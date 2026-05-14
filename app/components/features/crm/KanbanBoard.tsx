@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { getWonStageId, filterPipelineContacts } from './shared';
+import { filterPipelineContacts } from './shared';
 import { LeadCard } from './LeadCard';
 import type { CRMContact, CRMStageConfig, LeadStatus, LeadSource } from '@/lib/types';
 
@@ -84,38 +84,8 @@ export function KanbanBoard({ contacts, stages, onSelectContact, selectedContact
     }
   };
 
-  const totalLeads = filtered.length;
-  const hotLeads = filtered.filter((c) => c.tags?.includes('quente')).length;
-  const avgScore = totalLeads > 0
-    ? Math.round(filtered.reduce((s, c) => s + (c.scores?.overall ?? c.score ?? 0), 0) / totalLeads)
-    : 0;
-  const wonStageId = getWonStageId(stages);
-  const wonLeads = filtered.filter((c) => c.status === wonStageId).length;
-
   return (
-    <div className="flex flex-col flex-1 min-h-0 gap-4">
-      {/* KPI strip */}
-      <div className="flex gap-3 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
-        {[
-          { label: t('crm.kanban.totalLeads', 'Total de Leads'), value: String(totalLeads), color: 'text-blue-600 dark:text-blue-400' },
-          { label: t('crm.kanban.hotLeads', 'Leads Quentes'), value: String(hotLeads), color: 'text-orange-600 dark:text-orange-400' },
-          { label: t('crm.kanban.avgScore', 'Score Médio'), value: String(avgScore), color: 'text-amber-600 dark:text-amber-400' },
-          { label: t('crm.kanban.converted', 'Convertidos'), value: String(wonLeads), color: 'text-emerald-600 dark:text-emerald-400' },
-        ].map((kpi, i) => (
-          <motion.div
-            key={kpi.label}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.05 }}
-            className="flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-[#111827] border border-gray-100 dark:border-gray-700/50 rounded-xl shrink-0"
-          >
-            <span className={cn('text-xl font-display font-bold', kpi.color)}>{kpi.value}</span>
-            <span className="text-xs text-gray-400 dark:text-gray-500 font-medium whitespace-nowrap">{kpi.label}</span>
-          </motion.div>
-        ))}
-      </div>
-
-      {/* Kanban Board */}
+    <div className="flex flex-col flex-1 min-h-0">
       <div className="flex-1 overflow-x-auto overflow-y-hidden pb-4 min-h-0" style={{ scrollbarWidth: 'thin' }}>
         <div className="flex gap-3 min-w-max h-full">
           {stages.map((stage, ci) => {

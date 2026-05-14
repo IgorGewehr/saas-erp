@@ -122,26 +122,17 @@ async function logAudit(opts: {
 
 function CRMSkeleton() {
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col gap-4 p-4 sm:p-5 lg:p-6">
-      {/* Header skeleton */}
-      <div className="flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="h-8 w-14 rounded-lg shimmer" />
-          <div className="h-4 w-32 rounded-lg shimmer" />
-        </div>
-        <div className="flex gap-2">
-          <div className="h-9 w-36 rounded-xl shimmer" />
-          <div className="h-9 w-28 rounded-xl shimmer" />
-        </div>
-      </div>
-      {/* Nav skeleton */}
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-full flex flex-col gap-3 p-4 sm:p-5 lg:p-6">
       <div className="flex gap-1 shrink-0">
         {[0, 1, 2, 3, 4].map((i) => (
           <motion.div key={i} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
             className="h-9 w-28 rounded-lg shimmer" />
         ))}
       </div>
-      {/* Content skeleton */}
+      <div className="flex gap-2 shrink-0">
+        <div className="h-8 w-56 rounded-lg shimmer" />
+        <div className="h-8 w-20 rounded-lg shimmer" />
+      </div>
       <div className="flex-1 grid grid-cols-7 gap-3 min-h-0">
         {[0, 1, 2, 3, 4, 5, 6].map((i) => (
           <div key={i} className="rounded-xl shimmer" />
@@ -3668,7 +3659,18 @@ export default function CRMModule() {
   const [filterTags, setFilterTags] = useState<string[]>([]);
   const [filterSource, setFilterSource] = useState<LeadSource | 'all'>('all');
   const [filterTipo, setFilterTipo] = useState<'pf' | 'pj' | 'all'>('all');
-  const [showTagFilter, setShowTagFilter] = useState(false);
+  const [showFilterPopover, setShowFilterPopover] = useState(false);
+  const filterPopoverRef = React.useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showFilterPopover) return;
+    const handler = (e: MouseEvent) => {
+      if (filterPopoverRef.current && !filterPopoverRef.current.contains(e.target as Node)) {
+        setShowFilterPopover(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showFilterPopover]);
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [scheduleContact, setScheduleContact] = useState<CRMContact | null>(null);
 
@@ -4012,172 +4014,19 @@ export default function CRMModule() {
     } catch (err) { console.error('[CRM] Error updating tags:', err); toast.error(t('crm.toast.errorUpdateTags', 'Erro ao atualizar tags')); }
   }, [business?.id, user, queryClient, t]);
 
-  // Quick stats for header
-  const hotLeads = contacts.filter((c) => c.scores?.churnRisk && c.scores.churnRisk >= 60).length;
-  const activeDealsCount = deals.filter((d) => d.stage !== 'fechamento').length;
+  const activeFilterCount = filterTags.length + (filterSource !== 'all' ? 1 : 0) + (filterTipo !== 'all' ? 1 : 0);
 
   if (isLoading) return <CRMSkeleton />;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
 
-      {/* ═══════════════════════════════════════════════════════════
-          HEADER — clean, no icon, integrated stats
-          ═══════════════════════════════════════════════════════════ */}
-      <div className="shrink-0 px-5 sm:px-6 lg:px-8 pt-5 sm:pt-6 lg:pt-7 pb-0">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-5">
-          {/* Title + quick stats */}
-          <div className="flex items-center gap-5">
-            <h1 className="text-3xl font-display font-bold text-gray-900 dark:text-gray-100 tracking-tight">CRM</h1>
-            <div className="hidden sm:flex items-center gap-4 pl-5 border-l border-gray-200 dark:border-gray-700/50">
-              <div className="flex items-center gap-1.5 text-sm">
-                <span className="font-semibold text-gray-800 dark:text-gray-200">{contacts.length}</span>
-                <span className="text-gray-400">{t('crm.header.contacts', 'contatos')}</span>
-              </div>
-              {activeDealsCount > 0 && (
-                <div className="flex items-center gap-1.5 text-sm">
-                  <span className="font-semibold text-blue-600 dark:text-blue-400">{activeDealsCount}</span>
-                  <span className="text-gray-400">{t('crm.header.activeDeals', 'deals ativos')}</span>
-                </div>
-              )}
-              {hotLeads > 0 && (
-                <div className="flex items-center gap-1.5 text-sm">
-                  <AlertTriangle size={14} className="text-orange-500" />
-                  <span className="font-semibold text-orange-600 dark:text-orange-400">{hotLeads}</span>
-                  <span className="text-gray-400">{t('crm.header.atRisk', 'em risco')}</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Actions */}
-          <div className="flex items-center gap-2.5">
-            {/* Search — only on pipeline tab */}
-            {activeTab === 'kanban' && (
-              <div className="relative hidden sm:block">
-                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input type="text" placeholder={t('crm.action.search', 'Buscar...')} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 pr-4 py-2.5 w-52 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700/50 rounded-xl text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 focus:bg-white dark:focus:bg-white/[0.06] transition-all" />
-              </div>
-            )}
-
-            {/* Filter — only on pipeline */}
-            {activeTab === 'kanban' && (
-              <>
-                <Tooltip title={t('crm.action.filterByTags', 'Filtrar por tags')} arrow>
-                  <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
-                    onClick={() => setShowTagFilter(!showTagFilter)}
-                    className={cn('inline-flex items-center gap-1.5 px-3 py-2.5 border rounded-xl text-sm font-medium transition-all',
-                      showTagFilter || filterTags.length > 0
-                        ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
-                        : 'bg-gray-50 dark:bg-white/[0.04] border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400')}>
-                    <Filter size={15} />
-                    {filterTags.length > 0 && <span className="text-xs bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center leading-none">{filterTags.length}</span>}
-                  </motion.button>
-                </Tooltip>
-                <FormControl size="small" sx={{ minWidth: 110 }} className="hidden sm:block">
-                  <Select value={filterSource} onChange={(e) => setFilterSource(e.target.value as typeof filterSource)}
-                    displayEmpty sx={{ borderRadius: '12px', fontSize: '0.875rem', height: 42, bgcolor: isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB' }}>
-                    <MenuItem value="all"><span className="text-gray-400">{t('crm.filter.source', 'Origem')}</span></MenuItem>
-                    {ALL_SOURCES.map((s) => <MenuItem key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</MenuItem>)}
-                  </Select>
-                </FormControl>
-                <FormControl size="small" sx={{ minWidth: 100 }} className="hidden sm:block">
-                  <Select value={filterTipo} onChange={(e) => setFilterTipo(e.target.value as typeof filterTipo)}
-                    displayEmpty sx={{ borderRadius: '12px', fontSize: '0.875rem', height: 42, bgcolor: isDark ? 'rgba(255,255,255,0.04)' : '#F9FAFB' }}>
-                    <MenuItem value="all"><span className="text-gray-400">Tipo</span></MenuItem>
-                    <MenuItem value="pf">Pessoa Física</MenuItem>
-                    <MenuItem value="pj">Pessoa Jurídica</MenuItem>
-                  </Select>
-                </FormControl>
-              </>
-            )}
-
-            {/* Pipeline view toggle — only on kanban tab */}
-            {activeTab === 'kanban' && (
-              <div className="flex items-center gap-0.5 p-0.5 bg-gray-100 dark:bg-white/[0.06] rounded-xl">
-                <button
-                  onClick={() => handlePipelineView('kanban')}
-                  title="Visão Kanban"
-                  className={cn('p-1.5 rounded-[10px] transition-all',
-                    pipelineView === 'kanban'
-                      ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
-                      : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
-                  )}>
-                  <LayoutDashboard size={15} />
-                </button>
-                <button
-                  onClick={() => handlePipelineView('table')}
-                  title="Visão Lista"
-                  className={cn('p-1.5 rounded-[10px] transition-all',
-                    pipelineView === 'table'
-                      ? 'bg-white dark:bg-white/[0.12] text-gray-900 dark:text-white shadow-sm'
-                      : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300'
-                  )}>
-                  <LayoutList size={15} />
-                </button>
-              </div>
-            )}
-
-            {/* Toggle do modo de seleção — só no pipeline kanban (ambas views).
-                Padrão idêntico ao ClientsModule: estado on/off + barra
-                contextual aparece quando há itens marcados. */}
-            {activeTab === 'kanban' && (
-              <button
-                onClick={toggleSelectionMode}
-                className={cn(
-                  'inline-flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors',
-                  selectionMode
-                    ? 'bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-700 dark:text-blue-300'
-                    : 'bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-300 dark:hover:border-gray-600',
-                )}
-              >
-                <CheckSquare size={14} />
-                {selectionMode ? 'Sair da seleção' : 'Selecionar'}
-              </button>
-            )}
-
-            {/* CSV Import/Export dropdown */}
-            <div className="relative" ref={csvMenuRef}>
-              <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
-                onClick={() => setCsvMenuOpen(v => !v)}
-                className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 rounded-xl text-sm font-medium hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
-                <Download size={14} />
-                <Upload size={14} />
-              </motion.button>
-              <AnimatePresence>
-                {csvMenuOpen && (
-                  <motion.div initial={{ opacity: 0, y: 4, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 4, scale: 0.97 }} transition={{ duration: 0.1 }}
-                    className="absolute right-0 top-full mt-1.5 w-44 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg z-50 overflow-hidden">
-                    <button onClick={() => { setCsvMenuOpen(false); setShowExportModal(true); }}
-                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
-                      <Download size={15} className="text-emerald-500" /> Exportar CSV
-                    </button>
-                    <button onClick={() => { setCsvMenuOpen(false); setShowImportModal(true); }}
-                      className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
-                      <Upload size={15} className="text-blue-500" /> Importar CSV
-                    </button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-
-            {/* Botão único de entrada de leads no CRM: importa cliente existente
-                de /clientes pro pipeline (seta inPipeline:true + preenche campos
-                CRM-only). Substitui os botões "Contato" e "Novo Deal" antigos —
-                cadastro de cliente fica em /clientes; criação de deal continua
-                no LeadDetailPanel (botão "Logar deal") pra quem realmente usa. */}
-            <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.95 }}
-              onClick={() => setImportLeadOpen(true)}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-600 to-red-500 text-white rounded-xl font-semibold text-sm shadow-sm shadow-red-500/20 dark:shadow-red-900/30">
-              <UserPlus size={17} /> Importar cliente
-            </motion.button>
-          </div>
-        </div>
-
-        {/* ═══════════════════════════════════════════════════════════
-            NAVIGATION — underline tabs, clean and minimal
-            ═══════════════════════════════════════════════════════════ */}
+      {/* Tabs nav + minimal pipeline toolbar (search + single filters popover).
+          Header completo com título "CRM" / stats / botões de ação foi removido
+          pra dar mais espaço útil pra pipeline. Importar cliente, view toggle,
+          Selecionar, CSV ficaram dead code (state + modais ainda existem) —
+          podem ser re-adicionados em outro lugar quando precisar. */}
+      <div className="shrink-0 px-5 sm:px-6 lg:px-8 pt-4 pb-0">
         <div className="flex items-center gap-1 border-b border-gray-200 dark:border-gray-700/50 -mx-1">
           {TABS.map((tab) => {
             const isActive = activeTab === tab.key;
@@ -4199,7 +4048,6 @@ export default function CRMModule() {
               </button>
             );
           })}
-          {/* Pipeline settings gear — only on kanban tab, admin only */}
           {activeTab === 'kanban' && isAdmin && (
             <button
               onClick={() => setShowPipelineSettings(true)}
@@ -4210,33 +4058,120 @@ export default function CRMModule() {
             </button>
           )}
         </div>
-      </div>
 
-      {/* ═══════════════════════════════════════════════════════════
-          TAG FILTER BAR — collapsible. Só faz sentido na aba Pipeline
-          (filterTags é consumido só pela KanbanBoard/lista). State
-          showTagFilter persiste — bar reaparece quando volta pra kanban.
-          ═══════════════════════════════════════════════════════════ */}
-      <AnimatePresence>{showTagFilter && activeTab === 'kanban' && (
-        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="overflow-hidden shrink-0 px-5 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-2.5 flex-wrap py-3 mt-2">
-            <span className="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Tags:</span>
-            {ALL_PRESET_TAGS.map((tag) => {
-              const cfg = getTagConfig(tag);
-              const isActiveTag = filterTags.includes(tag);
-              return (
-                <button key={tag} onClick={() => setFilterTags(isActiveTag ? filterTags.filter((t) => t !== tag) : [...filterTags, tag])}
-                  className={cn('flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-full border transition-all',
-                    isActiveTag ? cn(cfg.bg, cfg.text, 'border-current/20') : 'bg-transparent border-gray-200 dark:border-gray-700 text-gray-400')}>
-                  <span className={cn('w-2 h-2 rounded-full', isActiveTag ? cfg.dot : 'bg-gray-400')} />
-                  {cfg.label}
+        {activeTab === 'kanban' && (
+          <div className="flex items-center gap-2 mt-3">
+            <div className="relative w-full max-w-xs">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 pointer-events-none" />
+              <input
+                type="text"
+                placeholder={t('crm.action.search', 'Buscar...')}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 pr-8 py-1.5 w-full bg-transparent border border-gray-200 dark:border-white/[0.08] rounded-lg text-sm text-gray-700 dark:text-gray-200 placeholder:text-gray-400 dark:placeholder:text-gray-600 focus:outline-none focus:border-gray-400 dark:focus:border-white/20 transition-colors"
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded"
+                  title={t('crm.action.clear', 'Limpar')}
+                >
+                  <X size={12} />
                 </button>
-              );
-            })}
-            {filterTags.length > 0 && <button onClick={() => setFilterTags([])} className="text-xs font-semibold text-gray-400 hover:text-red-500 ml-1">{t('crm.action.clear', 'Limpar')}</button>}
+              )}
+            </div>
+            <div className="relative" ref={filterPopoverRef}>
+              <button
+                onClick={() => setShowFilterPopover(v => !v)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors',
+                  activeFilterCount > 0
+                    ? 'bg-red-50 dark:bg-red-500/10 border-red-200 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                    : 'bg-transparent border-gray-200 dark:border-white/[0.08] text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-white/20',
+                )}
+              >
+                <SlidersHorizontal size={13} />
+                {t('crm.action.filter', 'Filtros')}
+                {activeFilterCount > 0 && (
+                  <span className="text-[10px] font-bold bg-red-500 text-white rounded-full min-w-[16px] h-4 px-1 inline-flex items-center justify-center leading-none">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </button>
+              <AnimatePresence>
+                {showFilterPopover && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 4, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: 4, scale: 0.97 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute left-0 top-full mt-1.5 w-72 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-xl shadow-lg z-40 p-4"
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-semibold text-gray-700 dark:text-gray-200 uppercase tracking-wide">{t('crm.action.filter', 'Filtros')}</span>
+                      {activeFilterCount > 0 && (
+                        <button
+                          onClick={() => { setFilterTags([]); setFilterSource('all'); setFilterTipo('all'); }}
+                          className="text-[11px] font-medium text-red-500 hover:text-red-600 dark:hover:text-red-400"
+                        >
+                          {t('crm.action.clearAll', 'Limpar tudo')}
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5">{t('crm.filter.source', 'Origem')}</label>
+                        <select
+                          value={filterSource}
+                          onChange={(e) => setFilterSource(e.target.value as typeof filterSource)}
+                          className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-xs text-gray-700 dark:text-gray-200 focus:outline-none focus:border-gray-400 dark:focus:border-white/20"
+                        >
+                          <option value="all">Todas</option>
+                          {ALL_SOURCES.map((s) => <option key={s} value={s}>{t('crm.source.' + s, SOURCE_LABELS[s])}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5">Tipo</label>
+                        <select
+                          value={filterTipo}
+                          onChange={(e) => setFilterTipo(e.target.value as typeof filterTipo)}
+                          className="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700 rounded-lg text-xs text-gray-700 dark:text-gray-200 focus:outline-none focus:border-gray-400 dark:focus:border-white/20"
+                        >
+                          <option value="all">Todos</option>
+                          <option value="pf">Pessoa Física</option>
+                          <option value="pj">Pessoa Jurídica</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5">Tags</label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {ALL_PRESET_TAGS.map((tag) => {
+                            const cfg = getTagConfig(tag);
+                            const isActiveTag = filterTags.includes(tag);
+                            return (
+                              <button
+                                key={tag}
+                                onClick={() => setFilterTags(isActiveTag ? filterTags.filter((t) => t !== tag) : [...filterTags, tag])}
+                                className={cn(
+                                  'inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-md border transition-colors',
+                                  isActiveTag ? cn(cfg.bg, cfg.text, 'border-current/20') : 'bg-transparent border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:border-gray-400 dark:hover:border-gray-600',
+                                )}
+                              >
+                                <span className={cn('w-1.5 h-1.5 rounded-full', isActiveTag ? cfg.dot : 'bg-gray-400')} />
+                                {cfg.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
-        </motion.div>
-      )}</AnimatePresence>
+        )}
+      </div>
 
       {/* ═══════════════════════════════════════════════════════════
           SELECTION BAR — contextual action bar quando há itens marcados.
