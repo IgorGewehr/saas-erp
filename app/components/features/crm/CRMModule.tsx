@@ -2586,6 +2586,7 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                         setFormCsvColumns(stats.csvColumns);
                       }}
                       existingClients={existingClients}
+                      businessId={business?.id}
                     />
                     {formRecipients.length > 0 && (
                       <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3 space-y-2">

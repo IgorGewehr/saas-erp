@@ -18,10 +18,14 @@
  *   />
  */
 
-import { useState, useRef, useMemo, useCallback } from 'react';
+import { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, ClipboardPaste, AlertTriangle, Check, X, ChevronDown, Link as LinkIcon } from 'lucide-react';
+import {
+  Upload, ClipboardPaste, AlertTriangle, Check, X, ChevronDown,
+  Link as LinkIcon, Shield, Loader2,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { toast } from 'react-toastify';
 import type { BroadcastRecipient, Client } from '@/lib/types';
 
 interface ParsedLine {
@@ -45,6 +49,9 @@ interface ListStats {
   duplicates: number;
   /** Telefones fixos BR — válidos como número mas sem WhatsApp possível. */
   landlines: number;
+  /** Phones confirmados sem WhatsApp pelo chip validador (purpose='validator').
+   *  Só preenchido depois que operador roda "Higienizar lista". */
+  noWhatsApp: number;
   linkedToCrm: number;
   /** Nomes das colunas extras detectadas no CSV (ordenadas como aparecem). */
   csvColumns: string[];
@@ -167,24 +174,38 @@ interface Props {
   mode: 'phone' | 'email';
   onChange: (recipients: BroadcastRecipient[], stats: ListStats) => void;
   existingClients?: Client[];
+  /** Necessário pra rodar a higienização via chip validador (POST
+   *  /api/channels/validator/check). Sem isso, o botão "Higienizar lista"
+   *  fica desabilitado. */
+  businessId?: string;
   className?: string;
 }
 
-export default function RecipientListInput({ mode, onChange, existingClients, className }: Props) {
+export default function RecipientListInput({ mode, onChange, existingClients, businessId, className }: Props) {
   const [activeTab, setActiveTab] = useState<'paste' | 'csv'>('paste');
   const [textValue, setTextValue] = useState('');
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
   const [parsedLines, setParsedLines] = useState<ParsedLine[]>([]);
-  const [expandedSection, setExpandedSection] = useState<'valid' | 'invalid' | 'duplicates' | 'landlines' | null>(null);
+  const [expandedSection, setExpandedSection] = useState<'valid' | 'invalid' | 'duplicates' | 'landlines' | 'noWhatsApp' | null>(null);
+  // Phones confirmados sem WhatsApp pelo chip validador (acumulado entre
+  // chamadas do "Higienizar lista" — ele roda em chunks de 30 por vez).
+  // Set pra lookup O(1) na categorização e na exclusão do envio.
+  const [noWhatsAppPhones, setNoWhatsAppPhones] = useState<Set<string>>(new Set());
+  // 'idle' antes do user clicar; 'running' enquanto chunks rolam; 'done'
+  // após terminar; 'error' se algum chunk falhou (chunks anteriores continuam
+  // valendo, operador pode retentar).
+  const [hygieneStatus, setHygieneStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [hygieneProgress, setHygieneProgress] = useState<{ checked: number; total: number }>({ checked: 0, total: 0 });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   /**
-   * Categoriza as linhas em 4 buckets para os painéis expansíveis:
-   *  - validLines: passaram parse + não são duplicadas + não é fixo (entram no envio)
+   * Categoriza as linhas em 5 buckets para os painéis expansíveis:
+   *  - validLines: passaram parse + não são duplicadas + não é fixo + tem WA (entram no envio)
    *  - invalidLines: parse falhou (formato inválido)
    *  - duplicateLines: parse OK mas chave já vista (segunda+ ocorrência)
    *  - landlineLines: parse OK mas é telefone fixo BR (sem WhatsApp)
-   * Ordem de prioridade na categorização: error > !key > duplicate > landline > valid.
+   *  - noWhatsAppLines: confirmado pelo chip validador que não tem WA
+   * Ordem de prioridade: error > !key > duplicate > landline > noWhatsApp > valid.
    * Linkagem ao CRM é feita em buildRecipients (filtro por phone/email match).
    */
   const categorizedLines = useMemo(() => {
@@ -192,6 +213,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
     const invalid: ParsedLine[] = [];
     const duplicates: ParsedLine[] = [];
     const landlines: ParsedLine[] = [];
+    const noWhatsApp: ParsedLine[] = [];
     const seen = new Set<string>();
     for (const line of parsedLines) {
       if (line.error) { invalid.push(line); continue; }
@@ -200,13 +222,19 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
       const key = mode === 'email' ? rawKey.toLowerCase() : rawKey;
       if (seen.has(key)) { duplicates.push(line); continue; }
       seen.add(key);
-      // Fixo entra antes de virar "valid" pra sair fora do envio mas permanecer
-      // visível pro operador entender quanto da base era fixo.
       if (line.isLandline) { landlines.push(line); continue; }
+      // Validator chip já confirmou que esse número não tem WA — categoria
+      // distinta de "fixo" porque a inferência é diferente (chip vs heurística
+      // local) e o operador pode querer re-rodar a higienização se o cache
+      // estiver muito velho.
+      if (mode === 'phone' && line.phoneNumber && noWhatsAppPhones.has(line.phoneNumber)) {
+        noWhatsApp.push(line);
+        continue;
+      }
       valid.push(line);
     }
-    return { valid, invalid, duplicates, landlines };
-  }, [parsedLines, mode]);
+    return { valid, invalid, duplicates, landlines, noWhatsApp };
+  }, [parsedLines, mode, noWhatsAppPhones]);
 
   /** Aplica dedup, valida e produz array de BroadcastRecipient + stats. */
   const buildRecipients = useCallback(
@@ -214,6 +242,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
       const seen = new Set<string>();
       let duplicates = 0;
       let landlines = 0;
+      let noWhatsApp = 0;
       let linkedToCrm = 0;
       const recipients: BroadcastRecipient[] = [];
 
@@ -229,6 +258,11 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
         // Mantém o seen.add acima pra que duplicatas de fixos também sejam
         // detectadas (operador vê stats consistente).
         if (line.isLandline) { landlines++; continue; }
+        // Confirmado pelo validator que não tem WA — exclui do envio.
+        if (mode === 'phone' && line.phoneNumber && noWhatsAppPhones.has(line.phoneNumber)) {
+          noWhatsApp++;
+          continue;
+        }
 
         // Auto-link com CRM
         let contactId: string | undefined;
@@ -283,23 +317,33 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
           invalid: lines.filter(l => l.error).length,
           duplicates,
           landlines,
+          noWhatsApp,
           linkedToCrm,
           csvColumns,
         },
       };
     },
-    [mode, existingClients]
+    [mode, existingClients, noWhatsAppPhones]
   );
 
-  /** Notifica parent quando linhas mudam. */
+  /** Atualiza linhas parseadas. O dispatch pro parent (onChange) é feito via
+   *  useEffect abaixo — assim cobre TANTO mudança no parse (textarea/CSV)
+   *  QUANTO mudança em noWhatsAppPhones (após hygiene rodar).
+   *  Sem o effect, o parent receberia stats desatualizado após higienização. */
   const updateAndNotify = useCallback(
     (lines: ParsedLine[]) => {
       setParsedLines(lines);
-      const { recipients, stats } = buildRecipients(lines);
-      onChange(recipients, stats);
     },
-    [buildRecipients, onChange]
+    []
   );
+
+  // Dispatch sincronizado pro parent — re-roda quando parsedLines OU
+  // noWhatsAppPhones mudam (esse último depois do hygiene).
+  useEffect(() => {
+    const { recipients, stats } = buildRecipients(parsedLines);
+    onChange(recipients, stats);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedLines, noWhatsAppPhones]);
 
   /**
    * Heurística de extração de nome no paste mode.
@@ -454,12 +498,106 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
 
   const stats = useMemo(() => buildRecipients(parsedLines).stats, [parsedLines, buildRecipients]);
 
+  /**
+   * Higieniza a lista chamando o endpoint /api/channels/validator/check em
+   * chunks de 30 phones (batch máx do endpoint). Acumula phones sem WA num
+   * Set; categorização re-roda automaticamente via useMemo.
+   *
+   * Pra cada chunk:
+   *   - chunk de 30 phones próximos a serem checked
+   *   - POST e aguarda resposta (~2s × 30 = 60s no pior caso, sem cache hits)
+   *   - acumula no noWhatsAppPhones
+   *   - atualiza progress
+   *
+   * Em erro de chunk (503 validator off, 500 inesperado), exibe toast e para —
+   * chunks anteriores já estão valendo. Operador pode retentar (cache cobre).
+   */
+  const runHygiene = useCallback(async () => {
+    if (!businessId || mode !== 'phone' || hygieneStatus === 'running') return;
+    // Pega o universo de phones a checar: válidos (não-fixos, não-duplicados,
+    // não já-no-noWhatsApp). Usa categorizedLines.valid pra refletir o estado
+    // atual da UI — não vale a pena re-checar quem o operador já sabe que é
+    // fixo ou não tem WA.
+    const phonesToCheck = Array.from(new Set(
+      categorizedLines.valid
+        .map(l => l.phoneNumber)
+        .filter((p): p is string => !!p)
+    ));
+    if (phonesToCheck.length === 0) {
+      toast.info('Nada pra higienizar — lista vazia ou já validada.');
+      return;
+    }
+
+    setHygieneStatus('running');
+    setHygieneProgress({ checked: 0, total: phonesToCheck.length });
+    const accNoWa = new Set(noWhatsAppPhones);
+
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      const headers: HeadersInit = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+
+      // CHUNK_SIZE casa com MAX_BATCH_SIZE do endpoint (30).
+      const CHUNK_SIZE = 30;
+      let totalChecked = 0;
+      for (let i = 0; i < phonesToCheck.length; i += CHUNK_SIZE) {
+        const chunk = phonesToCheck.slice(i, i + CHUNK_SIZE);
+        const res = await fetch('/api/channels/validator/check', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ businessId, phones: chunk }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          // 503 = validator off; outros = erro inesperado. Em ambos, para
+          // mas preserva o que já acumulou. Aproveita results parciais
+          // se o backend mandou (cache hits funcionam mesmo com validator off).
+          if (data.results) {
+            for (const phone of Object.keys(data.results)) {
+              if (data.results[phone].exists === false) accNoWa.add(phone);
+            }
+            setNoWhatsAppPhones(new Set(accNoWa));
+          }
+          toast.error(data.error || `Higienização falhou (HTTP ${res.status})`);
+          setHygieneStatus('error');
+          return;
+        }
+        // Sucesso do chunk — adiciona os sem-WA no acumulador.
+        const results = (data.results || {}) as Record<string, { exists: boolean }>;
+        for (const phone of Object.keys(results)) {
+          if (results[phone].exists === false) accNoWa.add(phone);
+        }
+        totalChecked += chunk.length;
+        setNoWhatsAppPhones(new Set(accNoWa));
+        setHygieneProgress({ checked: totalChecked, total: phonesToCheck.length });
+      }
+
+      setHygieneStatus('done');
+      const removed = accNoWa.size - noWhatsAppPhones.size;
+      if (removed > 0) {
+        toast.success(`Higienização concluída — ${removed} ${removed === 1 ? 'número removido' : 'números removidos'} (sem WhatsApp).`);
+      } else {
+        toast.success('Higienização concluída — todos os números têm WhatsApp.');
+      }
+    } catch (err) {
+      console.error('[RecipientListInput] runHygiene error:', err);
+      toast.error('Falha na higienização. Tente novamente.');
+      setHygieneStatus('error');
+    }
+  }, [businessId, mode, hygieneStatus, categorizedLines.valid, noWhatsAppPhones]);
+
   const reset = () => {
     setTextValue('');
     setCsvFileName(null);
     setParsedLines([]);
     setExpandedSection(null);
-    onChange([], { valid: 0, invalid: 0, duplicates: 0, landlines: 0, linkedToCrm: 0, csvColumns: [] });
+    setNoWhatsAppPhones(new Set());
+    setHygieneStatus('idle');
+    setHygieneProgress({ checked: 0, total: 0 });
+    onChange([], { valid: 0, invalid: 0, duplicates: 0, landlines: 0, noWhatsApp: 0, linkedToCrm: 0, csvColumns: [] });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -561,6 +699,16 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
               tone="slate"
             />
           )}
+          {stats.noWhatsApp > 0 && mode === 'phone' && (
+            <BadgeButton
+              active={expandedSection === 'noWhatsApp'}
+              onClick={() => setExpandedSection(s => s === 'noWhatsApp' ? null : 'noWhatsApp')}
+              count={stats.noWhatsApp}
+              label="sem WhatsApp"
+              tone="slate"
+              icon={<Shield className="w-2.5 h-2.5" />}
+            />
+          )}
           {stats.linkedToCrm > 0 && (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 font-semibold">
               <LinkIcon className="w-2.5 h-2.5" /> {stats.linkedToCrm} vinculados ao CRM
@@ -571,6 +719,56 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
               {stats.csvColumns.length} {stats.csvColumns.length === 1 ? 'coluna extra' : 'colunas extras'}
             </span>
           )}
+        </div>
+      )}
+
+      {/* Botão "Higienizar lista" — chama o chip validador pra checar quais
+          phones têm WhatsApp. Só faz sentido em mode=phone, com businessId
+          disponível e algum válido pra checar. */}
+      {mode === 'phone' && businessId && categorizedLines.valid.length > 0 && (
+        <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-blue-50/60 dark:bg-blue-500/[0.05] border border-blue-200/60 dark:border-blue-500/20">
+          <div className="flex items-start gap-2.5 min-w-0">
+            <Shield className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold text-blue-900 dark:text-blue-300">
+                Higienizar lista (recomendado)
+              </p>
+              <p className="text-[10px] text-blue-700/80 dark:text-blue-400/80 mt-0.5 leading-relaxed">
+                {hygieneStatus === 'idle' && `O chip validador vai checar ${categorizedLines.valid.length} ${categorizedLines.valid.length === 1 ? 'número' : 'números'} e excluir os que não têm WhatsApp.`}
+                {hygieneStatus === 'running' && `Checando ${hygieneProgress.checked} / ${hygieneProgress.total}… (~2s por número, com cache para os já checados antes)`}
+                {hygieneStatus === 'done' && `Concluído. ${stats.noWhatsApp} ${stats.noWhatsApp === 1 ? 'número removido' : 'números removidos'} (sem WhatsApp).`}
+                {hygieneStatus === 'error' && 'Higienização interrompida. Resultado parcial preservado — clique de novo pra continuar.'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={runHygiene}
+            disabled={hygieneStatus === 'running'}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors shrink-0',
+              hygieneStatus === 'running'
+                ? 'bg-blue-100 dark:bg-blue-500/15 text-blue-700 dark:text-blue-400 cursor-wait'
+                : 'bg-blue-600 hover:bg-blue-700 text-white',
+            )}
+          >
+            {hygieneStatus === 'running' ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Checando…
+              </>
+            ) : hygieneStatus === 'done' ? (
+              <>
+                <Check className="w-3 h-3" />
+                Re-higienizar
+              </>
+            ) : (
+              <>
+                <Shield className="w-3 h-3" />
+                Higienizar
+              </>
+            )}
+          </button>
         </div>
       )}
 
@@ -587,6 +785,7 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
               expandedSection === 'invalid' && 'border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/5',
               expandedSection === 'duplicates' && 'border-amber-200 dark:border-amber-500/20 bg-amber-50 dark:bg-amber-500/5',
               expandedSection === 'landlines' && 'border-slate-200 dark:border-slate-500/20 bg-slate-50 dark:bg-slate-500/5',
+              expandedSection === 'noWhatsApp' && 'border-slate-200 dark:border-slate-500/20 bg-slate-50 dark:bg-slate-500/5',
             )}
           >
             <RecipientPanel
@@ -595,7 +794,8 @@ export default function RecipientListInput({ mode, onChange, existingClients, cl
                 expandedSection === 'valid' ? categorizedLines.valid
                 : expandedSection === 'invalid' ? categorizedLines.invalid
                 : expandedSection === 'duplicates' ? categorizedLines.duplicates
-                : categorizedLines.landlines
+                : expandedSection === 'landlines' ? categorizedLines.landlines
+                : categorizedLines.noWhatsApp
               }
               mode={mode}
               onClose={() => setExpandedSection(null)}
@@ -658,7 +858,7 @@ function BadgeButton({ active, onClick, count, label, tone, icon }: BadgeButtonP
 }
 
 interface RecipientPanelProps {
-  section: 'valid' | 'invalid' | 'duplicates' | 'landlines';
+  section: 'valid' | 'invalid' | 'duplicates' | 'landlines' | 'noWhatsApp';
   lines: ParsedLine[];
   mode: 'phone' | 'email';
   onClose: () => void;
@@ -669,12 +869,14 @@ function RecipientPanel({ section, lines, mode, onClose }: RecipientPanelProps) 
     invalid: 'Entradas inválidas',
     duplicates: 'Duplicados (ignorados no envio)',
     landlines: 'Telefones fixos (sem WhatsApp, ignorados no envio)',
+    noWhatsApp: 'Sem WhatsApp (confirmado pelo validador, ignorados no envio)',
   };
   const colors = {
     valid: 'text-emerald-700 dark:text-emerald-400',
     invalid: 'text-red-700 dark:text-red-400',
     duplicates: 'text-amber-700 dark:text-amber-400',
     landlines: 'text-slate-700 dark:text-slate-300',
+    noWhatsApp: 'text-slate-700 dark:text-slate-300',
   };
 
   if (lines.length === 0) {
@@ -715,7 +917,7 @@ function RecipientPanel({ section, lines, mode, onClose }: RecipientPanelProps) 
   );
 }
 
-function RecipientLineRow({ line, mode, section }: { line: ParsedLine; mode: 'phone' | 'email'; section: 'valid' | 'invalid' | 'duplicates' | 'landlines' }) {
+function RecipientLineRow({ line, mode, section }: { line: ParsedLine; mode: 'phone' | 'email'; section: 'valid' | 'invalid' | 'duplicates' | 'landlines' | 'noWhatsApp' }) {
   // Formato exibido: phone/email "primário" + nome se houver + erro se inválido
   const primary = mode === 'phone' ? line.phoneNumber : line.email;
   return (
