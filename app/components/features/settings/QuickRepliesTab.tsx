@@ -13,19 +13,20 @@
  * Firestore (fora deste componente).
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
 import {
   collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc,
 } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { cn } from '@/lib/utils';
 import {
   Zap, Plus, Search, Edit3, Trash2, Save, X, Loader2,
-  AlertTriangle, Hash, FileText,
+  AlertTriangle, Hash, FileText, Paperclip, Image as ImageIcon, Video, Headphones,
 } from 'lucide-react';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { Snippet } from '@/lib/types';
@@ -44,9 +45,39 @@ interface FormState {
   content: string;
   category: string;
   sectorId: string;
+  /** Mídia atual gravada (vinda do doc original em edição). Pode ser substituída
+   *  por `pendingMedia` (upload novo) ou marcada pra remoção (`removeMedia`). */
+  mediaUrl?: string;
+  mediaType?: 'image' | 'video' | 'audio' | 'document';
+  fileName?: string;
+  mediaStoragePath?: string;
+  /** Arquivo selecionado mas ainda não enviado pro Storage. Faz upload no save. */
+  pendingMedia: File | null;
+  /** Flag pra deletar a mídia atual no save sem substituir (operador clicou X
+   *  num snippet em edição). Ignorado quando há `pendingMedia` (sobrescreve). */
+  removeMedia: boolean;
 }
 
-const EMPTY_FORM: FormState = { shortcode: '', content: '', category: '', sectorId: '' };
+const EMPTY_FORM: FormState = {
+  shortcode: '', content: '', category: '', sectorId: '',
+  pendingMedia: null, removeMedia: false,
+};
+
+// Limites Cloud (paridade com Composer): image 5, video 16, audio 16, doc 25.
+// A storage.rule é 25MB no path snippets/ — usamos esses limites mais finos
+// no client pra dar erro cedo (sem subir e tomar deny).
+const MEDIA_LIMITS_MB = { image: 5, video: 16, audio: 16, document: 25 } as const;
+function detectMediaType(file: File): 'image' | 'video' | 'audio' | 'document' {
+  if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('video/')) return 'video';
+  if (file.type.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+function formatBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 export default function QuickRepliesTab() {
   const { user, business, sectors } = useAuth();
@@ -65,6 +96,34 @@ export default function QuickRepliesTab() {
   // hydration mismatch no SSR. Mesmo padrão do RecurrenceDetailDialog.
   const [portalReady, setPortalReady] = useState(false);
   useEffect(() => { setPortalReady(true); }, []);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Lê + valida o arquivo selecionado. Limites por tipo (igual Composer):
+  // image 5MB, video/audio 16MB, document 25MB.
+  const handleSelectMedia = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const mediaType = detectMediaType(file);
+    const limitMb = MEDIA_LIMITS_MB[mediaType];
+    if (file.size > limitMb * 1024 * 1024) {
+      toast.error(`Arquivo excede limite (${limitMb}MB)`);
+      e.target.value = '';
+      return;
+    }
+    setForm(f => ({ ...f, pendingMedia: file, removeMedia: false }));
+    e.target.value = ''; // permite re-selecionar o mesmo arquivo
+  }, []);
+
+  const handleRemoveMedia = useCallback(() => {
+    setForm(f => ({
+      ...f,
+      pendingMedia: null,
+      // Se há mídia salva (edição), marca pra delete no save. Pra "nova
+      // resposta" não precisa flag — basta limpar pendingMedia.
+      removeMedia: !!f.mediaUrl,
+    }));
+  }, []);
 
   // ── Subscribe Firestore ────────────────────────────────────────────────
   useEffect(() => {
@@ -119,6 +178,12 @@ export default function QuickRepliesTab() {
       content: snip.content,
       category: snip.category || '',
       sectorId: snip.sectorId || '',
+      mediaUrl: snip.mediaUrl,
+      mediaType: snip.mediaType,
+      fileName: snip.fileName,
+      mediaStoragePath: snip.mediaStoragePath,
+      pendingMedia: null,
+      removeMedia: false,
     });
     setShowForm(true);
   }, [canEdit]);
@@ -133,6 +198,7 @@ export default function QuickRepliesTab() {
     const shortcode = form.shortcode.trim().toLowerCase();
     const content = form.content.trim();
     const category = form.category.trim();
+    const hasMedia = !!form.pendingMedia || (!!form.mediaUrl && !form.removeMedia);
 
     if (!shortcode) { toast.error('Atalho é obrigatório'); return; }
     if (!SHORTCODE_RE.test(shortcode)) {
@@ -143,7 +209,9 @@ export default function QuickRepliesTab() {
       toast.error(`Atalho excede ${MAX_SHORTCODE_LEN} caracteres`);
       return;
     }
-    if (!content) { toast.error('Mensagem é obrigatória'); return; }
+    // Mensagem é obrigatória SÓ se não houver mídia. Snippet apenas-mídia
+    // (PDF de orçamento, foto de cardápio) é caso de uso válido.
+    if (!content && !hasMedia) { toast.error('Mensagem ou mídia obrigatória'); return; }
     if (content.length > MAX_CONTENT_LEN) {
       toast.error(`Mensagem excede ${MAX_CONTENT_LEN} caracteres`);
       return;
@@ -165,17 +233,68 @@ export default function QuickRepliesTab() {
     setSaving(true);
     try {
       const now = new Date().toISOString();
+
+      // Resolução da mídia: 3 caminhos
+      //  (a) novo upload (pendingMedia) → sobe + grava + deleta antigo se existia
+      //  (b) removeMedia=true sem novo upload → limpa campos + deleta antigo
+      //  (c) sem mudança → mantém os campos atuais (edit form.mediaUrl)
+      let newMediaUrl: string | undefined = form.mediaUrl;
+      let newMediaType = form.mediaType;
+      let newFileName = form.fileName;
+      let newMediaPath: string | undefined = form.mediaStoragePath;
+      let oldPathToDelete: string | null = null;
+
+      if (form.pendingMedia) {
+        const file = form.pendingMedia;
+        const mediaType = detectMediaType(file);
+        // Sanitiza nome — evita problemas de URL/encoding no Storage
+        const safeName = file.name.replace(/[^\w.\-]/g, '_');
+        const path = `snippets/${business.id}/${Date.now()}_${safeName}`;
+        const sref = storageRef(storage, path);
+        await uploadBytes(sref, file, { contentType: file.type || 'application/octet-stream' });
+        newMediaUrl = await getDownloadURL(sref);
+        newMediaType = mediaType;
+        newFileName = file.name;
+        // Schedule delete do antigo APÓS o save do doc — se delete falhar, doc
+        // já está consistente (vazamento Storage é menor mal que doc inválido).
+        if (form.mediaStoragePath) oldPathToDelete = form.mediaStoragePath;
+        newMediaPath = path;
+      } else if (form.removeMedia && form.mediaStoragePath) {
+        oldPathToDelete = form.mediaStoragePath;
+        newMediaUrl = undefined;
+        newMediaType = undefined;
+        newFileName = undefined;
+        newMediaPath = undefined;
+      }
+
       const data: Partial<Snippet> & { businessId: string } = {
         businessId: business.id,
         shortcode,
         content,
         ...(category ? { category } : {}),
         ...(form.sectorId ? { sectorId: form.sectorId } : {}),
+        ...(newMediaUrl ? {
+          mediaUrl: newMediaUrl,
+          mediaType: newMediaType,
+          ...(newFileName ? { fileName: newFileName } : {}),
+          ...(newMediaPath ? { mediaStoragePath: newMediaPath } : {}),
+        } : {}),
         updatedAt: now,
       };
       if (form.id) {
-        // Update
-        await updateDoc(doc(db, 'snippets', form.id), data);
+        // Update — quando remove mídia, preciso explicitamente sobrescrever os
+        // 4 campos com null pra Firestore apagar (Object spread acima omite
+        // quando newMediaUrl é undefined, então updateDoc não tocaria nesses
+        // campos). Usar deleteField() seria mais limpo, mas null é suficiente
+        // e dispensa import extra.
+        const updatePayload: Record<string, unknown> = { ...data };
+        if (!newMediaUrl) {
+          updatePayload.mediaUrl = null;
+          updatePayload.mediaType = null;
+          updatePayload.fileName = null;
+          updatePayload.mediaStoragePath = null;
+        }
+        await updateDoc(doc(db, 'snippets', form.id), updatePayload);
         toast.success('Resposta atualizada');
       } else {
         // Create
@@ -186,6 +305,15 @@ export default function QuickRepliesTab() {
         });
         toast.success('Resposta criada');
       }
+
+      // Best-effort delete da mídia antiga. Falha não bloqueia — admin pode
+      // limpar via console depois se aparecer no relatório.
+      if (oldPathToDelete) {
+        await deleteObject(storageRef(storage, oldPathToDelete)).catch(err => {
+          console.warn('[QuickReplies] failed to delete old media:', err);
+        });
+      }
+
       closeForm();
     } catch (err) {
       console.error('[QuickReplies] save error:', err);
@@ -197,7 +325,14 @@ export default function QuickRepliesTab() {
 
   const handleDelete = useCallback(async (snip: Snippet) => {
     try {
+      // Doc primeiro — sem ele, o snippet some da UI/autocomplete imediato.
+      // Mídia órfã é cosmética; se delete do Storage falhar, é limpável depois.
       await deleteDoc(doc(db, 'snippets', snip.id));
+      if (snip.mediaStoragePath) {
+        await deleteObject(storageRef(storage, snip.mediaStoragePath)).catch(err => {
+          console.warn('[QuickReplies] failed to delete media on snippet delete:', err);
+        });
+      }
       toast.success('Resposta excluída');
     } catch (err) {
       console.error('[QuickReplies] delete error:', err);
@@ -320,6 +455,15 @@ export default function QuickRepliesTab() {
                             {sector.name}
                           </span>
                         )}
+                        {snip.mediaUrl && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                            <Paperclip className="w-2.5 h-2.5" />
+                            {snip.mediaType === 'image' ? 'Imagem'
+                              : snip.mediaType === 'video' ? 'Vídeo'
+                              : snip.mediaType === 'audio' ? 'Áudio'
+                              : 'Documento'}
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-gray-700 dark:text-gray-300 leading-relaxed line-clamp-2 whitespace-pre-wrap">
                         {snip.content}
@@ -402,9 +546,18 @@ export default function QuickRepliesTab() {
                 </div>
 
                 <div>
-                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
-                    Mensagem * <span className="font-normal text-gray-400 normal-case">({form.content.length}/{MAX_CONTENT_LEN})</span>
-                  </label>
+                  {/* Asterisco condicional: mensagem é obrigatória só sem mídia.
+                      Quando há mídia anexa, o texto vira caption opcional —
+                      operador pode enviar só PDF/imagem sem texto. */}
+                  {(() => {
+                    const hasMedia = !!form.pendingMedia || (!!form.mediaUrl && !form.removeMedia);
+                    return (
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                        {hasMedia ? 'Mensagem (caption)' : 'Mensagem *'}{' '}
+                        <span className="font-normal text-gray-400 normal-case">({form.content.length}/{MAX_CONTENT_LEN})</span>
+                      </label>
+                    );
+                  })()}
                   <textarea
                     value={form.content}
                     onChange={(e) => setForm(f => ({ ...f, content: e.target.value.slice(0, MAX_CONTENT_LEN) }))}
@@ -415,6 +568,64 @@ export default function QuickRepliesTab() {
                   <p className="text-[10px] text-gray-400 mt-1">
                     Pode usar variáveis como <code className="px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800 font-mono text-[10px]">{'{{nome}}'}</code> — substituídas pelo nome do contato no envio.
                   </p>
+                </div>
+
+                {/* Anexo de mídia — opcional. Quando presente, vira o "corpo" do
+                    snippet e o texto acima vira caption. Suporta image/video/
+                    audio/document, mesmos limites do Composer. */}
+                <div>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1 block">
+                    Mídia <span className="font-normal text-gray-400 normal-case">(opcional — imagem, vídeo, áudio ou documento)</span>
+                  </label>
+                  {(() => {
+                    const hasPending = !!form.pendingMedia;
+                    const hasExisting = !!form.mediaUrl && !form.removeMedia && !hasPending;
+                    if (hasPending || hasExisting) {
+                      const file = form.pendingMedia;
+                      const mt = file ? detectMediaType(file) : (form.mediaType ?? 'document');
+                      const name = file?.name ?? form.fileName ?? 'arquivo';
+                      const size = file ? formatBytes(file.size) : null;
+                      const Icon = mt === 'image' ? ImageIcon : mt === 'video' ? Video : mt === 'audio' ? Headphones : FileText;
+                      return (
+                        <div className="flex items-center gap-3 p-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-white/[0.04]">
+                          <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-white/[0.06] flex items-center justify-center flex-shrink-0">
+                            <Icon className="w-4 h-4 text-gray-400" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">{name}</p>
+                            <p className="text-[10px] text-gray-400">
+                              {hasPending ? `${size} · pendente upload` : `${mt} · salvo`}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleRemoveMedia}
+                            className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10"
+                            title="Remover mídia"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-dashed border-gray-300 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 hover:border-red-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                      >
+                        <Paperclip className="w-3.5 h-3.5" />
+                        Anexar arquivo
+                      </button>
+                    );
+                  })()}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,video/*,audio/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    onChange={handleSelectMedia}
+                    className="hidden"
+                  />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -459,7 +670,12 @@ export default function QuickRepliesTab() {
                 <button
                   type="button"
                   onClick={handleSave}
-                  disabled={saving || !form.shortcode.trim() || !form.content.trim()}
+                  disabled={(() => {
+                    if (saving || !form.shortcode.trim()) return true;
+                    // Aceita save com texto OU com mídia (pending novo OU já salvo).
+                    const hasMedia = !!form.pendingMedia || (!!form.mediaUrl && !form.removeMedia);
+                    return !form.content.trim() && !hasMedia;
+                  })()}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
                 >
                   {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}

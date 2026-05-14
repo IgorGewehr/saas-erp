@@ -100,6 +100,17 @@ service firebase.storage {
       allow write: if isAuthenticated() && isMedia() && isUnderSize(25);
     }
 
+    // ── Snippet media (mídia anexa a respostas rápidas) ───────────────────────
+    // Path: snippets/{businessId}/{fileName}
+    // Mesmas restrições de conversations (Meta limita tamanhos similares no
+    // envio). isAttachment vs isMedia: optamos por isMedia pra forçar tipos
+    // que a Meta aceita — operador não cria snippet com .zip pra enviar.
+    match /snippets/{businessId}/{fileName} {
+      allow read:   if isAuthenticated();
+      allow write:  if isAuthenticated() && isMedia() && isUnderSize(25);
+      allow delete: if isAuthenticated();
+    }
+
     // ── Contact avatars (server-only via Admin SDK) ───────────────────────────
     // Path: contactAvatars/{businessId}/...
     match /contactAvatars/{businessId}/{rest=**} {

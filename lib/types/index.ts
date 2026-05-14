@@ -2676,9 +2676,22 @@ export interface Snippet {
   id: string;
   businessId: string;
   shortcode: string;
+  /** Texto da resposta. Quando o snippet tem `mediaUrl`, content vira a caption
+   *  da mídia e pode ser vazio (envio apenas-mídia é válido). */
   content: string;
   category?: string;
   sectorId?: string;
+  /** Mídia anexa opcional (imagem/vídeo/áudio/documento). Quando presente, o
+   *  operador clicar no snippet dispara um envio direto com a mídia + caption
+   *  no lugar de inserir texto no Composer. */
+  mediaUrl?: string;
+  mediaType?: 'image' | 'video' | 'audio' | 'document';
+  /** Nome de arquivo original — usado em document.filename (Cloud) / fileName
+   *  (Baileys) e como label no card de preview da UI. */
+  fileName?: string;
+  /** Path no Firebase Storage. Necessário pra deletar o blob quando o snippet
+   *  é apagado/atualizado (sem isso, mídia órfã se acumula no bucket). */
+  mediaStoragePath?: string;
   createdBy: string;
   createdAt: string;
   updatedAt: string;

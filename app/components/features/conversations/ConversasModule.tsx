@@ -7299,71 +7299,67 @@ export default function ConversasModule() {
     setAttachment(null);
   }, []);
 
-  const sendMediaMessage = useCallback(async (file: File, asInternal = false) => {
+  // Pipeline pós-upload: cria o doc da mensagem, atualiza preview da conversa
+  // e dispara o POST pra /api/conversations/send. Recebe `mediaUrl` já pronto
+  // (não faz upload). Reutilizado por:
+  //   • sendMediaMessage(file): faz upload do anexo do Composer e chama isso
+  //   • handleInsertSnippet: snippets com mídia já têm mediaUrl gravado
+  const sendPreparedMedia = useCallback(async ({
+    mediaUrl,
+    mediaType,
+    fileName,
+    caption = '',
+    asInternal = false,
+  }: {
+    mediaUrl: string;
+    mediaType: 'image' | 'video' | 'audio' | 'document';
+    fileName?: string;
+    caption?: string;
+    asInternal?: boolean;
+  }) => {
     if (!selectedConversation || !business?.id || !user) return;
-
-    const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
-      : file.type.startsWith('video/') ? 'video'
-      : file.type.startsWith('audio/') ? 'audio'
-      : 'document';
     const now = new Date().toISOString();
-    // Caption sempre vazio: o nome do arquivo NÃO deve virar texto da bolha.
-    // Pra documento, o filename real vai no campo dedicado `fileName`, que o
-    // renderer mostra no card e a API repassa via document.filename (Cloud)
-    // ou fileName (Baileys). Pra outras mídias, sem texto = sem caption.
-    const messageContent = '';
-
     let msgRef: Awaited<ReturnType<typeof addDoc>> | null = null;
-
     try {
-      // 1. Upload to Firebase Storage with explicit content-type so Meta APIs receive
-      //    the correct MIME header when fetching the file.
-      const storageRef = ref(storage, `conversations/${business.id}/${selectedConversation.id}/${Date.now()}_${file.name}`);
-      await uploadBytes(storageRef, file, { contentType: file.type || 'application/octet-stream' });
-      const mediaUrl = await getDownloadURL(storageRef);
-
-      // 2. Save to Firestore — internal notes never go via API, marked 'delivered'
-      //    diretamente. Externos ficam 'sending' e mudam pra 'sent' após API ok.
       msgRef = await addDoc(collection(db, 'conversationMessages'), {
         conversationId: selectedConversation.id,
         businessId: business.id,
         channel: selectedConversation.channel,
         ...(selectedConversation.connectedVia ? { connectedVia: selectedConversation.connectedVia } : {}),
         direction: 'outbound' as const,
-        content: messageContent,
+        content: caption,
         mediaUrl,
         mediaType,
-        ...(mediaType === 'document' ? { fileName: file.name } : {}),
+        ...(mediaType === 'document' && fileName ? { fileName } : {}),
         status: asInternal ? 'delivered' as const : 'sending' as const,
         senderName: user.name,
         ...(asInternal ? { isInternal: true } : {}),
         sentAt: now,
       });
 
-      // 3. Atualização de preview da conversa — só pra mensagens externas.
-      //    Notas internas não devem virar "última mensagem" do contato (não foi
-      //    nada que o cliente viu) nem aparecer na lista lateral.
       if (!asInternal) {
         const mediaLabel = mediaType === 'image' ? t('conversations.mediaImage', 'Imagem')
           : mediaType === 'video' ? t('conversations.mediaVideo', 'Vídeo')
           : mediaType === 'audio' ? t('conversations.mediaAudio', 'Áudio')
           : t('conversations.mediaDocument', 'Documento');
+        // Preview: usa caption quando há, senão "[Tipo] nome do arquivo"
+        const preview = caption.trim()
+          ? caption.trim()
+          : `[${mediaLabel}]${fileName ? ' ' + fileName : ''}`;
         await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-          lastMessage: `[${mediaLabel}] ${file.name}`,
+          lastMessage: preview,
           lastMessageAt: now,
           lastMessageDirection: 'outbound',
           updatedAt: now,
         });
       } else {
-        // Internal notes só atualizam contagem; arquivo fica visível só pra equipe.
         await updateDoc(doc(db, 'conversations', selectedConversation.id), {
           internalNotes: (selectedConversation.internalNotes || 0) + 1,
           updatedAt: now,
         });
-        return; // PULA chamada à Meta API — bug crítico era enviar mesmo como nota interna
+        return; // Nota interna não vai pra Meta API
       }
 
-      // 4. Send via Meta API (apenas mensagens externas)
       const authInstance = getAuth();
       const token = await authInstance.currentUser?.getIdToken();
       const sendRes = await fetch('/api/conversations/send', {
@@ -7376,26 +7372,20 @@ export default function ConversasModule() {
           businessId: business.id,
           conversationId: selectedConversation.id,
           // CRÍTICO: passa messageDocId pro backend ATUALIZAR a mensagem que
-          // o frontend já criou (com mediaUrl/mediaType). Sem isso, o backend
-          // cai no branch saveAgentMessage e cria uma SEGUNDA mensagem (sem
-          // mediaUrl, só content) — operador via duas bolhas/dois timestamps
-          // pro mesmo envio. Outros paths (text/template/retry) já passavam.
+          // o frontend já criou. Sem isso, cai em saveAgentMessage e cria
+          // uma SEGUNDA bolha sem mediaUrl.
           messageDocId: msgRef.id,
           channel: selectedConversation.channel,
           recipientId: selectedConversation.contactExternalId,
-          // Sem caption automática — o filename real vai em fileName separado.
-          content: '',
+          content: caption,
           type: 'media',
           mediaUrl,
           mediaType,
-          ...(mediaType === 'document' ? { fileName: file.name } : {}),
+          ...(fileName ? { fileName } : {}),
         }),
       });
 
       if (sendRes.ok) {
-        // Backend já marca status='sent' + externalMessageId em
-        // updateMessageAfterSend. Esta linha vira no-op, mas deixamos como
-        // belt-and-suspenders pra UI atualizar antes do snapshot do Firestore.
         await updateDoc(msgRef, { status: 'sent' });
       } else {
         const errData = await sendRes.json().catch(() => ({})) as { error?: string };
@@ -7412,7 +7402,34 @@ export default function ConversasModule() {
         await updateDoc(msgRef, { status: 'failed', errorMessage: errMsg }).catch(() => {});
       }
     }
-  }, [selectedConversation, business?.id, user]);
+  }, [selectedConversation, business?.id, user, t]);
+
+  const sendMediaMessage = useCallback(async (file: File, asInternal = false) => {
+    if (!selectedConversation || !business?.id || !user) return;
+    const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
+      : file.type.startsWith('video/') ? 'video'
+      : file.type.startsWith('audio/') ? 'audio'
+      : 'document';
+    try {
+      // Upload explícito com content-type — Meta lê do header HTTP quando baixa.
+      const sref = ref(storage, `conversations/${business.id}/${selectedConversation.id}/${Date.now()}_${file.name}`);
+      await uploadBytes(sref, file, { contentType: file.type || 'application/octet-stream' });
+      const mediaUrl = await getDownloadURL(sref);
+      // Caption sempre vazio em anexo do Composer — filename real vai em
+      // `fileName` separado e o renderer mostra no card sem virar texto.
+      await sendPreparedMedia({
+        mediaUrl,
+        mediaType,
+        fileName: mediaType === 'document' ? file.name : undefined,
+        caption: '',
+        asInternal,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error('[Media] Upload error:', errMsg);
+      toast.error(`Falha no upload da mídia: ${errMsg}`);
+    }
+  }, [selectedConversation, business?.id, user, sendPreparedMedia]);
 
   // ── Retry failed message (Task 5) ─────────────────────────────────────────
 
@@ -7774,10 +7791,24 @@ export default function ConversasModule() {
     if (selectedConversation) {
       content = content.replace(/\{\{contact\.name\}\}/g, selectedConversation.customContactName ?? selectedConversation.contactName);
     }
+    // Snippet com mídia → envia direto (sem passar pelo Composer). Caption =
+    // content do snippet (já com {{contact.name}} resolvido); pode ser vazio.
+    // Sem mídia → comportamento legado: insere texto no Composer pro operador
+    // revisar/editar antes de mandar.
+    if (snippet.mediaUrl && snippet.mediaType) {
+      setShowSnippets(false);
+      void sendPreparedMedia({
+        mediaUrl: snippet.mediaUrl,
+        mediaType: snippet.mediaType,
+        fileName: snippet.mediaType === 'document' ? snippet.fileName : undefined,
+        caption: content,
+      });
+      return;
+    }
     composerRef.current?.setText(content);
     setShowSnippets(false);
     composerRef.current?.focus();
-  }, [selectedConversation]);
+  }, [selectedConversation, sendPreparedMedia]);
 
   // ── Sector assignment ──────────────────────────────────────────────────────
 
