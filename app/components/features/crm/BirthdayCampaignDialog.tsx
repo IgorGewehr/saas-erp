@@ -18,7 +18,7 @@ import {
 import { addDoc, updateDoc, deleteDoc, doc, collection } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
-import { Cake, Clock, Send, Filter, ShieldCheck, Trash2, AlertTriangle } from 'lucide-react';
+import { Cake, Clock, Send, Filter, ShieldCheck, Trash2, AlertTriangle, Calendar, Repeat } from 'lucide-react';
 import {
   ModernDialog,
   ModernDialogActions,
@@ -57,11 +57,36 @@ interface Props {
 
 const DEFAULT_MESSAGE = '🎂 Feliz aniversário, {{name}}! Pra comemorar, preparamos uma promoção especial pra você. Aproveite!';
 
+/** Presets de datas festivas comuns no Brasil. Operador pode escolher pelo
+ *  combobox ou digitar MM-DD livre. Carnaval/Páscoa/Dia das Mães mudam por
+ *  ano (móveis) — operador atualiza manualmente quando configurar a campanha.
+ *  Fixas (Natal, Reveillon, etc.) ficam corretas pra sempre. */
+const FESTIVE_DATE_PRESETS: Array<{ value: string; label: string }> = [
+  { value: '12-25', label: 'Natal (25/12)' },
+  { value: '12-31', label: 'Réveillon (31/12)' },
+  { value: '11-29', label: 'Black Friday (sex última nov)' },
+  { value: '06-12', label: 'Dia dos Namorados (12/06)' },
+  { value: '08-08', label: 'Dia dos Pais (2° dom ago — ajuste o dia)' },
+  { value: '05-12', label: 'Dia das Mães (2° dom maio — ajuste o dia)' },
+  { value: '04-21', label: 'Tiradentes (21/04)' },
+  { value: '09-07', label: 'Independência (07/09)' },
+  { value: '10-12', label: 'Nossa Sra. Aparecida (12/10)' },
+  { value: '11-02', label: 'Finados (02/11)' },
+  { value: '11-15', label: 'Proclamação República (15/11)' },
+];
+
 export default function BirthdayCampaignDialog({
   open, onClose, businessId, user, editing, availableConnections, clients,
 }: Props) {
   const [name, setName] = useState('');
   const [enabled, setEnabled] = useState(true);
+  // Tipo da recorrência: 'birthday' (aniversário de cada contato) ou
+  // 'fixed_date' (data fixa do calendário pra todos os filtrados).
+  // Default 'birthday' — comportamento legado.
+  const [recurrenceType, setRecurrenceType] = useState<'birthday' | 'fixed_date'>('birthday');
+  // MM-DD da data festiva (só usado quando recurrenceType === 'fixed_date').
+  // Default Natal pra dar exemplo claro pro operador na primeira vez.
+  const [festiveDate, setFestiveDate] = useState<string>('12-25');
   const [daysBefore, setDaysBefore] = useState(0);
   const [sendAtHour, setSendAtHour] = useState(9);
   const [viaBaileys, setViaBaileys] = useState(false);
@@ -82,6 +107,7 @@ export default function BirthdayCampaignDialog({
     setConfirmDelete(false);
     if (!editing) {
       setName(''); setEnabled(true);
+      setRecurrenceType('birthday'); setFestiveDate('12-25');
       setDaysBefore(0); setSendAtHour(9);
       setViaBaileys(false); setConnectionId('');
       setMessageContent(DEFAULT_MESSAGE); setTemplate(null);
@@ -91,6 +117,9 @@ export default function BirthdayCampaignDialog({
     }
     setName(editing.name);
     setEnabled(editing.enabled);
+    // Fallback 'birthday' pra docs antigos sem o campo (retrocompat).
+    setRecurrenceType(editing.recurrenceType ?? 'birthday');
+    setFestiveDate(editing.festiveDate ?? '12-25');
     setDaysBefore(editing.daysBeforeBirthday);
     setSendAtHour(editing.sendAtHour);
     setViaBaileys(editing.viaBaileys);
@@ -139,8 +168,27 @@ export default function BirthdayCampaignDialog({
     .map(t => t.trim().toLowerCase())
     .filter(Boolean), [filterTagsInput]);
 
-  // Preview: aniversariantes no mês-alvo (mês corrente + daysBeforeBirthday).
+  const isFixedDate = recurrenceType === 'fixed_date';
+
+  // Clients que passam nos filtros (sem checar birthDate). Usado pra dois
+  // fins: (1) base do preview pra fixed_date; (2) base pro calcular
+  // nextDispatchInfo no modo birthday (a função interna re-aplica o filtro
+  // birthDate aos elegíveis em cada dia futuro).
+  const filteredClients = useMemo(() => clients.filter(c => {
+    if ((c as { deletedAt?: string }).deletedAt) return false;
+    if (filterTipo !== 'all' && c.tipo !== filterTipo) return false;
+    if (filterStatus.length && !filterStatus.includes(c.status)) return false;
+    if (filterTags.length) {
+      const cTags = (c.tags || []).map(t => t.toLowerCase());
+      if (!filterTags.every(t => cTags.includes(t))) return false;
+    }
+    return true;
+  }), [clients, filterTipo, filterStatus, filterTags]);
+
+  // Preview: aniversariantes no mês-alvo (só relevante pra mode birthday).
+  // Em fixed_date, esse valor é apenas filteredClients.length (mês não importa).
   const totalInMonth = useMemo(() => {
+    if (isFixedDate) return filteredClients.length;
     const target = new Date();
     target.setDate(target.getDate() + daysBefore);
     const targetMonth = target.getMonth() + 1;
@@ -149,65 +197,71 @@ export default function BirthdayCampaignDialog({
       const month = Number(c.birthDate.slice(5, 7));
       return month === targetMonth;
     }).length;
-  }, [clients, daysBefore]);
+  }, [clients, daysBefore, isFixedDate, filteredClients.length]);
 
   const previewClients = useMemo(() => {
+    if (isFixedDate) {
+      // Fixed_date: todos os filtrados disparam na data marcada. Ordena por nome
+      // (não tem birthday MM-DD pra usar como sort key aqui).
+      return [...filteredClients].sort((a, b) => a.name.localeCompare(b.name));
+    }
     const target = new Date();
     target.setDate(target.getDate() + daysBefore);
     const targetMonth = target.getMonth() + 1;
-    return clients
+    return filteredClients
       .filter(c => {
         if (!c.birthDate || c.birthDate.length < 7) return false;
-        const month = Number(c.birthDate.slice(5, 7));
-        if (month !== targetMonth) return false;
-        if (filterTipo !== 'all' && c.tipo !== filterTipo) return false;
-        if (filterStatus.length && !filterStatus.includes(c.status)) return false;
-        if (filterTags.length) {
-          const cTags = (c.tags || []).map(t => t.toLowerCase());
-          if (!filterTags.every(t => cTags.includes(t))) return false;
-        }
-        return true;
+        return Number(c.birthDate.slice(5, 7)) === targetMonth;
       })
       .sort((a, b) => {
         const dayA = Number(a.birthDate!.slice(8, 10));
         const dayB = Number(b.birthDate!.slice(8, 10));
         return dayA - dayB;
       });
-  }, [clients, daysBefore, filterTipo, filterStatus, filterTags]);
+  }, [filteredClients, daysBefore, isFixedDate]);
   const previewCount = previewClients.length;
 
-  // Quantos disparam HOJE (MM-DD === hoje + daysBefore exato). Diferente do
-  // preview mensal acima — que conta o mês inteiro pra dar visão geral. Esse
-  // contador reflete o que o cron vai mandar se a campanha rodar agora.
+  // Quantos disparam HOJE: depende do tipo.
+  //   - birthday: clientes do mês cujo MM-DD === hoje + daysBefore
+  //   - fixed_date: se festiveDate === hoje + daysBefore, todos os filtrados; senão 0
   const todayMatchCount = useMemo(() => {
     const target = new Date();
     target.setDate(target.getDate() + daysBefore);
     const targetMm = String(target.getMonth() + 1).padStart(2, '0');
     const targetDd = String(target.getDate()).padStart(2, '0');
     const targetMmDd = `${targetMm}-${targetDd}`;
+    if (isFixedDate) {
+      return festiveDate === targetMmDd ? filteredClients.length : 0;
+    }
     return previewClients.filter(c => c.birthDate?.slice(5, 10) === targetMmDd).length;
-  }, [previewClients, daysBefore]);
+  }, [previewClients, daysBefore, isFixedDate, festiveDate, filteredClients.length]);
 
-  // Próximo dia em que pelo menos UM cliente filtrado faz aniversário (com
-  // o offset daysBefore aplicado). Útil pra mostrar ao operador "vai disparar
-  // em DD/MM". Se não houver nenhum no próximo ano, volta null.
+  // Próximo dia em que disparará. Birthday: varre 366d procurando match.
+  // Fixed_date: calcula festiveDate - daysBefore deste ano ou do próximo.
   const nextDispatchInfo = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    // Mapa de MM-DD → quantos clientes batem nesse dia (após filtros)
-    const filtered = clients.filter(c => {
-      if (!c.birthDate || c.birthDate.length < 10) return false;
-      if (filterTipo !== 'all' && c.tipo !== filterTipo) return false;
-      if (filterStatus.length && !filterStatus.includes(c.status)) return false;
-      if (filterTags.length) {
-        const cTags = (c.tags || []).map(t => t.toLowerCase());
-        if (!filterTags.every(t => cTags.includes(t))) return false;
+
+    if (isFixedDate) {
+      if (filteredClients.length === 0) return null;
+      const [festMm, festDd] = festiveDate.split('-').map(Number);
+      if (!festMm || !festDd) return null;
+      const currentYear = today.getFullYear();
+      // Próxima data-alvo de DISPARO (festiveDate - daysBefore). Este ano ou
+      // ano que vem, dependendo se a data ainda não passou.
+      let candidate = new Date(currentYear, festMm - 1, festDd);
+      candidate.setDate(candidate.getDate() - daysBefore);
+      if (candidate < today) {
+        candidate = new Date(currentYear + 1, festMm - 1, festDd);
+        candidate.setDate(candidate.getDate() - daysBefore);
       }
-      return true;
-    });
-    if (filtered.length === 0) return null;
-    // Pra cada dia dos próximos 366 dias, calcula a data-alvo (date + daysBefore)
-    // e verifica quantos clientes têm birthDate.MM-DD === target.MM-DD.
+      return { date: candidate, count: filteredClients.length };
+    }
+
+    // birthday: cada dia dos próximos 366, calcula a data-alvo (+daysBefore)
+    // e conta quantos clientes têm birthDate.MM-DD === alvo. Primeiro dia
+    // com ≥1 match = próximo disparo.
+    if (filteredClients.length === 0) return null;
     for (let dayOffset = 0; dayOffset < 366; dayOffset++) {
       const runDate = new Date(today);
       runDate.setDate(runDate.getDate() + dayOffset);
@@ -216,13 +270,13 @@ export default function BirthdayCampaignDialog({
       const targetMm = String(targetDate.getMonth() + 1).padStart(2, '0');
       const targetDd = String(targetDate.getDate()).padStart(2, '0');
       const targetMmDd = `${targetMm}-${targetDd}`;
-      const matches = filtered.filter(c => c.birthDate!.slice(5, 10) === targetMmDd).length;
-      if (matches > 0) {
-        return { date: runDate, count: matches };
-      }
+      const matches = filteredClients.filter(c =>
+        c.birthDate && c.birthDate.length >= 10 && c.birthDate.slice(5, 10) === targetMmDd
+      ).length;
+      if (matches > 0) return { date: runDate, count: matches };
     }
     return null;
-  }, [clients, daysBefore, filterTipo, filterStatus, filterTags]);
+  }, [filteredClients, daysBefore, isFixedDate, festiveDate]);
 
   const [showRecipients, setShowRecipients] = useState(false);
 
@@ -231,9 +285,17 @@ export default function BirthdayCampaignDialog({
   const canSave = useMemo(() => {
     if (!name.trim()) return false;
     if (eligibleConnections.length > 0 && !connectionId) return false;
+    // Pra fixed_date, festiveDate precisa ser MM-DD válido (mês 01-12, dia 01-31).
+    // Sem isso, runner não acharia match nunca + nextDispatchInfo retornaria null.
+    if (recurrenceType === 'fixed_date') {
+      const m = festiveDate.match(/^(\d{2})-(\d{2})$/);
+      if (!m) return false;
+      const mm = Number(m[1]), dd = Number(m[2]);
+      if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return false;
+    }
     if (viaBaileys) return messageContent.trim().length > 0;
     return isTemplateSelectionValid(template);
-  }, [name, connectionId, eligibleConnections.length, viaBaileys, messageContent, template]);
+  }, [name, connectionId, eligibleConnections.length, viaBaileys, messageContent, template, recurrenceType, festiveDate]);
 
   const handleSave = async () => {
     if (!canSave) {
@@ -251,6 +313,14 @@ export default function BirthdayCampaignDialog({
         businessId,
         name: name.trim(),
         enabled,
+        // recurrenceType sempre persiste em docs criados/atualizados via dialog,
+        // mesmo quando 'birthday' — assim ao editar de fixed_date pra birthday,
+        // o pre-fill da próxima abertura reflete a escolha (sem precisar deletar
+        // campos no Firestore). festiveDate só persiste quando 'fixed_date'
+        // (resíduo em birthday é ignorado pelo runner, mas pra limpar de vez
+        // seria preciso FieldValue.delete — overkill por enquanto).
+        recurrenceType,
+        ...(recurrenceType === 'fixed_date' ? { festiveDate } : {}),
         daysBeforeBirthday: daysBefore,
         sendAtHour,
         channel: 'whatsapp',
@@ -322,13 +392,20 @@ export default function BirthdayCampaignDialog({
 
   const channelLabel = viaBaileys ? 'WA Web' : 'WA Cloud';
   const dayLabel = daysBefore === 0 ? 'No dia' : `${daysBefore}d antes`;
+  // Label do tipo pra header/badges — texto curto e ícone.
+  const typeLabel = isFixedDate ? 'Data festiva' : 'Aniversário';
+  // Label completo da data festiva (preset → texto bonito; fallback MM-DD cru).
+  const festiveLabel = useMemo(() => {
+    const preset = FESTIVE_DATE_PRESETS.find(p => p.value === festiveDate);
+    return preset?.label ?? festiveDate;
+  }, [festiveDate]);
 
   return (
     <ModernDialog
       open={open}
       onClose={onClose}
-      icon={Cake}
-      title={editing ? 'Editar campanha de aniversariante' : 'Nova campanha de aniversariante'}
+      icon={isFixedDate ? Calendar : Cake}
+      title={editing ? 'Editar campanha recorrente' : 'Nova campanha recorrente'}
       maxWidth="sm"
       badges={
         editing
@@ -337,13 +414,16 @@ export default function BirthdayCampaignDialog({
       }
       subtitle={
         <>
-          <ModernPill tone="amber"><Cake size={12} />Recorrente</ModernPill>
+          <ModernPill tone="amber">
+            {isFixedDate ? <Calendar size={12} /> : <Cake size={12} />}
+            {typeLabel}
+          </ModernPill>
           <ModernPill tone="red"><Send size={12} />{channelLabel}</ModernPill>
           <ModernPill tone="blue"><Clock size={12} />{dayLabel} · {String(sendAtHour).padStart(2, '0')}:00</ModernPill>
           <ModernPill tone={todayMatchCount > 0 ? 'emerald' : 'slate'}>
             {todayMatchCount} hoje
           </ModernPill>
-          <ModernPill tone="slate">{previewCount} no mês</ModernPill>
+          {!isFixedDate && <ModernPill tone="slate">{previewCount} no mês</ModernPill>}
         </>
       }
       footer={
@@ -406,9 +486,93 @@ export default function BirthdayCampaignDialog({
       }
     >
       <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-        Esta campanha dispara automaticamente quando algum cliente faz aniversário.
-        Use placeholders como <code className="bg-slate-100 dark:bg-white/[0.06] px-1 rounded">{'{{name}}'}</code> pra personalizar a mensagem.
+        {isFixedDate
+          ? <>Esta campanha dispara automaticamente em uma data fixa do calendário (ex: Natal, Dia das Mães) pra todos os contatos do filtro.</>
+          : <>Esta campanha dispara automaticamente quando algum cliente faz aniversário.</>}
+        {' '}Use placeholders como <code className="bg-slate-100 dark:bg-white/[0.06] px-1 rounded">{'{{name}}'}</code> pra personalizar a mensagem.
       </p>
+
+      {/* Toggle do tipo de recorrência — Aniversário vs Data festiva.
+          Visual similar ao toggle Cloud/Baileys logo abaixo. Trocar de tipo
+          NÃO limpa filtros/mensagem, só altera a semântica de "quando dispara". */}
+      <ModernSection
+        icon={Repeat}
+        title="Tipo de recorrência"
+        meta={<ModernPill tone="amber">{typeLabel}</ModernPill>}
+      >
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setRecurrenceType('birthday')}
+            className={cn(
+              'flex-1 px-3 py-2 text-xs rounded-lg border-2 transition-colors text-left',
+              !isFixedDate
+                ? 'border-amber-500 bg-amber-50 dark:bg-amber-500/10'
+                : 'border-slate-200 dark:border-slate-700 hover:border-amber-300',
+            )}
+          >
+            <p className="font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+              <Cake size={13} /> Aniversário do contato
+            </p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+              Dispara no <code>birthDate</code> de cada cliente · individual
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => setRecurrenceType('fixed_date')}
+            className={cn(
+              'flex-1 px-3 py-2 text-xs rounded-lg border-2 transition-colors text-left',
+              isFixedDate
+                ? 'border-amber-500 bg-amber-50 dark:bg-amber-500/10'
+                : 'border-slate-200 dark:border-slate-700 hover:border-amber-300',
+            )}
+          >
+            <p className="font-bold text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+              <Calendar size={13} /> Data festiva
+            </p>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+              Data fixa do ano (Natal, Mães…) · todos do filtro
+            </p>
+          </button>
+        </div>
+
+        {/* Date picker MM-DD pra fixed_date. Combobox de presets + input livre. */}
+        {isFixedDate && (
+          <div className="space-y-2">
+            <FormControl fullWidth size="small">
+              <InputLabel>Data festiva (preset)</InputLabel>
+              <Select
+                value={FESTIVE_DATE_PRESETS.some(p => p.value === festiveDate) ? festiveDate : ''}
+                label="Data festiva (preset)"
+                onChange={e => setFestiveDate(e.target.value as string)}
+                renderValue={(v) => {
+                  const preset = FESTIVE_DATE_PRESETS.find(p => p.value === v);
+                  return preset ? preset.label : 'Customizada';
+                }}
+              >
+                {FESTIVE_DATE_PRESETS.map(p => (
+                  <MenuItem key={p.value} value={p.value}>{p.label}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <TextField
+              label="Ou MM-DD customizado"
+              value={festiveDate}
+              onChange={e => setFestiveDate(e.target.value)}
+              placeholder="12-25"
+              fullWidth
+              size="small"
+              error={!/^\d{2}-\d{2}$/.test(festiveDate)}
+              helperText={
+                /^\d{2}-\d{2}$/.test(festiveDate)
+                  ? `Disparo no dia ${festiveDate.slice(3, 5)}/${festiveDate.slice(0, 2)} todos os anos${daysBefore > 0 ? ` (${daysBefore}d antes)` : ''}.`
+                  : 'Use o formato MM-DD (ex: 12-25 para Natal).'
+              }
+            />
+          </div>
+        )}
+      </ModernSection>
 
       <ModernSection icon={Cake} title="Identificação" meta={<ModernPill tone="slate">1</ModernPill>}>
         <TextField
@@ -434,7 +598,11 @@ export default function BirthdayCampaignDialog({
         <div>
           <p className="text-xs text-slate-600 dark:text-slate-400 mb-1">
             Antecedência: <span className="font-semibold">
-              {daysBefore === 0 ? 'no dia do aniversário' : `${daysBefore} dia${daysBefore === 1 ? '' : 's'} antes`}
+              {(() => {
+                const eventLabel = isFixedDate ? 'da data festiva' : 'do aniversário';
+                if (daysBefore === 0) return `no dia ${eventLabel}`;
+                return `${daysBefore} dia${daysBefore === 1 ? '' : 's'} antes ${eventLabel}`;
+              })()}
             </span>
           </p>
           <Slider
@@ -578,6 +746,12 @@ export default function BirthdayCampaignDialog({
               {nextDispatchInfo.date.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' })}{' '}
               às {String(sendAtHour).padStart(2, '0')}:00 — <strong>{nextDispatchInfo.count}</strong>{' '}
               {nextDispatchInfo.count === 1 ? 'pessoa' : 'pessoas'}.
+              {isFixedDate && <> Data festiva: <strong>{festiveLabel}</strong>.</>}
+            </>
+          ) : isFixedDate ? (
+            <>
+              <strong>Sem destinatários.</strong> Nenhum cliente passa nos filtros configurados.
+              Ajuste os filtros abaixo pra incluir clientes na campanha.
             </>
           ) : (
             <>
@@ -591,6 +765,10 @@ export default function BirthdayCampaignDialog({
         <div className="flex items-center justify-between gap-2">
           <p className="text-[11px] text-slate-500 dark:text-slate-400">
             {(() => {
+              if (isFixedDate) {
+                const main = `${previewCount} contato${previewCount !== 1 ? 's' : ''} no filtro`;
+                return main;
+              }
               const target = new Date();
               target.setDate(target.getDate() + daysBefore);
               const sameMonth = target.getMonth() === new Date().getMonth();
@@ -620,8 +798,11 @@ export default function BirthdayCampaignDialog({
           <div className="rounded-lg border border-amber-200/60 dark:border-amber-500/20 bg-amber-50/40 dark:bg-amber-500/[0.03] max-h-48 overflow-y-auto">
             <ul className="divide-y divide-amber-200/40 dark:divide-amber-500/10">
               {previewClients.map(c => {
-                const day = c.birthDate!.slice(8, 10);
-                const month = c.birthDate!.slice(5, 7);
+                // Birthday: mostra DD/MM do aniversário. Fixed_date: não tem
+                // data por-contato — exibe o tipo (PF/PJ) como contexto.
+                const rightLabel = !isFixedDate && c.birthDate && c.birthDate.length >= 10
+                  ? `${c.birthDate.slice(8, 10)}/${c.birthDate.slice(5, 7)}`
+                  : c.tipo === 'pj' ? 'PJ' : 'PF';
                 return (
                   <li
                     key={c.id}
@@ -631,7 +812,7 @@ export default function BirthdayCampaignDialog({
                       {c.name}
                     </span>
                     <span className="text-[10.5px] text-amber-700 dark:text-amber-400 font-mono flex-shrink-0">
-                      {day}/{month}
+                      {rightLabel}
                     </span>
                   </li>
                 );
@@ -644,8 +825,8 @@ export default function BirthdayCampaignDialog({
           <InputLabel>Tipo</InputLabel>
           <Select value={filterTipo} label="Tipo" onChange={e => setFilterTipo(e.target.value as 'pf' | 'pj' | 'all')}>
             <MenuItem value="all">Todos</MenuItem>
-            <MenuItem value="pf">Pessoa Física (aniversário)</MenuItem>
-            <MenuItem value="pj">Pessoa Jurídica (fundação)</MenuItem>
+            <MenuItem value="pf">Pessoa Física</MenuItem>
+            <MenuItem value="pj">Pessoa Jurídica</MenuItem>
           </Select>
         </FormControl>
 
