@@ -4915,17 +4915,20 @@ function LinkContactDrawer({
   businessId,
   onClose,
   onLinked,
+  onRequestCreate,
 }: {
   conversation: Conversation;
   clients: Client[];
   businessId: string;
   onClose: () => void;
   onLinked: (clientId: string | null) => void;
+  /** Disparado quando operador clica "Criar novo cliente". Antes esse fluxo
+   *  fazia addDoc direto (quickCreate); agora o pai abre o ClientEditDialog
+   *  pré-preenchido pra que o operador edite nome/etc antes de salvar. */
+  onRequestCreate?: () => void;
 }) {
   const [search, setSearch] = useState('');
-  const [creating, setCreating] = useState(false);
   const [linkingId, setLinkingId] = useState<string | null>(null);
-  const queryClient = useQueryClient();
   const { setActivePage, setPendingOpenClientId } = useAppContext();
 
   const linkedClient = useMemo(
@@ -5005,74 +5008,37 @@ function LinkContactDrawer({
     }
   };
 
-  const quickCreate = async () => {
-    setCreating(true);
-    try {
-      const now = new Date().toISOString();
-      const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
-
-      // Antes de criar: verifica se já existe cliente com mesmo telefone
-      // (compara últimos 8 dígitos com DDD batendo — cobre variação BR de
-      // 9º dígito e código do país). Sem isso, conversa criava Client novo
-      // mesmo se o operador já tinha cadastrado o mesmo humano antes.
-      if (phoneDigits) {
-        const existing = clients.find(c => {
-          const candidates = [c.phone, c.whatsapp].filter(Boolean) as string[];
-          for (const cand of candidates) {
-            const candDigits = digits(cand);
-            if (!candDigits) continue;
-            const candLast8 = candDigits.slice(-8);
-            const newLast8 = phoneDigits.slice(-8);
-            if (candLast8 && candLast8 === newLast8) {
-              // Confere DDD bate (evita falso positivo entre cidades)
-              const candDdd = candDigits.replace(/^55/, '').slice(0, 2);
-              const newDdd = phoneDigits.replace(/^55/, '').slice(0, 2);
-              if (candDdd === newDdd) return true;
-            }
+  // Antes de abrir o dialog de criar, checa se já existe cliente com mesmo
+  // telefone (compara últimos 8 dígitos com DDD batendo — cobre variação BR
+  // de 9º dígito e código do país). Se encontrar, linka direto em vez de
+  // abrir o dialog — evita o operador criar duplicata sem perceber.
+  const handleCreateRequest = () => {
+    const phoneDigits = digits(conversation.contactPhone || conversation.contactExternalId);
+    if (phoneDigits) {
+      const existing = clients.find(c => {
+        const candidates = [c.phone, c.whatsapp].filter(Boolean) as string[];
+        for (const cand of candidates) {
+          const candDigits = digits(cand);
+          if (!candDigits) continue;
+          const candLast8 = candDigits.slice(-8);
+          const newLast8 = phoneDigits.slice(-8);
+          if (candLast8 && candLast8 === newLast8) {
+            const candDdd = candDigits.replace(/^55/, '').slice(0, 2);
+            const newDdd = phoneDigits.replace(/^55/, '').slice(0, 2);
+            if (candDdd === newDdd) return true;
           }
-          return false;
-        });
-        if (existing && !existing.mergedInto && !(existing as { deletedAt?: string }).deletedAt) {
-          console.log('[Conversations] Quick-create: cliente existente encontrado, linkando em vez de criar:', existing.id);
-          await link(existing.id);
-          return;
         }
+        return false;
+      });
+      if (existing && !existing.mergedInto && !(existing as { deletedAt?: string }).deletedAt) {
+        console.log('[Conversations] Create: cliente existente com mesmo telefone, linkando:', existing.id);
+        void link(existing.id);
+        return;
       }
-
-      // quickCreate só "vincula" — o contato vira cliente mas NÃO entra no
-      // pipeline do CRM (inPipeline:false). Para virar lead, o operador clica
-      // em "Enviar para o pipeline" no menu da conversa (sendConversationToPipeline).
-      // Antes esse handler gravava status:'ganho' hardcoded, fazendo todo
-      // contato recém-vinculado cair direto na coluna "Ganho" do Kanban.
-      const payload: Record<string, unknown> = {
-        businessId,
-        name: (conversation.customContactName ?? conversation.contactName) || 'Novo contato',
-        tipo: 'pf',
-        source: conversation.channel,
-        status: 'novo',
-        inPipeline: false,
-        score: 0,
-        isActive: true,
-        totalSpent: 0,
-        visitCount: 0,
-        createdAt: now,
-        updatedAt: now,
-      };
-      if (phoneDigits) {
-        if (conversation.channel === 'whatsapp') payload.whatsapp = phoneDigits;
-        else payload.phone = phoneDigits;
-        payload.channelIdentities = { [conversation.channel]: phoneDigits };
-      }
-      if (conversation.contactAvatarUrl) payload.avatarUrl = conversation.contactAvatarUrl;
-      const { addDoc, collection } = await import('firebase/firestore');
-      const ref = await addDoc(collection(db, 'clients'), payload);
-      queryClient.invalidateQueries({ queryKey: ['clients', businessId] });
-      await link(ref.id);
-    } catch (err) {
-      console.error('[Conversations] Quick-create failed:', err);
-    } finally {
-      setCreating(false);
     }
+    // Sem duplicata — abre dialog. Pai monta overrides + creationDefaults
+    // (inPipeline:false, channelIdentities, avatarUrl) e renderiza o dialog.
+    onRequestCreate?.();
   };
 
   return (
@@ -5144,26 +5110,25 @@ function LinkContactDrawer({
           </div>
         )}
 
-        {/* Quick create — always offered unless already linked */}
+        {/* Botão "Criar novo cliente" — abre o ClientEditDialog pré-preenchido
+            com nome + telefone da conversa. Operador pode revisar/editar todos
+            os campos (nome, email, tags, endereço, etc.) antes de salvar. */}
         {!linkedClient && (
           <button
             type="button"
-            onClick={quickCreate}
-            disabled={creating}
-            className="w-full group bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-500/10 dark:to-orange-500/5 border border-red-200 dark:border-red-500/30 rounded-xl p-4 text-left hover:shadow-md transition-all disabled:opacity-50"
+            onClick={handleCreateRequest}
+            className="w-full group bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-500/10 dark:to-orange-500/5 border border-red-200 dark:border-red-500/30 rounded-xl p-4 text-left hover:shadow-md transition-all"
           >
             <div className="flex items-start gap-3">
               <div className="w-10 h-10 rounded-xl bg-white dark:bg-gray-900 flex items-center justify-center shadow-sm flex-shrink-0">
-                {creating ? <Loader2 className="w-5 h-5 animate-spin text-red-500" /> : <Plus className="w-5 h-5 text-red-500" />}
+                <Plus className="w-5 h-5 text-red-500" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">
-                  {creating ? 'Criando...' : 'Criar novo cliente'}
-                </p>
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">Criar novo cliente</p>
                 <p className="text-[11px] text-gray-600 dark:text-gray-400 mt-0.5 leading-relaxed">
-                  Cria <strong>{(conversation.customContactName ?? conversation.contactName) || 'este contato'}</strong>
-                  {conversation.contactPhone && <> com telefone <strong>{conversation.contactPhone}</strong></>}
-                  {' '}e vincula automaticamente.
+                  Abre o formulário com <strong>{(conversation.customContactName ?? conversation.contactName) || 'este contato'}</strong>
+                  {conversation.contactPhone && <> e telefone <strong>{conversation.contactPhone}</strong></>}
+                  {' '}pré-preenchidos. Edite o que precisar antes de salvar.
                 </p>
               </div>
             </div>
@@ -5550,6 +5515,10 @@ export default function ConversasModule() {
   // crmContactId" (no edit normal não precisa vincular nada — o doc já existe).
   const [contactEditTarget, setContactEditTarget] = useState<Client | 'new' | null>(null);
   const [contactCreateOverrides, setContactCreateOverrides] = useState<Partial<ClientFormData> | null>(null);
+  // Campos extras não-form usados quando o create vem da conversa: inPipeline,
+  // channelIdentities, avatarUrl. Aplicados no addDoc do ClientEditDialog via
+  // prop creationDefaults. Em fluxo "Ver/editar" puro fica null.
+  const [contactCreationDefaults, setContactCreationDefaults] = useState<Record<string, unknown> | null>(null);
   const [pendingLinkConvId, setPendingLinkConvId] = useState<string | null>(null);
   // Quando criamos um cliente novo, o snapshot pode levar ~ms pra emitir o
   // doc novo em `clientsList`. Pra abrir o painel 360° imediatamente após
@@ -9304,6 +9273,40 @@ export default function ConversasModule() {
                 setSelectedConversation(prev => prev ? { ...prev, crmContactId: clientId || undefined } : prev);
                 setLinkContactOpen(false);
               }}
+              onRequestCreate={() => {
+                // Fecha o drawer e abre o ClientEditDialog pré-preenchido.
+                // O onSaved do dialog (definido no JSX abaixo) vincula a
+                // conversation via pendingLinkConvId — fluxo idêntico ao
+                // "Ver/editar contato" sem crmContactId.
+                const conv = selectedConversation;
+                const phoneDigits = (conv.contactPhone || conv.contactExternalId || '').replace(/[^0-9]/g, '');
+                const overrides: Partial<ClientFormData> = {
+                  name: conv.customContactName ?? conv.contactName ?? '',
+                  // 'novo' (não 'ganho' default do form) — contato recém vindo
+                  // de conversa não é cliente fechado, é lead em potencial.
+                  status: 'novo',
+                  // Canal do qual veio — exposto no Select de Origem do form.
+                  source: conv.channel,
+                };
+                if (phoneDigits) {
+                  if (conv.channel === 'whatsapp') overrides.whatsapp = phoneDigits;
+                  else overrides.phone = phoneDigits;
+                }
+                setContactCreateOverrides(overrides);
+                // Defaults técnicos que não estão no ClientForm: inPipeline
+                // (não entra no CRM por default — operador promove via menu
+                // "Enviar para o pipeline" depois), channelIdentities (auto-
+                // link em futuras mensagens) e avatarUrl (vindo do canal).
+                const creationDefaults: Record<string, unknown> = {
+                  inPipeline: false,
+                  ...(phoneDigits ? { channelIdentities: { [conv.channel]: phoneDigits } } : {}),
+                  ...(conv.contactAvatarUrl ? { avatarUrl: conv.contactAvatarUrl } : {}),
+                };
+                setContactCreationDefaults(creationDefaults);
+                setPendingLinkConvId(conv.id);
+                setContactEditTarget('new');
+                setLinkContactOpen(false);
+              }}
             />
           </>
         )}
@@ -9362,10 +9365,12 @@ export default function ConversasModule() {
         onClose={() => {
           setContactEditTarget(null);
           setContactCreateOverrides(null);
+          setContactCreationDefaults(null);
           setPendingLinkConvId(null);
         }}
         client={contactEditTarget === 'new' ? null : contactEditTarget}
         initialOverrides={contactEditTarget === 'new' ? contactCreateOverrides ?? undefined : undefined}
+        creationDefaults={contactEditTarget === 'new' ? contactCreationDefaults ?? undefined : undefined}
         allClients={clientsList}
         onSaved={async (clientId) => {
           // Fluxo criar+vincular: a conversation guardada em pendingLinkConvId

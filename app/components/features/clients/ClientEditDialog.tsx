@@ -55,6 +55,12 @@ export interface ClientEditDialogProps {
   onManageOffers?: () => void;
   /** Disparado após save bem-sucedido. Recebe o id do doc (novo ou existente). */
   onSaved?: (clientId: string) => void;
+  /** Campos extra a injetar no `addDoc` quando estiver criando (modo create
+   *  apenas — ignorado em edit). Útil pra setar campos que não existem no
+   *  ClientForm, como `inPipeline`, `channelIdentities`, `avatarUrl`,
+   *  `lastConversationId`. O form sobrescreve defaults aqui, então
+   *  campos do form (name/email/phone/etc.) ganham prioridade. */
+  creationDefaults?: Record<string, unknown>;
 }
 
 /** Constrói o estado inicial do form a partir do client (edit) ou de
@@ -106,6 +112,7 @@ export function ClientEditDialog({
   offers = [],
   onManageOffers,
   onSaved,
+  creationDefaults,
 }: ClientEditDialogProps) {
   const { business } = useAuth();
   const queryClient = useQueryClient();
@@ -188,11 +195,17 @@ export function ClientEditDialog({
         return client.id;
       }
       // create: addDoc remove undefined silenciosamente, mas filtramos
-      // explicitamente pra não gravar chaves "vazias".
+      // explicitamente pra não gravar chaves "vazias". Ordem dos spreads:
+      //   1. creationDefaults — campos extras que não vêm do form (inPipeline,
+      //      channelIdentities, avatarUrl, lastConversationId, etc.)
+      //   2. createPayload — campos do form (sobrescreve defaults com a
+      //      escolha do operador no formulário)
+      //   3. businessId/score/etc — defaults técnicos imutáveis no ponto final
       const createPayload = Object.fromEntries(
         Object.entries(payload).filter(([, v]) => v !== undefined),
       );
       const ref = await addDoc(collection(db, 'clients'), {
+        ...(creationDefaults || {}),
         ...createPayload,
         businessId: business!.id,
         score: 0,
