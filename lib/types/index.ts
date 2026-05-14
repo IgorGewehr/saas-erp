@@ -3544,6 +3544,10 @@ export type NotificationType =
   | 'task_overdue'
   | 'task_mentioned'
   | 'appointment_reminder'
+  // Profissional foi atribuído a um agendamento. Dispara quando appt é
+  // criado E o profissional é incluído, OU quando edição ADICIONA um novo
+  // profissional. Operador removido NÃO recebe notificação (evita ruído).
+  | 'appointment_assigned'
   | 'review_received'
   | 'conversation_assigned'
   // Disparo automático que perdeu o slot (servidor offline, erro transient).

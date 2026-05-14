@@ -73,6 +73,7 @@ import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/form
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import { getAppointmentProfessionalIds, getAppointmentProfessionalNames, isAppointmentAssignedTo } from '@/lib/utils/appointment';
+import { notifyUsers } from '@/lib/services/notifications';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
@@ -2112,6 +2113,38 @@ export default function AgendaModule() {
         }).catch(() => {});
       }
 
+      // Notifica profissionais — só os NOVOS (diff em relação ao estado
+      // anterior). Em create, todos são novos. Em edit, ignora quem já
+      // estava atribuído pra não spammar. Operador removido NÃO recebe
+      // (sem notificação de "você foi tirado", evita ruído).
+      // Fire-and-forget: falha de notificação não trava o save.
+      try {
+        const newIds = data.professionalIds && data.professionalIds.length > 0
+          ? data.professionalIds
+          : data.professionalId ? [data.professionalId] : [];
+        const oldIds = editingAppointment
+          ? getAppointmentProfessionalIds(editingAppointment)
+          : [];
+        const addedIds = newIds.filter(id => !oldIds.includes(id));
+        if (addedIds.length > 0 && user) {
+          // Date display formatado pra "DD/MM" curto no body da notificação.
+          const dateLabel = data.date.split('-').reverse().slice(0, 2).join('/');
+          void notifyUsers(db, addedIds, {
+            businessId: business.id,
+            type: 'appointment_assigned',
+            title: editingAppointment
+              ? `Agendamento atualizado — você foi atribuído`
+              : `Novo agendamento atribuído a você`,
+            body: `${data.clientName} · ${dateLabel} às ${data.startTime}${data.serviceName ? ` · ${data.serviceName}` : ''}`,
+            relatedId: editingAppointment?.id ?? undefined,
+            actorId: user.uid,
+            actorName: user.name,
+          }).catch(err => console.warn('[Agenda] notify professionals failed:', err));
+        }
+      } catch (notifyErr) {
+        console.warn('[Agenda] notify professionals threw:', notifyErr);
+      }
+
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setShowFormDialog(false);
@@ -2122,7 +2155,7 @@ export default function AgendaModule() {
     } finally {
       setSaving(false);
     }
-  }, [business?.id, editingAppointment, services, queryClient, checkConflicts, t, members]);
+  }, [business?.id, editingAppointment, services, queryClient, checkConflicts, t, members, user]);
 
   const handleDeleteAppointment = useCallback(async () => {
     if (!editingAppointment || !business?.id) return;
