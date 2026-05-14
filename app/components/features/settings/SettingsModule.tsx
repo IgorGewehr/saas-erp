@@ -97,6 +97,7 @@ import NotificationServerSection from './NotificationServerConfig';
 import WhatsAppProfileSection from './WhatsAppProfileSection';
 import QuickRepliesTab from './QuickRepliesTab';
 import BusinessChannelsSection from './BusinessChannelsSection';
+import ValidatorChipSection from './ValidatorChipSection';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
 import {
@@ -7296,6 +7297,12 @@ function CanaisTab() {
           via QR Code). Renderiza com seu próprio fetcher e modal de QR — fluxo
           isolado dos canais oficiais Meta logo acima. */}
       <BusinessChannelsSection />
+
+      {/* Chip validador — canal especial Baileys que NÃO envia mensagens,
+          serve só pra checar onWhatsApp pré-disparo. Visual amber pra não
+          confundir com os canais de envio acima; filtrado dos dropdowns
+          de envio (commit anterior) + bloqueado defensivamente no backend. */}
+      <ValidatorChipSection />
 
       {showQrModal && (
         <WhatsAppQrModal
