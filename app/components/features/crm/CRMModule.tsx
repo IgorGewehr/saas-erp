@@ -1524,11 +1524,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   }, [showNew, showNewBirthday, businessId]);
 
   // Connections elegíveis pro canal + modo escolhidos. Filtra por type e
-  // isConnected — desconectadas não dispararam.
+  // isConnected — desconectadas não dispararam. Exclui chip validador
+  // (purpose='validator') — esse chip existe SÓ pra checar onWhatsApp pré-
+  // disparo e nunca envia; backend (broadcasts/send) rejeita disparo por ele
+  // como defesa em profundidade, mas filtramos aqui pra nem aparecer no select.
   const eligibleConnections = useMemo(() => {
     if (formChannel === 'email') return [];
     return availableConnections.filter(c => {
       if (!c.isActive || !c.isConnected) return false;
+      if (c.purpose === 'validator') return false;
       if (formChannel === 'whatsapp') {
         return formViaBaileys ? c.type === 'whatsapp_baileys' : c.type === 'whatsapp_cloud';
       }

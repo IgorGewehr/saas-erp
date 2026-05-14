@@ -113,8 +113,12 @@ export default function BirthdayCampaignDialog({
   }, [open, editing]);
 
   // Connections elegíveis: ativas, conectadas, do tipo certo (Cloud ou Baileys).
+  // Exclui chip validador — ele só serve pra checar onWhatsApp pré-disparo,
+  // nunca envia. Se aparecesse aqui e o operador selecionasse por engano,
+  // a campanha inteira passaria pelo validator e queimaria.
   const eligibleConnections = useMemo(() => availableConnections.filter(c => {
     if (!c.isActive || !c.isConnected) return false;
+    if (c.purpose === 'validator') return false;
     return viaBaileys ? c.type === 'whatsapp_baileys' : c.type === 'whatsapp_cloud';
   }), [availableConnections, viaBaileys]);
 

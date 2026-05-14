@@ -3799,11 +3799,17 @@ function NewConversationDialog({
 
   // Phase 3.2: connections disponíveis pra "Enviar de" — só Baileys (Cloud
   // é sempre 1 por business via Embedded Signup, escolha trivial).
-  // Filtra: ativas + connected + tipo correto. Sort: business primary primeiro,
-  // depois business secundárias, depois user (pessoais).
+  // Filtra: ativas + connected + tipo correto + EXCLUI validators (chip
+  // validador só faz onWhatsApp pra higienização de campanhas, jamais envia).
+  // Sort: business primary primeiro, depois business secundárias, depois user.
   const availableBaileysConnections = useMemo(() => {
     return connections
-      .filter(c => c.type === 'whatsapp_baileys' && c.isActive && c.isConnected)
+      .filter(c =>
+        c.type === 'whatsapp_baileys'
+        && c.isActive
+        && c.isConnected
+        && c.purpose !== 'validator'
+      )
       .sort((a, b) => {
         if (a.ownerType === 'business' && b.ownerType !== 'business') return -1;
         if (a.ownerType !== 'business' && b.ownerType === 'business') return 1;
