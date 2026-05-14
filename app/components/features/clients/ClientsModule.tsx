@@ -11,13 +11,12 @@ import {
   FileDown, Settings, Plus as PlusIcon, Trophy, LayoutList, AlignJustify,
   Megaphone, MessageSquare, CheckSquare, FileSpreadsheet,
 } from 'lucide-react';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, limit as firestoreLimit, writeBatch, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
-import { validateCPF, validateCNPJ } from '@/lib/utils/validators';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { cn } from '@/lib/utils';
 import type { Client, ClientDuplicateIgnore, LeadStatus, LoyaltyConfig, LoyaltyTier } from '@/lib/types';
@@ -34,9 +33,8 @@ import { ClientTableView, type ClientSortField, type ClientSortDir } from './Cli
 // Modais, form e detalhe: extraídos pra arquivos próprios nas Fases 1a/1b
 // da modularização. ClientFormData vem do ClientForm pra que a mutationFn
 // que persiste o cliente não precise re-declarar o shape do payload.
-import { ClientForm, emptyForm, type ClientFormData } from './ClientForm';
+import { ClientEditDialog } from './ClientEditDialog';
 import {
-  ModernDialog, ModernDialogActions, ModernCancelButton, ModernPrimaryButton, ModernPill,
 } from '@/app/components/ui/dialog';
 import { ExportModal } from './ExportModal';
 import { ImportModal } from './ImportModal';
@@ -47,7 +45,7 @@ const SpreadsheetView = dynamicImport(() => import('@/app/components/features/sp
 // componentes extraídos. Ficam num ponto único pra rótulos/cores baterem.
 import { STATUS_CONFIG, SOURCE_LABELS, TIPO_LABELS } from './shared/constants';
 import { CHURN_CFG, getChurnLevel, type ChurnRiskLevel } from './shared/health';
-import { findDuplicate, digits, normEmail } from './shared/duplicates';
+import { digits, normEmail } from './shared/duplicates';
 import { mergeClients } from './shared/mergeClients';
 import { HealthBadge } from './shared/HealthBadge';
 import { TierBadge } from './shared/loyalty';
@@ -1042,106 +1040,8 @@ export default function ClientsModule() {
   }, [pendingOpenClientId, clients, setPendingOpenClientId]);
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
-  const { mutate: saveClient, isPending: isSaving } = useMutation({
-    mutationFn: async (data: ClientFormData) => {
-      // Validação CPF/CNPJ — antes não era feita ANTES do save, então cliente
-      // PJ com CNPJ inválido vinha a quebrar depois na emissão de NFe.
-      // Só valida quando o campo está preenchido (CPF/CNPJ é opcional).
-      const cpfCnpjRaw = (data.cpfCnpj || '').trim();
-      if (cpfCnpjRaw) {
-        const isValid = data.tipo === 'pj' ? validateCNPJ(cpfCnpjRaw) : validateCPF(cpfCnpjRaw);
-        if (!isValid) {
-          throw new Error(`${data.tipo === 'pj' ? 'CNPJ' : 'CPF'} inválido — confira os dígitos`);
-        }
-      }
-
-      const dup = findDuplicate(data, clients, editingClient?.id);
-      if (dup) {
-        throw new Error(`Já existe um cliente com esse ${dup.field}: "${dup.client.name}"`);
-      }
-
-      const now = new Date().toISOString();
-      const payload: Partial<Client> = {
-        name: data.name.trim(),
-        email: data.email.trim() || undefined,
-        phone: data.phone.trim() || undefined,
-        whatsapp: data.whatsapp.trim() || undefined,
-        company: data.company.trim() || undefined,
-        tipo: data.tipo,
-        cpfCnpj: data.cpfCnpj.trim() || undefined,
-        inscricaoEstadual: data.inscricaoEstadual.trim() || undefined,
-        indicadorIE: (['1', '2', '9'] as const).includes(data.indicadorIE as '1' | '2' | '9')
-          ? (data.indicadorIE as '1' | '2' | '9')
-          : undefined,
-        // ISO YYYY-MM-DD. Vazio vira undefined pra updateDoc descartar (o
-        // mecanismo de deleteField em editingClient cuida do limpar).
-        birthDate: data.birthDate.trim() || undefined,
-        source: data.source,
-        status: data.status,
-        notes: data.notes.trim() || undefined,
-        tags: data.tags.length ? data.tags : undefined,
-        // Aquisição (Fases 4A+4B) — 3 níveis de granularidade. Vazio vira
-        // undefined pra updateDoc → deleteField() limpar quando user remove.
-        acquisitionOfferId: data.acquisitionOfferId.trim() || undefined,
-        acquisitionProductId: data.acquisitionProductId.trim() || undefined,
-        acquisitionOfferLabel: data.acquisitionOfferLabel.trim() || undefined,
-        updatedAt: now,
-      };
-
-      if (data.cep || data.logradouro || data.municipio) {
-        // IMPORTANTE: não usar `field: value || undefined` em objeto nested.
-        // O sanitizer logo abaixo converte undefined → deleteField() apenas
-        // no TOP-LEVEL do payload — undefined dentro de `endereco` passava
-        // direto pro Firestore, que recusa com:
-        //   "Function updateDoc() called with invalid data. Unsupported
-        //    field value: undefined (found in field endereco.complemento)"
-        // Solução: monta endereco só com chaves que têm valor real.
-        const endereco: Record<string, string> = {};
-        const cep = data.cep.trim();         if (cep) endereco.cep = cep;
-        const log = data.logradouro.trim();  if (log) endereco.logradouro = log;
-        const num = data.numero.trim();      if (num) endereco.numero = num;
-        const cmp = data.complemento.trim(); if (cmp) endereco.complemento = cmp;
-        const bai = data.bairro.trim();      if (bai) endereco.bairro = bai;
-        const mun = data.municipio.trim();   if (mun) endereco.municipio = mun;
-        const uf  = data.uf.trim();          if (uf)  endereco.uf = uf;
-        if (Object.keys(endereco).length > 0) {
-          payload.endereco = endereco;
-        }
-      }
-
-      if (editingClient) {
-        // updateDoc rejeita undefined — converte para deleteField() para limpar campos apagados
-        const updatePayload = Object.fromEntries(
-          Object.entries(payload).map(([k, v]) => [k, v === undefined ? deleteField() : v])
-        );
-        await updateDoc(doc(db, 'clients', editingClient.id), updatePayload);
-      } else {
-        // addDoc: remove undefined para não gravar campos vazios
-        const createPayload = Object.fromEntries(
-          Object.entries(payload).filter(([, v]) => v !== undefined)
-        );
-        await addDoc(collection(db, 'clients'), {
-          ...createPayload,
-          businessId: business!.id,
-          score: 0,
-          isActive: true,
-          totalSpent: 0,
-          visitCount: 0,
-          createdAt: now,
-        });
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
-      toast.success(editingClient ? 'Cliente atualizado!' : 'Cliente cadastrado!');
-      setShowForm(false);
-      setEditingClient(null);
-    },
-    onError: (err: Error) => {
-      console.error('[Clients] Save error:', err);
-      toast.error(err?.message || 'Erro ao salvar cliente');
-    },
-  });
+  // saveClient foi extraído pra ClientEditDialog (reutilizado em Conversas).
+  // delete fica aqui — não há reuso entre módulos.
 
   const { mutate: deleteClient, isPending: isDeleting } = useMutation({
     mutationFn: async (id: string) => {
@@ -1360,43 +1260,7 @@ export default function ClientsModule() {
     setSelectedClient(null);
   };
 
-  const formInitial: ClientFormData = useMemo(() => editingClient
-    ? {
-        name: editingClient.name,
-        email: editingClient.email || '',
-        phone: editingClient.phone || '',
-        whatsapp: editingClient.whatsapp || '',
-        company: editingClient.company || '',
-        tipo: editingClient.tipo || 'pf',
-        cpfCnpj: editingClient.cpfCnpj || '',
-        inscricaoEstadual: editingClient.inscricaoEstadual || '',
-        indicadorIE: editingClient.indicadorIE || '',
-        birthDate: editingClient.birthDate || '',
-        source: editingClient.source,
-        status: editingClient.status,
-        notes: editingClient.notes || '',
-        tags: editingClient.tags ? [...editingClient.tags] : [],
-        cep: editingClient.endereco?.cep || '',
-        logradouro: editingClient.endereco?.logradouro || '',
-        numero: editingClient.endereco?.numero || '',
-        complemento: editingClient.endereco?.complemento || '',
-        bairro: editingClient.endereco?.bairro || '',
-        municipio: editingClient.endereco?.municipio || '',
-        uf: editingClient.endereco?.uf || '',
-        acquisitionOfferId: editingClient.acquisitionOfferId || '',
-        acquisitionProductId: editingClient.acquisitionProductId || '',
-        acquisitionOfferLabel: editingClient.acquisitionOfferLabel || '',
-      }
-    : emptyForm,
-    [editingClient]);
-
-  // Estado controlado do form — sincronizado com formInitial sempre que o
-  // dialog abre (novo cliente ou edição). useEffect dispara só quando showForm
-  // vira true ou quando troca o editing client; evita loop em render.
-  const [clientForm, setClientForm] = useState<ClientFormData>(emptyForm);
-  useEffect(() => {
-    if (showForm) setClientForm(formInitial);
-  }, [showForm, editingClient?.id, formInitial]);
+  // form state e formInitial migraram pra dentro do ClientEditDialog.
 
   // Aggregated tag suggestions across all clients (dedup, case-insensitive)
   const allTags = useMemo(() => {
@@ -2156,41 +2020,18 @@ export default function ClientsModule() {
         document.body
       )}
 
-      {/* Create/Edit modal — agora padronizado com ModernDialog */}
-      <ModernDialog
+      {/* Create/Edit modal — wrapper completo extraído pra ClientEditDialog
+          (reutilizado em Conversas pra editar cliente sem trocar de tela). */}
+      <ClientEditDialog
         open={showForm}
         onClose={() => { setShowForm(false); setEditingClient(null); }}
-        icon={Users}
-        title={editingClient ? 'Editar cliente' : 'Novo cliente'}
-        badges={
-          <ModernPill tone={clientForm.tipo === 'pj' ? 'blue' : 'red'}>
-            {clientForm.tipo === 'pj' ? 'PJ' : 'PF'}
-          </ModernPill>
-        }
-        footer={
-          <ModernDialogActions>
-            <ModernCancelButton onClick={() => { setShowForm(false); setEditingClient(null); }}>
-              Cancelar
-            </ModernCancelButton>
-            <ModernPrimaryButton
-              onClick={() => saveClient(clientForm)}
-              disabled={isSaving || !clientForm.name.trim()}
-              startIcon={!isSaving ? <CheckCircle2 size={16} /> : undefined}
-            >
-              {isSaving ? 'Salvando…' : editingClient ? 'Salvar alterações' : 'Criar cliente'}
-            </ModernPrimaryButton>
-          </ModernDialogActions>
-        }
-      >
-        <ClientForm
-          form={clientForm}
-          setForm={setClientForm}
-          tagSuggestions={allTags}
-          products={productsForAcquisition}
-          offers={offersForAcquisition}
-          onManageOffers={isAdmin ? () => setShowOffersManager(true) : undefined}
-        />
-      </ModernDialog>
+        client={editingClient}
+        allClients={clients}
+        tagSuggestions={allTags}
+        products={productsForAcquisition}
+        offers={offersForAcquisition}
+        onManageOffers={isAdmin ? () => setShowOffersManager(true) : undefined}
+      />
 
       {/* Loyalty settings modal */}
       <AnimatePresence>

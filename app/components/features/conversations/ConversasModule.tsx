@@ -9,6 +9,10 @@ import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { setActiveConversation } from '@/lib/utils/active-conversation';
 import { isActiveClient } from '@/lib/utils/clientFilters';
+import { createPortal } from 'react-dom';
+import { ClientDetailPanel } from '@/app/components/features/clients/detail/ClientDetailPanel';
+import { ClientEditDialog } from '@/app/components/features/clients/ClientEditDialog';
+import type { ClientFormData } from '@/app/components/features/clients/ClientForm';
 import { maskPhone } from '@/lib/utils/masks';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
@@ -5534,6 +5538,48 @@ export default function ConversasModule() {
   const [clientsList, setClientsList] = useState<Client[]>([]);
   const [clientsLoadError, setClientsLoadError] = useState<string | null>(null);
 
+  // ── Ver/editar contato (inline em Conversas) ──────────────────────────────
+  // Quando operador clica "Ver/editar contato" no overflow menu, abrimos o
+  // mesmo painel 360° de /clientes em um drawer próprio dentro de Conversas
+  // (preserva contexto da conversa visível atrás). Se a conversa não tem
+  // crmContactId, abre o dialog de criar em vez do painel, pré-preenchido com
+  // nome/telefone — e vincula a conversation ao client recém-criado no save.
+  const [openContactClient, setOpenContactClient] = useState<Client | null>(null);
+  // Dialog de criar/editar. Quando `'new'`, mode=create; quando Client, mode=edit.
+  // pendingLinkConvId guarda a conversation a vincular se vier do fluxo "sem
+  // crmContactId" (no edit normal não precisa vincular nada — o doc já existe).
+  const [contactEditTarget, setContactEditTarget] = useState<Client | 'new' | null>(null);
+  const [contactCreateOverrides, setContactCreateOverrides] = useState<Partial<ClientFormData> | null>(null);
+  const [pendingLinkConvId, setPendingLinkConvId] = useState<string | null>(null);
+  // Quando criamos um cliente novo, o snapshot pode levar ~ms pra emitir o
+  // doc novo em `clientsList`. Pra abrir o painel 360° imediatamente após
+  // save, guardamos o ID em pendingOpenClientId e um effect resolve assim
+  // que clientsList atualizar. Sem isso, `find()` retornava undefined no
+  // momento do onSaved e o painel ficava sem abrir.
+  const [pendingOpenClientId, setPendingOpenContactClientId] = useState<string | null>(null);
+
+  // Ressincroniza o painel aberto com clientsList — quando o operador edita
+  // e salva, ou quando o cliente sofre mudança em outro lugar (CRM, agente),
+  // o painel reflete os dados atuais sem precisar fechar+reabrir.
+  useEffect(() => {
+    if (!openContactClient) return;
+    const fresh = clientsList.find(c => c.id === openContactClient.id);
+    if (fresh && fresh.updatedAt !== openContactClient.updatedAt) {
+      setOpenContactClient(fresh);
+    }
+  }, [clientsList, openContactClient]);
+
+  // Resolve pendingOpenClientId quando o snapshot trouxer o cliente recém
+  // criado/atualizado. Limpo após sucesso (single-shot).
+  useEffect(() => {
+    if (!pendingOpenClientId) return;
+    const fresh = clientsList.find(c => c.id === pendingOpenClientId);
+    if (fresh) {
+      setOpenContactClient(fresh);
+      setPendingOpenContactClientId(null);
+    }
+  }, [clientsList, pendingOpenClientId]);
+
   useEffect(() => {
     if (!business?.id) return;
     const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
@@ -5700,18 +5746,32 @@ export default function ConversasModule() {
   }, [business?.id]);
 
   const handleOpenContact = useCallback((conv: Conversation) => {
-    // Se conversa está vinculada a um cliente CRM, marca o ID em sessionStorage
-    // para que ClientsModule abra o detalhe ao montar. Sem vínculo, redireciona
-    // para Clientes mostrando toast com instrução pra vincular antes.
-    if (conv.crmContactId) {
-      try {
-        sessionStorage.setItem('aevo:preselectClientId', conv.crmContactId);
-      } catch { /* sessionStorage indisponível — degradação graciosa */ }
-      setActivePage('Clientes');
-    } else {
-      toast.info('Este contato ainda não está vinculado a um cliente. Use "Vincular cliente" no header.');
+    // Fluxo principal: abre o painel 360° (ClientDetailPanel) inline em
+    // Conversas. Não redireciona pra /clientes — operador mantém a conversa
+    // visível atrás. Quando a conv não tem crmContactId (ou aponta pra cliente
+    // deletado/órfão), em vez de toast pedindo "vincule antes", abrimos
+    // diretamente o ClientEditDialog em modo CREATE pré-preenchido com
+    // nome+telefone, e vinculamos a conversation ao client recém-criado no
+    // onSaved (UX mais direta — operador não precisa abrir outro fluxo).
+    const existing = conv.crmContactId
+      ? clientsList.find(c => c.id === conv.crmContactId)
+      : null;
+    if (existing) {
+      setOpenContactClient(existing);
+      return;
     }
-  }, [setActivePage]);
+    // Pré-popula com dados conhecidos da conversa. Phone vai como BR sem +,
+    // padrão usado pelos masks do form (maskPhone aceita).
+    const phone = (conv.contactPhone || conv.contactExternalId || '').replace(/[^0-9]/g, '');
+    setContactCreateOverrides({
+      name: conv.customContactName ?? conv.contactName ?? '',
+      // whatsapp é o campo BR padrão pra WhatsApp; phone fica como fallback.
+      whatsapp: phone,
+      phone: phone,
+    });
+    setPendingLinkConvId(conv.id);
+    setContactEditTarget('new');
+  }, [clientsList]);
 
   const handleExportHistory = useCallback(async (conv: Conversation) => {
     try {
@@ -9262,6 +9322,72 @@ export default function ConversasModule() {
           onClose={() => setScheduleOpen(false)}
         />
       )}
+
+      {/* Painel 360° do cliente vinculado à conversa — reusa o mesmo
+          ClientDetailPanel do /clientes, montado em portal próprio dentro
+          de Conversas (operador não muda de tela). Botão "Editar" abre o
+          ClientEditDialog abaixo. */}
+      {typeof document !== 'undefined' && createPortal(
+        <AnimatePresence>
+          {openContactClient && (
+            <motion.div
+              key="conv-contact-drawer"
+              initial={{ x: 480, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 480, opacity: 0 }}
+              transition={{ duration: 0.22, ease: [0.4, 0, 0.2, 1] }}
+              className="fixed top-[60px] right-0 bottom-0 sm:top-[68px] sm:right-4 sm:bottom-4 w-full sm:w-[440px] max-w-[calc(100vw-2rem)] z-40 sm:rounded-2xl overflow-hidden border-l sm:border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 shadow-2xl"
+            >
+              <ClientDetailPanel
+                client={openContactClient}
+                onClose={() => setOpenContactClient(null)}
+                onEdit={() => {
+                  setContactEditTarget(openContactClient);
+                  setOpenContactClient(null);
+                }}
+                allClients={clientsList}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body,
+      )}
+
+      {/* Dialog de criar/editar cliente — reusado do /clientes. Modos:
+            • edit (contactEditTarget = Client) → painel "Editar"
+            • create (contactEditTarget = 'new') → vem de conversa sem
+              crmContactId; após save, vincula o client à conversation. */}
+      <ClientEditDialog
+        open={!!contactEditTarget}
+        onClose={() => {
+          setContactEditTarget(null);
+          setContactCreateOverrides(null);
+          setPendingLinkConvId(null);
+        }}
+        client={contactEditTarget === 'new' ? null : contactEditTarget}
+        initialOverrides={contactEditTarget === 'new' ? contactCreateOverrides ?? undefined : undefined}
+        allClients={clientsList}
+        onSaved={async (clientId) => {
+          // Fluxo criar+vincular: a conversation guardada em pendingLinkConvId
+          // ainda não tem crmContactId. Setamos agora — best-effort; se falhar,
+          // o cliente foi criado mesmo assim (operador pode vincular manual).
+          if (pendingLinkConvId) {
+            try {
+              await updateDoc(doc(db, 'conversations', pendingLinkConvId), {
+                crmContactId: clientId,
+                updatedAt: new Date().toISOString(),
+              });
+            } catch (err) {
+              console.warn('[Conversations] Failed to link client to conv:', err);
+              toast.warn('Cliente criado, mas vínculo com a conversa falhou. Vincule manualmente.');
+            }
+          }
+          // Abre o painel 360° do client recém-criado/editado. Pode não estar
+          // ainda em clientsList (snapshot em flight) — pendingOpenClientId
+          // resolve via effect assim que o snapshot chegar.
+          setPendingOpenContactClientId(clientId);
+        }}
+      />
 
       {/* Agent Debug Drawer */}
       <AnimatePresence>
