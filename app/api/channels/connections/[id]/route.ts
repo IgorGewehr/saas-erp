@@ -57,6 +57,16 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   const isAdmin = role === 'founder' || role === 'admin';
   const patch: Partial<ChannelConnection> = {};
 
+  // Imutável: purpose nasce com a connection e nunca muda. Permitir conversão
+  // sender→validator surpreendia um operador (ex: número parou de enviar de
+  // repente sem aviso); validator→sender desfazia o isolamento de segurança
+  // do chip validador. Se precisar trocar, delete e recrie com purpose certo.
+  if (body.purpose !== undefined && body.purpose !== conn.purpose) {
+    return NextResponse.json({
+      error: 'Não é permitido alterar o purpose (sender/validator) de uma conexão. Delete e crie outra com o purpose desejado.',
+    }, { status: 400 });
+  }
+
   // Campos que qualquer operator+ pode mudar na própria connection
   if (typeof body.displayName === 'string' && body.displayName.trim()) {
     patch.displayName = body.displayName.trim();
@@ -76,6 +86,13 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
       if (body.isPrimary === true && finalOwnerType !== 'business') {
         return NextResponse.json({
           error: 'Apenas canais da empresa (ownerType=business) podem ser marcados como principal.',
+        }, { status: 400 });
+      }
+      // Validator nunca pode virar primary — primary alimenta lookups de
+      // "canal default pra enviar" e validator é justamente o oposto disso.
+      if (body.isPrimary === true && conn.purpose === 'validator') {
+        return NextResponse.json({
+          error: 'Chip validador não pode ser marcado como principal — ele nunca envia mensagens.',
         }, { status: 400 });
       }
       patch.isPrimary = body.isPrimary;

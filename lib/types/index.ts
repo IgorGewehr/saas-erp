@@ -292,6 +292,14 @@ export interface ChannelConnection {
   /** Quando há múltiplas do mesmo tipo, qual é o "default" pra rotas que
    *  precisam decidir (ex: criar conversa vinda de fonte ambígua). */
   isPrimary?: boolean;
+  /** Finalidade da conexão.
+   *   - 'sender' (default): canal normal — envia mensagens e recebe.
+   *   - 'validator': APENAS pra checar via `onWhatsApp` se um número tem
+   *     WhatsApp antes de campanhas. NUNCA aparece em dropdowns de envio
+   *     e o backend rejeita disparos por ele (defesa em profundidade).
+   *     Único hoje pra WA Baileys, ownerType=business, isPrimary=false.
+   *  Default ausente = 'sender' (retrocompat com docs antigos). */
+  purpose?: 'sender' | 'validator';
   connectedAt?: string;
   disconnectedAt?: string;
   /** Motivo da última desconexão — usado pra UI mostrar mensagem clara:

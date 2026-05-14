@@ -640,6 +640,16 @@ export async function POST(req: NextRequest) {
           error: `Canal escolhido na campanha está desconectado/inativo. Reconecte em Configurações → Canais.`,
         }, { status: 400 });
       }
+      // Defesa em profundidade: chip validador é exclusivo pra checar
+      // existência de números via onWhatsApp e NUNCA envia mensagens.
+      // Mesmo se um payload furar o filtro do frontend (race, postman, etc),
+      // o backend rejeita aqui. Sem isso, validator poderia disparar campanha
+      // inteira e queimar o chip — destruindo a higienização que ele faz.
+      if (connData.purpose === 'validator') {
+        return NextResponse.json({
+          error: 'Canal escolhido é um chip validador — não envia mensagens. Escolha outro canal de envio na campanha.',
+        }, { status: 400 });
+      }
       // Reescreve o slot correspondente em `channels` com as credentials da
       // connection escolhida — o resto do fluxo (Cloud/FB/IG) continua lendo
       // de `channels` sem precisar de outra branch.

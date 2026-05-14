@@ -65,6 +65,10 @@ interface CreateBody {
   ownerType?: ChannelOwnerType;
   displayName?: string;
   phoneNumber?: string;
+  /** Finalidade da conexão. 'validator' cria chip Baileys SOMENTE pra
+   *  checar via onWhatsApp se números têm WA antes de campanhas (nunca envia).
+   *  Default 'sender'. */
+  purpose?: 'sender' | 'validator';
 }
 
 export async function POST(req: NextRequest) {
@@ -92,6 +96,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       error: 'Apenas WhatsApp Web (Baileys) pode ter ownerType=user. Cloud/Facebook/Instagram são sempre da empresa.',
     }, { status: 400 });
+  }
+
+  // Validator chip: SOMENTE pra Baileys, SOMENTE business (compartilhado),
+  // NUNCA primary. Limite de 1 por business (já checado abaixo). Esse chip
+  // é o que executa onWhatsApp pra higienização de campanhas e o backend
+  // do send route rejeita disparos por ele (defesa em profundidade).
+  const purpose: 'sender' | 'validator' = body.purpose === 'validator' ? 'validator' : 'sender';
+  if (purpose === 'validator') {
+    if (type !== 'whatsapp_baileys') {
+      return NextResponse.json({
+        error: 'Chip validador só funciona via WhatsApp Web (Baileys).',
+      }, { status: 400 });
+    }
+    if (ownerType !== 'business') {
+      return NextResponse.json({
+        error: 'Chip validador é sempre compartilhado da empresa, não pessoal.',
+      }, { status: 400 });
+    }
   }
 
   // Permissão:
@@ -128,8 +150,10 @@ export async function POST(req: NextRequest) {
   // Phase 3.1: business pode ter múltiplas connections do mesmo type (ex: 2+
   // Baileys-empresa). isPrimary é setado APENAS na primeira. Adicionais ficam
   // isPrimary=false; admin pode promover via PATCH se quiser trocar a default.
-  let willBePrimary = ownerType === 'business';
-  if (ownerType === 'business') {
+  // Validators NUNCA viram primary (esconde de qualquer lógica que escolhe
+  // "default" pra envio).
+  let willBePrimary = ownerType === 'business' && purpose !== 'validator';
+  if (ownerType === 'business' && purpose !== 'validator') {
     const existingPrimary = await adminDb.collection('channelConnections')
       .where('businessId', '==', businessId)
       .where('type', '==', type)
@@ -140,6 +164,22 @@ export async function POST(req: NextRequest) {
     if (!existingPrimary.empty) {
       // Já existe primary — esta vira secundária
       willBePrimary = false;
+    }
+  }
+
+  // Validator único por business (por enquanto). Se já existe, bloqueia.
+  // Limitar a 1 simplifica fluxo e evita ambiguidade de "qual validator usar".
+  if (purpose === 'validator') {
+    const existingValidator = await adminDb.collection('channelConnections')
+      .where('businessId', '==', businessId)
+      .where('purpose', '==', 'validator')
+      .limit(1)
+      .get();
+    if (!existingValidator.empty) {
+      return NextResponse.json({
+        error: 'Já existe um chip validador conectado. Remova o atual antes de adicionar outro.',
+        existingConnectionId: existingValidator.docs[0].id,
+      }, { status: 409 });
     }
   }
 
@@ -156,16 +196,22 @@ export async function POST(req: NextRequest) {
   const userName = (userSnap.data()?.name as string) || '';
 
   try {
+    const defaultDisplayName = purpose === 'validator'
+      ? 'Chip validador'
+      : ownerType === 'user'
+        ? `WhatsApp (${userName || 'Pessoal'})`
+        : 'WhatsApp Web';
     const conn = await createConnection({
       businessId,
       type,
       ownerType,
       ownerId: ownerId || undefined,
-      displayName: body.displayName || (ownerType === 'user' ? `WhatsApp (${userName || 'Pessoal'})` : 'WhatsApp Web'),
+      displayName: body.displayName || defaultDisplayName,
       phoneNumber: body.phoneNumber,
       isConnected: false,
       isActive: true,
       isPrimary: willBePrimary,
+      ...(purpose === 'validator' ? { purpose } : {}),
       createdAt: now,
       updatedAt: now,
       createdBy: uid,
