@@ -31,6 +31,7 @@ import { cn } from '@/lib/utils';
 import type { BirthdayCampaign, ChannelConnection, ConsentBasis, LeadStatus, Client } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
 import TemplateSelector, { isTemplateSelectionValid, type TemplateSelection } from './TemplateSelector';
+import { MOVABLE_PRESETS, resolvePresetMmDd, nextOccurrenceOfPreset, type FestivePresetKey } from '@/lib/utils/festive-dates';
 
 const STATUS_OPTIONS: { value: LeadStatus; label: string }[] = [
   { value: 'novo',         label: 'Novo' },
@@ -57,22 +58,20 @@ interface Props {
 
 const DEFAULT_MESSAGE = '🎂 Feliz aniversário, {{name}}! Pra comemorar, preparamos uma promoção especial pra você. Aproveite!';
 
-/** Presets de datas festivas comuns no Brasil. Operador pode escolher pelo
- *  combobox ou digitar MM-DD livre. Carnaval/Páscoa/Dia das Mães mudam por
- *  ano (móveis) — operador atualiza manualmente quando configurar a campanha.
- *  Fixas (Natal, Reveillon, etc.) ficam corretas pra sempre. */
-const FESTIVE_DATE_PRESETS: Array<{ value: string; label: string }> = [
+/** Datas festivas FIXAS no calendário brasileiro (MM-DD constante todo ano).
+ *  Operador escolhe pelo combobox ou digita MM-DD livre. Black Friday saiu
+ *  daqui — é móvel (4ª sex de novembro) e foi pra MOVABLE_PRESETS do util. */
+const FIXED_FESTIVE_DATES: Array<{ value: string; label: string }> = [
   { value: '12-25', label: 'Natal (25/12)' },
   { value: '12-31', label: 'Réveillon (31/12)' },
-  { value: '11-29', label: 'Black Friday (sex última nov)' },
   { value: '06-12', label: 'Dia dos Namorados (12/06)' },
-  { value: '08-08', label: 'Dia dos Pais (2° dom ago — ajuste o dia)' },
-  { value: '05-12', label: 'Dia das Mães (2° dom maio — ajuste o dia)' },
   { value: '04-21', label: 'Tiradentes (21/04)' },
   { value: '09-07', label: 'Independência (07/09)' },
   { value: '10-12', label: 'Nossa Sra. Aparecida (12/10)' },
+  { value: '10-12', label: 'Dia das Crianças (12/10)' },
   { value: '11-02', label: 'Finados (02/11)' },
   { value: '11-15', label: 'Proclamação República (15/11)' },
+  { value: '03-08', label: 'Dia Internacional da Mulher (08/03)' },
 ];
 
 export default function BirthdayCampaignDialog({
@@ -84,9 +83,13 @@ export default function BirthdayCampaignDialog({
   // 'fixed_date' (data fixa do calendário pra todos os filtrados).
   // Default 'birthday' — comportamento legado.
   const [recurrenceType, setRecurrenceType] = useState<'birthday' | 'fixed_date'>('birthday');
-  // MM-DD da data festiva (só usado quando recurrenceType === 'fixed_date').
-  // Default Natal pra dar exemplo claro pro operador na primeira vez.
+  // MM-DD da data festiva (só usado quando recurrenceType === 'fixed_date'
+  // E festivePreset NÃO está setado). Default Natal pra exemplo claro.
   const [festiveDate, setFestiveDate] = useState<string>('12-25');
+  // Chave do preset MÓVEL (mothers_day, easter, etc.) — quando setado,
+  // sobrepõe festiveDate. Runner resolve a data correta pro ano da execução
+  // via festive-dates util. Permite "Dia das Mães" sem ajustar MM-DD todo ano.
+  const [festivePreset, setFestivePreset] = useState<string>('');
   const [daysBefore, setDaysBefore] = useState(0);
   const [sendAtHour, setSendAtHour] = useState(9);
   const [viaBaileys, setViaBaileys] = useState(false);
@@ -107,7 +110,7 @@ export default function BirthdayCampaignDialog({
     setConfirmDelete(false);
     if (!editing) {
       setName(''); setEnabled(true);
-      setRecurrenceType('birthday'); setFestiveDate('12-25');
+      setRecurrenceType('birthday'); setFestiveDate('12-25'); setFestivePreset('');
       setDaysBefore(0); setSendAtHour(9);
       setViaBaileys(false); setConnectionId('');
       setMessageContent(DEFAULT_MESSAGE); setTemplate(null);
@@ -120,6 +123,7 @@ export default function BirthdayCampaignDialog({
     // Fallback 'birthday' pra docs antigos sem o campo (retrocompat).
     setRecurrenceType(editing.recurrenceType ?? 'birthday');
     setFestiveDate(editing.festiveDate ?? '12-25');
+    setFestivePreset(editing.festivePreset ?? '');
     setDaysBefore(editing.daysBeforeBirthday);
     setSendAtHour(editing.sendAtHour);
     setViaBaileys(editing.viaBaileys);
@@ -221,9 +225,20 @@ export default function BirthdayCampaignDialog({
   }, [filteredClients, daysBefore, isFixedDate]);
   const previewCount = previewClients.length;
 
+  // Resolve a data efetiva pra fixed_date: se festivePreset setado, calcula
+  // dinamicamente via util pro ano corrente; senão, usa festiveDate.
+  // Centraliza pra não duplicar a lógica em todayMatchCount + nextDispatchInfo.
+  const resolvedFestiveDate = useMemo(() => {
+    if (!isFixedDate) return null;
+    if (festivePreset) {
+      return resolvePresetMmDd(festivePreset as FestivePresetKey, new Date().getFullYear());
+    }
+    return festiveDate;
+  }, [isFixedDate, festivePreset, festiveDate]);
+
   // Quantos disparam HOJE: depende do tipo.
   //   - birthday: clientes do mês cujo MM-DD === hoje + daysBefore
-  //   - fixed_date: se festiveDate === hoje + daysBefore, todos os filtrados; senão 0
+  //   - fixed_date: se data resolvida === hoje + daysBefore, todos os filtrados
   const todayMatchCount = useMemo(() => {
     const target = new Date();
     target.setDate(target.getDate() + daysBefore);
@@ -231,29 +246,45 @@ export default function BirthdayCampaignDialog({
     const targetDd = String(target.getDate()).padStart(2, '0');
     const targetMmDd = `${targetMm}-${targetDd}`;
     if (isFixedDate) {
-      return festiveDate === targetMmDd ? filteredClients.length : 0;
+      return resolvedFestiveDate === targetMmDd ? filteredClients.length : 0;
     }
     return previewClients.filter(c => c.birthDate?.slice(5, 10) === targetMmDd).length;
-  }, [previewClients, daysBefore, isFixedDate, festiveDate, filteredClients.length]);
+  }, [previewClients, daysBefore, isFixedDate, resolvedFestiveDate, filteredClients.length]);
 
   // Próximo dia em que disparará. Birthday: varre 366d procurando match.
-  // Fixed_date: calcula festiveDate - daysBefore deste ano ou do próximo.
+  // Fixed_date: usa nextOccurrenceOfPreset (movable) ou calcula via festiveDate.
   const nextDispatchInfo = useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     if (isFixedDate) {
       if (filteredClients.length === 0) return null;
-      const [festMm, festDd] = festiveDate.split('-').map(Number);
-      if (!festMm || !festDd) return null;
-      const currentYear = today.getFullYear();
-      // Próxima data-alvo de DISPARO (festiveDate - daysBefore). Este ano ou
-      // ano que vem, dependendo se a data ainda não passou.
-      let candidate = new Date(currentYear, festMm - 1, festDd);
+      // Pra preset móvel: usa o util que já considera virada de ano.
+      let festiveDateObj: Date | null = null;
+      if (festivePreset) {
+        festiveDateObj = nextOccurrenceOfPreset(festivePreset as FestivePresetKey, today);
+      } else {
+        const [festMm, festDd] = festiveDate.split('-').map(Number);
+        if (!festMm || !festDd) return null;
+        festiveDateObj = new Date(today.getFullYear(), festMm - 1, festDd);
+        if (festiveDateObj < today) {
+          festiveDateObj = new Date(today.getFullYear() + 1, festMm - 1, festDd);
+        }
+      }
+      if (!festiveDateObj) return null;
+      // Data efetiva de DISPARO = festiveDate - daysBefore.
+      const candidate = new Date(festiveDateObj);
       candidate.setDate(candidate.getDate() - daysBefore);
-      if (candidate < today) {
-        candidate = new Date(currentYear + 1, festMm - 1, festDd);
-        candidate.setDate(candidate.getDate() - daysBefore);
+      // Se daysBefore puxa pra antes de hoje (ex: preset deste ano já passou
+      // do dia, mas a virada -daysBefore caiu pra trás), usa próximo ano.
+      if (candidate < today && festivePreset) {
+        const nextYearOcc = resolvePresetMmDd(festivePreset as FestivePresetKey, today.getFullYear() + 1);
+        if (nextYearOcc) {
+          const [m, d] = nextYearOcc.split('-').map(Number);
+          const nextDate = new Date(today.getFullYear() + 1, m - 1, d);
+          nextDate.setDate(nextDate.getDate() - daysBefore);
+          return { date: nextDate, count: filteredClients.length };
+        }
       }
       return { date: candidate, count: filteredClients.length };
     }
@@ -285,17 +316,22 @@ export default function BirthdayCampaignDialog({
   const canSave = useMemo(() => {
     if (!name.trim()) return false;
     if (eligibleConnections.length > 0 && !connectionId) return false;
-    // Pra fixed_date, festiveDate precisa ser MM-DD válido (mês 01-12, dia 01-31).
-    // Sem isso, runner não acharia match nunca + nextDispatchInfo retornaria null.
+    // Pra fixed_date: ou festivePreset (preset móvel resolvido pelo runner)
+    // OU festiveDate MM-DD válido. Pelo menos um precisa estar válido.
     if (recurrenceType === 'fixed_date') {
-      const m = festiveDate.match(/^(\d{2})-(\d{2})$/);
-      if (!m) return false;
-      const mm = Number(m[1]), dd = Number(m[2]);
-      if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return false;
+      if (festivePreset) {
+        // Preset existe na lista de móveis conhecidos?
+        if (!MOVABLE_PRESETS.some(p => p.key === festivePreset)) return false;
+      } else {
+        const m = festiveDate.match(/^(\d{2})-(\d{2})$/);
+        if (!m) return false;
+        const mm = Number(m[1]), dd = Number(m[2]);
+        if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return false;
+      }
     }
     if (viaBaileys) return messageContent.trim().length > 0;
     return isTemplateSelectionValid(template);
-  }, [name, connectionId, eligibleConnections.length, viaBaileys, messageContent, template, recurrenceType, festiveDate]);
+  }, [name, connectionId, eligibleConnections.length, viaBaileys, messageContent, template, recurrenceType, festiveDate, festivePreset]);
 
   const handleSave = async () => {
     if (!canSave) {
@@ -316,11 +352,15 @@ export default function BirthdayCampaignDialog({
         // recurrenceType sempre persiste em docs criados/atualizados via dialog,
         // mesmo quando 'birthday' — assim ao editar de fixed_date pra birthday,
         // o pre-fill da próxima abertura reflete a escolha (sem precisar deletar
-        // campos no Firestore). festiveDate só persiste quando 'fixed_date'
-        // (resíduo em birthday é ignorado pelo runner, mas pra limpar de vez
-        // seria preciso FieldValue.delete — overkill por enquanto).
+        // campos no Firestore). festiveDate/festivePreset só persistem em
+        // fixed_date; resíduos em birthday são ignorados pelo runner.
+        // (Cleanup full via FieldValue.delete fica pra commit dedicado.)
         recurrenceType,
-        ...(recurrenceType === 'fixed_date' ? { festiveDate } : {}),
+        ...(recurrenceType === 'fixed_date'
+          ? festivePreset
+            ? { festivePreset, festiveDate: '' }
+            : { festiveDate, festivePreset: '' }
+          : {}),
         daysBeforeBirthday: daysBefore,
         sendAtHour,
         channel: 'whatsapp',
@@ -394,11 +434,15 @@ export default function BirthdayCampaignDialog({
   const dayLabel = daysBefore === 0 ? 'No dia' : `${daysBefore}d antes`;
   // Label do tipo pra header/badges — texto curto e ícone.
   const typeLabel = isFixedDate ? 'Data festiva' : 'Aniversário';
-  // Label completo da data festiva (preset → texto bonito; fallback MM-DD cru).
+  // Label completo da data festiva (preset móvel > fixo conhecido > MM-DD cru).
   const festiveLabel = useMemo(() => {
-    const preset = FESTIVE_DATE_PRESETS.find(p => p.value === festiveDate);
-    return preset?.label ?? festiveDate;
-  }, [festiveDate]);
+    if (festivePreset) {
+      const movable = MOVABLE_PRESETS.find(p => p.key === festivePreset);
+      return movable?.label ?? festivePreset;
+    }
+    const fixed = FIXED_FESTIVE_DATES.find(p => p.value === festiveDate);
+    return fixed?.label ?? festiveDate;
+  }, [festiveDate, festivePreset]);
 
   return (
     <ModernDialog
@@ -537,38 +581,104 @@ export default function BirthdayCampaignDialog({
           </button>
         </div>
 
-        {/* Date picker MM-DD pra fixed_date. Combobox de presets + input livre. */}
+        {/* Date picker pra fixed_date. Combobox unificado:
+            - Presets MÓVEIS (calculados dinamicamente todo ano via util)
+            - Presets FIXOS (MM-DD constante)
+            - Custom (libera input livre de MM-DD)
+            Encoding do `value`: 'preset:KEY' pra móvel, MM-DD pra fixo. */}
         {isFixedDate && (
           <div className="space-y-2">
             <FormControl fullWidth size="small">
-              <InputLabel>Data festiva (preset)</InputLabel>
+              <InputLabel>Data festiva</InputLabel>
               <Select
-                value={FESTIVE_DATE_PRESETS.some(p => p.value === festiveDate) ? festiveDate : ''}
-                label="Data festiva (preset)"
-                onChange={e => setFestiveDate(e.target.value as string)}
+                value={
+                  festivePreset
+                    ? `preset:${festivePreset}`
+                    : FIXED_FESTIVE_DATES.some(p => p.value === festiveDate)
+                      ? festiveDate
+                      : ''
+                }
+                label="Data festiva"
+                onChange={e => {
+                  const v = e.target.value as string;
+                  if (v.startsWith('preset:')) {
+                    // Preset móvel selecionado — runner resolverá pelo ano
+                    setFestivePreset(v.slice('preset:'.length));
+                    // Mantém festiveDate como placeholder visual da ocorrência
+                    // atual mas o runner ignora quando festivePreset está setado.
+                    const mmDd = resolvePresetMmDd(
+                      v.slice('preset:'.length) as FestivePresetKey,
+                      new Date().getFullYear(),
+                    );
+                    if (mmDd) setFestiveDate(mmDd);
+                  } else {
+                    // Preset fixo OU '' — limpa preset móvel se havia.
+                    setFestivePreset('');
+                    setFestiveDate(v);
+                  }
+                }}
                 renderValue={(v) => {
-                  const preset = FESTIVE_DATE_PRESETS.find(p => p.value === v);
-                  return preset ? preset.label : 'Customizada';
+                  if (typeof v !== 'string' || !v) return 'Customizada';
+                  if (v.startsWith('preset:')) {
+                    const movable = MOVABLE_PRESETS.find(p => `preset:${p.key}` === v);
+                    return movable?.label ?? 'Móvel';
+                  }
+                  const fixed = FIXED_FESTIVE_DATES.find(p => p.value === v);
+                  return fixed?.label ?? v;
                 }}
               >
-                {FESTIVE_DATE_PRESETS.map(p => (
-                  <MenuItem key={p.value} value={p.value}>{p.label}</MenuItem>
+                {/* Móveis com label de cálculo dinâmico */}
+                <MenuItem disabled value="">
+                  <em className="text-[10px] uppercase tracking-wider text-slate-400">
+                    Móveis (calculadas todo ano)
+                  </em>
+                </MenuItem>
+                {MOVABLE_PRESETS.map(p => {
+                  const nextOcc = nextOccurrenceOfPreset(p.key, new Date());
+                  const ocLabel = nextOcc ? ` (próx: ${nextOcc.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' })})` : '';
+                  return (
+                    <MenuItem key={p.key} value={`preset:${p.key}`}>
+                      {p.label}{ocLabel}
+                    </MenuItem>
+                  );
+                })}
+                <MenuItem disabled value="">
+                  <em className="text-[10px] uppercase tracking-wider text-slate-400">
+                    Fixas (MM-DD constante)
+                  </em>
+                </MenuItem>
+                {FIXED_FESTIVE_DATES.map(p => (
+                  <MenuItem key={`fixed-${p.value}-${p.label}`} value={p.value}>
+                    {p.label}
+                  </MenuItem>
                 ))}
               </Select>
             </FormControl>
+            {/* Input livre MM-DD só faz sentido pra fixas. Móvel não tem MM-DD
+                único (varia por ano), então o input fica readonly+informativo
+                exibindo a data resolvida deste ano. */}
             <TextField
-              label="Ou MM-DD customizado"
+              label={festivePreset ? 'Data calculada (este ano)' : 'Ou MM-DD customizado'}
               value={festiveDate}
-              onChange={e => setFestiveDate(e.target.value)}
+              onChange={e => {
+                if (festivePreset) return; // readonly quando preset móvel
+                setFestiveDate(e.target.value);
+              }}
               placeholder="12-25"
               fullWidth
               size="small"
-              error={!/^\d{2}-\d{2}$/.test(festiveDate)}
-              helperText={
-                /^\d{2}-\d{2}$/.test(festiveDate)
-                  ? `Disparo no dia ${festiveDate.slice(3, 5)}/${festiveDate.slice(0, 2)} todos os anos${daysBefore > 0 ? ` (${daysBefore}d antes)` : ''}.`
-                  : 'Use o formato MM-DD (ex: 12-25 para Natal).'
-              }
+              disabled={!!festivePreset}
+              error={!festivePreset && !/^\d{2}-\d{2}$/.test(festiveDate)}
+              helperText={(() => {
+                if (festivePreset) {
+                  const movable = MOVABLE_PRESETS.find(p => p.key === festivePreset);
+                  return `${movable?.label ?? festivePreset}: ${movable?.description ?? ''} Recalculado automaticamente todo ano.`;
+                }
+                if (/^\d{2}-\d{2}$/.test(festiveDate)) {
+                  return `Disparo no dia ${festiveDate.slice(3, 5)}/${festiveDate.slice(0, 2)} todos os anos${daysBefore > 0 ? ` (${daysBefore}d antes)` : ''}.`;
+                }
+                return 'Use o formato MM-DD (ex: 12-25 para Natal).';
+              })()}
             />
           </div>
         )}

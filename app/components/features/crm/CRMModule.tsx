@@ -2037,10 +2037,25 @@ function CampaignsTab({ businessId }: { businessId: string }) {
               // Backward-compat: docs sem recurrenceType são 'birthday' (default).
               const bcType = bc.recurrenceType ?? 'birthday';
               const isBcFixedDate = bcType === 'fixed_date';
-              // Label da data festiva — formato DD/MM legível pra exibição rápida.
-              const festiveLabel = isBcFixedDate && bc.festiveDate && /^\d{2}-\d{2}$/.test(bc.festiveDate)
-                ? `${bc.festiveDate.slice(3, 5)}/${bc.festiveDate.slice(0, 2)}`
-                : null;
+              // Label da data festiva — preset móvel calcula DD/MM deste ano,
+              // fixed_date usa o MM-DD persistido. Cobre os 3 casos com fallback.
+              const festiveLabel = (() => {
+                if (!isBcFixedDate) return null;
+                if (bc.festivePreset) {
+                  // Lazy require pra não importar util no top-level deste arquivo
+                  // grande — só corre quando há campanha de preset listada.
+                  const { resolvePresetMmDd } = require('@/lib/utils/festive-dates') as typeof import('@/lib/utils/festive-dates');
+                  const mmDd = resolvePresetMmDd(
+                    bc.festivePreset as Parameters<typeof resolvePresetMmDd>[0],
+                    new Date().getFullYear(),
+                  );
+                  return mmDd ? `${mmDd.slice(3, 5)}/${mmDd.slice(0, 2)}` : null;
+                }
+                if (bc.festiveDate && /^\d{2}-\d{2}$/.test(bc.festiveDate)) {
+                  return `${bc.festiveDate.slice(3, 5)}/${bc.festiveDate.slice(0, 2)}`;
+                }
+                return null;
+              })();
               return (
                 <motion.div
                   key={bc.id}
