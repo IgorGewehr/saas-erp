@@ -18,7 +18,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
-import { Search, X, AlertTriangle, Trash2 } from 'lucide-react';
+import { Search, X, AlertTriangle, Trash2, Check } from 'lucide-react';
 import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -77,6 +77,8 @@ export function AppointmentFormDialog({
     duration: 60,
     professionalId: '',
     professionalName: '',
+    professionalIds: [],
+    professionalNames: [],
     notes: '',
     status: 'agendado',
     price: 0,
@@ -90,7 +92,21 @@ export function AppointmentFormDialog({
 
   useEffect(() => {
     if (open && initialData) {
-      setFormData((prev) => ({ ...prev, ...initialData }));
+      // Edit: hidrata initial. Se initialData veio só com professionalId
+      // (legado), seed professionalIds com [professionalId] pra UI multi
+      // refletir o estado. Mesma coisa pra nomes.
+      const seedIds = initialData.professionalIds && initialData.professionalIds.length > 0
+        ? initialData.professionalIds
+        : initialData.professionalId ? [initialData.professionalId] : [];
+      const seedNames = initialData.professionalNames && initialData.professionalNames.length > 0
+        ? initialData.professionalNames
+        : initialData.professionalName ? [initialData.professionalName] : [];
+      setFormData((prev) => ({
+        ...prev,
+        ...initialData,
+        professionalIds: seedIds,
+        professionalNames: seedNames,
+      }));
       const resolvedName = initialData.clientId
         ? (clients.find(c => c.id === initialData.clientId)?.name || initialData.clientName)
         : initialData.clientName;
@@ -107,6 +123,8 @@ export function AppointmentFormDialog({
         duration: 60,
         professionalId: '',
         professionalName: '',
+        professionalIds: [],
+        professionalNames: [],
         notes: '',
         status: 'agendado',
         price: 0,
@@ -147,13 +165,28 @@ export function AppointmentFormDialog({
     });
   }, [members, formData.serviceId]);
 
+  // Conflito de agenda — checa pra CADA profissional selecionado. Se QUALQUER
+  // um deles tem conflito no slot, avisa. Mensagem agrega os nomes em conflito
+  // pra o operador entender qual é o problema. Sem multi-prof, comportamento
+  // idêntico (1 prof = 1 check).
   const formConflict = useMemo(() => {
-    if (!checkConflicts || !formData.professionalId || !formData.date || !formData.startTime) {
+    if (!checkConflicts || formData.professionalIds.length === 0 || !formData.date || !formData.startTime) {
       return { hasConflict: false, message: '' };
     }
     const endTime = addDurationToTime(formData.startTime, formData.duration);
-    return checkConflicts(formData.professionalId, formData.date, formData.startTime, endTime, editingAppointmentId);
-  }, [checkConflicts, formData.professionalId, formData.date, formData.startTime, formData.duration, editingAppointmentId]);
+    const conflicts: string[] = [];
+    for (let i = 0; i < formData.professionalIds.length; i++) {
+      const pid = formData.professionalIds[i];
+      const c = checkConflicts(pid, formData.date, formData.startTime, endTime, editingAppointmentId);
+      if (c.hasConflict) {
+        conflicts.push(`${formData.professionalNames[i] || pid}: ${c.message}`);
+      }
+    }
+    return {
+      hasConflict: conflicts.length > 0,
+      message: conflicts.join(' · '),
+    };
+  }, [checkConflicts, formData.professionalIds, formData.professionalNames, formData.date, formData.startTime, formData.duration, editingAppointmentId]);
 
   const handleServiceChange = (serviceId: string) => {
     const service = services.find((s) => s.id === serviceId);
@@ -180,11 +213,54 @@ export function AppointmentFormDialog({
     setShowClientDropdown(false);
   };
 
+  /** Toggle de profissional (multi-select via chips). Adiciona se ausente,
+   *  remove se presente. Mantém arrays ids/names paralelos por índice. */
+  const toggleProfessional = (memberId: string) => {
+    setFormData((prev) => {
+      const idx = prev.professionalIds.indexOf(memberId);
+      if (idx >= 0) {
+        // Remove
+        const ids = [...prev.professionalIds];
+        const names = [...prev.professionalNames];
+        ids.splice(idx, 1);
+        names.splice(idx, 1);
+        return {
+          ...prev,
+          professionalIds: ids,
+          professionalNames: names,
+          // Sincroniza legado: pega o novo primeiro (ou vazio se acabou)
+          professionalId: ids[0] ?? '',
+          professionalName: names[0] ?? '',
+        };
+      }
+      // Add
+      const member = members.find((m) => m.id === memberId);
+      const newName = member?.name ?? '';
+      const ids = [...prev.professionalIds, memberId];
+      const names = [...prev.professionalNames, newName];
+      return {
+        ...prev,
+        professionalIds: ids,
+        professionalNames: names,
+        professionalId: ids[0],
+        professionalName: names[0],
+      };
+    });
+  };
+
   const handleSubmit = () => {
     if (!formData.clientName || !formData.date || !formData.startTime) {
       return;
     }
-    onSave(formData);
+    // Garante consistência final: legado === primeiro do array (ou vazio).
+    // toggleProfessional já mantém isso, mas reforça aqui pra casos onde
+    // initialData veio com legado-only e usuário não tocou no campo.
+    const final: AppointmentFormData = {
+      ...formData,
+      professionalId: formData.professionalIds[0] ?? '',
+      professionalName: formData.professionalNames[0] ?? '',
+    };
+    onSave(final);
   };
 
   const endTime = addDurationToTime(formData.startTime, formData.duration);
@@ -375,41 +451,61 @@ export function AppointmentFormDialog({
             </div>
           </div>
 
-          {/* Professional */}
+          {/* Profissionais — multi-select via chips. Cada chip é toggleável,
+              azul quando selecionado. Permite atribuir 1+ profissionais ao
+              mesmo agendamento. Quando vazio, agendamento é "global" (sem
+              prof específico — útil pra slots da casa que qualquer um cobre). */}
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-              {t('agenda.professional', 'Profissional')}
+              {t('agenda.professional', 'Profissionais')}
+              {formData.professionalIds.length > 0 && (
+                <span className="ml-1.5 text-[10px] font-semibold text-red-600 dark:text-red-400">
+                  ({formData.professionalIds.length})
+                </span>
+              )}
               {formData.serviceId && availableMembers.length < members.length && (
                 <span className="ml-1.5 text-[10px] text-gray-400 dark:text-gray-500 font-normal">
-                  ({availableMembers.length} {t('agenda.availableForService', 'disponíveis para este serviço')})
+                  · {availableMembers.length} {t('agenda.availableForService', 'disponíveis para este serviço')}
                 </span>
               )}
             </label>
-            <select
-              value={formData.professionalId}
-              onChange={(e) => {
-                const member = members.find((m) => m.id === e.target.value);
-                setFormData((prev) => ({
-                  ...prev,
-                  professionalId: e.target.value,
-                  professionalName: member?.name || '',
-                }));
-              }}
-              className={cn(
-                'w-full px-4 py-2.5 rounded-xl border bg-white dark:bg-gray-800',
-                'text-sm text-gray-900 dark:text-gray-100 appearance-none',
-                'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                'transition-all duration-200',
-                formConflict.hasConflict
-                  ? 'border-amber-300 dark:border-amber-500/40'
-                  : 'border-gray-200 dark:border-gray-700',
+            <div className={cn(
+              'flex flex-wrap gap-2 p-2 rounded-xl border bg-white dark:bg-gray-800 min-h-[44px]',
+              formConflict.hasConflict
+                ? 'border-amber-300 dark:border-amber-500/40'
+                : 'border-gray-200 dark:border-gray-700',
+            )}>
+              {availableMembers.length === 0 ? (
+                <span className="text-xs text-gray-400 dark:text-gray-500 px-1 py-1">
+                  Nenhum profissional cadastrado.
+                </span>
+              ) : (
+                availableMembers.map((m) => {
+                  const selected = formData.professionalIds.includes(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => toggleProfessional(m.id)}
+                      className={cn(
+                        'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                        selected
+                          ? 'bg-red-50 dark:bg-red-500/15 text-red-700 dark:text-red-300 border-red-300 dark:border-red-500/40'
+                          : 'bg-gray-50 dark:bg-white/[0.03] text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-red-200 dark:hover:border-red-500/30',
+                      )}
+                    >
+                      {selected && <Check className="w-3 h-3" />}
+                      {m.name}
+                    </button>
+                  );
+                })
               )}
-            >
-              <option value="">{t('agenda.selectProfessional', 'Selecionar profissional')}</option>
-              {availableMembers.map((m) => (
-                <option key={m.id} value={m.id}>{m.name}</option>
-              ))}
-            </select>
+            </div>
+            {formData.professionalIds.length === 0 && availableMembers.length > 0 && (
+              <p className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                Sem profissional = agendamento global da casa. Clique pra atribuir 1 ou mais.
+              </p>
+            )}
           </div>
 
           {/* Conflict warning */}

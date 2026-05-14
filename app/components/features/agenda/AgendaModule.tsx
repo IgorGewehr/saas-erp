@@ -72,6 +72,7 @@ import { cn } from '@/lib/utils';
 import { formatCurrency, getStatusColor, getStatusLabel } from '@/lib/utils/format';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
+import { getAppointmentProfessionalIds, getAppointmentProfessionalNames, isAppointmentAssignedTo } from '@/lib/utils/appointment';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
@@ -372,7 +373,16 @@ function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }:
   const isTiny = height < 36;          // 30min slot
   const showService = height >= 50 && !!appointment.serviceName;
   const showTimeRange = height >= 60;
-  const showProfessional = height >= 84 && !!appointment.professionalName;
+  // Multi-prof: pega TODOS os nomes via helper (cobre legado e novo schema).
+  // Display: 1° nome + "+N" se houver mais — slot é estreito demais pra
+  // listar todos sem truncar serviço/horário.
+  const profNames = getAppointmentProfessionalNames(appointment);
+  const showProfessional = height >= 84 && profNames.length > 0;
+  const profDisplay = profNames.length === 0
+    ? ''
+    : profNames.length === 1
+      ? profNames[0]
+      : `${profNames[0]} +${profNames.length - 1}`;
   const showPrice = height >= 110 && appointment.price > 0;
 
   return (
@@ -382,7 +392,7 @@ function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }:
           <div className="font-semibold">{displayName}</div>
           {appointment.serviceName && <div>{appointment.serviceName}</div>}
           <div>{appointment.startTime} - {appointment.endTime}</div>
-          {appointment.professionalName && <div>{appointment.professionalName}</div>}
+          {profNames.length > 0 && <div>{profNames.join(', ')}</div>}
           <div>{getStatusLabel(appointment.status)}</div>
           {appointment.price > 0 && <div>{formatCurrency(appointment.price)}</div>}
         </div>
@@ -447,9 +457,10 @@ function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }:
                 {showTimeRange ? `${appointment.startTime} – ${appointment.endTime}` : appointment.startTime}
               </div>
               {showProfessional && (
-                <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight flex items-center gap-1">
+                <div className="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight flex items-center gap-1"
+                     title={profNames.join(', ')}>
                   <span className="opacity-70">·</span>
-                  {appointment.professionalName}
+                  {profDisplay}
                 </div>
               )}
               {showPrice && (
@@ -1332,15 +1343,25 @@ function ViewAppointmentDialog({
               </div>
             )}
 
-            {appointment.professionalName && (
-              <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
-                <UserIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
-                <div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">{t('agenda.professional', 'Profissional')}</div>
-                  <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{appointment.professionalName}</div>
+            {(() => {
+              const profNames = getAppointmentProfessionalNames(appointment);
+              if (profNames.length === 0) return null;
+              return (
+                <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                  <UserIcon className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
+                  <div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      {profNames.length === 1
+                        ? t('agenda.professional', 'Profissional')
+                        : `${t('agenda.professionalPlural', 'Profissionais')} (${profNames.length})`}
+                    </div>
+                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      {profNames.join(', ')}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             <div className="flex items-center gap-3 py-2.5 px-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
               <DollarSign className="w-4 h-4 text-gray-400 dark:text-gray-500 flex-shrink-0" />
@@ -1572,8 +1593,11 @@ export default function AgendaModule() {
 
   const canEditAppointment = useCallback((appt: Appointment) => {
     if (isAdmin) return true;
-    if (!appt.professionalId) return false; // global = so admin
-    return appt.professionalId === user?.uid;
+    // Multi-prof: operador pode editar se está em QUALQUER posição do array.
+    // Sem prof atribuído = global, só admin.
+    const ids = getAppointmentProfessionalIds(appt);
+    if (ids.length === 0) return false;
+    return !!user?.uid && ids.includes(user.uid);
   }, [isAdmin, user?.uid]);
 
   // ---- State ----
@@ -1729,11 +1753,12 @@ export default function AgendaModule() {
   // PROFESSIONAL FILTERING & CONFLICT DETECTION
   // ==========================================
 
-  // Filter appointments by selected professional
+  // Filter appointments by selected professional (multi-prof: aparece se
+  // o profissional escolhido estiver em qualquer posição do array).
   const filteredAppointments = useMemo(() => {
     if (!appointments) return [];
     if (selectedProfessional === 'all') return appointments;
-    return appointments.filter((a) => a.professionalId === selectedProfessional);
+    return appointments.filter((a) => isAppointmentAssignedTo(a, selectedProfessional));
   }, [appointments, selectedProfessional]);
 
   // Group appointments by date (using filtered)
@@ -1884,8 +1909,15 @@ export default function AgendaModule() {
       if (data.clientPhone) payload.clientPhone = data.clientPhone;
       if (data.serviceId) payload.serviceId = data.serviceId;
       if (data.serviceName) payload.serviceName = data.serviceName;
+      // Profissionais: persiste o array novo (canonical) E o campo legado
+      // (professionalId/Name = primeiro do array). APIs externas e queries
+      // server-side antigas continuam funcionando com o legado.
       if (data.professionalId) payload.professionalId = data.professionalId;
       if (data.professionalName) payload.professionalName = data.professionalName;
+      if (data.professionalIds && data.professionalIds.length > 0) {
+        payload.professionalIds = data.professionalIds;
+        payload.professionalNames = data.professionalNames;
+      }
       if (data.notes) payload.notes = data.notes;
 
       if (editingAppointment) {
@@ -2432,10 +2464,14 @@ export default function AgendaModule() {
       date: date || format(currentDate, 'yyyy-MM-dd'),
       startTime: time || '09:00',
     };
-    // Auto-populate profissional para usuarios nao-admin
+    // Auto-populate profissional para usuarios nao-admin (operador cria
+    // só pra ele mesmo). Popula tanto o legado quanto o array novo pra
+    // que o form multi-select já mostre o operador como pré-selecionado.
     if (!isAdmin && user) {
       initial.professionalId = user.uid;
       initial.professionalName = user.name;
+      initial.professionalIds = [user.uid];
+      initial.professionalNames = [user.name];
     }
     setFormInitialData(initial);
     setShowFormDialog(true);
@@ -2456,6 +2492,15 @@ export default function AgendaModule() {
       duration: selectedAppointment.duration,
       professionalId: selectedAppointment.professionalId || '',
       professionalName: selectedAppointment.professionalName || '',
+      // Hidrata multi: prefere arrays novos; cai pro legado se ausente.
+      // AppointmentFormDialog faz a mesma fusão internamente — passamos ambos
+      // pra forma consistente.
+      professionalIds: selectedAppointment.professionalIds && selectedAppointment.professionalIds.length > 0
+        ? [...selectedAppointment.professionalIds]
+        : selectedAppointment.professionalId ? [selectedAppointment.professionalId] : [],
+      professionalNames: selectedAppointment.professionalNames && selectedAppointment.professionalNames.length > 0
+        ? [...selectedAppointment.professionalNames]
+        : selectedAppointment.professionalName ? [selectedAppointment.professionalName] : [],
       notes: selectedAppointment.notes || '',
       status: selectedAppointment.status,
       price: selectedAppointment.price,

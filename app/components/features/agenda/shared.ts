@@ -96,8 +96,14 @@ export interface AppointmentFormData {
   date: string;
   startTime: string;
   duration: number;
+  /** Profissional principal — equivalente a professionalIds[0]. Mantido pra
+   *  compat com código que ainda lê este campo direto + APIs externas. */
   professionalId: string;
   professionalName: string;
+  /** Todos os profissionais atribuídos (1+). Form usa este como source-of-truth
+   *  pro multi-select; o handler de save sincroniza professionalId com o [0]. */
+  professionalIds: string[];
+  professionalNames: string[];
   notes: string;
   status: AppointmentStatus;
   price: number;
