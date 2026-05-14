@@ -345,6 +345,28 @@ export default function RecipientListInput({ mode, onChange, existingClients, bu
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parsedLines, noWhatsAppPhones]);
 
+  // Reset do estado de higienização quando a lista parseada muda em tamanho
+  // (operador limpou textarea, removeu CSV, ou colou lista diferente). Sem
+  // isso:
+  //  1. hygieneStatus='done' fica stale exibindo "Concluído. X removidos"
+  //     que se refere à lista anterior.
+  //  2. noWhatsAppPhones acumulado de listas anteriores se aplica
+  //     erroneamente à nova lista por overlap inesperado.
+  //
+  // O backend cache de 30 dias preserva as validações — re-higienização
+  // depois do reset é instant pra phones já vistos antes.
+  //
+  // Guard 'running' evita interromper a barra de progresso caso o operador
+  // edite a textarea no meio da higienização (raro mas possível).
+  useEffect(() => {
+    if (hygieneStatus === 'running') return;
+    if (parsedLines.length === 0 && noWhatsAppPhones.size === 0 && hygieneStatus === 'idle') return;
+    setHygieneStatus('idle');
+    setHygieneProgress({ checked: 0, total: 0 });
+    setNoWhatsAppPhones(new Set());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parsedLines.length]);
+
   /**
    * Heurística de extração de nome no paste mode.
    *

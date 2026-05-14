@@ -39,6 +39,45 @@ const ONWHATSAPP_DELAY_MS = 2_000;
  *  perca o WA nesse intervalo, vira `failed` no disparo (cobre o residual). */
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * Slot allocator GLOBAL por connectionId. Garante que mesmo com múltiplos
+ * operadores rodando higienização simultânea contra o MESMO chip validador,
+ * os pings `onWhatsApp` saem em série e respeitam ONWHATSAPP_DELAY_MS entre
+ * cada um — preservando o anti-detect que o intervalo provê.
+ *
+ * Sem isso, 2 operadores = 2× a velocidade de scan, dobrando o risco de
+ * bloqueio do chip. O throttle in-loop do request individual não cobre esse
+ * caso porque cada request tem seu próprio loop e dorme só dentro dele.
+ *
+ * Persiste em globalThis pra sobreviver HMR em dev (mesmo padrão do
+ * baileys-manager.sessions). Vive enquanto o processo Node viver — em
+ * serverless, é por-instância, mas como o socket Baileys também é pinned
+ * por-instância, isso é suficiente (todas as requests que conseguem usar
+ * o chip vão pra mesma instância).
+ *
+ * Como funciona: cada chamada de `acquireSlot` reclama IMEDIATAMENTE o
+ * próximo timestamp livre (set síncrono no Map) e DEPOIS dorme até esse
+ * timestamp. Garante ordem FIFO sem race.
+ */
+const globalSlots = (globalThis as Record<string, unknown>);
+if (!globalSlots.__validatorPingSlots) {
+  globalSlots.__validatorPingSlots = new Map<string, number>();
+}
+const slotEndByConnection = globalSlots.__validatorPingSlots as Map<string, number>;
+
+async function acquireSlot(connectionId: string, minIntervalMs: number): Promise<void> {
+  const now = Date.now();
+  const lastSlotEnd = slotEndByConnection.get(connectionId) ?? 0;
+  // Claim sincronamente: próximo slot começa em max(now, lastSlotEnd) e
+  // ocupa minIntervalMs. Set ANTES do await pra prevenir race (outro await
+  // simultâneo lê o novo valor, não o antigo).
+  const myStart = Math.max(now, lastSlotEnd);
+  const myEnd = myStart + minIntervalMs;
+  slotEndByConnection.set(connectionId, myEnd);
+  const waitMs = myStart - now;
+  if (waitMs > 0) await sleep(waitMs);
+}
+
 interface CheckBody {
   businessId: string;
   phones: string[];
@@ -157,11 +196,11 @@ export async function POST(req: NextRequest) {
     const batchWrite = adminDb.batch();
     let batchOps = 0;
 
-    for (let i = 0; i < phonesToCheck.length; i++) {
-      const phone = phonesToCheck[i];
-      // Throttle: aguarda antes de fazer o ping (exceto no 1°). Pula no
-      // primeiro pra reduzir latência percebida.
-      if (i > 0) await sleep(ONWHATSAPP_DELAY_MS);
+    for (const phone of phonesToCheck) {
+      // Throttle GLOBAL por connectionId — bloqueia se outro request
+      // simultâneo acabou de pingar o mesmo chip. Evita "2× scan rate"
+      // quando 2 operadores higienizam ao mesmo tempo.
+      await acquireSlot(validatorConnection.id, ONWHATSAPP_DELAY_MS);
 
       const candidateJid = `${phone}@s.whatsapp.net`;
       try {
