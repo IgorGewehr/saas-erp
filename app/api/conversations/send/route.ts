@@ -586,21 +586,28 @@ export async function POST(req: NextRequest) {
     let statusCode = 400;
     let errorDetails: Record<string, unknown> = {};
 
-    if (error instanceof Error) {
-      const rawMsg = error.message;
+    // Normaliza qualquer throw — Error, string, objeto — pra uma mensagem útil.
+    // @ffmpeg-installer e algumas libs nativas fazem `throw 'string literal'`,
+    // que antes caía no default 'Erro ao enviar mensagem' e ocultava a causa.
+    const rawMsg = error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : (error && typeof error === 'object' && 'message' in error && typeof (error as { message: unknown }).message === 'string')
+          ? (error as { message: string }).message
+          : String(error);
 
-      // Check for disconnected/missing channel errors
-      if (rawMsg.includes('não está conectado') || rawMsg.includes('incompletas') || rawMsg.includes('ausente')) {
-        return NextResponse.json({ error: rawMsg, code: 'disconnected' }, { status: 400 });
-      }
+    // Check for disconnected/missing channel errors
+    if (rawMsg.includes('não está conectado') || rawMsg.includes('incompletas') || rawMsg.includes('ausente')) {
+      return NextResponse.json({ error: rawMsg, code: 'disconnected' }, { status: 400 });
+    }
 
-      try {
-        errorDetails = JSON.parse(rawMsg);
-        message = errorDetails.message as string;
-        if (errorDetails.code === 190) statusCode = 401;
-      } catch {
-        message = rawMsg;
-      }
+    try {
+      errorDetails = JSON.parse(rawMsg);
+      message = (errorDetails.message as string) || rawMsg;
+      if (errorDetails.code === 190) statusCode = 401;
+    } catch {
+      message = rawMsg;
     }
 
     console.error('[Send Message] Error:', message, errorDetails);
@@ -1003,13 +1010,21 @@ async function sendFacebookMessenger(
  * a extensão do tempfile é apenas hint.
  */
 async function convertAudioToM4a(srcUrl: string, businessId: string): Promise<string> {
-  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
   const ffmpeg = (await import('fluent-ffmpeg')).default;
   const { tmpdir } = await import('os');
   const { join } = await import('path');
   const { writeFile, readFile, unlink } = await import('fs/promises');
 
-  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+  // @ffmpeg-installer baixa o binário da plataforma do `npm install` via
+  // optionalDependencies. Build no Windows só traz `win32-x64/ffmpeg.exe` —
+  // o container Linux não tem `linux-x64/ffmpeg` e o `require` joga uma
+  // STRING ('Could not find ffmpeg executable...'), que vaza pro catch da
+  // rota e some no `instanceof Error` (fica com a msg default).
+  // Linux/macOS: usa o ffmpeg do PATH (apt install no Dockerfile).
+  if (process.platform === 'win32') {
+    const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+  }
 
   // 1. Baixa o áudio do Firebase Storage (URL com token)
   const res = await fetch(srcUrl, { signal: AbortSignal.timeout(30000) });

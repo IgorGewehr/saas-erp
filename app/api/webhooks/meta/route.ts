@@ -243,13 +243,17 @@ const AUDIO_CONVERT_MIMES = new Set([
  * AMR is a telephony codec not supported in browsers.
  */
 async function convertAudioToM4a(inputBuffer: Buffer, inputExt: string): Promise<Buffer> {
-  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
   const ffmpeg = (await import('fluent-ffmpeg')).default;
   const { tmpdir } = await import('os');
   const { join } = await import('path');
   const { writeFile, readFile, unlink } = await import('fs/promises');
 
-  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+  // Linux/macOS: usa ffmpeg do PATH. Windows: usa o binário do
+  // @ffmpeg-installer (apt-installed no Dockerfile pro container).
+  if (process.platform === 'win32') {
+    const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+  }
 
   const inputPath = join(tmpdir(), `in_${Date.now()}${inputExt}`);
   const outputPath = join(tmpdir(), `out_${Date.now()}.m4a`);

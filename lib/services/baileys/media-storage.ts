@@ -66,13 +66,17 @@ function mimeToExtension(mime: string): string {
  * entre arquivos sem necessidade. Se virar manutenção, vale extrair pra utility.
  */
 async function convertAudioToM4a(inputBuffer: Buffer, inputExt: string): Promise<Buffer> {
-  const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
   const ffmpeg = (await import('fluent-ffmpeg')).default;
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { writeFile, readFile, unlink } = await import('node:fs/promises');
 
-  ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+  // Linux/macOS: usa ffmpeg do PATH. Windows: usa o binário do
+  // @ffmpeg-installer (apt-installed no Dockerfile pro container).
+  if (process.platform === 'win32') {
+    const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
+    ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+  }
 
   const inputPath = join(tmpdir(), `bly_in_${Date.now()}${inputExt}`);
   const outputPath = join(tmpdir(), `bly_out_${Date.now()}.m4a`);
