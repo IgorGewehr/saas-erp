@@ -42,7 +42,7 @@ import type {
 import { CONSENT_BASIS_LABELS, THROTTLE_PRESETS } from '@/lib/types';
 import { getAuth } from 'firebase/auth';
 import { ROLE_HIERARCHY } from '@/lib/types';
-import { resolveClientAudience, matchesAudienceFilterGroups, audienceTagsToFilterGroups } from '@/lib/campaigns/audience';
+import { resolveClientAudience, matchesAudienceFilterGroups, audienceTagsToFilterGroups, type AudienceResolveContext } from '@/lib/campaigns/audience';
 
 // ── Extracted sub-components ────────────────────────────────────────────────
 import {
@@ -878,6 +878,8 @@ const SEGMENT_FIELDS: SegFieldDef[] = [
     options: [{ value: 'whatsapp', label: 'WhatsApp' }, { value: 'facebook', label: 'Facebook' }, { value: 'instagram', label: 'Instagram' }] },
   { id: 'optInMarketing', label: 'Opt-in marketing', type: 'boolean',
     options: [{ value: 'true', label: 'Sim' }, { value: 'false', label: 'Não' }] },
+  { id: 'inPipeline', label: 'No pipeline CRM', type: 'boolean',
+    options: [{ value: 'true', label: 'Sim (visível no Kanban)' }, { value: 'false', label: 'Não (só /clientes)' }] },
   { id: 'tags', label: 'Tags', type: 'tags' },
   { id: 'company', label: 'Empresa (contém)', type: 'string' },
 ];
@@ -926,13 +928,13 @@ function getCampaignDestinationLabel(channel: BroadcastChannel): string {
   return 'WhatsApp';
 }
 
-function evalFilter(contact: CRMContact, filter: SegmentFilter): boolean {
-  return matchesAudienceFilterGroups(contact, [{ id: 'single', filters: [filter] }]);
+function evalFilter(contact: CRMContact, filter: SegmentFilter, ctx?: AudienceResolveContext): boolean {
+  return matchesAudienceFilterGroups(contact, [{ id: 'single', filters: [filter] }], ctx);
 }
 
-function matchesSegmentGroups(contact: CRMContact, filterGroups: SegmentFilterGroup[]): boolean {
+function matchesSegmentGroups(contact: CRMContact, filterGroups: SegmentFilterGroup[], ctx?: AudienceResolveContext): boolean {
   if (!filterGroups.length) return true;
-  return filterGroups.some(group => group.filters.every(f => evalFilter(contact, f)));
+  return filterGroups.some(group => group.filters.every(f => evalFilter(contact, f, ctx)));
 }
 
 function makeFilter(): SegmentFilter { return { field: 'status', operator: 'eq', value: 'novo' }; }
@@ -1018,6 +1020,85 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
     staleTime: 2 * 60 * 1000,
   });
 
+  // Índice de conversas → mapa clientId → channels com conversa ativa. Sem
+  // isso, filtros como "hasFacebook"/"hasInstagram"/"conversationChannel" no
+  // preview ignoram contatos cujo vínculo vem da conversa (não de
+  // channelIdentities preenchido manualmente), e a contagem fica menor que
+  // a do envio real. resolveClientAudience no backend monta o mesmo índice.
+  const { data: convIndex = makeEmptyAudienceConversationIndex() } = useQuery<AudienceConversationIndex>({
+    queryKey: ['segments-conv-index', businessId],
+    queryFn: async () => {
+      if (!businessId) return makeEmptyAudienceConversationIndex();
+      const snap = await getDocs(query(
+        collection(db, 'conversations'),
+        where('businessId', '==', businessId),
+        firestoreLimit(5000),
+      ));
+      const index = makeEmptyAudienceConversationIndex();
+      snap.docs.forEach(d => {
+        const data = d.data();
+        const channel = data.channel as ConversationChannel | undefined;
+        const clientId = data.crmContactId as string | undefined;
+        const recipientId = (data.contactExternalId as string | undefined)?.trim();
+        if (!channel || !clientId) return;
+        if (!index.contactIdsByChannel.has(channel)) index.contactIdsByChannel.set(channel, new Set());
+        index.contactIdsByChannel.get(channel)!.add(clientId);
+        if (recipientId) {
+          if (!index.recipientIdsByChannel.has(channel)) index.recipientIdsByChannel.set(channel, new Map());
+          index.recipientIdsByChannel.get(channel)!.set(clientId, recipientId);
+        }
+      });
+      return index;
+    },
+    enabled: !!businessId,
+    staleTime: 2 * 60 * 1000,
+  });
+
+  // Context passado ao engine. `channel` é exigido pelo tipo mas só afeta
+  // `clientToBroadcastRecipient` (que não chamamos no preview) — segmentos
+  // são canal-agnósticos. Default 'whatsapp' não altera resultado dos filtros.
+  const audienceCtx = useMemo<AudienceResolveContext>(() => ({
+    channel: 'whatsapp',
+    conversationContactIdsByChannel: convIndex.contactIdsByChannel,
+    conversationRecipientIdsByChannel: convIndex.recipientIdsByChannel,
+  }), [convIndex]);
+
+  // Espelha o backend: exclui clientes merged/deletados/inativos da audiência.
+  // Sem isso, contagem do preview inclui contatos que o broadcast NÃO vai mandar.
+  const activeContacts = useMemo(
+    () => contacts.filter(c =>
+      !c.mergedInto && !(c as { deletedAt?: string }).deletedAt && c.isActive !== false,
+    ),
+    [contacts],
+  );
+
+  // Conta broadcasts que referenciam o segmento sendo deletado — exibido no
+  // dialog de confirmação. Sob demanda (só dispara quando deleteConfirm é
+  // setado) pra evitar fetch desnecessário enquanto o usuário só navega.
+  //
+  // Query é só por businessId (não filtra audienceSegmentId no servidor)
+  // porque uma composta exigiria índice composto novo e isso forçaria deploy
+  // do firestore.indexes.json. Filtra client-side; com ~500 broadcasts de
+  // limite (acima disso o aviso pode subestimar), aceitável.
+  const { data: dependentBroadcastCount = 0 } = useQuery({
+    queryKey: ['segments-dependents', businessId, deleteConfirm?.id],
+    queryFn: async () => {
+      if (!deleteConfirm) return 0;
+      const snap = await getDocs(query(
+        collection(db, 'broadcasts'),
+        where('businessId', '==', businessId),
+        firestoreLimit(500),
+      ));
+      let n = 0;
+      snap.docs.forEach(d => {
+        if ((d.data() as { audienceSegmentId?: string }).audienceSegmentId === deleteConfirm.id) n++;
+      });
+      return n;
+    },
+    enabled: !!businessId && !!deleteConfirm,
+    staleTime: 30 * 1000,
+  });
+
   const openCreate = () => {
     setEditing(null);
     setName(''); setDescription('');
@@ -1039,9 +1120,9 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
 
   const liveCount = useMemo(() => {
     const groups = filterGroups.filter(g => g.filters.length > 0);
-    if (!groups.length) return contacts.length;
-    return contacts.filter(c => matchesSegmentGroups(c, groups)).length;
-  }, [contacts, filterGroups]);
+    if (!groups.length) return activeContacts.length;
+    return activeContacts.filter(c => matchesSegmentGroups(c, groups, audienceCtx)).length;
+  }, [activeContacts, filterGroups, audienceCtx]);
 
   const handleSave = async () => {
     if (!name.trim()) return;
@@ -1132,8 +1213,8 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
           {segments.map(seg => {
             // Segments legados podem não ter filterGroups NEM filters — fallback p/ [].
             // Sem isso, group.filters.every(...) lança TypeError e quebra a aba inteira.
-            const count = contacts.filter(c =>
-              matchesSegmentGroups(c, seg.filterGroups?.length ? seg.filterGroups : [{ id: '', filters: seg.filters ?? [] }])
+            const count = activeContacts.filter(c =>
+              matchesSegmentGroups(c, seg.filterGroups?.length ? seg.filterGroups : [{ id: '', filters: seg.filters ?? [] }], audienceCtx)
             ).length;
             const groupCount = seg.filterGroups?.length ?? 1;
             return (
@@ -1283,7 +1364,21 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
             <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
               className="w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6">
               <p className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Excluir segmento?</p>
-              <p className="text-xs text-gray-500 mb-5"><strong>{deleteConfirm.name}</strong> será removido permanentemente.</p>
+              <p className="text-xs text-gray-500 mb-3"><strong>{deleteConfirm.name}</strong> será removido permanentemente.</p>
+              {/* Aviso de referências: broadcasts já enviados que usaram este
+                  segmento ficam com audienceSegmentId apontando pra doc
+                  inexistente. UI deles trata graciosamente (segmento "—") mas
+                  o operador precisa estar ciente antes de confirmar. */}
+              {dependentBroadcastCount > 0 && (
+                <div className="mb-4 p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-1">
+                    Atenção
+                  </p>
+                  <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                    <strong>{dependentBroadcastCount}</strong> campanha{dependentBroadcastCount === 1 ? '' : 's'} já enviada{dependentBroadcastCount === 1 ? '' : 's'} referencia{dependentBroadcastCount === 1 ? '' : 'm'} este segmento. Os envios não são afetados, mas o histórico vai mostrar "segmento removido" no lugar do nome.
+                  </p>
+                </div>
+              )}
               <div className="flex gap-2">
                 <button onClick={() => setDeleteConfirm(null)} className="flex-1 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400">Cancelar</button>
                 <button onClick={() => handleDelete(deleteConfirm)} className="flex-1 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold">Excluir</button>

@@ -128,6 +128,12 @@ export function getAudienceFieldValue(client: Client, field: string, ctx?: Audie
   if (field === 'hasInstagram') return !!client.channelIdentities?.instagram
     || !!ctx?.conversationRecipientIdsByChannel?.get('instagram')?.has(client.id);
   if (field === 'conversationChannel') return getConversationChannels(client, ctx?.conversationContactIdsByChannel);
+  // inPipeline: flag opcional no Client (ausente = lead visível no Kanban).
+  // Normalizamos pra boolean estável (`!== false`) pra que o filtro tenha
+  // semântica coerente com KanbanBoard — sem isso, legacy sem o campo
+  // viraria `undefined` no engine e nem `inPipeline=true` nem `=false`
+  // pegariam eles.
+  if (field === 'inPipeline') return client.inPipeline !== false;
   return getNestedVal(client, field);
 }
 
