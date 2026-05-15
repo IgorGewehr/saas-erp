@@ -154,11 +154,21 @@ export async function POST(req: NextRequest) {
       sentAt: now,
       createdAt: now,
     });
-    await adminDb.collection('conversations').doc(p.conversation_id).update({
-      lastMessage: displayContent,
-      lastMessageAt: now,
-      lastMessageDirection: 'outbound',
-      updatedAt: now,
+    // firstAutoResponseAt: setado UMA vez na primeira resposta IA interativa.
+    // Transação evita race com saveAgentMessage caso duas msgs IA disparem
+    // quase simultâneas (botão + lista, por ex).
+    const convRef = adminDb.collection('conversations').doc(p.conversation_id);
+    await adminDb.runTransaction(async (tx) => {
+      const snap = await tx.get(convRef);
+      const data = snap.data() || {};
+      const update: Record<string, unknown> = {
+        lastMessage: displayContent,
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        updatedAt: now,
+      };
+      if (!data.firstAutoResponseAt) update.firstAutoResponseAt = now;
+      tx.update(convRef, update);
     });
 
     return NextResponse.json({ ok: true, data: { externalMessageId } });

@@ -8177,6 +8177,9 @@ export default function ConversasModule() {
           lastMessageAt: now,
           lastMessageDirection: 'outbound',
           updatedAt: now,
+          // Primeira resposta via mídia conta igual a texto — operador respondeu.
+          ...(!selectedConversation.firstResponseAt ? { firstResponseAt: now } : {}),
+          ...(!selectedConversation.firstHumanResponseAt ? { firstHumanResponseAt: now } : {}),
         });
       } else {
         await updateDoc(doc(db, 'conversations', selectedConversation.id), {
