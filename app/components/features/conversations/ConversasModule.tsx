@@ -4831,19 +4831,28 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [inPeriod]);
 
-  // Volume by day (last 7 days)
-  const byDay = useMemo(() => {
-    const days: { label: string; count: number }[] = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86_400_000);
-      const label = d.toLocaleDateString('pt-BR', { weekday: 'short' });
-      const dayStr = d.toISOString().slice(0, 10);
-      const count = conversations.filter(c => c.createdAt?.startsWith(dayStr)).length;
-      days.push({ label, count });
+  // Heatmap dia da semana × hora — agrupa createdAt do inPeriod em 7×24
+  // buckets. Visualiza padrões de demanda (ex: "muita conv segunda 14h")
+  // pra dimensionar plantão. Mais útil que volume linear porque expõe a
+  // estrutura semanal que se repete.
+  // Linha 0 = Domingo (getDay() === 0), até 6 = Sábado. Mantemos Mon-first
+  // na renderização rotacionando o array.
+  const heatmap = useMemo(() => {
+    const grid: number[][] = Array.from({ length: 7 }, () => Array(24).fill(0));
+    let max = 0;
+    for (const c of inPeriod) {
+      if (!c.createdAt) continue;
+      const d = new Date(c.createdAt);
+      const dow = d.getDay();
+      const h = d.getHours();
+      grid[dow][h]++;
+      if (grid[dow][h] > max) max = grid[dow][h];
     }
-    return days;
-  }, [conversations]);
-  const maxDay = Math.max(...byDay.map(d => d.count), 1);
+    return { grid, max };
+  }, [inPeriod]);
+  // Ordem visual: Seg, Ter, Qua, Qui, Sex, Sáb, Dom (semana de trabalho first).
+  const HEATMAP_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+  const HEATMAP_DAY_LABELS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 
   // By agent
   const byAgent = useMemo(() => {
@@ -4936,17 +4945,51 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
           </div>
         </div>
 
-        {/* Volume últimos 7 dias */}
+        {/* Heatmap dia × hora — densidade de novas conversas. Cor mais
+            intensa = mais conv naquele slot. Hover mostra o número exato. */}
         <div>
-          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">Volume / dia (7d)</p>
-          <div className="flex items-end gap-1.5 h-16">
-            {byDay.map(({ label, count }) => (
-              <div key={label} className="flex-1 flex flex-col items-center gap-1">
-                <motion.div initial={{ height: 0 }} animate={{ height: `${(count / maxDay) * 52}px` }}
-                  transition={{ duration: 0.5 }} className="w-full bg-red-500/70 dark:bg-red-400/60 rounded-t-sm min-h-[2px]" />
-                <span className="text-[9px] text-gray-400">{label}</span>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Volume por dia × hora</p>
+            <p className="text-[9px] text-gray-400">{heatmap.max > 0 ? `pico ${heatmap.max}` : '—'}</p>
+          </div>
+          <div className="flex gap-1">
+            {/* Coluna esquerda: labels dos dias */}
+            <div className="flex flex-col gap-[2px] pt-3 pr-1">
+              {HEATMAP_DAY_LABELS.map(d => (
+                <div key={d} className="text-[8px] text-gray-400 leading-none h-[11px] flex items-center">{d}</div>
+              ))}
+            </div>
+            {/* Grid 7×24 */}
+            <div className="flex-1 flex flex-col gap-[2px]">
+              {/* Linha de labels de hora — só 0/6/12/18 pra evitar poluição */}
+              <div className="flex gap-[2px] mb-0.5">
+                {Array.from({ length: 24 }).map((_, h) => (
+                  <div key={h} className="flex-1 text-[7px] text-gray-400 text-center leading-none h-2">
+                    {h % 6 === 0 ? h : ''}
+                  </div>
+                ))}
               </div>
-            ))}
+              {HEATMAP_DAY_ORDER.map((dow, rowIdx) => (
+                <div key={dow} className="flex gap-[2px]">
+                  {heatmap.grid[dow].map((count, h) => {
+                    const intensity = heatmap.max > 0 ? count / heatmap.max : 0;
+                    // Escala não-linear pra que slots de volume baixo ainda
+                    // sejam visíveis (sqrt comprime topo, expande base).
+                    const alpha = count === 0 ? 0 : Math.max(0.12, Math.sqrt(intensity));
+                    return (
+                      <div
+                        key={h}
+                        title={`${HEATMAP_DAY_LABELS[rowIdx]} ${h}h — ${count} ${count === 1 ? 'conversa' : 'conversas'}`}
+                        className="flex-1 h-[11px] rounded-[2px] bg-gray-100 dark:bg-white/[0.04]"
+                        style={count > 0 ? {
+                          backgroundColor: `rgba(239, 68, 68, ${alpha})`,
+                        } : undefined}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
