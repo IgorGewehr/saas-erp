@@ -2236,6 +2236,20 @@ export interface Conversation {
   internalNotes?: number;
   tags?: string[];
   firstResponseAt?: string;  // ISO — quando o primeiro msg outbound não-interna foi enviada
+  /**
+   * ISO — primeira resposta enviada por OPERADOR humano (não campanha, não IA).
+   * Pareado com firstAutoResponseAt pra que analytics separe "tempo de
+   * atendimento humano" de "tempo de bot/campanha". Sem este campo, médias
+   * são puxadas pra zero por bots que respondem em < 1s. Setado UMA vez na
+   * primeira resposta manual via composer (não sobrescreve).
+   */
+  firstHumanResponseAt?: string;
+  /**
+   * ISO — primeira resposta enviada por automação (IA agente). Não inclui
+   * campanhas iniciadas pelo lado outbound (campanhas criam conv com
+   * createdAt = firstResponseAt = now, métrica não-significativa).
+   */
+  firstAutoResponseAt?: string;
   slaBreached?: boolean;     // true quando SLA venceu sem firstResponseAt
   csatRating?: 1 | 2 | 3 | 4 | 5;  // avaliação de satisfação registrada pelo contato
   csatSentAt?: string;       // ISO — quando a pesquisa CSAT foi enviada

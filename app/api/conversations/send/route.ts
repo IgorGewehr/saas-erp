@@ -1195,11 +1195,20 @@ async function saveAgentMessage(
     if (clientMessageId) doc.clientMessageId = clientMessageId;
     if (replyToMessageId) doc.replyToMessageId = replyToMessageId;
     await adminDb.collection('conversationMessages').add(doc);
-    await adminDb.collection('conversations').doc(conversationId).update({
-      lastMessage: content,
-      lastMessageAt: now,
-      lastMessageDirection: 'outbound',
-      updatedAt: now,
+    // firstAutoResponseAt: setado UMA vez na primeira resposta IA. Usa transação
+    // pra evitar race quando múltiplas msgs IA disparam quase simultaneamente.
+    const convRef = adminDb.collection('conversations').doc(conversationId);
+    await adminDb.runTransaction(async (tx) => {
+      const snap = await tx.get(convRef);
+      const data = snap.data() || {};
+      const update: Record<string, unknown> = {
+        lastMessage: content,
+        lastMessageAt: now,
+        lastMessageDirection: 'outbound',
+        updatedAt: now,
+      };
+      if (!data.firstAutoResponseAt) update.firstAutoResponseAt = now;
+      tx.update(convRef, update);
     });
   } catch (err) {
     console.error('[Send Message] Failed to save agent message to Firestore:', err);

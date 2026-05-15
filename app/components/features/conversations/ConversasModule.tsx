@@ -4745,12 +4745,59 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
   const resolved = inPeriod.filter(c => c.status === 'resolved').length;
   const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
 
-  const avgFirstResponseMin = useMemo(() => {
-    const withResponse = inPeriod.filter(c => c.firstResponseAt && c.createdAt);
-    if (!withResponse.length) return null;
-    const totalMin = withResponse.reduce((s, c) => s + (new Date(c.firstResponseAt!).getTime() - new Date(c.createdAt).getTime()) / 60_000, 0);
-    return Math.round(totalMin / withResponse.length);
+  // Tempo de 1ª resposta — separado humano vs auto, com mediana + p90.
+  // Mediana é menos sensível a outliers (1 conv esquecida por 8h não distorce
+  // a estatística do dia). p90 expõe os "caudas" — quanto tempo os 10%
+  // mais lentos esperam. Bot que responde em 1s mascara este número se
+  // misturado com humano, daí a separação.
+  // Exclui convs iniciadas por campanha (originBroadcastId/Birthday): nesses
+  // casos, firstResponseAt == createdAt (a campanha é o início, não resposta
+  // a um inbound), poluiriam a base com 0s artificiais.
+  const responseStats = useMemo(() => {
+    const isInboundInitiated = (c: Conversation) => !c.originBroadcastId && !c.originBirthdayCampaignId;
+    const humanDurations: number[] = [];
+    const autoDurations: number[] = [];
+    for (const c of inPeriod) {
+      if (!c.createdAt || !isInboundInitiated(c)) continue;
+      const created = new Date(c.createdAt).getTime();
+      if (c.firstHumanResponseAt) {
+        humanDurations.push(new Date(c.firstHumanResponseAt).getTime() - created);
+      }
+      if (c.firstAutoResponseAt) {
+        autoDurations.push(new Date(c.firstAutoResponseAt).getTime() - created);
+      }
+      // Legacy fallback: convs antes do split tinham só firstResponseAt.
+      // Aplica heurística do 3s pra classificar (< 3s = provavelmente bot).
+      if (!c.firstHumanResponseAt && !c.firstAutoResponseAt && c.firstResponseAt) {
+        const dur = new Date(c.firstResponseAt).getTime() - created;
+        if (dur <= 0) continue;
+        if (dur < 3000) autoDurations.push(dur);
+        else humanDurations.push(dur);
+      }
+    }
+    const percentile = (arr: number[], p: number): number | null => {
+      if (!arr.length) return null;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p));
+      return sorted[idx];
+    };
+    return {
+      humanMedianMs: percentile(humanDurations, 0.5),
+      humanP90Ms: percentile(humanDurations, 0.9),
+      autoMedianMs: percentile(autoDurations, 0.5),
+      autoP90Ms: percentile(autoDurations, 0.9),
+      humanCount: humanDurations.length,
+      autoCount: autoDurations.length,
+    };
   }, [inPeriod]);
+
+  // Formata milissegundos pra label curta (s/min/h) — KPI tile tem pouco espaço.
+  const formatDuration = (ms: number | null): string => {
+    if (ms == null) return '-';
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+    if (ms < 3_600_000) return `${Math.round(ms / 60_000)}min`;
+    return `${(ms / 3_600_000).toFixed(1)}h`;
+  };
 
   // Volume by channel
   const byChannel = useMemo(() => {
@@ -4812,13 +4859,13 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-        {/* KPI Cards */}
+        {/* KPI Cards — núcleo */}
         <div className="grid grid-cols-2 gap-2.5">
           {[
             { label: 'Total', value: total, icon: <MessageSquare className="w-4 h-4" />, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
             { label: 'Resolvidas', value: resolved, icon: <CheckCircle className="w-4 h-4" />, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
             { label: 'Taxa resolução', value: `${resolutionRate}%`, icon: <TrendingUp className="w-4 h-4" />, color: 'text-violet-600 dark:text-violet-400', bg: 'bg-violet-50 dark:bg-violet-500/10' },
-            { label: 'Tempo 1ª resp.', value: avgFirstResponseMin != null ? `${avgFirstResponseMin}min` : '-', icon: <Timer className="w-4 h-4" />, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
+            { label: 'Resp humana (p50)', value: formatDuration(responseStats.humanMedianMs), icon: <Timer className="w-4 h-4" />, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
           ].map(k => (
             <div key={k.label} className="p-3 rounded-xl bg-white dark:bg-white/[0.03] border border-gray-100 dark:border-gray-700/50">
               <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center mb-2', k.bg, k.color)}>{k.icon}</div>
@@ -4826,6 +4873,40 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
               <p className={cn('text-lg font-bold', k.color)}>{k.value}</p>
             </div>
           ))}
+        </div>
+
+        {/* Tempo de resposta — detalhamento p50/p90 humano vs auto.
+            Linha compacta abaixo dos KPI tiles, separada pra que o resumo
+            (humana p50 no tile) fique imediato e o p90 + auto stays a
+            segundo nível pra quem quer aprofundar. */}
+        <div className="p-3 rounded-xl bg-gray-50 dark:bg-white/[0.02] border border-gray-100 dark:border-gray-700/50 space-y-2">
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Tempo 1ª resposta</p>
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                <span className="text-[10px] text-gray-500 dark:text-gray-400">Humana ({responseStats.humanCount})</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="font-bold text-gray-900 dark:text-gray-100">{formatDuration(responseStats.humanMedianMs)}</span>
+                <span className="text-[10px] text-gray-400">p50</span>
+                <span className="font-semibold text-gray-700 dark:text-gray-300">{formatDuration(responseStats.humanP90Ms)}</span>
+                <span className="text-[10px] text-gray-400">p90</span>
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center gap-1.5 mb-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+                <span className="text-[10px] text-gray-500 dark:text-gray-400">Auto ({responseStats.autoCount})</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="font-bold text-gray-900 dark:text-gray-100">{formatDuration(responseStats.autoMedianMs)}</span>
+                <span className="text-[10px] text-gray-400">p50</span>
+                <span className="font-semibold text-gray-700 dark:text-gray-300">{formatDuration(responseStats.autoP90Ms)}</span>
+                <span className="text-[10px] text-gray-400">p90</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Volume últimos 7 dias */}
@@ -7518,6 +7599,7 @@ export default function ConversasModule() {
           lastMessageDirection: 'outbound',
           updatedAt: now,
           ...(!selectedConversation.firstResponseAt ? { firstResponseAt: now } : {}),
+          ...(!selectedConversation.firstHumanResponseAt ? { firstHumanResponseAt: now } : {}),
         });
 
         // 3. Send via API as template — passa messageDocId pra que o backend
@@ -8145,6 +8227,7 @@ export default function ConversasModule() {
           lastMessageDirection: 'outbound',
           updatedAt: now,
           ...(!selectedConversation.firstResponseAt ? { firstResponseAt: now } : {}),
+          ...(!selectedConversation.firstHumanResponseAt ? { firstHumanResponseAt: now } : {}),
         });
 
         // 3. Send via Meta API — pass messageDocId so backend updates sending → sent
