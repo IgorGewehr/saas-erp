@@ -3,8 +3,7 @@
  */
 
 import { collection, addDoc, getDocs, query, where, type Firestore } from 'firebase/firestore';
-import type { NotificationType, StockAlert, User } from '@/lib/types';
-import { ROLE_HIERARCHY } from '@/lib/types';
+import type { NotificationType, StockAlert, UserRole } from '@/lib/types';
 
 export interface CreateNotificationParams {
   businessId: string;
@@ -76,17 +75,20 @@ export async function notifyLowStock(
   if (!params.alerts.length) return;
   try {
     // Busca admins/managers do tenant. Operador (actor) não recebe — já viu
-    // o toast localmente. Filtra por role >= manager (60).
+    // o toast localmente. Filtra role no servidor (where 'in') pra não ler
+    // todos os users do tenant quando só queremos role >= manager (60).
+    // Se adicionar role intermediário (ex: 'supervisor') no futuro, atualize
+    // este array — não usa ROLE_HIERARCHY dinamicamente porque Firestore
+    // não aceita filtro dinâmico server-side.
+    const ADMIN_ROLES: UserRole[] = ['founder', 'admin', 'manager'];
     const usersSnap = await getDocs(
-      query(collection(db, 'users'), where('businessId', '==', params.businessId)),
+      query(
+        collection(db, 'users'),
+        where('businessId', '==', params.businessId),
+        where('role', 'in', ADMIN_ROLES),
+      ),
     );
-    const recipientIds: string[] = [];
-    usersSnap.docs.forEach(d => {
-      const u = d.data() as User;
-      if ((ROLE_HIERARCHY[u.role] ?? 0) >= ROLE_HIERARCHY.manager) {
-        recipientIds.push(d.id);
-      }
-    });
+    const recipientIds = usersSnap.docs.map(d => d.id);
     if (!recipientIds.length) return;
 
     // Resumo no body — 1 produto: nome direto; 2+: lista enxuta.
