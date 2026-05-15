@@ -124,6 +124,8 @@ import {
   Pause,
   Trash,
   ArrowDownUp,
+  ArrowUp,
+  ArrowDown,
   Moon,
   BellOff,
   Mail,
@@ -4730,66 +4732,187 @@ function AnalyticsBar({ label, value, max, color }: { label: string; value: numb
   );
 }
 
+type AnalyticsPeriod = 'today' | 'week' | 'month';
+
+interface PeriodStats {
+  total: number;
+  resolved: number;
+  resolutionRate: number;
+  humanMedianMs: number | null;
+  humanP90Ms: number | null;
+  autoMedianMs: number | null;
+  autoP90Ms: number | null;
+  humanCount: number;
+  autoCount: number;
+  noResponseCount: number;
+  reopenedCount: number;
+  reopenRate: number;
+  totalResolvedEver: number;
+}
+
+function computePeriodStats(convs: Conversation[]): PeriodStats {
+  const total = convs.length;
+  const resolved = convs.filter(c => c.status === 'resolved').length;
+  const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
+  // Resposta humana/auto — exclui convs iniciadas por campanha (firstResponseAt
+  // = createdAt artificialmente). Heurística 3s pra legacy sem firstHuman/Auto.
+  const isInboundInitiated = (c: Conversation) => !c.originBroadcastId && !c.originBirthdayCampaignId;
+  const humanDurations: number[] = [];
+  const autoDurations: number[] = [];
+  for (const c of convs) {
+    if (!c.createdAt || !isInboundInitiated(c)) continue;
+    const created = new Date(c.createdAt).getTime();
+    if (c.firstHumanResponseAt) humanDurations.push(new Date(c.firstHumanResponseAt).getTime() - created);
+    if (c.firstAutoResponseAt) autoDurations.push(new Date(c.firstAutoResponseAt).getTime() - created);
+    if (!c.firstHumanResponseAt && !c.firstAutoResponseAt && c.firstResponseAt) {
+      const dur = new Date(c.firstResponseAt).getTime() - created;
+      if (dur > 0) (dur < 3000 ? autoDurations : humanDurations).push(dur);
+    }
+  }
+  const percentile = (arr: number[], p: number): number | null => {
+    if (!arr.length) return null;
+    const sorted = [...arr].sort((a, b) => a - b);
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+  };
+  const noResponseCount = convs.filter(c =>
+    c.status !== 'resolved' &&
+    !c.firstResponseAt &&
+    c.lastMessageDirection === 'inbound' &&
+    !c.originBroadcastId &&
+    !c.originBirthdayCampaignId,
+  ).length;
+  const everResolved = convs.filter(c => c.status === 'resolved' || (c.reopenedCount ?? 0) > 0);
+  const reopened = everResolved.filter(c => (c.reopenedCount ?? 0) > 0).length;
+  return {
+    total, resolved, resolutionRate,
+    humanMedianMs: percentile(humanDurations, 0.5),
+    humanP90Ms: percentile(humanDurations, 0.9),
+    autoMedianMs: percentile(autoDurations, 0.5),
+    autoP90Ms: percentile(autoDurations, 0.9),
+    humanCount: humanDurations.length,
+    autoCount: autoDurations.length,
+    noResponseCount,
+    reopenedCount: reopened,
+    totalResolvedEver: everResolved.length,
+    reopenRate: everResolved.length > 0 ? Math.round((reopened / everResolved.length) * 100) : 0,
+  };
+}
+
+// Mostra delta absoluto (ou %) entre current e previous. Cor verde quando
+// a métrica vai pra "lado bom" (que depende da métrica — resp time menor
+// é bom, total maior é bom, etc.).
+function DeltaArrow({ current, previous, betterWhenLower, suffix }: {
+  current: number | null;
+  previous: number | null;
+  betterWhenLower?: boolean;
+  suffix?: string;
+}) {
+  if (current == null || previous == null) return null;
+  if (current === 0 && previous === 0) return null;
+  if (current === previous) return <span className="text-[9px] text-gray-400 font-medium">=</span>;
+  const isUp = current > previous;
+  const isGood = betterWhenLower ? !isUp : isUp;
+  const pct = previous > 0 ? Math.round(((current - previous) / previous) * 100) : null;
+  const Icon = isUp ? ArrowUp : ArrowDown;
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-0.5 text-[9px] font-bold',
+      isGood ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400',
+    )}>
+      <Icon className="w-2.5 h-2.5" strokeWidth={3} />
+      {pct !== null ? `${Math.abs(pct)}%` : `${Math.abs(current - previous)}${suffix ?? ''}`}
+    </span>
+  );
+}
+
 function ConversationAnalyticsPanel({ conversations, members, onClose }: {
   conversations: Conversation[];
   members: User[];
   onClose: () => void;
 }) {
-  const [period, setPeriod] = useState<7 | 30 | 90>(30);
+  const [period, setPeriod] = useState<AnalyticsPeriod>('week');
 
-  const since = useMemo(() => Date.now() - period * 86_400_000, [period]);
-  const inPeriod = useMemo(() => conversations.filter(c => new Date(c.createdAt).getTime() >= since), [conversations, since]);
-
-  // KPIs
-  const total = inPeriod.length;
-  const resolved = inPeriod.filter(c => c.status === 'resolved').length;
-  const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
-
-  // Tempo de 1ª resposta — separado humano vs auto, com mediana + p90.
-  // Mediana é menos sensível a outliers (1 conv esquecida por 8h não distorce
-  // a estatística do dia). p90 expõe os "caudas" — quanto tempo os 10%
-  // mais lentos esperam. Bot que responde em 1s mascara este número se
-  // misturado com humano, daí a separação.
-  // Exclui convs iniciadas por campanha (originBroadcastId/Birthday): nesses
-  // casos, firstResponseAt == createdAt (a campanha é o início, não resposta
-  // a um inbound), poluiriam a base com 0s artificiais.
-  const responseStats = useMemo(() => {
-    const isInboundInitiated = (c: Conversation) => !c.originBroadcastId && !c.originBirthdayCampaignId;
-    const humanDurations: number[] = [];
-    const autoDurations: number[] = [];
-    for (const c of inPeriod) {
-      if (!c.createdAt || !isInboundInitiated(c)) continue;
-      const created = new Date(c.createdAt).getTime();
-      if (c.firstHumanResponseAt) {
-        humanDurations.push(new Date(c.firstHumanResponseAt).getTime() - created);
-      }
-      if (c.firstAutoResponseAt) {
-        autoDurations.push(new Date(c.firstAutoResponseAt).getTime() - created);
-      }
-      // Legacy fallback: convs antes do split tinham só firstResponseAt.
-      // Aplica heurística do 3s pra classificar (< 3s = provavelmente bot).
-      if (!c.firstHumanResponseAt && !c.firstAutoResponseAt && c.firstResponseAt) {
-        const dur = new Date(c.firstResponseAt).getTime() - created;
-        if (dur <= 0) continue;
-        if (dur < 3000) autoDurations.push(dur);
-        else humanDurations.push(dur);
-      }
+  // Ranges atual e anterior — comparativos contextuais.
+  // - 'today' compara com ontem (dia inteiro 24-48h atrás)
+  // - 'week' compara com semana passada (Seg-Dom completa)
+  // - 'month' compara com mês passado (primeiro ao último dia)
+  // Importante: comparações com período parcial (ex: "hoje 9h vs ontem inteiro")
+  // são truncadas a "previousEnd = ranges.currentEnd - delta" pra dar comparação
+  // apples-to-apples no mesmo offset relativo.
+  const ranges = useMemo(() => {
+    const now = new Date();
+    const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const nowMs = now.getTime();
+    if (period === 'today') {
+      const today = startOfDay(now);
+      const yesterday = today - 86_400_000;
+      return {
+        currentStart: today,
+        currentEnd: nowMs,
+        // Truncar ontem ao mesmo offset (apples-to-apples). Ex: agora são 10h —
+        // compara hoje [00h-10h] com ontem [00h-10h], não com ontem inteiro.
+        prevStart: yesterday,
+        prevEnd: yesterday + (nowMs - today),
+        label: 'Hoje',
+        prevLabel: 'vs ontem',
+      };
     }
-    const percentile = (arr: number[], p: number): number | null => {
-      if (!arr.length) return null;
-      const sorted = [...arr].sort((a, b) => a - b);
-      const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p));
-      return sorted[idx];
-    };
+    if (period === 'week') {
+      const dow = now.getDay();
+      const daysFromMonday = (dow + 6) % 7;
+      const monday = startOfDay(new Date(now.getTime() - daysFromMonday * 86_400_000));
+      const prevMonday = monday - 7 * 86_400_000;
+      return {
+        currentStart: monday,
+        currentEnd: nowMs,
+        prevStart: prevMonday,
+        prevEnd: prevMonday + (nowMs - monday),
+        label: 'Esta semana',
+        prevLabel: 'vs sem. ant.',
+      };
+    }
+    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const firstOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
     return {
-      humanMedianMs: percentile(humanDurations, 0.5),
-      humanP90Ms: percentile(humanDurations, 0.9),
-      autoMedianMs: percentile(autoDurations, 0.5),
-      autoP90Ms: percentile(autoDurations, 0.9),
-      humanCount: humanDurations.length,
-      autoCount: autoDurations.length,
+      currentStart: firstOfMonth,
+      currentEnd: nowMs,
+      prevStart: firstOfPrevMonth,
+      prevEnd: firstOfPrevMonth + (nowMs - firstOfMonth),
+      label: 'Este mês',
+      prevLabel: 'vs mês ant.',
     };
-  }, [inPeriod]);
+  }, [period]);
+
+  const inPeriod = useMemo(() => conversations.filter(c => {
+    if (!c.createdAt) return false;
+    const t = new Date(c.createdAt).getTime();
+    return t >= ranges.currentStart && t < ranges.currentEnd;
+  }), [conversations, ranges]);
+
+  const inPrevPeriod = useMemo(() => conversations.filter(c => {
+    if (!c.createdAt) return false;
+    const t = new Date(c.createdAt).getTime();
+    return t >= ranges.prevStart && t < ranges.prevEnd;
+  }), [conversations, ranges]);
+
+  const current = useMemo(() => computePeriodStats(inPeriod), [inPeriod]);
+  const previous = useMemo(() => computePeriodStats(inPrevPeriod), [inPrevPeriod]);
+
+  // Aliases pra reduzir churn no restante do componente que já referencia
+  // total/resolved/etc diretos do escopo do panel.
+  const total = current.total;
+  const resolved = current.resolved;
+  const resolutionRate = current.resolutionRate;
+  const responseStats = {
+    humanMedianMs: current.humanMedianMs,
+    humanP90Ms: current.humanP90Ms,
+    autoMedianMs: current.autoMedianMs,
+    autoP90Ms: current.autoP90Ms,
+    humanCount: current.humanCount,
+    autoCount: current.autoCount,
+  };
+  const noResponseCount = current.noResponseCount;
+  const reopenStats = { rate: current.reopenRate };
 
   // Formata milissegundos pra label curta (s/min/h) — KPI tile tem pouco espaço.
   const formatDuration = (ms: number | null): string => {
@@ -4798,31 +4921,6 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
     if (ms < 3_600_000) return `${Math.round(ms / 60_000)}min`;
     return `${(ms / 3_600_000).toFixed(1)}h`;
   };
-
-  // Reabertura — % de convs resolvidas que foram reabertas pelo menos 1x.
-  // Métrica de qualidade: ticket "resolvido" que volta = problema mascarado.
-  const reopenStats = useMemo(() => {
-    const everResolved = inPeriod.filter(c => c.status === 'resolved' || (c.reopenedCount ?? 0) > 0);
-    const reopened = everResolved.filter(c => (c.reopenedCount ?? 0) > 0).length;
-    return {
-      reopenedCount: reopened,
-      totalResolved: everResolved.length,
-      rate: everResolved.length > 0 ? Math.round((reopened / everResolved.length) * 100) : 0,
-    };
-  }, [inPeriod]);
-
-  // Sem 1ª resposta — convs onde cliente mandou msg (inbound) mas ninguém
-  // respondeu ainda. Exclui resolvidas (já fechadas) e iniciadas por campanha
-  // (originBroadcastId/Birthday: começam outbound, não esperam resposta).
-  const noResponseCount = useMemo(() => {
-    return inPeriod.filter(c =>
-      c.status !== 'resolved' &&
-      !c.firstResponseAt &&
-      c.lastMessageDirection === 'inbound' &&
-      !c.originBroadcastId &&
-      !c.originBirthdayCampaignId,
-    ).length;
-  }, [inPeriod]);
 
   // Volume by channel
   const byChannel = useMemo(() => {
@@ -4880,11 +4978,15 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-0.5 bg-gray-100 dark:bg-white/[0.06] rounded-lg p-0.5">
-            {([7, 30, 90] as const).map(p => (
-              <button key={p} onClick={() => setPeriod(p)}
+            {([
+              { id: 'today' as const, label: 'Hoje' },
+              { id: 'week' as const, label: 'Semana' },
+              { id: 'month' as const, label: 'Mês' },
+            ]).map(p => (
+              <button key={p.id} onClick={() => setPeriod(p.id)}
                 className={cn('px-2.5 py-1 rounded-md text-[10px] font-semibold transition-all',
-                  period === p ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-400')}>
-                {p}d
+                  period === p.id ? 'bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-400')}>
+                {p.label}
               </button>
             ))}
           </div>
@@ -4893,18 +4995,55 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
-        {/* KPI Cards — núcleo */}
+        {/* Header com label do período comparativo. Move o "vs ontem"/
+            "vs sem. ant." pra cá pra deixar contexto explícito no topo
+            sem precisar repetir em cada tile. */}
+        <div className="flex items-center justify-between -mb-1">
+          <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-300">{ranges.label}</p>
+          <p className="text-[9px] text-gray-400">{ranges.prevLabel}</p>
+        </div>
+        {/* KPI Cards — núcleo (com delta arrows comparando ao período anterior) */}
         <div className="grid grid-cols-2 gap-2.5">
           {[
-            { label: 'Total', value: total, icon: <MessageSquare className="w-4 h-4" />, color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10' },
-            { label: 'Resolvidas', value: resolved, icon: <CheckCircle className="w-4 h-4" />, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
-            { label: 'Taxa resolução', value: `${resolutionRate}%`, icon: <TrendingUp className="w-4 h-4" />, color: 'text-violet-600 dark:text-violet-400', bg: 'bg-violet-50 dark:bg-violet-500/10' },
-            { label: 'Resp humana (p50)', value: formatDuration(responseStats.humanMedianMs), icon: <Timer className="w-4 h-4" />, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
-            { label: 'Sem 1ª resposta', value: noResponseCount, icon: <Inbox className="w-4 h-4" />, color: 'text-rose-600 dark:text-rose-400', bg: 'bg-rose-50 dark:bg-rose-500/10' },
-            { label: 'Reabertura', value: `${reopenStats.rate}%`, icon: <RotateCcw className="w-4 h-4" />, color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10' },
+            {
+              label: 'Total', value: total, icon: <MessageSquare className="w-4 h-4" />,
+              color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-500/10',
+              delta: <DeltaArrow current={current.total} previous={previous.total} />,
+            },
+            {
+              label: 'Resolvidas', value: resolved, icon: <CheckCircle className="w-4 h-4" />,
+              color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10',
+              delta: <DeltaArrow current={current.resolved} previous={previous.resolved} />,
+            },
+            {
+              label: 'Taxa resolução', value: `${resolutionRate}%`, icon: <TrendingUp className="w-4 h-4" />,
+              color: 'text-violet-600 dark:text-violet-400', bg: 'bg-violet-50 dark:bg-violet-500/10',
+              delta: <DeltaArrow current={current.resolutionRate} previous={previous.resolutionRate} />,
+            },
+            {
+              label: 'Resp humana (p50)', value: formatDuration(responseStats.humanMedianMs), icon: <Timer className="w-4 h-4" />,
+              color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10',
+              // Tempo de resposta: menor é melhor.
+              delta: <DeltaArrow current={current.humanMedianMs} previous={previous.humanMedianMs} betterWhenLower />,
+            },
+            {
+              label: 'Sem 1ª resposta', value: noResponseCount, icon: <Inbox className="w-4 h-4" />,
+              color: 'text-rose-600 dark:text-rose-400', bg: 'bg-rose-50 dark:bg-rose-500/10',
+              // Sem resposta: menos é melhor.
+              delta: <DeltaArrow current={current.noResponseCount} previous={previous.noResponseCount} betterWhenLower />,
+            },
+            {
+              label: 'Reabertura', value: `${reopenStats.rate}%`, icon: <RotateCcw className="w-4 h-4" />,
+              color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10',
+              // Reabertura: menos é melhor.
+              delta: <DeltaArrow current={current.reopenRate} previous={previous.reopenRate} betterWhenLower />,
+            },
           ].map(k => (
             <div key={k.label} className="p-3 rounded-xl bg-white dark:bg-white/[0.03] border border-gray-100 dark:border-gray-700/50">
-              <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center mb-2', k.bg, k.color)}>{k.icon}</div>
+              <div className="flex items-start justify-between mb-2">
+                <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center', k.bg, k.color)}>{k.icon}</div>
+                {k.delta}
+              </div>
               <p className="text-[10px] text-gray-400 dark:text-gray-500">{k.label}</p>
               <p className={cn('text-lg font-bold', k.color)}>{k.value}</p>
             </div>
