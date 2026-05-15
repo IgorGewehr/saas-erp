@@ -169,8 +169,16 @@ async function setStatus(businessId: string, id: string, status: ConversationSta
   if (c.businessId !== businessId) throw new Error('Cross-tenant access denied');
 
   const now = new Date().toISOString();
-  await ref.update({ status, updatedAt: now });
-  return { ...c, status, updatedAt: now, id: snap.id };
+  // Reabertura: resolved → open. Track via reopenedCount + lastReopenedAt
+  // pra que analytics exiba taxa de reabertura sem precisar de status history.
+  const isReopening = c.status === 'resolved' && status === 'open';
+  const patch: Record<string, unknown> = { status, updatedAt: now };
+  if (isReopening) {
+    patch.reopenedCount = (c.reopenedCount ?? 0) + 1;
+    patch.lastReopenedAt = now;
+  }
+  await ref.update(patch);
+  return { ...c, ...patch, id: snap.id } as Conversation;
 }
 
 // ─── Snippets ────────────────────────────────────────────────────────────────

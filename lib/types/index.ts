@@ -2250,6 +2250,15 @@ export interface Conversation {
    * createdAt = firstResponseAt = now, métrica não-significativa).
    */
   firstAutoResponseAt?: string;
+  /**
+   * Quantas vezes esta conversa transitou de resolved → open. Métrica chave:
+   * conv reaberta = problema mal resolvido. Setado quando o operador (ou
+   * agente IA) muda status de 'resolved' pra 'open'. Não conta primeira vez
+   * (essa é a abertura inicial, não reabertura).
+   */
+  reopenedCount?: number;
+  /** ISO — última vez que a conversa foi reaberta (resolved → open). */
+  lastReopenedAt?: string;
   slaBreached?: boolean;     // true quando SLA venceu sem firstResponseAt
   csatRating?: 1 | 2 | 3 | 4 | 5;  // avaliação de satisfação registrada pelo contato
   csatSentAt?: string;       // ISO — quando a pesquisa CSAT foi enviada

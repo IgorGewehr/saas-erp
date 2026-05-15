@@ -4799,6 +4799,31 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
     return `${(ms / 3_600_000).toFixed(1)}h`;
   };
 
+  // Reabertura — % de convs resolvidas que foram reabertas pelo menos 1x.
+  // Métrica de qualidade: ticket "resolvido" que volta = problema mascarado.
+  const reopenStats = useMemo(() => {
+    const everResolved = inPeriod.filter(c => c.status === 'resolved' || (c.reopenedCount ?? 0) > 0);
+    const reopened = everResolved.filter(c => (c.reopenedCount ?? 0) > 0).length;
+    return {
+      reopenedCount: reopened,
+      totalResolved: everResolved.length,
+      rate: everResolved.length > 0 ? Math.round((reopened / everResolved.length) * 100) : 0,
+    };
+  }, [inPeriod]);
+
+  // Sem 1ª resposta — convs onde cliente mandou msg (inbound) mas ninguém
+  // respondeu ainda. Exclui resolvidas (já fechadas) e iniciadas por campanha
+  // (originBroadcastId/Birthday: começam outbound, não esperam resposta).
+  const noResponseCount = useMemo(() => {
+    return inPeriod.filter(c =>
+      c.status !== 'resolved' &&
+      !c.firstResponseAt &&
+      c.lastMessageDirection === 'inbound' &&
+      !c.originBroadcastId &&
+      !c.originBirthdayCampaignId,
+    ).length;
+  }, [inPeriod]);
+
   // Volume by channel
   const byChannel = useMemo(() => {
     const map: Record<string, number> = {};
@@ -4866,6 +4891,8 @@ function ConversationAnalyticsPanel({ conversations, members, onClose }: {
             { label: 'Resolvidas', value: resolved, icon: <CheckCircle className="w-4 h-4" />, color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
             { label: 'Taxa resolução', value: `${resolutionRate}%`, icon: <TrendingUp className="w-4 h-4" />, color: 'text-violet-600 dark:text-violet-400', bg: 'bg-violet-50 dark:bg-violet-500/10' },
             { label: 'Resp humana (p50)', value: formatDuration(responseStats.humanMedianMs), icon: <Timer className="w-4 h-4" />, color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-500/10' },
+            { label: 'Sem 1ª resposta', value: noResponseCount, icon: <Inbox className="w-4 h-4" />, color: 'text-rose-600 dark:text-rose-400', bg: 'bg-rose-50 dark:bg-rose-500/10' },
+            { label: 'Reabertura', value: `${reopenStats.rate}%`, icon: <RotateCcw className="w-4 h-4" />, color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10' },
           ].map(k => (
             <div key={k.label} className="p-3 rounded-xl bg-white dark:bg-white/[0.03] border border-gray-100 dark:border-gray-700/50">
               <div className={cn('w-7 h-7 rounded-lg flex items-center justify-center mb-2', k.bg, k.color)}>{k.icon}</div>
@@ -8122,7 +8149,16 @@ export default function ConversasModule() {
   const updateConversationStatus = useCallback(async (conversationId: string, status: ConversationStatus) => {
     const now = new Date().toISOString();
     try {
-      await updateDoc(doc(db, 'conversations', conversationId), { status, updatedAt: now });
+      // Detecta reabertura (resolved → open). Lookup via lista em memória —
+      // se o doc não estiver carregado, skip o tracking (não bloqueia o update).
+      const prev = conversations.find(c => c.id === conversationId);
+      const isReopening = prev?.status === 'resolved' && status === 'open';
+      const patch: Record<string, unknown> = { status, updatedAt: now };
+      if (isReopening) {
+        patch.reopenedCount = (prev?.reopenedCount ?? 0) + 1;
+        patch.lastReopenedAt = now;
+      }
+      await updateDoc(doc(db, 'conversations', conversationId), patch);
 
       // Send CSAT survey when resolving, if enabled and not already sent.
       // Delegado pro helper que faz o POST /api/conversations/send (entrega
