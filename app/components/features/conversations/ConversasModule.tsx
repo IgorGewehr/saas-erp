@@ -6913,6 +6913,11 @@ export default function ConversasModule() {
   const exitBatchMode = useCallback(() => {
     setBatchMode(false);
     setBatchSelectedIds(new Set());
+    // Se o modal de export estava aberto via batch ('selected'), fecha junto.
+    // Sem isso, sair do batch mode com o modal ainda aberto deixava ele
+    // exibindo "0 conversas / 0 telefones" (batchSelectedIds zerado).
+    // O modo 'filtered' não depende do batch state, então preserva.
+    setExportMode(prev => (prev === 'selected' ? null : prev));
   }, []);
 
   // Texto único da pesquisa CSAT — mantido como const pra alinhar single-resolve

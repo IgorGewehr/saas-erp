@@ -22,7 +22,7 @@
  *    Google Sheets ou subir como CSV em outro contexto.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import { Download, Copy, X, Phone, Check, AlertTriangle } from 'lucide-react';
@@ -80,6 +80,13 @@ export default function ExportPhonesDialog({ open, onClose, conversations, clien
   }, [conversations, clientsById]);
 
   const [copied, setCopied] = useState(false);
+
+  // Reset do flag 'Copiado!' ao reabrir o modal — sem isso, se user copia em
+  // modo filtered, fecha, reabre em selected dentro de 2s (antes do setTimeout
+  // resetar), o botão ainda aparece verde "Copiado!" pra uma lista diferente.
+  useEffect(() => {
+    if (open) setCopied(false);
+  }, [open]);
 
   const handleCopy = async () => {
     if (rows.length === 0) return;
