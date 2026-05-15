@@ -10,7 +10,7 @@
  */
 
 import type { Firestore } from 'firebase-admin/firestore';
-import type { Product, StockMovement } from '@/lib/types';
+import type { Product, StockMovement, StockAlert } from '@/lib/types';
 import {
   expandBomLines as _expandBomLines,
   checkBomAvailability as _checkBomAvailability,
@@ -41,6 +41,32 @@ export interface StockAdjustmentAdmin {
   delta: number;
   previousStock: number;
   newStock: number;
+  /** Setado quando deductStockAdmin cruzou o minStock pra baixo. Espelha o
+   *  campo de StockAdjustment client-side. Caller (API route) usa pra
+   *  escrever em notifications + retornar pro client se quiser toast. */
+  alert?: StockAlert;
+}
+
+/** Detecta cruzamento de minStock. Espelha stock.ts — duplicado pra evitar
+ *  importar entre módulos client/admin SDK. */
+function detectStockCrossing(
+  product: Product,
+  previousStock: number,
+  newStock: number,
+): StockAlert | undefined {
+  const minStock = product.minStock ?? 0;
+  if (minStock <= 0) return undefined;
+  if (previousStock > minStock && newStock <= minStock) {
+    return {
+      productId: product.id,
+      productName: product.name,
+      previousStock,
+      newStock,
+      minStock,
+      severity: newStock <= 0 ? 'zeroed' : 'min',
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -156,12 +182,14 @@ export async function deductStockAdmin(
     };
     batch.set(movementRef, movement);
 
+    const alert = detectStockCrossing(product, previousStock, newStock);
     adjustments.push({
       productId: product.id,
       productName: product.name,
       delta: -line.quantity,
       previousStock,
       newStock,
+      ...(alert ? { alert } : {}),
     });
   }
 

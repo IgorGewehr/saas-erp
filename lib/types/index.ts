@@ -3592,7 +3592,31 @@ export type NotificationType =
   // Disparo automático que perdeu o slot (servidor offline, erro transient).
   // Genérico — birthday campaigns, broadcasts agendados, automações CRM.
   // O usuário decide manualmente se quer reagendar.
-  | 'campaign_missed';
+  | 'campaign_missed'
+  // Produto cruzou o minStock pra baixo numa operação (venda/pedido/ajuste).
+  // Dispara UMA vez por cruzamento — não em cada venda enquanto estiver baixo,
+  // só quando passa de "ok" pra "baixo/zerado". Recipient é admin+manager
+  // do tenant, mais o operador que causou (pra contexto).
+  | 'low_stock';
+
+/**
+ * Alerta de cruzamento de limiar de estoque. Gerado pelos helpers
+ * `deductStock` / `deductStockAdmin` quando uma operação leva o produto
+ * de "acima do mínimo" pra "no mínimo ou abaixo". O caller consome esse
+ * array (já filtrado, só os que cruzaram) pra disparar toast + notif.
+ *
+ * Severidade:
+ *   - 'zeroed'  → newStock <= 0 (mais grave; produto pode ficar indisponível)
+ *   - 'min'     → newStock <= minStock mas > 0 (aviso preventivo)
+ */
+export interface StockAlert {
+  productId: string;
+  productName: string;
+  previousStock: number;
+  newStock: number;
+  minStock: number;
+  severity: 'zeroed' | 'min';
+}
 
 export interface AppNotification {
   id: string;

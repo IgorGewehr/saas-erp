@@ -16,7 +16,7 @@ import {
   type Firestore,
   type WriteBatch,
 } from 'firebase/firestore';
-import type { Product, StockMovement } from '@/lib/types';
+import type { Product, StockMovement, StockAlert } from '@/lib/types';
 import {
   expandBomLines as _expandBomLines,
   checkBomAvailability as _checkBomAvailability,
@@ -47,6 +47,38 @@ export interface StockAdjustment {
   delta: number;       // negative for deduction
   previousStock: number;
   newStock: number;
+  /** Setado quando a operação cruzou o minStock pra baixo. Caller usa pra
+   *  toast/notif sem precisar recalcular. Apenas em deductStock — addStock
+   *  e restoreStock não geram alertas (estoque subindo). */
+  alert?: StockAlert;
+}
+
+/**
+ * Detecta se a operação cruzou o limiar de estoque mínimo.
+ * Só dispara em transição (acima → abaixo) — não re-dispara em vendas
+ * subsequentes enquanto o estoque já tá baixo.
+ */
+function detectStockCrossing(
+  product: Product,
+  previousStock: number,
+  newStock: number,
+): StockAlert | undefined {
+  const minStock = product.minStock ?? 0;
+  // Sem limiar configurado, sem alerta. Evita ruído pra produtos
+  // com gestão de estoque desativada (minStock=0).
+  if (minStock <= 0) return undefined;
+  // Transição: estava acima OU igual, agora tá abaixo OU igual.
+  if (previousStock > minStock && newStock <= minStock) {
+    return {
+      productId: product.id,
+      productName: product.name,
+      previousStock,
+      newStock,
+      minStock,
+      severity: newStock <= 0 ? 'zeroed' : 'min',
+    };
+  }
+  return undefined;
 }
 
 /**
@@ -129,12 +161,14 @@ export async function deductStock(
     };
     batch.set(movementRef, movement);
 
+    const alert = detectStockCrossing(product, previousStock, newStock);
     adjustments.push({
       productId: product.id,
       productName: product.name,
       delta: -line.quantity,
       previousStock,
       newStock,
+      ...(alert ? { alert } : {}),
     });
   }
 
