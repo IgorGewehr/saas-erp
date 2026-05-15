@@ -1001,15 +1001,23 @@ async function sendFacebookMessenger(
 
 // ─── Instagram Messaging ─────────────────────────────────────────────────────
 
-// ─── Audio Conversion (OGG/WebM → M4A) ──────────────────────────────────────
+// ─── Audio Conversion (WebM → OGG/Opus ou M4A/AAC) ──────────────────────────
 
 /**
- * Converte qualquer áudio (ogg/opus/webm/etc.) pra M4A/AAC via ffmpeg.
- * M4A é o denominador comum: Cloud API, Baileys, Messenger e Instagram
- * aceitam todos. ffmpeg detecta o formato de entrada pelo conteúdo —
- * a extensão do tempfile é apenas hint.
+ * Converte áudio pra formato adequado ao canal alvo.
+ *
+ * - target='ogg': WhatsApp Cloud API exibe `audio/ogg` com codec Opus como
+ *   voice note (PTT) — interface circular com waveform no app. Como o Composer
+ *   já grava em Opus (MediaRecorder do Chrome usa webm/opus, Firefox usa
+ *   ogg/opus), aqui basta repackaging do container (-c:a copy) — lossless e
+ *   praticamente instantâneo.
+ * - target='m4a': Messenger e Instagram não aceitam Opus, só AAC. Re-encoda.
  */
-async function convertAudioToM4a(srcUrl: string, businessId: string): Promise<string> {
+async function convertAudio(
+  srcUrl: string,
+  businessId: string,
+  target: 'ogg' | 'm4a',
+): Promise<string> {
   const ffmpeg = (await import('fluent-ffmpeg')).default;
   const { tmpdir } = await import('os');
   const { join } = await import('path');
@@ -1031,34 +1039,36 @@ async function convertAudioToM4a(srcUrl: string, businessId: string): Promise<st
   if (!res.ok) throw new Error(`Failed to download audio: ${res.status}`);
   const srcBuffer = Buffer.from(await res.arrayBuffer());
 
-  // 2. Converte via tempfiles (ffmpeg precisa de I/O seekable pra M4A)
+  // 2. Converte via tempfiles (ffmpeg precisa de I/O seekable pra mux M4A/OGG)
   const inputPath = join(tmpdir(), `input_${Date.now()}.audio`);
-  const outputPath = join(tmpdir(), `output_${Date.now()}.m4a`);
+  const outExt = target === 'ogg' ? '.ogg' : '.m4a';
+  const outputPath = join(tmpdir(), `output_${Date.now()}${outExt}`);
 
   await writeFile(inputPath, srcBuffer);
 
   await new Promise<void>((resolve, reject) => {
-    ffmpeg(inputPath)
-      .audioCodec('aac')
-      .audioBitrate('128k')
-      .audioChannels(1)
-      .format('ipod') // M4A container
-      .on('error', reject)
-      .on('end', () => resolve())
-      .save(outputPath);
+    const cmd = ffmpeg(inputPath);
+    if (target === 'ogg') {
+      // Stream copy — Composer grava em Opus, só repack do container.
+      cmd.audioCodec('copy').format('ogg');
+    } else {
+      cmd.audioCodec('aac').audioBitrate('128k').audioChannels(1).format('ipod');
+    }
+    cmd.on('error', reject).on('end', () => resolve()).save(outputPath);
   });
 
-  const m4aBuffer = await readFile(outputPath);
+  const outBuffer = await readFile(outputPath);
   await unlink(inputPath).catch(() => {});
   await unlink(outputPath).catch(() => {});
 
-  // 3. Re-upload do M4A via Admin SDK (server-side não tem auth Firebase
-  //    pra usar client SDK contra as Storage Rules).
-  const storagePath = `conversations/${businessId}/converted/${Date.now()}_audio.m4a`;
+  // 3. Re-upload via Admin SDK (server-side não tem auth Firebase pra usar
+  //    client SDK contra as Storage Rules).
+  const contentType = target === 'ogg' ? 'audio/ogg' : 'audio/mp4';
+  const storagePath = `conversations/${businessId}/converted/${Date.now()}_audio${outExt}`;
   return await uploadServerMedia({
     storagePath,
-    buffer: m4aBuffer,
-    contentType: 'audio/mp4',
+    buffer: outBuffer,
+    contentType,
   });
 }
 
@@ -1089,8 +1099,11 @@ async function prepareAudioForChannel(
 ): Promise<MediaOptions | undefined> {
   if (!media || media.mediaType !== 'audio') return media;
   if (!needsAudioConversion(media.mediaUrl, channel)) return media;
-  console.warn(`[Send] Converting audio to M4A for ${channel} compatibility`);
-  const convertedUrl = await convertAudioToM4a(media.mediaUrl, businessId);
+  // WhatsApp: OGG/Opus → Meta exibe como voice note (PTT).
+  // FB/IG: M4A/AAC (Messenger e Instagram não aceitam Opus).
+  const target: 'ogg' | 'm4a' = channel === 'whatsapp' ? 'ogg' : 'm4a';
+  console.warn(`[Send] Converting audio to ${target.toUpperCase()} for ${channel} compatibility`);
+  const convertedUrl = await convertAudio(media.mediaUrl, businessId, target);
   return { ...media, mediaUrl: convertedUrl };
 }
 
