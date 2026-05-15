@@ -22,10 +22,11 @@ import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { toast } from 'react-toastify';
 import { deductStock, checkStockAvailability } from '@/lib/services/stock';
+import { notifyLowStock } from '@/lib/services/notifications';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
-  Product, Client, DeliveryOrderAddress,
+  Product, Client, DeliveryOrderAddress, StockAlert,
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 
@@ -1247,10 +1248,11 @@ export default function OrdersModule() {
       const patch: Record<string, unknown> = { status: newStatus, updatedAt: now };
 
       // Deduct stock when entering 'preparando' for the first time
+      let stockAlertsFromOrder: StockAlert[] = [];
       if (newStatus === 'preparando' && !order.stockDeductedAt) {
         const productIndex = new Map(products.map(p => [p.id, p]));
         const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
-        await deductStock(db, stockLines, {
+        const adjustments = await deductStock(db, stockLines, {
           businessId: business.id,
           operatorId: user.uid,
           operatorName: user.name,
@@ -1258,6 +1260,7 @@ export default function OrdersModule() {
           reason: `Pedido #${order.number}`,
           productIndex,
         });
+        stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
         patch.stockDeductedAt = now;
       }
       if (newStatus === 'entregue') {
@@ -1267,6 +1270,24 @@ export default function OrdersModule() {
       await updateDoc(doc(db, 'deliveryOrders',order.id), patch);
       setSelectedOrder(prev => prev && prev.id === order.id ? { ...prev, ...patch, status: newStatus } as Order : prev);
       toast.success(`Pedido #${order.number}: ${STATUS_CONFIG[newStatus].label}`);
+
+      // Estoque baixo após dedução do pedido: toast + notif (best-effort).
+      if (stockAlertsFromOrder.length > 0) {
+        stockAlertsFromOrder.forEach(a => {
+          const icon = a.severity === 'zeroed' ? '🚨' : '⚠️';
+          const msg = a.severity === 'zeroed'
+            ? `${icon} ${a.productName} esgotou`
+            : `${icon} ${a.productName} no estoque mínimo (${a.newStock}/${a.minStock})`;
+          toast.warning(msg, { autoClose: 6000 });
+        });
+        void notifyLowStock(db, {
+          businessId: business.id,
+          alerts: stockAlertsFromOrder,
+          actorId: user.uid,
+          actorName: user.name,
+          sourceLabel: `Pedido #${order.number}`,
+        });
+      }
 
       // Auto-notify customer via original channel (if agent enabled). Fire-and-forget.
       if (business.settings?.aiAgent?.enabled && business.settings?.aiAgent?.pedidos?.notifyOnStatusChange) {

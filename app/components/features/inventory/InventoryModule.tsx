@@ -71,7 +71,8 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Product, StockMovement, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
+import type { Product, StockMovement, StockAlert, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
+import { notifyLowStock } from '@/lib/services/notifications';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -2308,7 +2309,34 @@ export default function InventoryModule() {
     toast.success(t('inventory.toast.movementCreated', 'Movimentação registrada com sucesso!'));
     // products via onSnapshot. stockMovements continua em useQuery local.
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
-  }, [business?.id, user, products, queryClient]);
+
+    // Cruzou minStock pra baixo? Movimentação manual também alerta. Detecção
+    // inline (este path não passa pelo deductStock — escreve direto). Reusa
+    // a mesma logica do helper: só dispara em transição.
+    const minStock = product.minStock ?? 0;
+    if (minStock > 0 && previousStock > minStock && newStock <= minStock) {
+      const alert: StockAlert = {
+        productId: product.id,
+        productName: product.name,
+        previousStock,
+        newStock,
+        minStock,
+        severity: newStock <= 0 ? 'zeroed' : 'min',
+      };
+      const icon = alert.severity === 'zeroed' ? '🚨' : '⚠️';
+      const msg = alert.severity === 'zeroed'
+        ? `${icon} ${product.name} esgotou`
+        : `${icon} ${product.name} no estoque mínimo (${newStock}/${minStock})`;
+      toast.warning(msg, { autoClose: 6000 });
+      void notifyLowStock(db, {
+        businessId: business.id,
+        alerts: [alert],
+        actorId: user.uid,
+        actorName: user.name,
+        sourceLabel: `Ajuste manual: ${data.reason || data.type}`,
+      });
+    }
+  }, [business?.id, user, products, queryClient, t]);
 
   const handleDeleteProduct = useCallback(async () => {
     if (!business?.id || !deletingProduct) return;

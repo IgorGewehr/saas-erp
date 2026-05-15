@@ -61,6 +61,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { notifyLowStock } from '@/lib/services/notifications';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { db } from '@/lib/config/firebase';
@@ -765,8 +766,13 @@ export default function PDVModule() {
         }
       }
 
+      // Capturado pra detectar cruzamento de minStock pós-commit. As gravações
+      // do deductStock vão no batch externo (commit lá embaixo); os alerts são
+      // calculados em memória no momento da chamada e ficam aqui pra disparar
+      // toast + notif só depois que o commit confirmar.
+      let stockAdjustments: Awaited<ReturnType<typeof deductStock>> = [];
       if (stockLines.length > 0) {
-        await deductStock(db, stockLines, {
+        stockAdjustments = await deductStock(db, stockLines, {
           businessId: business.id,
           operatorId: user.uid,
           operatorName: user.name,
@@ -823,6 +829,27 @@ export default function PDVModule() {
 
       // Use saleRef.id for downstream operations
       const docRef = saleRef;
+
+      // Estoque baixo: cruzou minStock? Dispara toast pro operador (imediato)
+      // + notif persistente pros gestores. Best-effort — falha aqui não
+      // afeta a venda (já commitada).
+      const stockAlerts = stockAdjustments.flatMap(a => a.alert ? [a.alert] : []);
+      if (stockAlerts.length > 0) {
+        stockAlerts.forEach(a => {
+          const icon = a.severity === 'zeroed' ? '🚨' : '⚠️';
+          const msg = a.severity === 'zeroed'
+            ? `${icon} ${a.productName} esgotou`
+            : `${icon} ${a.productName} no estoque mínimo (${a.newStock}/${a.minStock})`;
+          toast.warning(msg, { autoClose: 6000 });
+        });
+        void notifyLowStock(db, {
+          businessId: business.id,
+          alerts: stockAlerts,
+          actorId: user.uid,
+          actorName: user.name,
+          sourceLabel: `Venda #${saleRef.id.substring(0, 6)}`,
+        });
+      }
 
       // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
       const commissionRate = user.commissionRate ?? 0;
