@@ -2422,7 +2422,6 @@ interface ComposerProps {
   onTyping?: () => void;
   channel: ConversationChannel;
   connectedVia?: string;
-  isSending: boolean;
   attachment: File | null;
   onAttachmentSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onAttachmentRemove: () => void;
@@ -2467,7 +2466,6 @@ function AudioRecorderBar({
   onDiscard,
   onTogglePlay,
   onSend,
-  isSending,
 }: {
   state: 'recording' | 'preview';
   duration: number;
@@ -2477,7 +2475,6 @@ function AudioRecorderBar({
   onDiscard: () => void;
   onTogglePlay: () => void;
   onSend: () => void;
-  isSending: boolean;
 }) {
   const mm = Math.floor(duration / 60).toString().padStart(2, '0');
   const ss = (duration % 60).toString().padStart(2, '0');
@@ -2490,7 +2487,6 @@ function AudioRecorderBar({
       {/* Cancelar (descarta gravação) */}
       <button
         onClick={onDiscard}
-        disabled={isSending}
         title="Cancelar gravação"
         className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 disabled:opacity-50 transition-colors flex-shrink-0"
       >
@@ -2538,20 +2534,18 @@ function AudioRecorderBar({
         <motion.button
           onClick={onStop}
           whileTap={{ scale: 0.95 }}
-          disabled={isSending}
           title="Parar gravação"
-          className="w-10 h-10 rounded-2xl flex items-center justify-center bg-gradient-to-br from-red-600 to-red-500 text-white shadow-sm shadow-red-500/30 disabled:opacity-50 flex-shrink-0"
+          className="w-10 h-10 rounded-2xl flex items-center justify-center bg-gradient-to-br from-red-600 to-red-500 text-white shadow-sm shadow-red-500/30 flex-shrink-0"
         >
           <Square className="w-4 h-4" />
         </motion.button>
       ) : (
         <motion.button
           onClick={onSend}
-          whileHover={!isSending ? { scale: 1.05 } : undefined}
-          whileTap={!isSending ? { scale: 0.95 } : undefined}
-          disabled={isSending}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
           title="Enviar áudio"
-          className="w-10 h-10 rounded-2xl flex items-center justify-center bg-gradient-to-br from-red-600 to-red-500 text-white shadow-sm shadow-red-500/30 disabled:opacity-50 flex-shrink-0"
+          className="w-10 h-10 rounded-2xl flex items-center justify-center bg-gradient-to-br from-red-600 to-red-500 text-white shadow-sm shadow-red-500/30 flex-shrink-0"
         >
           <Send className="w-4 h-4 translate-x-0.5 -translate-y-0.5" />
         </motion.button>
@@ -2566,7 +2560,6 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   onTyping,
   channel,
   connectedVia,
-  isSending,
   attachment,
   onAttachmentSelect,
   onAttachmentRemove,
@@ -2826,7 +2819,7 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (hasContent && !isSending) {
+      if (hasContent) {
         onSend(textRef.current);
       }
       return;
@@ -2910,7 +2903,6 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
           onDiscard={discardRecording}
           onTogglePlay={togglePreviewPlayback}
           onSend={sendRecording}
-          isSending={isSending}
         />
       ) : (
       <>
@@ -3077,8 +3069,7 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
             onKeyDown={handleKeyDown}
             rows={1}
             placeholder={t('conversations.messagePlaceholder', 'Digite uma mensagem...')}
-            disabled={isSending}
-            className="w-full resize-none bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors leading-relaxed max-h-36 overflow-y-auto disabled:opacity-50"
+            className="w-full resize-none bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-2xl px-4 py-2.5 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors leading-relaxed max-h-36 overflow-y-auto"
             style={{ minHeight: '42px' }}
           />
           {text.length > 200 && (
@@ -3095,26 +3086,25 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
         {hasContent || isInternalNote || !onSendAudio ? (
           <motion.button
             onClick={() => onSend(textRef.current)}
-            whileHover={hasContent && !isSending ? { scale: 1.05 } : undefined}
-            whileTap={hasContent && !isSending ? { scale: 0.95 } : undefined}
-            disabled={!hasContent || isSending}
+            whileHover={hasContent ? { scale: 1.05 } : undefined}
+            whileTap={hasContent ? { scale: 0.95 } : undefined}
+            disabled={!hasContent}
             className={cn(
               'w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-200 shadow-sm mb-0.5',
-              hasContent && !isSending
+              hasContent
                 ? 'bg-gradient-to-br from-red-600 to-red-500 text-white shadow-red-500/30 shadow-md'
                 : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 dark:text-gray-600 cursor-not-allowed',
             )}
           >
-            <Send className={cn('w-4 h-4', hasContent && !isSending && 'translate-x-0.5 -translate-y-0.5')} />
+            <Send className={cn('w-4 h-4', hasContent && 'translate-x-0.5 -translate-y-0.5')} />
           </motion.button>
         ) : (
           <motion.button
             onClick={startRecording}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
-            disabled={isSending}
             title={t('conversations.recordAudio', 'Gravar áudio')}
-            className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-200 shadow-sm mb-0.5 bg-gradient-to-br from-red-600 to-red-500 text-white shadow-red-500/30 shadow-md disabled:opacity-50"
+            className="w-10 h-10 rounded-2xl flex items-center justify-center flex-shrink-0 transition-all duration-200 shadow-sm mb-0.5 bg-gradient-to-br from-red-600 to-red-500 text-white shadow-red-500/30 shadow-md"
           >
             <Mic className="w-4 h-4" />
           </motion.button>
@@ -6685,7 +6675,6 @@ export default function ConversasModule() {
   // cada keystroke causava re-render do módulo inteiro). Pai lê/escreve
   // via composerRef.
   const composerRef = useRef<ComposerHandle | null>(null);
-  const [isSending, setIsSending] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showMobileThread, setShowMobileThread] = useState(false);
   // IDs de conversas que o user marcou "não lida" intencionalmente nesta
@@ -7766,9 +7755,8 @@ export default function ConversasModule() {
 
   const handleSendTemplate = useCallback(
     async (templateName: string, templateLanguage: string) => {
-      if (!selectedConversation || !business?.id || !user || isSending) return;
+      if (!selectedConversation || !business?.id || !user) return;
 
-      setIsSending(true);
       setShowTemplateSelector(false);
       const now = new Date().toISOString();
 
@@ -7863,11 +7851,9 @@ export default function ConversasModule() {
         } else {
           toast.error(`Falha ao salvar template: ${errMsg}`);
         }
-      } finally {
-        setIsSending(false);
       }
     },
-    [selectedConversation, business?.id, user, isSending, templateList],
+    [selectedConversation, business?.id, user, templateList],
   );
 
   // ── Mark as read ───────────────────────────────────────────────────────────
@@ -8367,7 +8353,7 @@ export default function ConversasModule() {
     const sourceText = rawText ?? composerRef.current?.getText() ?? '';
     const hasText = sourceText.trim().length > 0;
     const hasFile = !!attachment;
-    if ((!hasText && !hasFile) || !selectedConversation || !business?.id || !user || isSending) return;
+    if ((!hasText && !hasFile) || !selectedConversation || !business?.id || !user) return;
 
     const content = sourceText.trim();
     const currentAttachment = attachment;
@@ -8377,20 +8363,20 @@ export default function ConversasModule() {
     composerRef.current?.setText('');
     setAttachment(null);
     setReplyToMessage(null);
-    setIsSending(true);
     // Apaga o "Fulano digitando..." pros outros operadores assim que envia —
     // sem isso, o indicador continuava visível até o TTL de 5s expirar.
     stopOperatorTyping();
 
-    // If there is a media attachment, send it (errors are handled + toasted inside sendMediaMessage).
-    // Propaga `isInternalNote` — anexo de nota interna NUNCA vai pelo Meta API.
+    // Envia mídia primeiro (sequencial DENTRO desta chamada de handleSend) pra
+    // garantir que a bolha de mídia apareça ANTES do texto quando o operador
+    // anexa+digita+envia juntos. Múltiplas chamadas paralelas de handleSend
+    // continuam paralelas — esta serialização afeta só o par mídia+texto da
+    // mesma submissão. sendMediaMessage trata erros internamente.
     if (currentAttachment) {
       await sendMediaMessage(currentAttachment, isInternalNote);
     }
 
-    // If no text, just finish
     if (!hasText) {
-      setIsSending(false);
       composerRef.current?.focus();
       return;
     }
@@ -8513,11 +8499,10 @@ export default function ConversasModule() {
       }
       composerRef.current?.setText(content);
     } finally {
-      setIsSending(false);
       composerRef.current?.focus();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachment, selectedConversation, business?.id, user, isSending, sendMediaMessage, isInternalNote, replyToMessage]);
+  }, [attachment, selectedConversation, business?.id, user, sendMediaMessage, isInternalNote, replyToMessage]);
 
   // handleKeyDown removido daqui — Enter e "/" agora são tratados dentro do
   // próprio Composer, com acesso direto ao text local. Pai só recebe via
@@ -9706,8 +9691,7 @@ export default function ConversasModule() {
                           <button
                             key={`${tpl.name}_${tpl.language}`}
                             onClick={() => handleSendTemplate(tpl.name, tpl.language)}
-                            disabled={isSending}
-                            className="w-full text-left p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors group disabled:opacity-50"
+                            className="w-full text-left p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors group"
                           >
                             <div className="flex items-center justify-between gap-2">
                               <div className="min-w-0 flex-1">
@@ -9773,7 +9757,6 @@ export default function ConversasModule() {
                       onTyping={handleComposerTyping}
                       channel={selectedConversation.channel}
                       connectedVia={selectedConversation.connectedVia}
-                      isSending={isSending}
                       attachment={attachment}
                       onAttachmentSelect={handleFileSelect}
                       onAttachmentRemove={handleRemoveAttachment}
