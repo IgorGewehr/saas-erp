@@ -44,6 +44,7 @@ import { notifyUsers } from '@/lib/services/notifications';
 import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
 import { getVisibleStages } from '@/app/components/features/crm/shared';
 import { ScheduleFromConversationDialog } from './ScheduleFromConversationDialog';
+import ExportPhonesDialog from './ExportPhonesDialog';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { pickReadableTextColor } from '@/lib/utils/color';
 import debounce from 'lodash.debounce';
@@ -3403,12 +3404,13 @@ function SaveViewModal({ onSave, onClose, initialName, initialEmoji, mode = 'cre
 
 // ─── Batch Action Bar ─────────────────────────────────────────────────────────
 
-function BatchActionBar({ count, onAssign, onStatus, onTag, onMarkRead, onCancel }: {
+function BatchActionBar({ count, onAssign, onStatus, onTag, onMarkRead, onExport, onCancel }: {
   count: number;
   onAssign: () => void;
   onStatus: (s: ConversationStatus) => void;
   onTag: () => void;
   onMarkRead: () => void;
+  onExport: () => void;
   onCancel: () => void;
 }) {
   const [showStatus, setShowStatus] = useState(false);
@@ -3455,6 +3457,10 @@ function BatchActionBar({ count, onAssign, onStatus, onTag, onMarkRead, onCancel
           <button onClick={onTag} title="Adicionar tag"
             className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
             <TagIcon className="w-3.5 h-3.5" />
+          </button>
+          <button onClick={onExport} title="Exportar telefones"
+            className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors">
+            <Phone className="w-3.5 h-3.5" />
           </button>
         </div>
 
@@ -5870,6 +5876,9 @@ export default function ConversasModule() {
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [showRoutingRules, setShowRoutingRules] = useState(false);
   const [showHeaderMore, setShowHeaderMore] = useState(false);
+  // Exportação de telefones — 'filtered' usa filteredConversations atual,
+  // 'selected' usa apenas batchSelectedIds. Null = modal fechado.
+  const [exportMode, setExportMode] = useState<'filtered' | 'selected' | null>(null);
   const headerMoreRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -8420,6 +8429,15 @@ export default function ConversasModule() {
     return map;
   }, [clientsList]);
 
+  // Map clientId → Client completo. Usado pelo ExportPhonesDialog pra
+  // resolver telefone via cliente vinculado (preferido sobre contactPhone
+  // denormalizado, que pode estar stale se o cliente atualizou o phone).
+  const clientsById = useMemo(() => {
+    const map = new Map<string, import('@/lib/types').Client>();
+    for (const c of clientsList) map.set(c.id, c);
+    return map;
+  }, [clientsList]);
+
   // `now` é fixado dentro do useMemo pra que o cálculo seja determinístico
   // dentro de uma render — evita drift quando matchesSmartView é chamada
   // múltiplas vezes ('stale' e 'resolved_today' dependem do tempo). Re-render
@@ -8678,6 +8696,18 @@ export default function ConversasModule() {
                           <BarChart3 className={cn('w-4 h-4', showAnalytics && 'text-red-500')} />
                           Analytics de conversas
                           {showAnalytics && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-red-500" />}
+                        </button>
+                        {/* Exporta telefones da view ATUAL (canal + view + setor + filtros
+                            avançados + busca). Útil pra montar lista de campanha a partir
+                            de quem está no filtro: ex: "todas conversas WA abertas → lista". */}
+                        <button
+                          type="button"
+                          onClick={() => { setExportMode('filtered'); setShowHeaderMore(false); }}
+                          disabled={filteredConversations.length === 0}
+                          className="w-full flex items-center gap-2.5 px-3 py-2 text-xs hover:bg-gray-50 dark:hover:bg-white/[0.04] text-gray-700 dark:text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed">
+                          <Phone className="w-4 h-4" />
+                          Exportar telefones da lista
+                          <span className="ml-auto text-[10px] text-gray-400 tabular-nums">{filteredConversations.length}</span>
                         </button>
                         {isAdmin && (
                           <>
@@ -9089,6 +9119,7 @@ export default function ConversasModule() {
                   onAssign={() => setShowBatchAssign(true)}
                   onStatus={handleBatchStatus}
                   onTag={() => setShowBatchTag(true)}
+                  onExport={() => setExportMode('selected')}
                   onCancel={exitBatchMode}
                 />
               )}
@@ -9818,6 +9849,23 @@ export default function ConversasModule() {
           onClose={() => setScheduleOpen(false)}
         />
       )}
+
+      {/* Export de telefones — modo 'filtered' usa todas as conversas que
+          passam pelos filtros atuais; modo 'selected' usa apenas as marcadas
+          via batch. Conversas resolvidas em memória — sem hit no Firestore. */}
+      <ExportPhonesDialog
+        open={exportMode !== null}
+        onClose={() => setExportMode(null)}
+        conversations={
+          exportMode === 'selected'
+            ? filteredConversations.filter(c => batchSelectedIds.has(c.id))
+            : exportMode === 'filtered'
+              ? filteredConversations
+              : []
+        }
+        clientsById={clientsById}
+        sourceLabel={exportMode === 'selected' ? 'selecionadas' : 'filtradas'}
+      />
 
       {/* Painel 360° do cliente vinculado à conversa — reusa o mesmo
           ClientDetailPanel do /clientes, montado em portal próprio dentro
