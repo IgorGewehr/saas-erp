@@ -86,6 +86,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
+import { NfseServicoCombobox } from '@/app/components/features/fiscal/NfseServicoCombobox';
 
 // SDD Fase 4: dispatch de domain event quando appointment vira concluido.
 // Fire-and-forget — não bloqueia o save. Auditoria fica em domainEvents/{id}.
@@ -976,40 +977,20 @@ function ServiceManagementDialog({
                   <p className="text-[11px] text-gray-500 dark:text-gray-400">
                     {t('agenda.serviceFiscalHint', 'Preenchidos aqui, os campos serão auto-completados ao emitir NFSe pra este serviço.')}
                   </p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
-                        {t('agenda.serviceLc116', 'Código LC 116')}
-                      </label>
-                      <input
-                        type="text"
-                        value={formData.lc116Code ?? ''}
-                        onChange={(e) => setFormData((p) => ({ ...p, lc116Code: e.target.value }))}
-                        placeholder="Ex: 01.07"
-                        className={cn(
-                          'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
-                          'text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400',
-                          'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                        )}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
-                        {t('agenda.serviceCodMunicipal', 'Código Municipal')}
-                      </label>
-                      <input
-                        type="text"
-                        value={formData.codigoMunicipal ?? ''}
-                        onChange={(e) => setFormData((p) => ({ ...p, codigoMunicipal: e.target.value }))}
-                        placeholder="Ex: 2919"
-                        className={cn(
-                          'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
-                          'text-xs text-gray-900 dark:text-gray-100 placeholder:text-gray-400',
-                          'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                        )}
-                      />
-                    </div>
-                  </div>
+                  {/* Combobox unificado de LC 116 + código municipal SP —
+                      mesmo componente usado no EmitirNotaDialog. Operador
+                      pesquisa por código/descrição/SP e auto-preenche os 2
+                      campos. Quando o serviço é selecionado na emissão de
+                      NFSe, esses campos auto-completam a nota. */}
+                  <NfseServicoCombobox
+                    lc116Value={formData.lc116Code ?? ''}
+                    spCodeValue={formData.codigoMunicipal ?? ''}
+                    onChange={(lc116, sp) => setFormData((p) => ({
+                      ...p,
+                      lc116Code: lc116,
+                      codigoMunicipal: sp,
+                    }))}
+                  />
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
