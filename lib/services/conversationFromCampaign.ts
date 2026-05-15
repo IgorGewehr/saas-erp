@@ -209,6 +209,7 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
       status: 'sent',
       senderName: 'Campanha',
       isFromCampaign: true,
+      isAutomated: true,
       ...sourceFields,
       sentAt: now,
       createdAt: now,

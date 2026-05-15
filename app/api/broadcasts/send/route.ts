@@ -401,6 +401,7 @@ async function upsertConversationFromBroadcast(params: {
       status: 'sent',
       senderName: 'Campanha',
       isFromCampaign: true,
+      isAutomated: true,
       broadcastId: params.broadcastId,
       broadcastMessageId: params.broadcastMessageId,
       sentAt: now,

@@ -2343,6 +2343,22 @@ export interface ConversationMessage {
   senderId?: string;
   senderName?: string;
   senderAvatarUrl?: string;
+  /**
+   * Marca explícita de mensagem enviada por automação (campanha, IA, bot,
+   * resposta agendada). Usada nos analytics pra separar "tempo 1ª resposta
+   * humana" de "tempo 1ª resposta automática" — médias misturadas mascaram
+   * o tempo real de atendimento humano quando há autoresponder de boas-vindas.
+   *
+   * Setado em:
+   *   - Broadcasts/campanhas recorrentes (via conversationFromCampaign helper)
+   *   - Respostas do agente IA (saveAgentMessage)
+   *
+   * Heurística de fallback no consumidor (quando undefined em msgs antigas):
+   *   - direction='out' && !senderId        → provavelmente automatizada
+   *   - tempo desde inbound < 3s            → possivelmente automatizada
+   *   - caso contrário                       → humano
+   */
+  isAutomated?: boolean;
   mediaUrl?: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
   /** Nome do arquivo original para documentos. Renderizado no card; preserva

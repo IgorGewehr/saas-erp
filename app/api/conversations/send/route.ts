@@ -1185,6 +1185,7 @@ async function saveAgentMessage(
       content,
       status: 'sent',
       senderName: 'IA',
+      isAutomated: true,
       externalMessageId,
       sentAt: now,
       createdAt: now,

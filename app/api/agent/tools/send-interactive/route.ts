@@ -149,6 +149,7 @@ export async function POST(req: NextRequest) {
       content: displayContent,
       status: 'sent',
       senderName: 'IA',
+      isAutomated: true,
       externalMessageId,
       sentAt: now,
       createdAt: now,
