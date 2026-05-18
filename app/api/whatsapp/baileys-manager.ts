@@ -878,6 +878,7 @@ async function handleInboundMessage(
         lastMessage: displayText,
         lastMessageAt: timestamp,
         lastMessageDirection: 'inbound',
+        firstInboundFromContactAt: timestamp,
         unreadCount: 1,
         createdAt: now,
         updatedAt: now,
@@ -912,6 +913,8 @@ async function handleInboundMessage(
           lastMessageDirection: 'inbound',
           unreadCount: FieldValue.increment(1),
           updatedAt: now,
+          // first-touch do contato — habilita filtro "Cliente não respondeu".
+          ...(!data.firstInboundFromContactAt ? { firstInboundFromContactAt: timestamp } : {}),
         };
         if (pushName && (!data.contactName || /^\+?\d[\d\s-]+$/.test(data.contactName))) {
           convUpdate.contactName = pushName;
@@ -977,6 +980,7 @@ async function handleInboundMessage(
           lastMessage: displayText,
           lastMessageAt: timestamp,
           lastMessageDirection: 'inbound',
+          firstInboundFromContactAt: timestamp,
           unreadCount: 1,
           createdAt: now,
           updatedAt: now,

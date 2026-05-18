@@ -1668,6 +1668,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
         lastMessage: params.conversationPreview || params.content || '[Midia]',
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
+        firstInboundFromContactAt: params.timestamp,
         unreadCount: 1,
         createdAt: now,
         updatedAt: now,
@@ -1762,6 +1763,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
         // Clear soft-delete flags on resurrect
         isDeleted: false,
         deletedAt: null,
+        // first-touch do contato — habilita filtro "Cliente não respondeu".
+        // Não sobrescreve; conv pré-campanha onde o contato já respondeu antes
+        // mantém o timestamp original.
+        ...(!existingData.firstInboundFromContactAt ? { firstInboundFromContactAt: params.timestamp } : {}),
       };
       // Backfill / correção de channelConnectionId. Preenche se ausente; também
       // corrige se diferente do resolvido — o webhook é autoritativo (sabemos

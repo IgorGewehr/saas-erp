@@ -241,6 +241,12 @@ async function syncSingleConversation(
 
   const latestMsg = sortedMsgs[sortedMsgs.length - 1];
   const latestIsInbound = latestMsg.from.id !== pageId;
+  // Inbound mais antiga das msgs sincronizadas — alimenta firstInboundFromContactAt.
+  // sortedMsgs está em ordem asc, então .find() devolve a primeira inbound.
+  const oldestInboundMsg = sortedMsgs.find(m => m.from.id !== pageId);
+  const oldestInboundAt = oldestInboundMsg
+    ? new Date(oldestInboundMsg.created_time).toISOString()
+    : null;
 
   if (convSnap.empty) {
     // Create new conversation
@@ -256,6 +262,7 @@ async function syncSingleConversation(
       lastMessage: latestMsg.message || '[Mídia]',
       lastMessageAt: new Date(latestMsg.created_time).toISOString(),
       lastMessageDirection: latestIsInbound ? 'inbound' : 'outbound',
+      ...(oldestInboundAt ? { firstInboundFromContactAt: oldestInboundAt } : {}),
       unreadCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -295,6 +302,15 @@ async function syncSingleConversation(
       enrichUpdate.lastMessage = latestMsg.message || '[Mídia]';
       enrichUpdate.lastMessageAt = syncedLastAt;
       enrichUpdate.lastMessageDirection = latestIsInbound ? 'inbound' : 'outbound';
+    }
+    // first-touch do contato — usa a mais antiga entre o existente e a
+    // inbound mais antiga sincronizada (sync pode trazer msgs anteriores
+    // ao que o webhook captou). Só escreve se descobrir algo novo/anterior.
+    if (oldestInboundAt) {
+      const existing = existingData.firstInboundFromContactAt as string | undefined;
+      if (!existing || oldestInboundAt < existing) {
+        enrichUpdate.firstInboundFromContactAt = oldestInboundAt;
+      }
     }
 
     if (Object.keys(enrichUpdate).length > 1) {

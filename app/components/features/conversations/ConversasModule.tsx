@@ -3145,14 +3145,19 @@ interface AdvancedFilters {
    *  vinculado (ex: 'novo', 'qualificado'). Vazio = sem filtro. Conversas
    *  sem crmContactId nunca passam quando este filtro está ativo. */
   pipelineStage: string;
+  /** Quando true, mostra apenas conversas sem `firstInboundFromContactAt` —
+   *  ou seja, contatos que NUNCA mandaram mensagem (típico de campanhas
+   *  sem engajamento). Usar combinado com "Origem da campanha" pra listar
+   *  destinatários de um broadcast específico que não responderam. */
+  noReplyFromContact: boolean;
 }
 
 const EMPTY_ADV_FILTERS: AdvancedFilters = {
-  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '', pipelineStage: '',
+  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '', pipelineStage: '', noReplyFromContact: false,
 };
 
 function countActiveFilters(f: AdvancedFilters): number {
-  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin, f.pipelineStage].filter(Boolean).length;
+  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin, f.pipelineStage, f.noReplyFromContact].filter(Boolean).length;
 }
 
 /** Opção de campanha pro dropdown — pre-aggregated pelo container.
@@ -3267,6 +3272,19 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
             </select>
           </div>
         )}
+
+        {/* Cliente não respondeu — flagra convs sem firstInboundFromContactAt
+            (contato nunca mandou nada). Útil principalmente quando combinado
+            com "Origem da campanha" → lista destinatários sem engajamento
+            pra retargeting. Convs inbound-initiated têm o campo setado em
+            createdAt, então não aparecem aqui. */}
+        <label className="flex items-center gap-2 cursor-pointer">
+          <button onClick={() => set('noReplyFromContact', !filters.noReplyFromContact)}
+            className={cn('w-8 h-4 rounded-full transition-colors relative shrink-0', filters.noReplyFromContact ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')}>
+            <span className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.noReplyFromContact ? 'translate-x-4' : 'translate-x-0.5')} />
+          </button>
+          <span className="text-xs text-gray-600 dark:text-gray-400">Cliente não respondeu</span>
+        </label>
 
         <div className="flex items-center justify-between">
           {/* Unread only */}
@@ -7068,6 +7086,7 @@ export default function ConversasModule() {
       unreadOnly: advFilters.unreadOnly || undefined,
       campaignOrigin: advFilters.campaignOrigin || undefined,
       pipelineStage: advFilters.pipelineStage || undefined,
+      noReplyFromContact: advFilters.noReplyFromContact || undefined,
     };
     // Edição: sobrescreve nome/emoji/filtros do doc existente. Filtros
     // refletem o snapshot atual da UI — comportamento ergonômico esperado
@@ -7118,6 +7137,7 @@ export default function ConversasModule() {
         unreadOnly: view.filters.unreadOnly ?? false,
         campaignOrigin: view.filters.campaignOrigin ?? '',
         pipelineStage: view.filters.pipelineStage ?? '',
+        noReplyFromContact: view.filters.noReplyFromContact ?? false,
       });
     }
     setEditingView(view);
@@ -7176,6 +7196,7 @@ export default function ConversasModule() {
       unreadOnly: view.filters.unreadOnly ?? false,
       campaignOrigin: validCampaign ? persistedCampaign : '',
       pipelineStage: view.filters.pipelineStage ?? '',
+      noReplyFromContact: view.filters.noReplyFromContact ?? false,
     });
   };
 
@@ -8780,6 +8801,11 @@ export default function ConversasModule() {
         || (!!c.crmContactId && clientStageById.get(c.crmContactId) === advFilters.pipelineStage);
       const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
       const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
+      // "Cliente não respondeu": ausência do timestamp do primeiro inbound do
+      // contato. Conversas pré-deploy do field ficam sem o campo mesmo se o
+      // contato já respondeu — backfill via scripts/backfill-conversation-
+      // first-inbound.ts corrige.
+      const matchesNoReply = !advFilters.noReplyFromContact || !c.firstInboundFromContactAt;
       // Origem da campanha: combina dois caminhos. Forward = campo denormalizado
       // no doc Conversation (criado a partir do deploy + backfill no matched).
       // Retro = id presente no Set retroCampaignConvIds carregado de
@@ -8792,7 +8818,7 @@ export default function ConversasModule() {
         || (campaignKind === 'broadcast' && c.originBroadcastId === campaignId)
         || (campaignKind === 'birthday' && c.originBirthdayCampaignId === campaignId)
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
-      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage;
+      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesNoReply;
     });
   }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById]);
 

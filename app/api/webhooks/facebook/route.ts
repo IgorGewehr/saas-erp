@@ -380,6 +380,7 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         lastMessage: params.text,
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
+        firstInboundFromContactAt: params.timestamp,
         unreadCount: 1,
         createdAt: now,
         updatedAt: now,
@@ -396,6 +397,8 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         lastMessageDirection: 'inbound',
         unreadCount: FieldValue.increment(1),
         updatedAt: now,
+        // first-touch do contato — habilita filtro "Cliente não respondeu".
+        ...(!existingConv.firstInboundFromContactAt ? { firstInboundFromContactAt: params.timestamp } : {}),
       };
 
       // Enrich name: replace numeric IDs AND default placeholder names with the real name

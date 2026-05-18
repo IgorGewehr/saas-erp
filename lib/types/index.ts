@@ -2251,6 +2251,17 @@ export interface Conversation {
    */
   firstAutoResponseAt?: string;
   /**
+   * ISO — primeira mensagem inbound vinda do CONTATO. Setado UMA vez quando
+   * o primeiro inbound chega via webhook (Meta/Baileys/Facebook), nunca
+   * sobrescreve. Em conversas iniciadas por campanha (originBroadcastId/
+   * originBirthdayCampaignId), permanece ausente até o contato responder —
+   * habilita o filtro "Cliente não respondeu" pra retargeting de campanhas
+   * sem engajamento. Em conversas inbound-initiated, normalmente igual a
+   * createdAt (primeira msg criou a conv). Backfill via
+   * scripts/backfill-conversation-first-inbound.ts.
+   */
+  firstInboundFromContactAt?: string;
+  /**
    * Quantas vezes esta conversa transitou de resolved → open. Métrica chave:
    * conv reaberta = problema mal resolvido. Setado quando o operador (ou
    * agente IA) muda status de 'resolved' pra 'open'. Não conta primeira vez
@@ -2335,6 +2346,8 @@ export interface ConversationView {
     campaignOrigin?: string;
     /** Filtro por estágio do pipeline do CRM (LeadStatus do Client vinculado). */
     pipelineStage?: string;
+    /** Mostra apenas conversas onde o contato nunca respondeu (sem firstInboundFromContactAt). */
+    noReplyFromContact?: boolean;
   };
   createdBy: string;
   createdByName: string;
