@@ -2205,6 +2205,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
       setFormSegmentId('');
       setFormAudienceFilterGroups([makeCampaignAudienceGroup()]);
       setFormRequireMarketingOptIn(false);
+      // Reseta exclusões manuais — useEffect que reseta em mudança de audiência
+      // não cobre o caso "duas campanhas do mesmo tipo (ex: 'list' + 'list')"
+      // porque setFormAudienceType('list') sobre valor já 'list' não dispara
+      // re-render. Limpar explicitamente evita vazamento de keys entre campanhas.
+      setFormExcludedKeys(new Set());
+      setAudiencePreviewOpen(false);
       setSaveAsList(false);
       setListSaveName('');
       setRecipientResetKey(k => k + 1);
