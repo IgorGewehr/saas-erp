@@ -807,6 +807,22 @@ service cloud.firestore {
     }
 
     // ============================================
+    // APPOINTMENT REMINDER LOGS COLLECTION
+    // Log idempotente de lembrete (1 doc por appointmentId+minutesBefore).
+    // Mesma semântica do birthdayCampaignLogs: write só via admin SDK
+    // (cron runner), read liberado pro tenant pra debug/auditoria futura.
+    // ============================================
+    match /appointmentReminderLogs/{logId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      // Operador NÃO pode apagar/alterar — não pode forçar re-disparo
+      // de lembrete já enviado (evita spam de notificação).
+      allow write: if false;
+    }
+
+    // ============================================
     // BROADCAST MESSAGES COLLECTION
     // ============================================
     match /broadcastMessages/{messageId} {
