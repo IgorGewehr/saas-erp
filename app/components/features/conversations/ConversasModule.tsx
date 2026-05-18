@@ -1403,34 +1403,44 @@ function ThreadHeader({
 
       {/* Actions */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
-        {/* AI toggle — sempre visível; estado reflete business-wide + conversation-level */}
+        {/* AI toggle — sempre clicável. Combina estado business-wide + per-conv:
+            - Global ON  + conv !== false  → IA ON (violet, default herda global)
+            - Global ON  + conv === false  → IA OFF (cinza)
+            - Global OFF + conv === true   → OVERRIDE (âmbar — opt-in explícito)
+            - Global OFF + conv !== true   → IA OFF (cinza com hint pra Settings) */}
         {onToggleAi && (() => {
-          const aiOn = aiEnabledBusinessWide && conversation.aiEnabled !== false;
-          const disabled = !aiEnabledBusinessWide;
+          const convOptIn = conversation.aiEnabled === true;
+          const convOptOut = conversation.aiEnabled === false;
+          const isOverride = !aiEnabledBusinessWide && convOptIn;
+          const aiOn = isOverride || (aiEnabledBusinessWide && !convOptOut);
           return (
             <motion.button
-              whileHover={!disabled ? { scale: 1.05 } : {}}
-              whileTap={!disabled ? { scale: 0.95 } : {}}
-              onClick={disabled ? onGoToAgentSettings : onToggleAi}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={onToggleAi}
               className={cn(
                 'relative inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold transition-colors border',
-                aiOn
-                  ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white border-violet-500 shadow-sm shadow-violet-500/20'
-                  : disabled
-                    ? 'bg-gray-50 dark:bg-white/[0.03] text-gray-400 border-dashed border-gray-300 dark:border-gray-700 cursor-help'
+                isOverride
+                  // Cor diferente pra deixar EXPLÍCITO que tá fora do default da empresa.
+                  // Operador olha e sabe "isso é per-conv, não é o padrão".
+                  ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white border-amber-500 shadow-sm shadow-amber-500/20'
+                  : aiOn
+                    ? 'bg-gradient-to-r from-violet-500 to-purple-500 text-white border-violet-500 shadow-sm shadow-violet-500/20'
                     : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400 border-gray-200 dark:border-gray-700',
               )}
               title={
-                disabled
-                  ? 'Agente IA desativado em nível de empresa. Clique para ir para Configurações.'
-                  : aiOn
-                    ? 'Agente IA ativo nesta conversa — clique para desligar só aqui'
-                    : 'Agente IA desligado nesta conversa — clique para ligar'
+                isOverride
+                  ? 'IA ATIVA SÓ NESTA CONVERSA (global desligado em Configurações) — clique para desligar'
+                  : !aiEnabledBusinessWide
+                    ? 'IA global desligada. Clique para ligar SÓ nesta conversa (override)'
+                    : aiOn
+                      ? 'Agente IA ativo nesta conversa — clique para desligar só aqui'
+                      : 'Agente IA desligado nesta conversa — clique para ligar'
               }
             >
               {aiOn ? <Bot className="w-3.5 h-3.5" /> : <BotOff className="w-3.5 h-3.5" />}
               <span className="hidden md:inline">
-                {disabled ? 'IA —' : aiOn ? 'IA ON' : 'IA OFF'}
+                {isOverride ? 'IA *' : aiOn ? 'IA ON' : 'IA OFF'}
               </span>
               {aiOn && (
                 <motion.span
@@ -6325,7 +6335,14 @@ export default function ConversasModule() {
 
   const handleToggleAi = useCallback(async (conv: Conversation) => {
     if (!business?.id) return;
-    const nextValue = conv.aiEnabled === false ? true : false;
+    // Computa o ESTADO VISÍVEL atual (mesma lógica do botão) e inverte.
+    // Sem isso, clicar numa conv com aiEnabled=undefined (default) gravava
+    // false primeiro — operador precisaria de 2 cliques pra ligar override
+    // quando global tá desligado.
+    const globalOn = !!business.settings?.aiAgent?.enabled;
+    const isOverride = !globalOn && conv.aiEnabled === true;
+    const aiOn = isOverride || (globalOn && conv.aiEnabled !== false);
+    const nextValue = !aiOn;
     try {
       await updateDoc(doc(db, 'conversations', conv.id), {
         aiEnabled: nextValue,
@@ -6334,7 +6351,7 @@ export default function ConversasModule() {
     } catch (err) {
       console.error('[Conversations] Toggle AI failed:', err);
     }
-  }, [business?.id]);
+  }, [business?.id, business?.settings?.aiAgent?.enabled]);
 
   const handleGoToAgentSettings = useCallback(() => {
     setActivePage('Configurações');

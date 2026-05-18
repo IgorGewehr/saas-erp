@@ -96,15 +96,24 @@ export async function dispatchInboundToAgent(
     const business = bizSnap.data() as Business;
     const conv = convSnap.data() as Conversation;
 
-    // Gates
+    // Gates — semântica de override per-conversa:
+    //   - global ON  + conv.aiEnabled !== false  → responde (default herda global)
+    //   - global ON  + conv.aiEnabled === false  → SKIP (operador desligou nessa conv)
+    //   - global OFF + conv.aiEnabled === true   → responde (override explícito do operador)
+    //   - global OFF + conv.aiEnabled !== true   → SKIP (default seguro)
+    //
+    // Segurança: só `=== true` libera override (strict equality). Convs novas e
+    // legadas vêm com aiEnabled=undefined → nunca vazam IA quando global está off.
+    // Único caminho pra true é o toggle manual em handleToggleAi (UI).
     const agentEnabledOnBusiness = !!business.settings?.aiAgent?.enabled;
-    dlog(`${tag} gate check — aiAgent.enabled=${agentEnabledOnBusiness} conv.aiEnabled=${(conv as any).aiEnabled}`);
-    if (!agentEnabledOnBusiness) {
-      dlog(`${tag} SKIP: aiAgent.enabled=false on business`);
+    const convOverrideOn = conv.aiEnabled === true;
+    dlog(`${tag} gate check — aiAgent.enabled=${agentEnabledOnBusiness} conv.aiEnabled=${(conv as any).aiEnabled} override=${convOverrideOn}`);
+    if (!agentEnabledOnBusiness && !convOverrideOn) {
+      dlog(`${tag} SKIP: global off and no per-conv override`);
       return;
     }
-    if (conv.aiEnabled === false) {
-      dlog(`${tag} SKIP: aiEnabled=false on conversation`);
+    if (agentEnabledOnBusiness && conv.aiEnabled === false) {
+      dlog(`${tag} SKIP: aiEnabled=false on conversation (opted out of global)`);
       return;
     }
 
