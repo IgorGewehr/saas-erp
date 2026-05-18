@@ -1169,10 +1169,13 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
     setSaving(true);
     const now = new Date().toISOString();
     const groups = filterGroups.filter(g => g.filters.length > 0);
-    const payload: Omit<Segment, 'id'> = {
+    const trimmedDesc = description.trim();
+    // description é opcional. Firestore rejeita `undefined` direto — precisamos
+    // OMITIR o campo no addDoc (create) e usar deleteField() no updateDoc (edit)
+    // pra limpar quando o usuário apaga uma descrição existente.
+    const basePayload = {
       businessId,
       name: name.trim(),
-      description: description.trim() || undefined,
       filters: groups[0]?.filters ?? [],
       filterGroups: groups,
       contactCount: liveCount,
@@ -1183,9 +1186,15 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
     };
     try {
       if (editing) {
-        await updateDoc(doc(db, 'segments', editing.id), payload);
+        await updateDoc(doc(db, 'segments', editing.id), {
+          ...basePayload,
+          description: trimmedDesc || deleteField(),
+        });
       } else {
-        await addDoc(collection(db, 'segments'), payload);
+        await addDoc(collection(db, 'segments'), {
+          ...basePayload,
+          ...(trimmedDesc ? { description: trimmedDesc } : {}),
+        });
       }
       queryClient.invalidateQueries({ queryKey: ['segments', businessId] });
       toast.success(editing ? 'Segmento atualizado' : 'Segmento criado');
