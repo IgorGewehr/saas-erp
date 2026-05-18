@@ -14,6 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { decryptToken } from '@/lib/utils/encryption';
+import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
@@ -242,11 +243,31 @@ async function syncSingleConversation(
   const latestMsg = sortedMsgs[sortedMsgs.length - 1];
   const latestIsInbound = latestMsg.from.id !== pageId;
   // Inbound mais antiga das msgs sincronizadas — alimenta firstInboundFromContactAt.
-  // sortedMsgs está em ordem asc, então .find() devolve a primeira inbound.
-  const oldestInboundMsg = sortedMsgs.find(m => m.from.id !== pageId);
+  // sortedMsgs está em ordem asc, então findIndex devolve a primeira inbound.
+  const oldestInboundIndex = sortedMsgs.findIndex(m => m.from.id !== pageId);
+  const oldestInboundMsg = oldestInboundIndex >= 0 ? sortedMsgs[oldestInboundIndex] : null;
   const oldestInboundAt = oldestInboundMsg
     ? new Date(oldestInboundMsg.created_time).toISOString()
     : null;
+  // Pra detecção de bot na primeira inbound: outbound imediatamente anterior
+  // a ela nas msgs sincronizadas. Se a primeira inbound abre a thread (sem
+  // outbound antes), só keywords podem flagrar.
+  let prevOutboundBeforeFirstInboundMs: number | null = null;
+  if (oldestInboundIndex > 0) {
+    for (let i = oldestInboundIndex - 1; i >= 0; i--) {
+      if (sortedMsgs[i].from.id === pageId) {
+        prevOutboundBeforeFirstInboundMs = new Date(sortedMsgs[i].created_time).getTime();
+        break;
+      }
+    }
+  }
+  const detectedBotOnOldestInbound = oldestInboundMsg
+    ? detectLikelyBotReply({
+        content: oldestInboundMsg.message ?? '',
+        msgTimestampMs: new Date(oldestInboundMsg.created_time).getTime(),
+        prevOutboundAtMs: prevOutboundBeforeFirstInboundMs,
+      })
+    : false;
 
   if (convSnap.empty) {
     // Create new conversation
@@ -263,6 +284,7 @@ async function syncSingleConversation(
       lastMessageAt: new Date(latestMsg.created_time).toISOString(),
       lastMessageDirection: latestIsInbound ? 'inbound' : 'outbound',
       ...(oldestInboundAt ? { firstInboundFromContactAt: oldestInboundAt } : {}),
+      ...(oldestInboundAt && detectedBotOnOldestInbound ? { firstInboundLikelyBot: true } : {}),
       unreadCount: 0,
       createdAt: now,
       updatedAt: now,
@@ -306,10 +328,13 @@ async function syncSingleConversation(
     // first-touch do contato — usa a mais antiga entre o existente e a
     // inbound mais antiga sincronizada (sync pode trazer msgs anteriores
     // ao que o webhook captou). Só escreve se descobrir algo novo/anterior.
+    // Se o timestamp foi sobrescrito, re-avalia bot pra refletir a inbound
+    // que agora é a "primeira".
     if (oldestInboundAt) {
       const existing = existingData.firstInboundFromContactAt as string | undefined;
       if (!existing || oldestInboundAt < existing) {
         enrichUpdate.firstInboundFromContactAt = oldestInboundAt;
+        enrichUpdate.firstInboundLikelyBot = detectedBotOnOldestInbound;
       }
     }
 

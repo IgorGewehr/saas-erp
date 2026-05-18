@@ -3150,14 +3150,20 @@ interface AdvancedFilters {
    *  sem engajamento). Usar combinado com "Origem da campanha" pra listar
    *  destinatários de um broadcast específico que não responderam. */
   noReplyFromContact: boolean;
+  /** Quando true, mostra apenas conversas onde a primeira resposta do contato
+   *  foi flagada como auto-reply/bot (firstInboundLikelyBot === true).
+   *  Heurística: tempo curto (<5s) entre nosso outbound e o inbound OR match
+   *  em padrões textuais ("fora do horário", "mensagem automática", etc.).
+   *  Detecta atendimento automatizado do lado do cliente. */
+  likelyBotReply: boolean;
 }
 
 const EMPTY_ADV_FILTERS: AdvancedFilters = {
-  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '', pipelineStage: '', noReplyFromContact: false,
+  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '', pipelineStage: '', noReplyFromContact: false, likelyBotReply: false,
 };
 
 function countActiveFilters(f: AdvancedFilters): number {
-  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin, f.pipelineStage, f.noReplyFromContact].filter(Boolean).length;
+  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin, f.pipelineStage, f.noReplyFromContact, f.likelyBotReply].filter(Boolean).length;
 }
 
 /** Opção de campanha pro dropdown — pre-aggregated pelo container.
@@ -3284,6 +3290,19 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
             <span className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.noReplyFromContact ? 'translate-x-4' : 'translate-x-0.5')} />
           </button>
           <span className="text-xs text-gray-600 dark:text-gray-400">Cliente não respondeu</span>
+        </label>
+
+        {/* Cliente respondeu com bot — flagra convs onde a primeira inbound
+            do contato foi auto-reply. Webhook decide via detectLikelyBotReply
+            (lib/utils/botDetection.ts) na primeira inbound após nosso outbound.
+            Mutuamente exclusivo na prática com "Cliente não respondeu" (um exige
+            firstInboundFromContactAt, o outro exige ausência). */}
+        <label className="flex items-center gap-2 cursor-pointer">
+          <button onClick={() => set('likelyBotReply', !filters.likelyBotReply)}
+            className={cn('w-8 h-4 rounded-full transition-colors relative shrink-0', filters.likelyBotReply ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')}>
+            <span className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.likelyBotReply ? 'translate-x-4' : 'translate-x-0.5')} />
+          </button>
+          <span className="text-xs text-gray-600 dark:text-gray-400">Cliente respondeu com bot</span>
         </label>
 
         <div className="flex items-center justify-between">
@@ -7087,6 +7106,7 @@ export default function ConversasModule() {
       campaignOrigin: advFilters.campaignOrigin || undefined,
       pipelineStage: advFilters.pipelineStage || undefined,
       noReplyFromContact: advFilters.noReplyFromContact || undefined,
+      likelyBotReply: advFilters.likelyBotReply || undefined,
     };
     // Edição: sobrescreve nome/emoji/filtros do doc existente. Filtros
     // refletem o snapshot atual da UI — comportamento ergonômico esperado
@@ -7138,6 +7158,7 @@ export default function ConversasModule() {
         campaignOrigin: view.filters.campaignOrigin ?? '',
         pipelineStage: view.filters.pipelineStage ?? '',
         noReplyFromContact: view.filters.noReplyFromContact ?? false,
+        likelyBotReply: view.filters.likelyBotReply ?? false,
       });
     }
     setEditingView(view);
@@ -7197,6 +7218,7 @@ export default function ConversasModule() {
       campaignOrigin: validCampaign ? persistedCampaign : '',
       pipelineStage: view.filters.pipelineStage ?? '',
       noReplyFromContact: view.filters.noReplyFromContact ?? false,
+      likelyBotReply: view.filters.likelyBotReply ?? false,
     });
   };
 
@@ -8806,6 +8828,9 @@ export default function ConversasModule() {
       // contato já respondeu — backfill via scripts/backfill-conversation-
       // first-inbound.ts corrige.
       const matchesNoReply = !advFilters.noReplyFromContact || !c.firstInboundFromContactAt;
+      // "Cliente respondeu com bot": flag setado no webhook na primeira
+      // inbound. Convs pré-deploy ficam com false — backfill opcional.
+      const matchesLikelyBot = !advFilters.likelyBotReply || c.firstInboundLikelyBot === true;
       // Origem da campanha: combina dois caminhos. Forward = campo denormalizado
       // no doc Conversation (criado a partir do deploy + backfill no matched).
       // Retro = id presente no Set retroCampaignConvIds carregado de
@@ -8818,7 +8843,7 @@ export default function ConversasModule() {
         || (campaignKind === 'broadcast' && c.originBroadcastId === campaignId)
         || (campaignKind === 'birthday' && c.originBirthdayCampaignId === campaignId)
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
-      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesNoReply;
+      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesNoReply && matchesLikelyBot;
     });
   }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById]);
 

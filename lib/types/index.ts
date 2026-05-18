@@ -2262,6 +2262,18 @@ export interface Conversation {
    */
   firstInboundFromContactAt?: string;
   /**
+   * true quando o PRIMEIRO inbound do contato (o que setou
+   * firstInboundFromContactAt) foi detectado como provável auto-reply/bot
+   * pelo helper `detectLikelyBotReply` — combina tempo curto entre o nosso
+   * outbound anterior e o inbound (<5s) OU match com padrões textuais de
+   * mensagens automáticas (ex: "fora do horário", "mensagem automática").
+   * Habilita o filtro "Cliente respondeu com bot" pra separar destinatários
+   * de campanha que tiveram engajamento real vs. atendimento automatizado
+   * do lado deles. Setado junto com firstInboundFromContactAt, nunca
+   * sobrescreve.
+   */
+  firstInboundLikelyBot?: boolean;
+  /**
    * Quantas vezes esta conversa transitou de resolved → open. Métrica chave:
    * conv reaberta = problema mal resolvido. Setado quando o operador (ou
    * agente IA) muda status de 'resolved' pra 'open'. Não conta primeira vez
@@ -2348,6 +2360,8 @@ export interface ConversationView {
     pipelineStage?: string;
     /** Mostra apenas conversas onde o contato nunca respondeu (sem firstInboundFromContactAt). */
     noReplyFromContact?: boolean;
+    /** Mostra apenas conversas onde a primeira resposta do contato foi detectada como auto-reply/bot. */
+    likelyBotReply?: boolean;
   };
   createdBy: string;
   createdByName: string;

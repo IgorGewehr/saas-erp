@@ -19,6 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { decryptToken } from '@/lib/utils/encryption';
+import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -381,6 +382,11 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         firstInboundFromContactAt: params.timestamp,
+        ...(detectLikelyBotReply({
+          content: params.text ?? '',
+          msgTimestampMs: new Date(params.timestamp).getTime(),
+          prevOutboundAtMs: null,
+        }) ? { firstInboundLikelyBot: true } : {}),
         unreadCount: 1,
         createdAt: now,
         updatedAt: now,
@@ -391,6 +397,21 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       conversationId = convSnap.docs[0].id;
       const existingConv = convSnap.docs[0].data();
 
+      // Detecção de bot — só na primeira inbound do contato.
+      const isFirstInboundFb = !existingConv.firstInboundFromContactAt;
+      let likelyBotPatchFb: Record<string, unknown> = {};
+      if (isFirstInboundFb) {
+        const prevOutboundAtMs = existingConv.lastMessageDirection === 'outbound' && existingConv.lastMessageAt
+          ? new Date(existingConv.lastMessageAt as string).getTime()
+          : null;
+        const isBot = detectLikelyBotReply({
+          content: params.text ?? '',
+          msgTimestampMs: new Date(params.timestamp).getTime(),
+          prevOutboundAtMs,
+        });
+        if (isBot) likelyBotPatchFb = { firstInboundLikelyBot: true };
+      }
+
       const convUpdate: Record<string, unknown> = {
         lastMessage: params.text,
         lastMessageAt: params.timestamp,
@@ -398,7 +419,8 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         unreadCount: FieldValue.increment(1),
         updatedAt: now,
         // first-touch do contato — habilita filtro "Cliente não respondeu".
-        ...(!existingConv.firstInboundFromContactAt ? { firstInboundFromContactAt: params.timestamp } : {}),
+        ...(isFirstInboundFb ? { firstInboundFromContactAt: params.timestamp } : {}),
+        ...likelyBotPatchFb,
       };
 
       // Enrich name: replace numeric IDs AND default placeholder names with the real name

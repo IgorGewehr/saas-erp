@@ -20,6 +20,7 @@ import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
+import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
 import { markWebhookSeen } from '@/contracts/_runtime/webhookIdempotency';
@@ -1669,6 +1670,13 @@ async function saveInboundMessage(params: InboundMessageParams) {
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         firstInboundFromContactAt: params.timestamp,
+        // Conv nova: nao ha outbound anterior, mas keywords ainda podem flagrar
+        // (caso raro de contato abrir conversa ja com mensagem de auto-reply).
+        ...(detectLikelyBotReply({
+          content: params.content ?? '',
+          msgTimestampMs: new Date(params.timestamp).getTime(),
+          prevOutboundAtMs: null,
+        }) ? { firstInboundLikelyBot: true } : {}),
         unreadCount: 1,
         createdAt: now,
         updatedAt: now,
@@ -1754,6 +1762,24 @@ async function saveInboundMessage(params: InboundMessageParams) {
         console.log('[Meta Webhook] Resurrecting soft-deleted conversation:', conversationId);
       }
 
+      // Detecção de bot: só roda na PRIMEIRA inbound do contato e se há um
+      // outbound anterior pra comparar tempo (caso típico: campanha → resposta).
+      // Sem prev outbound, só o teste de palavra-chave roda. Falso positivo
+      // baixo — combinamos tempo curto OR palavras-chave, e só na 1ª inbound.
+      const isFirstInbound = !existingData.firstInboundFromContactAt;
+      let likelyBotPatch: Record<string, unknown> = {};
+      if (isFirstInbound) {
+        const prevOutboundAtMs = existingData.lastMessageDirection === 'outbound' && existingData.lastMessageAt
+          ? new Date(existingData.lastMessageAt as string).getTime()
+          : null;
+        const isBot = detectLikelyBotReply({
+          content: params.content ?? '',
+          msgTimestampMs: new Date(params.timestamp).getTime(),
+          prevOutboundAtMs,
+        });
+        if (isBot) likelyBotPatch = { firstInboundLikelyBot: true };
+      }
+
       const enrichUpdate: Record<string, unknown> = {
         lastMessage: params.conversationPreview || params.content || '[Midia]',
         lastMessageAt: params.timestamp,
@@ -1766,7 +1792,8 @@ async function saveInboundMessage(params: InboundMessageParams) {
         // first-touch do contato — habilita filtro "Cliente não respondeu".
         // Não sobrescreve; conv pré-campanha onde o contato já respondeu antes
         // mantém o timestamp original.
-        ...(!existingData.firstInboundFromContactAt ? { firstInboundFromContactAt: params.timestamp } : {}),
+        ...(isFirstInbound ? { firstInboundFromContactAt: params.timestamp } : {}),
+        ...likelyBotPatch,
       };
       // Backfill / correção de channelConnectionId. Preenche se ausente; também
       // corrige se diferente do resolvido — o webhook é autoritativo (sabemos

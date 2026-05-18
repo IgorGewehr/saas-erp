@@ -26,6 +26,7 @@ import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
+import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -879,6 +880,11 @@ async function handleInboundMessage(
         lastMessageAt: timestamp,
         lastMessageDirection: 'inbound',
         firstInboundFromContactAt: timestamp,
+        ...(detectLikelyBotReply({
+          content: displayText,
+          msgTimestampMs: new Date(timestamp).getTime(),
+          prevOutboundAtMs: null,
+        }) ? { firstInboundLikelyBot: true } : {}),
         unreadCount: 1,
         createdAt: now,
         updatedAt: now,
@@ -907,6 +913,22 @@ async function handleInboundMessage(
           return { kind: 'conflict' as const };
         }
 
+        // Detecção de bot — só na primeira inbound do contato. Conv nova
+        // (branch acima) nunca tem prev outbound, então não roda lá.
+        const isFirstInboundBaileys = !data.firstInboundFromContactAt;
+        let likelyBotPatchBaileys: Record<string, unknown> = {};
+        if (isFirstInboundBaileys) {
+          const prevOutboundAtMs = data.lastMessageDirection === 'outbound' && data.lastMessageAt
+            ? new Date(data.lastMessageAt as string).getTime()
+            : null;
+          const isBot = detectLikelyBotReply({
+            content: displayText,
+            msgTimestampMs: new Date(timestamp).getTime(),
+            prevOutboundAtMs,
+          });
+          if (isBot) likelyBotPatchBaileys = { firstInboundLikelyBot: true };
+        }
+
         const convUpdate: Record<string, unknown> = {
           lastMessage: displayText,
           lastMessageAt: timestamp,
@@ -914,7 +936,8 @@ async function handleInboundMessage(
           unreadCount: FieldValue.increment(1),
           updatedAt: now,
           // first-touch do contato — habilita filtro "Cliente não respondeu".
-          ...(!data.firstInboundFromContactAt ? { firstInboundFromContactAt: timestamp } : {}),
+          ...(isFirstInboundBaileys ? { firstInboundFromContactAt: timestamp } : {}),
+          ...likelyBotPatchBaileys,
         };
         if (pushName && (!data.contactName || /^\+?\d[\d\s-]+$/.test(data.contactName))) {
           convUpdate.contactName = pushName;
@@ -981,6 +1004,11 @@ async function handleInboundMessage(
           lastMessageAt: timestamp,
           lastMessageDirection: 'inbound',
           firstInboundFromContactAt: timestamp,
+          ...(detectLikelyBotReply({
+            content: displayText,
+            msgTimestampMs: new Date(timestamp).getTime(),
+            prevOutboundAtMs: null,
+          }) ? { firstInboundLikelyBot: true } : {}),
           unreadCount: 1,
           createdAt: now,
           updatedAt: now,
