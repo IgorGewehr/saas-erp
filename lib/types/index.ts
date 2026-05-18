@@ -3084,6 +3084,16 @@ export interface Broadcast {
   audienceResolvedAt?: string;
   /** Se true, só clientes com optInMarketing explícito entraram na audiência. */
   audienceRequireMarketingOptIn?: boolean;
+  /**
+   * Contatos desmarcados manualmente pelo operador NESTA campanha (override
+   * per-campaign sem alterar segmento/filtros). Pode conter:
+   *   - Client.id (pra audiências baseadas em segmento/filtros/tags)
+   *   - phoneNumber/email/recipientId (pra audienceType='list' onde não há contactId)
+   * O frontend filtra recipients[] antes de gravar — backend não re-resolve,
+   * então o snapshot final em recipients[] já está limpo. Campo persistido
+   * pra auditoria e pra permitir re-edição do broadcast (futuro).
+   */
+  excludedAudienceKeys?: string[];
   /** Lista direta de recipientes (paste/CSV) — usado quando audienceType === 'list'. */
   recipients?: BroadcastRecipient[];
   /** ID do broadcast original quando este é um retry — auditoria. */
