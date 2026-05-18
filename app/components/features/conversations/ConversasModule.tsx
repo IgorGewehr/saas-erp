@@ -2435,6 +2435,15 @@ interface ComposerProps {
   attachment: File | null;
   onAttachmentSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onAttachmentRemove: () => void;
+  /** Mídia pré-carregada por snippet — já hospedada no Storage. Renderiza
+   *  preview no lugar do attachment normal e o envio pula upload. */
+  pendingMedia?: {
+    mediaUrl: string;
+    mediaType: 'image' | 'video' | 'audio' | 'document';
+    fileName?: string;
+    shortcode: string;
+  } | null;
+  onPendingMediaRemove?: () => void;
   disabled?: boolean;
   onTemplateClick?: () => void;
   isInternalNote?: boolean;
@@ -2573,6 +2582,8 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   attachment,
   onAttachmentSelect,
   onAttachmentRemove,
+  pendingMedia,
+  onPendingMediaRemove,
   disabled,
   onTemplateClick,
   isInternalNote,
@@ -2605,7 +2616,7 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
     focus: () => taRef.current?.focus(),
   }), []);
 
-  const hasContent = text.trim().length > 0 || !!attachment;
+  const hasContent = text.trim().length > 0 || !!attachment || !!pendingMedia;
   const isDisabled = disabled || false;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -2960,6 +2971,49 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
               >
                 <X className="w-3 h-3" />
               </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Snippet media preview — mídia já hospedada (não é File local). Visual
+          espelha o attachment normal pra UX consistente; badge mostra o
+          shortcode pra deixar claro de onde veio. */}
+      <AnimatePresence>
+        {pendingMedia && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="mb-2 overflow-hidden"
+          >
+            <div className="flex items-center gap-3 p-2.5 rounded-xl bg-amber-50/50 dark:bg-amber-500/[0.06] border border-amber-200/60 dark:border-amber-500/20">
+              {pendingMedia.mediaType === 'image' ? (
+                <img src={pendingMedia.mediaUrl} alt="Preview" className="w-12 h-12 rounded-lg object-cover flex-shrink-0" />
+              ) : (
+                <div className="w-12 h-12 rounded-lg bg-amber-100/60 dark:bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+                  {pendingMedia.mediaType === 'video' && <Video className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+                  {pendingMedia.mediaType === 'audio' && <Headphones className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+                  {pendingMedia.mediaType === 'document' && <FileText className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
+                  {pendingMedia.fileName ?? 'Mídia da resposta rápida'}
+                </p>
+                <p className="text-[10px] text-amber-700 dark:text-amber-400 font-mono">
+                  /{pendingMedia.shortcode}
+                </p>
+              </div>
+              {onPendingMediaRemove && (
+                <button
+                  onClick={onPendingMediaRemove}
+                  className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-500/15 flex items-center justify-center text-amber-700 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-500/25 transition-colors flex-shrink-0"
+                  title="Remover mídia"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
             </div>
           </motion.div>
         )}
@@ -6738,6 +6792,18 @@ export default function ConversasModule() {
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
 
+  // Snippet com mídia "pré-carregado" no Composer: visualmente igual a um
+  // anexo, mas a mídia já está no Storage (mediaUrl) — handleSend pula upload
+  // e chama sendPreparedMedia direto. Mutuamente exclusivo com `attachment`
+  // (anexar arquivo novo limpa; selecionar outro snippet substitui). Limpo no
+  // switch de conversa e após envio bem-sucedido.
+  const [pendingSnippetMedia, setPendingSnippetMedia] = useState<{
+    mediaUrl: string;
+    mediaType: 'image' | 'video' | 'audio' | 'document';
+    fileName?: string;
+    shortcode: string;
+  } | null>(null);
+
   // Reply ativo — populado quando operador clica "Responder" em uma bolha.
   // handleSend lê este state, injeta replyToMessageId/Content/FromMe no POST,
   // e limpa após envio bem-sucedido. Conversation switch também limpa
@@ -7988,6 +8054,7 @@ export default function ConversasModule() {
       setSelectedConversation(conv);
       setShowMobileThread(true);
       setAttachment(null);
+      setPendingSnippetMedia(null);
       // Re-seleção explícita = "vou ler agora" — limpa o flag de intencional
       // pra que o auto-markAsRead possa voltar a funcionar normalmente.
       setIntentionallyUnreadIds(prev => {
@@ -8156,10 +8223,17 @@ export default function ConversasModule() {
     }
 
     setAttachment(finalFile);
+    // Anexar arquivo novo descarta snippet com mídia pré-carregado — não faz
+    // sentido enviar dois anexos simultaneamente, e o operador escolheu o file.
+    setPendingSnippetMedia(null);
   }, [selectedConversation]);
 
   const handleRemoveAttachment = useCallback(() => {
     setAttachment(null);
+  }, []);
+
+  const handleRemovePendingSnippetMedia = useCallback(() => {
+    setPendingSnippetMedia(null);
   }, []);
 
   // Pipeline pós-upload: cria o doc da mensagem, atualiza preview da conversa
@@ -8404,19 +8478,38 @@ export default function ConversasModule() {
     const sourceText = rawText ?? composerRef.current?.getText() ?? '';
     const hasText = sourceText.trim().length > 0;
     const hasFile = !!attachment;
-    if ((!hasText && !hasFile) || !selectedConversation || !business?.id || !user) return;
+    const hasPendingSnippet = !!pendingSnippetMedia;
+    if ((!hasText && !hasFile && !hasPendingSnippet) || !selectedConversation || !business?.id || !user) return;
 
     const content = sourceText.trim();
     const currentAttachment = attachment;
+    const currentPendingSnippet = pendingSnippetMedia;
     // Snapshot do reply ativo antes de limpar — assim a mensagem que sair
     // já carrega o quote mesmo que o usuário clique noutra coisa enquanto envia.
     const currentReply = replyToMessage;
     composerRef.current?.setText('');
     setAttachment(null);
+    setPendingSnippetMedia(null);
     setReplyToMessage(null);
     // Apaga o "Fulano digitando..." pros outros operadores assim que envia —
     // sem isso, o indicador continuava visível até o TTL de 5s expirar.
     stopOperatorTyping();
+
+    // Snippet com mídia: a URL já está no Storage, pula o upload e usa o
+    // texto do composer como caption final. Reply/attachment normal são
+    // ignorados nesse caminho (já limpados acima) — mutuamente exclusivos
+    // por construção do estado.
+    if (currentPendingSnippet) {
+      await sendPreparedMedia({
+        mediaUrl: currentPendingSnippet.mediaUrl,
+        mediaType: currentPendingSnippet.mediaType,
+        fileName: currentPendingSnippet.mediaType === 'document' ? currentPendingSnippet.fileName : undefined,
+        caption: content,
+        asInternal: isInternalNote,
+      });
+      composerRef.current?.focus();
+      return;
+    }
 
     // Envia mídia primeiro (sequencial DENTRO desta chamada de handleSend) pra
     // garantir que a bolha de mídia apareça ANTES do texto quando o operador
@@ -8553,7 +8646,7 @@ export default function ConversasModule() {
       composerRef.current?.focus();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachment, selectedConversation, business?.id, user, sendMediaMessage, isInternalNote, replyToMessage]);
+  }, [attachment, pendingSnippetMedia, selectedConversation, business?.id, user, sendMediaMessage, sendPreparedMedia, isInternalNote, replyToMessage]);
 
   // handleKeyDown removido daqui — Enter e "/" agora são tratados dentro do
   // próprio Composer, com acesso direto ao text local. Pai só recebe via
@@ -8666,24 +8759,30 @@ export default function ConversasModule() {
     if (selectedConversation) {
       content = content.replace(/\{\{contact\.name\}\}/g, selectedConversation.customContactName ?? selectedConversation.contactName);
     }
-    // Snippet com mídia → envia direto (sem passar pelo Composer). Caption =
-    // content do snippet (já com {{contact.name}} resolvido); pode ser vazio.
-    // Sem mídia → comportamento legado: insere texto no Composer pro operador
-    // revisar/editar antes de mandar.
+    // Snippet com mídia → pré-carrega no Composer (mídia + caption editável)
+    // e espera operador clicar enviar. Comportamento idêntico ao snippet de
+    // texto, mas com o anexo visível no preview do Composer. Anexo de
+    // arquivo selecionado antes é descartado — operador escolheu o snippet.
     if (snippet.mediaUrl && snippet.mediaType) {
-      setShowSnippets(false);
-      void sendPreparedMedia({
+      setAttachment(null);
+      setPendingSnippetMedia({
         mediaUrl: snippet.mediaUrl,
         mediaType: snippet.mediaType,
-        fileName: snippet.mediaType === 'document' ? snippet.fileName : undefined,
-        caption: content,
+        fileName: snippet.fileName,
+        shortcode: snippet.shortcode,
       });
+      composerRef.current?.setText(content);
+      setShowSnippets(false);
+      composerRef.current?.focus();
       return;
     }
+    // Snippet só-texto substitui qualquer mídia pendente — escolher um snippet
+    // novo é trocar o que está montado, não acumular.
+    setPendingSnippetMedia(null);
     composerRef.current?.setText(content);
     setShowSnippets(false);
     composerRef.current?.focus();
-  }, [selectedConversation, sendPreparedMedia]);
+  }, [selectedConversation]);
 
   // ── Sector assignment ──────────────────────────────────────────────────────
 
@@ -9819,6 +9918,8 @@ export default function ConversasModule() {
                       attachment={attachment}
                       onAttachmentSelect={handleFileSelect}
                       onAttachmentRemove={handleRemoveAttachment}
+                      pendingMedia={pendingSnippetMedia}
+                      onPendingMediaRemove={handleRemovePendingSnippetMedia}
                       disabled={isWindowExpired(selectedConversation)}
                       onTemplateClick={() => {
                         setShowTemplateSelector(true);
