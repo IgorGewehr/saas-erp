@@ -80,9 +80,10 @@ services:
 
   # Cron interno — dispara endpoints scheduled do saas-erp.
   # Self-contained (não depende de cron-job.org externo). Roda sempre.
-  #   - process-scheduled (broadcasts):       a cada 1 minuto
-  #   - agent/scheduled/run (agente IA):      a cada 1 hora (HH:00)
-  #   - birthday-campaigns/run (aniversário): a cada 1 hora (HH:00)
+  #   - process-scheduled (broadcasts):           a cada 1 minuto
+  #   - appointments/run-reminders (lembretes):   a cada 5 minutos (minuto % 5 == 0)
+  #   - agent/scheduled/run (agente IA):          a cada 1 hora (HH:00)
+  #   - birthday-campaigns/run (aniversário):     a cada 1 hora (HH:00)
   # Todos autenticam com Authorization: Bearer ${CRON_SECRET}
   # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
   # pelo Cloudflare/internet (mais rápido e não consome quota tunnel).
@@ -105,7 +106,7 @@ services:
     command: |
       sh -c '
         apk add --no-cache curl > /dev/null 2>&1
-        echo "[cron] iniciado — process-scheduled a cada 1min, agent + birthday a cada 1h (HH:00)"
+        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, agent+birthday 1h (HH:00)"
 
         call_endpoint() {
           # $$1=path, $$2=timeout
@@ -125,9 +126,17 @@ services:
           # broadcasts: a cada minuto
           call_endpoint "/api/broadcasts/process-scheduled" 30
 
+          # lembretes de agendamento: a cada 5min (minuto múltiplo de 5).
+          # Runner é idempotente — cron rodando "off by one minute" não duplica.
+          # Janela ±5min em torno de 60min/30min cobre o gap sem perder appts.
+          MIN_NOW=$$(date +%M)
+          if [ "$$((10#$$MIN_NOW % 5))" = "0" ]; then
+            call_endpoint "/api/appointments/run-reminders" 60
+          fi
+
           # tarefas horárias: só dispara quando minuto == 00.
           # Sequencial pra evitar pico simultâneo na app.
-          if [ "$$(date +%M)" = "00" ]; then
+          if [ "$$MIN_NOW" = "00" ]; then
             call_endpoint "/api/agent/scheduled/run" 60
             call_endpoint "/api/birthday-campaigns/run" 120
           fi
