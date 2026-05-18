@@ -12,7 +12,7 @@ import {
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
   Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
-  Check, Link as LinkIcon, CheckSquare, Repeat, Cake,
+  Check, Link as LinkIcon, CheckSquare, Repeat, Cake, Info,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -943,6 +943,46 @@ function makeCampaignAudienceGroup(): SegmentFilterGroup {
   return { id: crypto.randomUUID(), filters: [{ field: 'age', operator: 'gt', value: 30 }] };
 }
 
+/**
+ * Detecta a armadilha mais comum: filtros AND com o MESMO campo + operador
+ * `eq` + valores DIFERENTES. Um contato não pode estar em dois valores do
+ * mesmo campo ao mesmo tempo (ex: status=novo E status=ganho) → grupo
+ * sempre dá vazio. Retorna { field, label, values } pra o caller mostrar
+ * aviso e oferecer auto-split em grupos OU.
+ */
+function detectImpossibleAnd(filters: SegmentFilter[], fields: SegFieldDef[]): { field: string; label: string; values: unknown[] } | null {
+  const byField = new Map<string, unknown[]>();
+  for (const f of filters) {
+    if (f.operator !== 'eq') continue;
+    const arr = byField.get(f.field) ?? [];
+    arr.push(f.value);
+    byField.set(f.field, arr);
+  }
+  for (const [field, values] of byField) {
+    const unique = new Set(values.map(v => JSON.stringify(v)));
+    if (unique.size >= 2) {
+      const def = fields.find(d => d.id === field);
+      return { field, label: def?.label ?? field, values: Array.from(unique).map(v => JSON.parse(v)) };
+    }
+  }
+  return null;
+}
+
+/**
+ * Quebra um grupo AND-impossível em N grupos OU — um por valor conflitante
+ * do campo. Filtros não-conflitantes do grupo original são replicados em
+ * cada novo grupo (ficam AND-ados com cada valor isolado). Caller substitui
+ * o grupo original pelos N novos no array de filterGroups.
+ */
+function splitImpossibleAnd(group: SegmentFilterGroup, conflictField: string): SegmentFilterGroup[] {
+  const conflicting = group.filters.filter(f => f.field === conflictField && f.operator === 'eq');
+  const others = group.filters.filter(f => !(f.field === conflictField && f.operator === 'eq'));
+  return conflicting.map(c => ({
+    id: crypto.randomUUID(),
+    filters: [...others, c],
+  }));
+}
+
 function FilterRow({ filter, onChange, onRemove, fields = SEGMENT_FIELDS }: {
   filter: SegmentFilter;
   onChange: (f: SegmentFilter) => void;
@@ -1292,7 +1332,12 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
                 <div className="space-y-3">
                   <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Filtros</p>
 
-                  {filterGroups.map((group, gIdx) => (
+                  {filterGroups.map((group, gIdx) => {
+                    // Detecta armadilha mais comum: AND com mesmo campo + valores
+                    // diferentes (sempre vazio). Quando encontra, mostra aviso
+                    // + botão pra splitar em grupos OU automaticamente.
+                    const impossibleAnd = detectImpossibleAnd(group.filters, SEGMENT_FIELDS);
+                    return (
                     <React.Fragment key={group.id}>
                       {gIdx > 0 && (
                         <div className="flex items-center gap-3">
@@ -1304,9 +1349,17 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
                       <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
                         {/* Group header */}
                         <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60">
-                          <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                            {filterGroups.length > 1 ? `Grupo ${gIdx + 1} — todas as condições` : 'Todas as condições'}
-                          </p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                              {filterGroups.length > 1 ? `Grupo ${gIdx + 1} — todas as condições` : 'Todas as condições'}
+                            </p>
+                            <span
+                              title="Todas as condições aqui precisam ser verdadeiras ao mesmo tempo (E/AND). Pra unir alternativas, use 'Adicionar grupo (OU)' embaixo."
+                              className="text-gray-400 dark:text-gray-500 cursor-help"
+                            >
+                              <Info size={11} />
+                            </span>
+                          </div>
                           {filterGroups.length > 1 && (
                             <button onClick={() => setFilterGroups(prev => prev.filter((_, i) => i !== gIdx))}
                               className="text-[10px] text-red-500 hover:text-red-700 font-medium">Remover grupo</button>
@@ -1330,10 +1383,37 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
                             className="text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 flex items-center gap-1 mt-1">
                             <Plus size={11} />Adicionar condição
                           </button>
+                          {impossibleAnd && (
+                            <div className="mt-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30">
+                              <div className="flex items-start gap-2">
+                                <AlertTriangle size={13} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-300 leading-snug">
+                                    Esse grupo sempre vai resultar em 0 contatos
+                                  </p>
+                                  <p className="text-[10px] text-amber-700 dark:text-amber-400 mt-0.5 leading-snug">
+                                    Você exigiu &quot;{impossibleAnd.label}&quot; igual a {impossibleAnd.values.length} valores diferentes no mesmo grupo (E). Um contato só pode ter um valor por vez — use OU em vez de E.
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => setFilterGroups(prev => {
+                                      const next = [...prev];
+                                      next.splice(gIdx, 1, ...splitImpossibleAnd(group, impossibleAnd.field));
+                                      return next;
+                                    })}
+                                    className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-semibold transition-colors"
+                                  >
+                                    Converter em grupos OU
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </React.Fragment>
-                  ))}
+                    );
+                  })}
 
                   <button onClick={() => setFilterGroups(prev => [...prev, makeGroup()])}
                     className="w-full py-2 rounded-xl border-2 border-dashed border-red-200 dark:border-red-500/20 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/5 transition-colors flex items-center justify-center gap-1.5">
@@ -2584,7 +2664,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                 </div>
               </div>
 
-              {formAudienceFilterGroups.map((group, gIdx) => (
+              {formAudienceFilterGroups.map((group, gIdx) => {
+                const impossibleAnd = detectImpossibleAnd(group.filters, CAMPAIGN_AUDIENCE_FIELDS);
+                return (
                 <React.Fragment key={group.id}>
                   {gIdx > 0 && (
                     <div className="flex items-center gap-3">
@@ -2595,9 +2677,17 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                   )}
                   <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
                     <div className="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-800/60">
-                      <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-                        {formAudienceFilterGroups.length > 1 ? `Grupo ${gIdx + 1}` : 'Todas as condições'}
-                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+                          {formAudienceFilterGroups.length > 1 ? `Grupo ${gIdx + 1}` : 'Todas as condições'}
+                        </p>
+                        <span
+                          title="Todas as condições aqui precisam ser verdadeiras ao mesmo tempo (E/AND). Pra unir alternativas, use 'Adicionar grupo (OU)' embaixo."
+                          className="text-gray-400 dark:text-gray-500 cursor-help"
+                        >
+                          <Info size={11} />
+                        </span>
+                      </div>
                       {formAudienceFilterGroups.length > 1 && (
                         <button type="button" onClick={() => setFormAudienceFilterGroups(prev => prev.filter((_, i) => i !== gIdx))}
                           className="text-[10px] text-red-500 hover:text-red-700 font-medium">
@@ -2621,10 +2711,37 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                         className="text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 flex items-center gap-1 mt-1">
                         <Plus size={11} />Adicionar condição
                       </button>
+                      {impossibleAnd && (
+                        <div className="mt-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30">
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle size={13} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-300 leading-snug">
+                                Esse grupo sempre vai resultar em 0 contatos
+                              </p>
+                              <p className="text-[10px] text-amber-700 dark:text-amber-400 mt-0.5 leading-snug">
+                                Você exigiu &quot;{impossibleAnd.label}&quot; igual a {impossibleAnd.values.length} valores diferentes no mesmo grupo (E). Um contato só pode ter um valor por vez — use OU em vez de E.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => setFormAudienceFilterGroups(prev => {
+                                  const next = [...prev];
+                                  next.splice(gIdx, 1, ...splitImpossibleAnd(group, impossibleAnd.field));
+                                  return next;
+                                })}
+                                className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white text-[10px] font-semibold transition-colors"
+                              >
+                                Converter em grupos OU
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </React.Fragment>
-              ))}
+                );
+              })}
               <button type="button" onClick={() => setFormAudienceFilterGroups(prev => [...prev, makeCampaignAudienceGroup()])}
                 className="w-full py-2 rounded-xl border-2 border-dashed border-red-200 dark:border-red-500/20 text-xs font-semibold text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/5 transition-colors flex items-center justify-center gap-1.5">
                 <Plus size={12} />Adicionar grupo (OU)
