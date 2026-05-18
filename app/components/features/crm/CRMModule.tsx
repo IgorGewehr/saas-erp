@@ -1605,6 +1605,15 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [formRequireMarketingOptIn, setFormRequireMarketingOptIn] = useState(false);
   const [formTags, setFormTags] = useState('');
   const [formRecipients, setFormRecipients] = useState<BroadcastRecipient[]>([]);
+  /**
+   * Set de chaves de destinatários DESMARCADOS pelo operador pra ESTA campanha
+   * (override per-campaign sem mexer no segmento). Chave = contactId quando
+   * disponível, senão phoneNumber/email/recipientId (pra audienceType='list').
+   * Reseta automaticamente quando a definição de audiência muda (useEffect abaixo).
+   */
+  const [formExcludedKeys, setFormExcludedKeys] = useState<Set<string>>(new Set());
+  /** Modal "Ver/editar destinatários" — preview dos resolvidos com checkbox de desmarcar. */
+  const [audiencePreviewOpen, setAudiencePreviewOpen] = useState(false);
   /** 5.8: nomes de colunas extras detectadas no último CSV importado — vão pro TemplateSelector. */
   const [formCsvColumns, setFormCsvColumns] = useState<string[]>([]);
   const [formMsgType, setFormMsgType] = useState<'template' | 'text'>('template');
@@ -1891,11 +1900,36 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     (formAudienceType === 'segment' && !selectedSegment) ||
     (formAudienceType === 'filtered_clients' && !formAudienceFilterGroups.some(g => g.filters.length > 0));
 
-  const activeRecipients = formAudienceType === 'list'
+  // Chave estável pra identificar um recipient no Set de exclusão. Cobre todos
+  // os audience types: segmento/filtros/tags → contactId; list → phoneNumber/
+  // email/recipientId (caso onde não há Client subjacente).
+  const recipientKey = useCallback((r: BroadcastRecipient): string => {
+    return r.contactId || r.phoneNumber || r.email || r.recipientId || '';
+  }, []);
+
+  // Reseta exclusões quando a definição de audiência muda (segmento diferente,
+  // filtros mudaram, tipo trocado, canal mudou). Sem reset, IDs antigos
+  // ficariam no Set sem corresponder a nada — Set cresceria silenciosamente
+  // e poderia coincidir com IDs de outros contatos no futuro.
+  useEffect(() => {
+    setFormExcludedKeys(new Set());
+  }, [formAudienceType, formSegmentId, formAudienceFilterGroups, formTags, formChannel, formRequireMarketingOptIn]);
+
+  // Lista ANTES da exclusão — usada pelo modal de preview pra mostrar tudo
+  // (inclusive os desmarcados, com checkbox false).
+  const allResolvedRecipients = formAudienceType === 'list'
     ? formRecipients
     : audienceSelectionIncomplete
       ? []
       : resolvedClientAudience.recipients;
+
+  // Lista DEPOIS da exclusão — esta é a que efetivamente vai pro envio.
+  // Filter é cheap (Set lookup); useMemo evita recriar array em renders que
+  // não tocam a exclusão.
+  const activeRecipients = useMemo(() => {
+    if (formExcludedKeys.size === 0) return allResolvedRecipients;
+    return allResolvedRecipients.filter(r => !formExcludedKeys.has(recipientKey(r)));
+  }, [allResolvedRecipients, formExcludedKeys, recipientKey]);
 
   const updateAudienceGroup = (gIdx: number, patch: Partial<SegmentFilterGroup>) =>
     setFormAudienceFilterGroups(prev => prev.map((g, i) => i === gIdx ? { ...g, ...patch } : g));
@@ -2078,6 +2112,10 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         audienceSnapshotCount: recipientsTotal,
         audienceResolvedAt: now,
         audienceRequireMarketingOptIn: formRequireMarketingOptIn || undefined,
+        // Persiste a lista de exclusão pra auditoria + permitir edição futura
+        // do broadcast (re-render do dialog reconstrói o Set a partir daqui).
+        // Omite quando vazio (Firestore-friendly).
+        excludedAudienceKeys: formExcludedKeys.size > 0 ? Array.from(formExcludedKeys) : undefined,
         messageType: effectiveMsgType,
         throttle: throttleClean,
         templateName: effectiveMsgType === 'template' && formTemplate ? formTemplate.name : undefined,
@@ -2922,7 +2960,41 @@ function CampaignsTab({ businessId }: { businessId: string }) {
                   Apenas clientes com opt-in marketing
                 </span>
               </label>
+              {/* Botão pra abrir modal de preview/edição da lista resolvida.
+                  Permite desmarcar contatos individuais SÓ pra esta campanha. */}
+              {allResolvedRecipients.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setAudiencePreviewOpen(true)}
+                  className="w-full mt-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs font-semibold text-gray-700 dark:text-gray-200 transition-colors"
+                >
+                  <Eye size={13} />
+                  Ver/editar destinatários
+                  {formExcludedKeys.size > 0 && (
+                    <span className="ml-1 px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[10px] font-bold">
+                      {formExcludedKeys.size} desmarcado{formExcludedKeys.size === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </button>
+              )}
             </div>
+          )}
+          {/* Versão pro modo "list" (lista direta de números) — mesmo modal,
+              chave do recipient muda pra phoneNumber/email. */}
+          {formAudienceType === 'list' && allResolvedRecipients.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setAudiencePreviewOpen(true)}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-white/[0.04] text-xs font-semibold text-gray-700 dark:text-gray-200 transition-colors"
+            >
+              <Eye size={13} />
+              Ver/editar destinatários ({allResolvedRecipients.length})
+              {formExcludedKeys.size > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[10px] font-bold">
+                  {formExcludedKeys.size} desmarcado{formExcludedKeys.size === 1 ? '' : 's'}
+                </span>
+              )}
+            </button>
           )}
           {/* Limite de envio — agora toda audiência é materializada em recipients[]
               antes de criar a campanha, seja lista direta ou clientes filtrados. */}
@@ -3314,6 +3386,133 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           </div>
           </ModernSection>
       </ModernDialog>
+
+      {/* Modal de preview/edição da lista resolvida — opera sobre o Set
+          `formExcludedKeys` do estado pai. Não altera segmento/filtros;
+          o "desmarcar" é apenas pra esta campanha (per-campaign override).
+          Reseta automaticamente quando o operador muda a definição de
+          audiência (useEffect no escopo do form). */}
+      <AnimatePresence>
+        {audiencePreviewOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={e => { if (e.target === e.currentTarget) setAudiencePreviewOpen(false); }}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 12 }}
+              className="w-full max-w-2xl max-h-[80vh] bg-white dark:bg-gray-900 rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-gray-800">
+                <div>
+                  <h3 className="text-sm font-bold text-gray-900 dark:text-white">Destinatários da campanha</h3>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
+                    Desmarque contatos que NÃO devem receber esta campanha. Esta exclusão vale só aqui — não altera o segmento.
+                  </p>
+                </div>
+                <button onClick={() => setAudiencePreviewOpen(false)}
+                  className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="px-5 py-3 flex items-center justify-between gap-3 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30 flex-shrink-0">
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                  {activeRecipients.length} de {allResolvedRecipients.length} selecionados
+                  {formExcludedKeys.size > 0 && (
+                    <span className="ml-1.5 text-amber-600 dark:text-amber-400">
+                      ({formExcludedKeys.size} desmarcado{formExcludedKeys.size === 1 ? '' : 's'})
+                    </span>
+                  )}
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setFormExcludedKeys(new Set())}
+                    disabled={formExcludedKeys.size === 0}
+                    className="text-[11px] font-medium text-gray-600 dark:text-gray-300 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed px-2 py-1 rounded transition-colors"
+                  >
+                    Limpar exclusões
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Marca TODOS como excluídos (estado raro mas útil pra
+                      // inverter a lógica — desmarcar todos, ligar 2-3).
+                      setFormExcludedKeys(new Set(allResolvedRecipients.map(r => recipientKey(r)).filter(Boolean)));
+                    }}
+                    className="text-[11px] font-medium text-gray-600 dark:text-gray-300 hover:text-amber-600 dark:hover:text-amber-400 px-2 py-1 rounded transition-colors"
+                  >
+                    Desmarcar todos
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {allResolvedRecipients.length === 0 ? (
+                  <div className="py-12 text-center text-sm text-gray-400">
+                    Nenhum destinatário resolvido ainda.
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-gray-100 dark:divide-gray-800">
+                    {allResolvedRecipients.map((r, idx) => {
+                      const key = recipientKey(r);
+                      const excluded = key && formExcludedKeys.has(key);
+                      const display = r.name || r.phoneNumber || r.email || r.recipientId || '—';
+                      const subtitle = r.phoneNumber || r.email || r.recipientId || '';
+                      return (
+                        <li key={`${key}-${idx}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-gray-50/60 dark:hover:bg-white/[0.02]">
+                          <input
+                            type="checkbox"
+                            checked={!excluded}
+                            onChange={() => {
+                              if (!key) return;
+                              setFormExcludedKeys(prev => {
+                                const next = new Set(prev);
+                                if (next.has(key)) next.delete(key);
+                                else next.add(key);
+                                return next;
+                              });
+                            }}
+                            className="w-4 h-4 rounded accent-red-600 flex-shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className={cn(
+                              'text-xs font-medium truncate',
+                              excluded ? 'text-gray-400 line-through' : 'text-gray-800 dark:text-gray-200',
+                            )}>
+                              {display}
+                            </p>
+                            {subtitle && subtitle !== display && (
+                              <p className={cn(
+                                'text-[10px] text-gray-500 dark:text-gray-400 truncate',
+                                excluded && 'line-through opacity-60',
+                              )}>
+                                {subtitle}
+                              </p>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+              <div className="px-5 py-3 border-t border-gray-100 dark:border-gray-800 flex justify-end gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAudiencePreviewOpen(false)}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors"
+                >
+                  Pronto
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

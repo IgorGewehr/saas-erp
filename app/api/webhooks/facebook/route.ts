@@ -382,6 +382,7 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         firstInboundFromContactAt: params.timestamp,
+        lastInboundFromContactAt: params.timestamp,
         ...(detectLikelyBotReply({
           content: params.text ?? '',
           msgTimestampMs: new Date(params.timestamp).getTime(),
@@ -420,6 +421,8 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         updatedAt: now,
         // first-touch do contato — habilita filtro "Cliente não respondeu".
         ...(isFirstInboundFb ? { firstInboundFromContactAt: params.timestamp } : {}),
+        // last-touch sempre atualiza — alimenta detecção da janela 24h.
+        lastInboundFromContactAt: params.timestamp,
         ...likelyBotPatchFb,
       };
 

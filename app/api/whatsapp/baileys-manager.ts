@@ -880,6 +880,7 @@ async function handleInboundMessage(
         lastMessageAt: timestamp,
         lastMessageDirection: 'inbound',
         firstInboundFromContactAt: timestamp,
+        lastInboundFromContactAt: timestamp,
         ...(detectLikelyBotReply({
           content: displayText,
           msgTimestampMs: new Date(timestamp).getTime(),
@@ -937,6 +938,8 @@ async function handleInboundMessage(
           updatedAt: now,
           // first-touch do contato — habilita filtro "Cliente não respondeu".
           ...(isFirstInboundBaileys ? { firstInboundFromContactAt: timestamp } : {}),
+          // last-touch sempre atualiza — alimenta detecção da janela 24h.
+          lastInboundFromContactAt: timestamp,
           ...likelyBotPatchBaileys,
         };
         if (pushName && (!data.contactName || /^\+?\d[\d\s-]+$/.test(data.contactName))) {
@@ -1004,6 +1007,7 @@ async function handleInboundMessage(
           lastMessageAt: timestamp,
           lastMessageDirection: 'inbound',
           firstInboundFromContactAt: timestamp,
+          lastInboundFromContactAt: timestamp,
           ...(detectLikelyBotReply({
             content: displayText,
             msgTimestampMs: new Date(timestamp).getTime(),

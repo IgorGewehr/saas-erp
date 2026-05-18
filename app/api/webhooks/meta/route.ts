@@ -1670,6 +1670,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
         lastMessageAt: params.timestamp,
         lastMessageDirection: 'inbound',
         firstInboundFromContactAt: params.timestamp,
+        lastInboundFromContactAt: params.timestamp,
         // Conv nova: nao ha outbound anterior, mas keywords ainda podem flagrar
         // (caso raro de contato abrir conversa ja com mensagem de auto-reply).
         ...(detectLikelyBotReply({
@@ -1793,6 +1794,9 @@ async function saveInboundMessage(params: InboundMessageParams) {
         // Não sobrescreve; conv pré-campanha onde o contato já respondeu antes
         // mantém o timestamp original.
         ...(isFirstInbound ? { firstInboundFromContactAt: params.timestamp } : {}),
+        // last-touch sempre atualiza — alimenta detecção da janela 24h pros
+        // lembretes automaticos (isOutsideMetaWindow).
+        lastInboundFromContactAt: params.timestamp,
         ...likelyBotPatch,
       };
       // Backfill / correção de channelConnectionId. Preenche se ausente; também

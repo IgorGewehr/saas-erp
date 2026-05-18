@@ -3155,25 +3155,27 @@ interface AdvancedFilters {
    *  vinculado (ex: 'novo', 'qualificado'). Vazio = sem filtro. Conversas
    *  sem crmContactId nunca passam quando este filtro está ativo. */
   pipelineStage: string;
-  /** Quando true, mostra apenas conversas sem `firstInboundFromContactAt` —
-   *  ou seja, contatos que NUNCA mandaram mensagem (típico de campanhas
-   *  sem engajamento). Usar combinado com "Origem da campanha" pra listar
-   *  destinatários de um broadcast específico que não responderam. */
-  noReplyFromContact: boolean;
-  /** Quando true, mostra apenas conversas onde a primeira resposta do contato
-   *  foi flagada como auto-reply/bot (firstInboundLikelyBot === true).
-   *  Heurística: tempo curto (<5s) entre nosso outbound e o inbound OR match
-   *  em padrões textuais ("fora do horário", "mensagem automática", etc.).
-   *  Detecta atendimento automatizado do lado do cliente. */
-  likelyBotReply: boolean;
+  /**
+   * Filtro de engajamento do contato — agrupa três cenários mutuamente
+   * exclusivos num único dropdown:
+   *  - ''                 → sem filtro (default)
+   *  - 'no_reply'         → contato nunca respondeu (sem firstInboundFromContactAt).
+   *                         Útil pra retargeting de campanhas sem engajamento.
+   *  - 'bot_reply'        → primeira resposta detectada como auto-reply/bot
+   *                         (firstInboundLikelyBot === true). Heurística:
+   *                         tempo curto (<5s) OR keywords de auto-reply.
+   *  - 'real_engagement'  → contato respondeu E não foi bot — engajamento
+   *                         real. Útil pra avaliar performance de campanha.
+   */
+  engagement: '' | 'no_reply' | 'bot_reply' | 'real_engagement';
 }
 
 const EMPTY_ADV_FILTERS: AdvancedFilters = {
-  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '', pipelineStage: '', noReplyFromContact: false, likelyBotReply: false,
+  assignedTo: '', priority: '', label: '', slaStatus: '', unreadOnly: false, campaignOrigin: '', pipelineStage: '', engagement: '',
 };
 
 function countActiveFilters(f: AdvancedFilters): number {
-  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin, f.pipelineStage, f.noReplyFromContact, f.likelyBotReply].filter(Boolean).length;
+  return [f.assignedTo, f.priority, f.label, f.slaStatus, f.unreadOnly, f.campaignOrigin, f.pipelineStage, f.engagement].filter(Boolean).length;
 }
 
 /** Opção de campanha pro dropdown — pre-aggregated pelo container.
@@ -3289,31 +3291,23 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
           </div>
         )}
 
-        {/* Cliente não respondeu — flagra convs sem firstInboundFromContactAt
-            (contato nunca mandou nada). Útil principalmente quando combinado
-            com "Origem da campanha" → lista destinatários sem engajamento
-            pra retargeting. Convs inbound-initiated têm o campo setado em
-            createdAt, então não aparecem aqui. */}
-        <label className="flex items-center gap-2 cursor-pointer">
-          <button onClick={() => set('noReplyFromContact', !filters.noReplyFromContact)}
-            className={cn('w-8 h-4 rounded-full transition-colors relative shrink-0', filters.noReplyFromContact ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')}>
-            <span className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.noReplyFromContact ? 'translate-x-4' : 'translate-x-0.5')} />
-          </button>
-          <span className="text-xs text-gray-600 dark:text-gray-400">Cliente não respondeu</span>
-        </label>
-
-        {/* Cliente respondeu com bot — flagra convs onde a primeira inbound
-            do contato foi auto-reply. Webhook decide via detectLikelyBotReply
-            (lib/utils/botDetection.ts) na primeira inbound após nosso outbound.
-            Mutuamente exclusivo na prática com "Cliente não respondeu" (um exige
-            firstInboundFromContactAt, o outro exige ausência). */}
-        <label className="flex items-center gap-2 cursor-pointer">
-          <button onClick={() => set('likelyBotReply', !filters.likelyBotReply)}
-            className={cn('w-8 h-4 rounded-full transition-colors relative shrink-0', filters.likelyBotReply ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')}>
-            <span className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.likelyBotReply ? 'translate-x-4' : 'translate-x-0.5')} />
-          </button>
-          <span className="text-xs text-gray-600 dark:text-gray-400">Cliente respondeu com bot</span>
-        </label>
+        {/* Engajamento do cliente — agrupa 3 cenários mutuamente exclusivos
+            num dropdown único: sem resposta, resposta bot, engajamento real.
+            Combinar com "Origem da campanha" pra isolar destinatários de um
+            broadcast específico (retargeting, análise de performance, etc.). */}
+        <div>
+          <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wider mb-1">Engajamento do cliente</p>
+          <select
+            value={filters.engagement}
+            onChange={e => set('engagement', e.target.value as AdvancedFilters['engagement'])}
+            className={selClass}
+          >
+            <option value="">Todos</option>
+            <option value="no_reply">Cliente não respondeu</option>
+            <option value="bot_reply">Respondeu com bot</option>
+            <option value="real_engagement">Engajamento real</option>
+          </select>
+        </div>
 
         <div className="flex items-center justify-between">
           {/* Unread only */}
@@ -7122,8 +7116,7 @@ export default function ConversasModule() {
       unreadOnly: advFilters.unreadOnly || undefined,
       campaignOrigin: advFilters.campaignOrigin || undefined,
       pipelineStage: advFilters.pipelineStage || undefined,
-      noReplyFromContact: advFilters.noReplyFromContact || undefined,
-      likelyBotReply: advFilters.likelyBotReply || undefined,
+      engagement: advFilters.engagement || undefined,
     };
     // Edição: sobrescreve nome/emoji/filtros do doc existente. Filtros
     // refletem o snapshot atual da UI — comportamento ergonômico esperado
@@ -7174,8 +7167,7 @@ export default function ConversasModule() {
         unreadOnly: view.filters.unreadOnly ?? false,
         campaignOrigin: view.filters.campaignOrigin ?? '',
         pipelineStage: view.filters.pipelineStage ?? '',
-        noReplyFromContact: view.filters.noReplyFromContact ?? false,
-        likelyBotReply: view.filters.likelyBotReply ?? false,
+        engagement: (view.filters.engagement as AdvancedFilters['engagement']) ?? '',
       });
     }
     setEditingView(view);
@@ -7234,8 +7226,7 @@ export default function ConversasModule() {
       unreadOnly: view.filters.unreadOnly ?? false,
       campaignOrigin: validCampaign ? persistedCampaign : '',
       pipelineStage: view.filters.pipelineStage ?? '',
-      noReplyFromContact: view.filters.noReplyFromContact ?? false,
-      likelyBotReply: view.filters.likelyBotReply ?? false,
+      engagement: (view.filters.engagement as AdvancedFilters['engagement']) ?? '',
     });
   };
 
@@ -8840,14 +8831,14 @@ export default function ConversasModule() {
         || (!!c.crmContactId && clientStageById.get(c.crmContactId) === advFilters.pipelineStage);
       const matchesUnread = !advFilters.unreadOnly || (c.unreadCount ?? 0) > 0;
       const matchesSLAStatus = !advFilters.slaStatus || getSLAInfo(c, slaConfig)?.status === advFilters.slaStatus;
-      // "Cliente não respondeu": ausência do timestamp do primeiro inbound do
-      // contato. Conversas pré-deploy do field ficam sem o campo mesmo se o
-      // contato já respondeu — backfill via scripts/backfill-conversation-
-      // first-inbound.ts corrige.
-      const matchesNoReply = !advFilters.noReplyFromContact || !c.firstInboundFromContactAt;
-      // "Cliente respondeu com bot": flag setado no webhook na primeira
-      // inbound. Convs pré-deploy ficam com false — backfill opcional.
-      const matchesLikelyBot = !advFilters.likelyBotReply || c.firstInboundLikelyBot === true;
+      // Engajamento — 3 cenários mutuamente exclusivos. Convs pré-deploy dos
+      // campos firstInboundFromContactAt/firstInboundLikelyBot precisam de
+      // backfill (scripts/backfill-conversation-first-inbound.ts +
+      // backfill-conversation-likely-bot.ts) pra serem categorizadas corretamente.
+      const matchesEngagement = !advFilters.engagement
+        || (advFilters.engagement === 'no_reply' && !c.firstInboundFromContactAt)
+        || (advFilters.engagement === 'bot_reply' && c.firstInboundLikelyBot === true)
+        || (advFilters.engagement === 'real_engagement' && !!c.firstInboundFromContactAt && c.firstInboundLikelyBot !== true);
       // Origem da campanha: combina dois caminhos. Forward = campo denormalizado
       // no doc Conversation (criado a partir do deploy + backfill no matched).
       // Retro = id presente no Set retroCampaignConvIds carregado de
@@ -8860,7 +8851,7 @@ export default function ConversasModule() {
         || (campaignKind === 'broadcast' && c.originBroadcastId === campaignId)
         || (campaignKind === 'birthday' && c.originBirthdayCampaignId === campaignId)
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
-      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesNoReply && matchesLikelyBot;
+      return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesEngagement;
     });
   }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById]);
 

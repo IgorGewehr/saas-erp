@@ -3857,6 +3857,59 @@ function AgenteToggleSwitch({ checked, onChange }: { checked: boolean; onChange:
   );
 }
 
+/** Dropdown de template aprovado pra lembretes automaticos quando o contato
+ *  esta fora da janela 24h da Cloud API. value=null significa "pula contatos
+ *  fora da janela" (skip + log). varsHint documenta a ordem das variaveis. */
+function ReminderTemplateField({
+  value,
+  onChange,
+  templates,
+  loading,
+  error,
+  varsHint,
+}: {
+  value: { name: string; language: string } | null;
+  onChange: (next: { name: string; language: string } | null) => void;
+  templates: Array<{ name: string; language: string; preview: string }>;
+  loading: boolean;
+  error: string | null;
+  varsHint: string;
+}) {
+  return (
+    <div className="mt-3 pt-3 border-t border-dashed border-gray-200 dark:border-gray-700/60">
+      <label className="text-[11px] font-semibold text-gray-600 dark:text-gray-400 block mb-1.5">
+        Template para fora da janela 24h
+      </label>
+      {loading ? (
+        <p className="text-[10px] text-gray-400 dark:text-gray-500">Carregando templates aprovados...</p>
+      ) : error ? (
+        <p className="text-[10px] text-amber-600 dark:text-amber-400">⚠ {error}</p>
+      ) : (
+        <select
+          value={value ? `${value.name}__${value.language}` : ''}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (!v) { onChange(null); return; }
+            const [name, language] = v.split('__');
+            onChange({ name, language });
+          }}
+          className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-violet-400"
+        >
+          <option value="">— Nenhum (pula contatos fora da janela) —</option>
+          {templates.map(t => (
+            <option key={`${t.name}__${t.language}`} value={`${t.name}__${t.language}`}>
+              {t.name} ({t.language}) — {t.preview.slice(0, 60)}{t.preview.length > 60 ? '...' : ''}
+            </option>
+          ))}
+        </select>
+      )}
+      <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1.5 leading-snug">
+        Variáveis preenchidas automaticamente: <span className="font-mono">{varsHint}</span>. O template aprovado deve usar essa ordem.
+      </p>
+    </div>
+  );
+}
+
 function AgenteTab() {
   const { business, refreshUser } = useAuth();
   const current = business?.settings?.aiAgent;
@@ -3876,6 +3929,16 @@ function AgenteTab() {
   const [reminderHoursBefore, setReminderHoursBefore] = useState<number>(current?.agenda?.reminderHoursBefore ?? 24);
   const [confirmationBeforeAppointment, setConfirmationBeforeAppointment] = useState<boolean>(current?.agenda?.confirmationBeforeAppointment ?? true);
   const [followUpAfter, setFollowUpAfter] = useState<boolean>(current?.agenda?.followUpAfter ?? false);
+  // Templates pra fora da janela 24h da Cloud API. null = nao escolhido (skipa).
+  type TplRef = { name: string; language: string } | null;
+  const [reminderTemplate, setReminderTemplate] = useState<TplRef>(current?.agenda?.reminderTemplate ?? null);
+  const [confirmationTemplate, setConfirmationTemplate] = useState<TplRef>(current?.agenda?.confirmationTemplate ?? null);
+  const [followUpTemplate, setFollowUpTemplate] = useState<TplRef>(current?.agenda?.followUpTemplate ?? null);
+  // Lista de templates aprovados na WABA — fetch 1x ao montar.
+  interface ApprovedTemplate { name: string; language: string; category: string; preview: string; hasVariables: boolean }
+  const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
+  const [templatesError, setTemplatesError] = useState<string | null>(null);
 
   // Operator-specific (dashboard chat)
   const [autonomousMode, setAutonomousMode] = useState<boolean>(current?.operator?.autonomousMode ?? false);
@@ -3905,6 +3968,9 @@ function AgenteTab() {
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
     setFollowUpAfter(current?.agenda?.followUpAfter ?? false);
+    setReminderTemplate(current?.agenda?.reminderTemplate ?? null);
+    setConfirmationTemplate(current?.agenda?.confirmationTemplate ?? null);
+    setFollowUpTemplate(current?.agenda?.followUpTemplate ?? null);
     setAutonomousMode(current?.operator?.autonomousMode ?? false);
     setPolicyCancellation(current?.policies?.cancellation || '');
     setPolicyRefund(current?.policies?.refund || '');
@@ -3916,6 +3982,41 @@ function AgenteTab() {
     setUpsellRules(current?.upsellRules || []);
   }, [current]);
 
+  // Fetch templates aprovados na WABA — usados pra mensagens fora da janela
+  // 24h da Cloud API. So roda em modo servicos (unico que tem agenda).
+  useEffect(() => {
+    if (useCase !== 'servicos' || !business?.id) return;
+    let cancelled = false;
+    setTemplatesLoading(true);
+    setTemplatesError(null);
+    (async () => {
+      try {
+        const token = await firebaseAuth.currentUser?.getIdToken();
+        if (!token) {
+          if (!cancelled) setTemplatesError('Sessao expirada');
+          return;
+        }
+        const res = await fetch(`/api/channels/whatsapp-templates?businessId=${business.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({})) as { error?: string };
+          if (!cancelled) setTemplatesError(data.error || `HTTP ${res.status}`);
+          return;
+        }
+        const data = await res.json() as { templates?: ApprovedTemplate[] };
+        if (!cancelled) setApprovedTemplates(data.templates ?? []);
+      } catch (err) {
+        if (!cancelled) setTemplatesError(err instanceof Error ? err.message : 'erro');
+      } finally {
+        if (!cancelled) setTemplatesLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [useCase, business?.id]);
+
   const handleSave = async () => {
     if (!business?.id) return;
     setSaving(true);
@@ -3926,7 +4027,15 @@ function AgenteTab() {
         ? { notifyOnStatusChange, acceptOrdersOffHours, deliveryFee: deliveryFee > 0 ? deliveryFee : null }
         : undefined;
       const agenda = useCase === 'servicos'
-        ? { sendReminder, reminderHoursBefore, confirmationBeforeAppointment, followUpAfter }
+        ? {
+            sendReminder,
+            reminderHoursBefore,
+            confirmationBeforeAppointment,
+            followUpAfter,
+            reminderTemplate: reminderTemplate ?? null,
+            confirmationTemplate: confirmationTemplate ?? null,
+            followUpTemplate: followUpTemplate ?? null,
+          }
         : undefined;
 
       // Wave 7 — parse dynamic fields
@@ -4053,18 +4162,28 @@ function AgenteTab() {
                   Envia mensagem lembrando o cliente do horário marcado.
                 </p>
                 {sendReminder && (
-                  <div className="mt-2 flex items-center gap-2">
-                    <label className="text-xs text-gray-500">Quantas horas antes?</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={168}
-                      value={reminderHoursBefore}
-                      onChange={(e) => setReminderHoursBefore(Math.max(1, Math.min(168, Number(e.target.value) || 24)))}
-                      className="w-16 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-center"
+                  <>
+                    <div className="mt-2 flex items-center gap-2">
+                      <label className="text-xs text-gray-500">Quantas horas antes?</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={168}
+                        value={reminderHoursBefore}
+                        onChange={(e) => setReminderHoursBefore(Math.max(1, Math.min(168, Number(e.target.value) || 24)))}
+                        className="w-16 px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs text-center"
+                      />
+                      <span className="text-xs text-gray-500">horas</span>
+                    </div>
+                    <ReminderTemplateField
+                      value={reminderTemplate}
+                      onChange={setReminderTemplate}
+                      templates={approvedTemplates}
+                      loading={templatesLoading}
+                      error={templatesError}
+                      varsHint="1=nome, 2=serviço, 3=hora"
                     />
-                    <span className="text-xs text-gray-500">horas</span>
-                  </div>
+                  </>
                 )}
               </div>
               <AgenteToggleSwitch checked={sendReminder} onChange={setSendReminder} />
@@ -4072,26 +4191,46 @@ function AgenteTab() {
 
             {/* Confirmação de presença */}
             <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
-              <div>
+              <div className="flex-1">
                 <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                   Pedir confirmação de presença
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                   Um dia antes, pergunta se o cliente confirma — resposta "confirmo" atualiza o status do agendamento.
                 </p>
+                {confirmationBeforeAppointment && (
+                  <ReminderTemplateField
+                    value={confirmationTemplate}
+                    onChange={setConfirmationTemplate}
+                    templates={approvedTemplates}
+                    loading={templatesLoading}
+                    error={templatesError}
+                    varsHint="1=nome, 2=serviço, 3=hora"
+                  />
+                )}
               </div>
               <AgenteToggleSwitch checked={confirmationBeforeAppointment} onChange={setConfirmationBeforeAppointment} />
             </div>
 
             {/* Follow-up pós-atendimento */}
             <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
-              <div>
+              <div className="flex-1">
                 <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                   Follow-up após o atendimento
                 </p>
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                   Agradecimento enviado 12–36h após a conclusão. Útil para medir satisfação e fidelizar.
                 </p>
+                {followUpAfter && (
+                  <ReminderTemplateField
+                    value={followUpTemplate}
+                    onChange={setFollowUpTemplate}
+                    templates={approvedTemplates}
+                    loading={templatesLoading}
+                    error={templatesError}
+                    varsHint="1=nome, 2=serviço"
+                  />
+                )}
               </div>
               <AgenteToggleSwitch checked={followUpAfter} onChange={setFollowUpAfter} />
             </div>

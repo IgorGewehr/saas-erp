@@ -22,7 +22,11 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, AgentAuthError } from '@/lib/agent/auth';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
 import { sendFinancialNotifications } from '@/app/api/financial/notify/service';
+import { isOutsideMetaWindow } from '@/lib/utils/metaWindow';
+import { logPipelineFailure } from '@/lib/services/pipelineFailures';
 import type { Appointment, Business, Conversation } from '@/lib/types';
+
+type ReminderKind = 'reminder' | 'confirmation' | 'followup';
 
 const RATE_LIMIT = 4;              // max 4 manual triggers
 const RATE_WINDOW_MS = 60 * 60_000; // per hour per IP
@@ -279,9 +283,12 @@ async function processBusiness(business: Business & { id: string }, stats: RunSt
       if (diffHours <= target && diffHours > target - 1) {
         try {
           const msg = `Olá ${firstName(appt.clientName)}! Lembrete: você tem ${appt.serviceName} marcado ${diffHours < 2 ? 'em breve' : 'amanhã'} às ${appt.startTime}. Até lá! 📅`;
-          await sendToContact(business, appt, msg);
-          await doc.ref.update({ reminderSentAt: new Date().toISOString() });
-          stats.remindersSent++;
+          const result = await sendToContact(business, appt, msg, 'reminder');
+          if (result.sent) {
+            await doc.ref.update({ reminderSentAt: new Date().toISOString() });
+            stats.remindersSent++;
+          }
+          // skip silencioso ja foi loggado em pipelineFailures
         } catch (err) {
           stats.errors.push({ appointmentId: appt.id, phase: 'reminder', error: String(err) });
         }
@@ -293,9 +300,11 @@ async function processBusiness(business: Business & { id: string }, stats: RunSt
       if (diffHours <= 26 && diffHours >= 24 && appt.status !== 'confirmado') {
         try {
           const msg = `Oi ${firstName(appt.clientName)}, posso confirmar seu horário de ${appt.serviceName} amanhã às ${appt.startTime}? Responda "confirmo" para reservar ou "cancelar" caso precise desmarcar.`;
-          await sendToContact(business, appt, msg);
-          await doc.ref.update({ confirmationRequestedAt: new Date().toISOString() });
-          stats.confirmationsAsked++;
+          const result = await sendToContact(business, appt, msg, 'confirmation');
+          if (result.sent) {
+            await doc.ref.update({ confirmationRequestedAt: new Date().toISOString() });
+            stats.confirmationsAsked++;
+          }
         } catch (err) {
           stats.errors.push({ appointmentId: appt.id, phase: 'confirmation', error: String(err) });
         }
@@ -309,9 +318,11 @@ async function processBusiness(business: Business & { id: string }, stats: RunSt
       if (hoursAfter >= 12 && hoursAfter <= 36) {
         try {
           const msg = `Oi ${firstName(appt.clientName)}! Como foi seu ${appt.serviceName}? Ficamos à disposição para qualquer coisa. 🙏`;
-          await sendToContact(business, appt, msg);
-          await doc.ref.update({ followUpSentAt: new Date().toISOString() });
-          stats.followUpsSent++;
+          const result = await sendToContact(business, appt, msg, 'followup');
+          if (result.sent) {
+            await doc.ref.update({ followUpSentAt: new Date().toISOString() });
+            stats.followUpsSent++;
+          }
         } catch (err) {
           stats.errors.push({ appointmentId: appt.id, phase: 'follow-up', error: String(err) });
         }
@@ -326,7 +337,37 @@ function firstName(full: string): string {
   return (full || '').trim().split(/\s+/)[0] || '';
 }
 
-async function sendToContact(business: Business & { id: string }, appt: Appointment, content: string): Promise<void> {
+/** Variaveis em ordem fixa por tipo de lembrete (documentado na UI Settings).
+ *  Template aprovado precisa ter MENOS OU IGUAL ao tamanho retornado — vars
+ *  extras sao truncadas, vars faltantes a Meta rejeita com mismatch. */
+function buildTemplateVars(appt: Appointment, kind: ReminderKind): string[] {
+  const name = firstName(appt.clientName) || 'cliente';
+  const service = appt.serviceName || 'seu agendamento';
+  switch (kind) {
+    case 'reminder':
+    case 'confirmation':
+      return [name, service, appt.startTime];
+    case 'followup':
+      return [name, service];
+  }
+}
+
+function pickTemplate(
+  agenda: NonNullable<NonNullable<Business['settings']>['aiAgent']>['agenda'] | undefined,
+  kind: ReminderKind,
+): { name: string; language: string } | undefined {
+  if (!agenda) return undefined;
+  if (kind === 'reminder') return agenda.reminderTemplate;
+  if (kind === 'confirmation') return agenda.confirmationTemplate;
+  return agenda.followUpTemplate;
+}
+
+async function sendToContact(
+  business: Business & { id: string },
+  appt: Appointment,
+  content: string,
+  kind: ReminderKind,
+): Promise<{ sent: boolean; reason?: string }> {
   const phoneDigits = (appt.clientPhone || '').replace(/\D/g, '');
   if (!phoneDigits) throw new Error('no phone');
 
@@ -347,14 +388,61 @@ async function sendToContact(business: Business & { id: string }, appt: Appointm
   const secret = process.env.AGENT_SHARED_SECRET;
   if (!secret) throw new Error('AGENT_SHARED_SECRET not configured');
 
-  const body = JSON.stringify({
-    businessId: business.id,
-    conversationId: conv.id,
-    channel: conv.channel,
-    recipientId: phoneDigits,
-    content,
-    type: 'text',
-  });
+  // Decisao texto-livre x template:
+  //   - Baileys nao tem janela 24h → texto livre sempre
+  //   - Cloud + dentro da janela 24h → texto livre
+  //   - Cloud + fora da janela + template configurado → envia template
+  //   - Cloud + fora da janela + sem template → skip silencioso + log
+  const isBaileys = conv.connectedVia === 'baileys';
+  const outsideWindow = !isBaileys && isOutsideMetaWindow(conv.lastInboundFromContactAt);
+
+  let payload: Record<string, unknown>;
+  if (!outsideWindow) {
+    payload = {
+      businessId: business.id,
+      conversationId: conv.id,
+      channel: conv.channel,
+      recipientId: phoneDigits,
+      content,
+      type: 'text',
+    };
+  } else {
+    const tpl = pickTemplate(business.settings?.aiAgent?.agenda, kind);
+    if (!tpl) {
+      // Fora da janela e sem template → log + skip. NAO marca *SentAt no caller
+      // pra que se a janela reabrir (cliente respondeu) dentro do window target,
+      // o cron consiga tentar de novo. Risco de loop e baixo: janela target e
+      // estreita (1h pro lembrete, 2h pra confirmacao).
+      await logPipelineFailure({
+        source: 'whatsapp-send',
+        channel: 'whatsapp',
+        businessId: business.id,
+        conversationId: conv.id,
+        recipientId: phoneDigits,
+        transport: 'cloud',
+        error: `Lembrete ${kind} pulado: fora da janela 24h e sem template configurado em Settings → Agente IA.`,
+        severity: 'warning',
+        httpStatus: 0,
+      });
+      return { sent: false, reason: 'no_template_outside_window' };
+    }
+    const vars = buildTemplateVars(appt, kind);
+    payload = {
+      businessId: business.id,
+      conversationId: conv.id,
+      channel: conv.channel,
+      recipientId: phoneDigits,
+      content: '',
+      type: 'template',
+      templateName: tpl.name,
+      templateLanguage: tpl.language,
+      templateParams: [
+        { type: 'body', parameters: vars.map(v => ({ type: 'text', text: v })) },
+      ],
+    };
+  }
+
+  const body = JSON.stringify(payload);
   const ts = Date.now();
   const sig = crypto.createHmac('sha256', secret).update(`${ts}.${business.id}.${body}`).digest('hex');
 
@@ -376,6 +464,7 @@ async function sendToContact(business: Business & { id: string }, appt: Appointm
     const text = await resp.text();
     throw new Error(`send failed ${resp.status}: ${text}`);
   }
+  return { sent: true };
 }
 
 // ─── Recurring transaction generation ───────────────────────────────────────

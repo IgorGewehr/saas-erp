@@ -597,6 +597,19 @@ export interface AiAgentSettings {
     confirmationBeforeAppointment?: boolean;
     /** Follow-up depois da consulta (pesquisa de satisfação leve) */
     followUpAfter?: boolean;
+    /**
+     * Templates Cloud API aprovados pra usar quando o contato está FORA da
+     * janela de 24h. Sem template configurado, o sistema pula o envio pra
+     * esse contato e loga em webhookFailures (visível no painel de Logs).
+     *
+     * Convenção de variáveis (preenchidas auto pelo runner):
+     *  - reminderTemplate     → {{1}} nome, {{2}} serviço, {{3}} hora
+     *  - confirmationTemplate → {{1}} nome, {{2}} serviço, {{3}} hora
+     *  - followUpTemplate     → {{1}} nome, {{2}} serviço
+     */
+    reminderTemplate?: { name: string; language: string };
+    confirmationTemplate?: { name: string; language: string };
+    followUpTemplate?: { name: string; language: string };
   };
 
   /** === Modo: operador (dashboard chat) === */
@@ -2274,6 +2287,14 @@ export interface Conversation {
    */
   firstInboundLikelyBot?: boolean;
   /**
+   * ISO — ÚLTIMA mensagem inbound vinda do contato. Atualizado a CADA inbound
+   * via webhook (diferente de firstInboundFromContactAt, que só seta UMA vez).
+   * Usado pra detectar janela de 24h da WhatsApp Cloud API antes de disparar
+   * lembretes/confirmações automáticas — se passou de 24h da última inbound,
+   * a Cloud exige mensagem template, senão aceita texto livre.
+   */
+  lastInboundFromContactAt?: string;
+  /**
    * Quantas vezes esta conversa transitou de resolved → open. Métrica chave:
    * conv reaberta = problema mal resolvido. Setado quando o operador (ou
    * agente IA) muda status de 'resolved' pra 'open'. Não conta primeira vez
@@ -2358,10 +2379,10 @@ export interface ConversationView {
     campaignOrigin?: string;
     /** Filtro por estágio do pipeline do CRM (LeadStatus do Client vinculado). */
     pipelineStage?: string;
-    /** Mostra apenas conversas onde o contato nunca respondeu (sem firstInboundFromContactAt). */
-    noReplyFromContact?: boolean;
-    /** Mostra apenas conversas onde a primeira resposta do contato foi detectada como auto-reply/bot. */
-    likelyBotReply?: boolean;
+    /** Filtro de engajamento do contato: '' (sem filtro), 'no_reply' (cliente
+     *  nunca respondeu), 'bot_reply' (primeira resposta detectada como bot),
+     *  'real_engagement' (respondeu e nao foi bot). */
+    engagement?: '' | 'no_reply' | 'bot_reply' | 'real_engagement';
   };
   createdBy: string;
   createdByName: string;

@@ -249,6 +249,15 @@ async function syncSingleConversation(
   const oldestInboundAt = oldestInboundMsg
     ? new Date(oldestInboundMsg.created_time).toISOString()
     : null;
+  // Inbound mais RECENTE — alimenta lastInboundFromContactAt (janela 24h).
+  // Reverse find: itera de tras pra frente pra achar a ultima inbound em O(n).
+  let newestInboundAt: string | null = null;
+  for (let i = sortedMsgs.length - 1; i >= 0; i--) {
+    if (sortedMsgs[i].from.id !== pageId) {
+      newestInboundAt = new Date(sortedMsgs[i].created_time).toISOString();
+      break;
+    }
+  }
   // Pra detecção de bot na primeira inbound: outbound imediatamente anterior
   // a ela nas msgs sincronizadas. Se a primeira inbound abre a thread (sem
   // outbound antes), só keywords podem flagrar.
@@ -284,6 +293,7 @@ async function syncSingleConversation(
       lastMessageAt: new Date(latestMsg.created_time).toISOString(),
       lastMessageDirection: latestIsInbound ? 'inbound' : 'outbound',
       ...(oldestInboundAt ? { firstInboundFromContactAt: oldestInboundAt } : {}),
+      ...(newestInboundAt ? { lastInboundFromContactAt: newestInboundAt } : {}),
       ...(oldestInboundAt && detectedBotOnOldestInbound ? { firstInboundLikelyBot: true } : {}),
       unreadCount: 0,
       createdAt: now,
@@ -335,6 +345,13 @@ async function syncSingleConversation(
       if (!existing || oldestInboundAt < existing) {
         enrichUpdate.firstInboundFromContactAt = oldestInboundAt;
         enrichUpdate.firstInboundLikelyBot = detectedBotOnOldestInbound;
+      }
+    }
+    // last-touch: usa a mais RECENTE entre o existente e a sincronizada.
+    if (newestInboundAt) {
+      const existing = existingData.lastInboundFromContactAt as string | undefined;
+      if (!existing || newestInboundAt > existing) {
+        enrichUpdate.lastInboundFromContactAt = newestInboundAt;
       }
     }
 
