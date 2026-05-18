@@ -967,7 +967,10 @@ function FinancialModuleBody() {
     setFormDescription('');
     setFormCategory('');
     setFormAmount('');
-    setFormDueDate('');
+    // Pré-popula vencimento com hoje. Antes ficava vazio e, como o save é
+    // por onClick (não submit), o `required` do TextField não dispara —
+    // user salvava sem data e a coluna ficava em branco na lista.
+    setFormDueDate(new Date().toISOString().slice(0, 10));
     setFormPaymentDate('');
     setFormPaymentMethod('');
     setFormNotes('');
@@ -1049,6 +1052,13 @@ function FinancialModuleBody() {
     }
     const amount = unmaskMoney(formAmount);
     if (!formDescription || amount <= 0) return;
+    // Defesa: TextField tem `required` mas o save é por onClick (não submit),
+    // então HTML5 validation não dispara. Sem isso, dueDate salvava como null
+    // e a coluna "Vencimento" ficava em branco na lista.
+    if (!formDueDate) {
+      toast.error(t('financial.toast.dueDateRequired', 'Informe a data de vencimento.'));
+      return;
+    }
 
     setIsSaving(true);
     try {
