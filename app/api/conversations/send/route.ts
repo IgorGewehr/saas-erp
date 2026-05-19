@@ -46,6 +46,10 @@ interface SendRequestBody {
    *  document.filename; Baileys em fileName. Sem isso, o filename viraria
    *  caption duplicada na bolha — bug conhecido pré-fix. */
   fileName?: string;
+  /** Quando true (e mediaType==='audio'), envia como voice note (PTT) —
+   *  ícone azul de microfone. Cloud força re-encode pra OGG/Opus mono;
+   *  Baileys seta ptt:true. Composer recordings passam true; paperclip false. */
+  voice?: boolean;
   /** Reply contextual: ID externo (wamid / mid / stanzaId) da mensagem sendo
    *  citada. Cloud API recebe em `context.message_id`; Messenger/IG em
    *  `message.reply_to.mid`; Baileys precisa também do conteúdo + fromMe da
@@ -172,7 +176,7 @@ export async function POST(req: NextRequest) {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
     const rawBody = await req.text();
     const body: SendRequestBody = JSON.parse(rawBody);
-    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, fileName, replyToMessageId, replyToMessageContent, replyToMessageFromMe, clientMessageId } = body;
+    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, fileName, voice, replyToMessageId, replyToMessageContent, replyToMessageFromMe, clientMessageId } = body;
     failureContext = { businessId, conversationId, recipientId, channel };
 
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
@@ -446,7 +450,7 @@ export async function POST(req: NextRequest) {
     // Send via the appropriate Meta API
     let result: { externalMessageId: string };
 
-    const mediaOpts = isMedia ? { mediaUrl: mediaUrl!, mediaType: mediaType || 'document' as const, fileName } : undefined;
+    const mediaOpts = isMedia ? { mediaUrl: mediaUrl!, mediaType: mediaType || 'document' as const, fileName, voice: !!voice } : undefined;
 
     // Captura o transporte usado (cloud vs baileys) pra denormalizar na mensagem.
     // Setado dentro do case 'whatsapp'; outros canais (FB/IG) ficam undefined.
@@ -752,8 +756,14 @@ async function sendWhatsAppBaileys(
 
     switch (mediaOpts.mediaType) {
       case 'audio':
-        // ptt=false → regular audio file (not voice note)
-        messageContent = { audio: mediaBuffer, mimetype: mimeType || 'audio/mp4', ptt: false };
+        // ptt=true → voice note (ícone azul de microfone no WhatsApp).
+        // ptt=false → arquivo de áudio (ícone amarelo de fone). Composer
+        // gravado seta voice=true; paperclip (mp3/m4a anexado) deixa false.
+        messageContent = {
+          audio: mediaBuffer,
+          mimetype: mimeType || 'audio/mp4',
+          ptt: !!mediaOpts.voice,
+        };
         break;
       case 'image':
         messageContent = { image: mediaBuffer, caption: content || undefined };
@@ -829,6 +839,11 @@ interface MediaOptions {
   mediaType: 'image' | 'video' | 'audio' | 'document';
   /** Nome de arquivo original — só relevante para documentos. */
   fileName?: string;
+  /** Quando true (e mediaType==='audio'), envia como voice note (PTT):
+   *   - Cloud: força re-encode pra OGG/Opus MONO (Meta exige mono pra
+   *     reconhecer PTT — sem mono renderiza como arquivo amarelo).
+   *   - Baileys: seta `ptt: true` no sendMessage. */
+  voice?: boolean;
 }
 
 interface WhatsAppTemplateOptions {
@@ -1017,6 +1032,11 @@ async function convertAudio(
   srcUrl: string,
   businessId: string,
   target: 'ogg' | 'm4a',
+  /** Quando true e target==='ogg', re-encoda pra OGG/Opus mono (não copy).
+   *  Meta exige container OGG limpo + canal mono pra renderizar como PTT;
+   *  só repackaging (audioCodec copy) preserva stereo do MediaRecorder e
+   *  Meta cai no fallback "arquivo de áudio" (ícone amarelo). */
+  forceVoiceMono = false,
 ): Promise<string> {
   const ffmpeg = (await import('fluent-ffmpeg')).default;
   const { tmpdir } = await import('os');
@@ -1049,8 +1069,18 @@ async function convertAudio(
   await new Promise<void>((resolve, reject) => {
     const cmd = ffmpeg(inputPath);
     if (target === 'ogg') {
-      // Stream copy — Composer grava em Opus, só repack do container.
-      cmd.audioCodec('copy').format('ogg');
+      if (forceVoiceMono) {
+        // Voice note: re-encoda Opus mono. Re-encode é mais caro que copy
+        // (~300ms num áudio de 30s) mas obrigatório — Meta só renderiza PTT
+        // com OGG/Opus MONO. Bitrate 32k é o sweet spot pra voz humana
+        // (qualidade indistinguível vs 64k pra fala, metade do tamanho).
+        // 48000 Hz: Opus roda nativamente nessa taxa; explicitar evita Meta
+        // dropar frames quando fonte é 16k (MediaRecorder Chrome às vezes).
+        cmd.audioCodec('libopus').audioBitrate('32k').audioChannels(1).audioFrequency(48000).format('ogg');
+      } else {
+        // Áudio comum (paperclip): stream copy preserva qualidade original.
+        cmd.audioCodec('copy').format('ogg');
+      }
     } else {
       cmd.audioCodec('aac').audioBitrate('128k').audioChannels(1).format('ipod');
     }
@@ -1098,12 +1128,18 @@ async function prepareAudioForChannel(
   businessId: string,
 ): Promise<MediaOptions | undefined> {
   if (!media || media.mediaType !== 'audio') return media;
-  if (!needsAudioConversion(media.mediaUrl, channel)) return media;
-  // WhatsApp: OGG/Opus → Meta exibe como voice note (PTT).
+  // Voice note no WhatsApp Cloud: SEMPRE re-encoda pra OGG/Opus mono, mesmo
+  // se já for .ogg. Chrome produz audio/ogg;codecs=opus mas em stereo —
+  // Meta não reconhece como PTT sem mono + container limpo. Re-encode garante.
+  // FB/IG ignoram voice (não tem PTT) — fluxo normal de conversão se precisar.
+  const forceConvert = !!media.voice && channel === 'whatsapp';
+  if (!forceConvert && !needsAudioConversion(media.mediaUrl, channel)) return media;
+  // WhatsApp: OGG/Opus → Meta exibe como voice note (PTT) se mono.
   // FB/IG: M4A/AAC (Messenger e Instagram não aceitam Opus).
   const target: 'ogg' | 'm4a' = channel === 'whatsapp' ? 'ogg' : 'm4a';
-  console.warn(`[Send] Converting audio to ${target.toUpperCase()} for ${channel} compatibility`);
-  const convertedUrl = await convertAudio(media.mediaUrl, businessId, target);
+  const forceVoiceMono = forceConvert && target === 'ogg';
+  console.warn(`[Send] Converting audio to ${target.toUpperCase()}${forceVoiceMono ? ' (voice/mono)' : ''} for ${channel}`);
+  const convertedUrl = await convertAudio(media.mediaUrl, businessId, target, forceVoiceMono);
   return { ...media, mediaUrl: convertedUrl };
 }
 

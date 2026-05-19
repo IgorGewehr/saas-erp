@@ -2432,6 +2432,12 @@ export interface ConversationMessage {
   isAutomated?: boolean;
   mediaUrl?: string;
   mediaType?: 'image' | 'audio' | 'video' | 'document';
+  /** Quando true (e mediaType==='audio'), foi enviado como voice note (PTT) —
+   *  WhatsApp renderiza ícone azul de microfone no destinatário. False/ausente
+   *  = áudio comum (ícone amarelo de arquivo). Usado pelo backend pra forçar
+   *  re-encode mono OGG/Opus (Cloud) ou `ptt:true` (Baileys), e pelo retry
+   *  preservar o modo sem precisar redetectar. */
+  isVoiceNote?: boolean;
   /** Nome do arquivo original para documentos. Renderizado no card; preserva
    *  o filename real ao invés de virar caption duplicada na bolha de texto. */
   fileName?: string;

@@ -8321,12 +8321,17 @@ export default function ConversasModule() {
     fileName,
     caption = '',
     asInternal = false,
+    isVoiceNote = false,
   }: {
     mediaUrl: string;
     mediaType: 'image' | 'video' | 'audio' | 'document';
     fileName?: string;
     caption?: string;
     asInternal?: boolean;
+    /** Quando true, áudio sai como PTT (voice note) no WhatsApp — ícone azul de
+     *  microfone. Default false (áudio comum, ícone amarelo de arquivo). Composer
+     *  passa true pra gravações via MediaRecorder; paperclip passa false. */
+    isVoiceNote?: boolean;
   }) => {
     if (!selectedConversation || !business?.id || !user) return;
     const now = new Date().toISOString();
@@ -8342,6 +8347,9 @@ export default function ConversasModule() {
         mediaUrl,
         mediaType,
         ...(mediaType === 'document' && fileName ? { fileName } : {}),
+        // Persiste pra retry preservar o modo (PTT vs arquivo) sem precisar
+        // distinguir lá. Só seta se for áudio (campo zumbi em outros tipos).
+        ...(mediaType === 'audio' && isVoiceNote ? { isVoiceNote: true } : {}),
         status: asInternal ? 'delivered' as const : 'sending' as const,
         senderName: user.name,
         ...(asInternal ? { isInternal: true } : {}),
@@ -8396,6 +8404,9 @@ export default function ConversasModule() {
           mediaUrl,
           mediaType,
           ...(fileName ? { fileName } : {}),
+          // voice=true → Cloud força re-encode pra OGG/Opus mono (Meta exige
+          // pra renderizar PTT azul) e Baileys seta ptt:true.
+          ...(mediaType === 'audio' && isVoiceNote ? { voice: true } : {}),
         }),
       });
 
@@ -8418,7 +8429,7 @@ export default function ConversasModule() {
     }
   }, [selectedConversation, business?.id, user, t]);
 
-  const sendMediaMessage = useCallback(async (file: File, asInternal = false) => {
+  const sendMediaMessage = useCallback(async (file: File, asInternal = false, isVoiceNote = false) => {
     if (!selectedConversation || !business?.id || !user) return;
     const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
       : file.type.startsWith('video/') ? 'video'
@@ -8437,6 +8448,7 @@ export default function ConversasModule() {
         fileName: mediaType === 'document' ? file.name : undefined,
         caption: '',
         asInternal,
+        isVoiceNote,
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -8495,7 +8507,14 @@ export default function ConversasModule() {
           recipientId: selectedConversation.contactExternalId,
           content: msg.content,
           messageDocId: msg.id,
-          ...(msg.mediaUrl ? { type: 'media', mediaUrl: msg.mediaUrl, mediaType: msg.mediaType } : {}),
+          ...(msg.mediaUrl ? {
+            type: 'media',
+            mediaUrl: msg.mediaUrl,
+            mediaType: msg.mediaType,
+            // Preserva PTT no retry — sem isso, voice note falhada voltaria
+            // como áudio comum (ícone amarelo) ao reenviar.
+            ...(msg.isVoiceNote ? { voice: true } : {}),
+          } : {}),
           ...(msg.replyToMessageId ? {
             replyToMessageId: msg.replyToMessageId,
             replyToMessageContent: replyOriginal?.content ?? '',
@@ -10035,7 +10054,7 @@ export default function ConversasModule() {
                       crossOperatorWarning={crossOpWarning}
                       replyTo={replyToMessage}
                       onCancelReply={() => setReplyToMessage(null)}
-                      onSendAudio={(file) => { void sendMediaMessage(file, isInternalNote); }}
+                      onSendAudio={(file) => { void sendMediaMessage(file, isInternalNote, /* isVoiceNote */ true); }}
                     />
                   );
                 })()}
