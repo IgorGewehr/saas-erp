@@ -6,7 +6,7 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
 import { generateUnsubscribeToken } from '@/lib/utils/unsubscribeToken';
-import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
+import { getAlternativeBrazilianPhone, canonicalizeBr } from '@/lib/utils/phoneAlternatives';
 import type { BroadcastTemplateParam, OptOutChannel } from '@/lib/types';
 import { cleanContactName } from '@/lib/utils/contactName';
 import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
@@ -160,11 +160,21 @@ function normalizeRecipients(
   // duplicado, segment com bug, lista mesclada de fontes diferentes).
   const seen = new Set<string>();
   for (const r of raw) {
-    const recipientId = (
+    const rawRecipient = (
       // Para WhatsApp/FB/IG usa phoneNumber/recipientId
       // Para email usa email
       channel === 'email' ? r.email : (r.phoneNumber || r.recipientId)
     ) ?? '';
+    if (!rawRecipient) continue;
+    // Canonicaliza phone na entrada (BR → "55DDDNUM"): alinha com o wa_id
+    // que a Meta retorna e que o webhook grava em contactExternalId. Sem
+    // isso, o exact match no upsertConversationFromBroadcast falhava quando
+    // o operador colava número com +, parênteses ou sem DDI → criava conv
+    // duplicada e perdia a outbound do template. FB/IG (PSID/IGSID) e email
+    // mantém o valor original.
+    const recipientId = channel === 'whatsapp'
+      ? canonicalizeBr(rawRecipient) || rawRecipient.replace(/\D/g, '') || rawRecipient
+      : rawRecipient;
     if (!recipientId) continue;
     // Normaliza pra dedup: trim + lowercase pra email; só dígitos pra telefone.
     const dedupKey = channel === 'email'
@@ -1173,6 +1183,15 @@ export async function POST(req: NextRequest) {
           const data = await response.json();
           // Notification-server retorna { success, jobId } — Meta retorna messages[0].id
           const messageId = data?.messages?.[0]?.id || data?.message_id || data?.jobId || '';
+          // wa_id é a forma autoritativa do telefone segundo a Meta (após
+          // o roteamento do número, troca de chip, etc). Usar no upsert
+          // garante exact match com o webhook (que grava o mesmo wa_id em
+          // contactExternalId) mesmo quando a canonicalização local diverge.
+          // FB/IG não devolvem este campo — cai pro recipient.recipientId.
+          const waId: string | undefined = data?.contacts?.[0]?.wa_id;
+          const effectiveRecipientId = (channel === 'whatsapp' && typeof waId === 'string' && waId.length > 0)
+            ? waId
+            : recipient.recipientId;
           results.push({
             contactId: recipient.contactId,
             recipientId: recipient.recipientId,
@@ -1208,7 +1227,7 @@ export async function POST(req: NextRequest) {
             await upsertConversationFromBroadcast({
               businessId,
               channel: channel as 'whatsapp' | 'facebook' | 'instagram',
-              recipientId: recipient.recipientId,
+              recipientId: effectiveRecipientId,
               contactName: recipient.name,
               contactId: recipient.contactId,
               content: displayContent,
