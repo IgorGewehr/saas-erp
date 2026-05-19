@@ -2457,6 +2457,13 @@ export interface ConversationMessage {
   deliveredAt?: string;
   readAt?: string;
   createdAt?: string;
+  /** Mensagem de erro retornada pela API de envio (Meta/Baileys) quando
+   *  `status === 'failed'`. Mostrada na bolha pra operador entender o motivo
+   *  exato sem precisar olhar console. Ex: "This message was not delivered
+   *  to maintain healthy ecosystem engagement". */
+  errorMessage?: string;
+  /** Código de erro Meta (errBody.metaCode) — opcional, complementa errorMessage. */
+  errorMetaCode?: number;
 }
 
 // ---- Pagination & Filters ----

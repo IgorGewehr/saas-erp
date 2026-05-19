@@ -2297,15 +2297,29 @@ function MessageBubble({
           )}
         </div>
 
-        {/* Retry button for failed messages */}
-        {message.status === 'failed' && message.direction === 'outbound' && onRetry && (
-          <button
-            onClick={() => onRetry(message)}
-            className="flex items-center gap-1 text-xs text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 mt-1 px-1 transition-colors"
-          >
-            <RotateCcw className="w-3 h-3" />
-            {t('conversations.tryAgain', 'Tentar novamente')}
-          </button>
+        {/* Retry button + erro Meta para mensagens falhadas. Erro mostrado em
+            uma linha abaixo do botão (operador entende motivo sem console). */}
+        {message.status === 'failed' && message.direction === 'outbound' && (
+          <div className="mt-1 flex flex-col items-end gap-0.5">
+            {onRetry && (
+              <button
+                onClick={() => onRetry(message)}
+                className="flex items-center gap-1 text-xs text-red-500 hover:text-red-600 dark:text-red-400 dark:hover:text-red-300 px-1 transition-colors"
+              >
+                <RotateCcw className="w-3 h-3" />
+                {t('conversations.tryAgain', 'Tentar novamente')}
+              </button>
+            )}
+            {message.errorMessage && (
+              <p
+                className="text-[10.5px] text-red-500/90 dark:text-red-400/90 max-w-[280px] text-right leading-snug"
+                title={message.errorMessage}
+              >
+                {message.errorMessage}
+                {message.errorMetaCode ? ` (Meta #${message.errorMetaCode})` : ''}
+              </p>
+            )}
+          </div>
         )}
       </div>
     </motion.div>
@@ -8003,16 +8017,21 @@ export default function ConversasModule() {
             const errBody = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
             toast.error(`Falha ao enviar template "${templateName}": ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
             console.warn('[SendTemplate] API error:', errBody);
-            // Marca como falhou — sem isso, o doc otimista fica em 'sending'
-            // pra sempre e o operador não sabe que precisa retentar.
-            await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' })
-              .catch(e => console.warn('[SendTemplate] Failed to mark template as failed:', e));
+            // Marca como falhou + persiste erro Meta — sem isso, o doc otimista
+            // fica em 'sending' pra sempre e o operador não vê o motivo da falha.
+            await updateDoc(doc(db, 'conversationMessages', msgRef.id), {
+              status: 'failed',
+              ...(errBody.error ? { errorMessage: String(errBody.error).slice(0, 500) } : {}),
+              ...(typeof errBody.metaCode === 'number' ? { errorMetaCode: errBody.metaCode } : {}),
+            }).catch(e => console.warn('[SendTemplate] Failed to mark template as failed:', e));
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           toast.error(`Erro de conexão ao enviar template: ${msg}`);
-          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' })
-            .catch(e => console.warn('[SendTemplate] Failed to mark template as failed:', e));
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), {
+            status: 'failed',
+            errorMessage: `Erro de conexão: ${msg}`.slice(0, 500),
+          }).catch(e => console.warn('[SendTemplate] Failed to mark template as failed:', e));
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -8431,11 +8450,21 @@ export default function ConversasModule() {
   const retryMessage = useCallback(async (msg: ConversationMessage) => {
     if (!selectedConversation || !business?.id) return;
 
-    // Update status back to 'sending'
-    await updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'sending' });
+    // Update status back to 'sending' — limpa errorMessage do attempt anterior
+    // (se a retry der certo, vira 'sent' e o campo fica zumbi; melhor limpar já).
+    const { deleteField } = await import('firebase/firestore');
+    await updateDoc(doc(db, 'conversationMessages', msg.id), {
+      status: 'sending',
+      errorMessage: deleteField(),
+      errorMetaCode: deleteField(),
+    });
 
-    const markFailed = () =>
-      updateDoc(doc(db, 'conversationMessages', msg.id), { status: 'failed' })
+    const markFailed = (errorMessage?: string, errorMetaCode?: number) =>
+      updateDoc(doc(db, 'conversationMessages', msg.id), {
+        status: 'failed',
+        ...(errorMessage ? { errorMessage: errorMessage.slice(0, 500) } : {}),
+        ...(typeof errorMetaCode === 'number' ? { errorMetaCode } : {}),
+      })
         .catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
 
     // Reply preserva no retry: lookup local da msg original pra remontar
@@ -8486,12 +8515,12 @@ export default function ConversasModule() {
           toast.error(`Erro ao reenviar mensagem [${res.status}]: ${errBody.error || 'erro desconhecido'}`);
         }
         console.warn('[Retry] API error:', errBody);
-        await markFailed();
+        await markFailed(errBody.error, typeof errBody.metaCode === 'number' ? errBody.metaCode : undefined);
       }
     } catch (err) {
       const m = err instanceof Error ? err.message : String(err);
       toast.error(`Erro de conexão ao reenviar mensagem: ${m}`);
-      await markFailed();
+      await markFailed(`Erro de conexão: ${m}`);
     }
   }, [selectedConversation, business?.id, messages]);
 
@@ -8676,12 +8705,21 @@ export default function ConversasModule() {
             // Tratado (toast + status:'failed') — usa warn pra não disparar o overlay
             // de erro do Next.js dev. console.error fica reservado pro catch abaixo.
             console.warn('[Send] API error:', errBody);
-            await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
+            // Persiste o erro Meta no doc pra UI mostrar embaixo da bolha
+            // (operador entende o motivo sem precisar abrir o console).
+            await updateDoc(doc(db, 'conversationMessages', msgRef.id), {
+              status: 'failed',
+              ...(errBody.error ? { errorMessage: String(errBody.error).slice(0, 500) } : {}),
+              ...(typeof errBody.metaCode === 'number' ? { errorMetaCode: errBody.metaCode } : {}),
+            }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           toast.error(`Erro de conexão ao enviar mensagem: ${msg}`);
-          await updateDoc(doc(db, 'conversationMessages', msgRef.id), { status: 'failed' }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
+          await updateDoc(doc(db, 'conversationMessages', msgRef.id), {
+            status: 'failed',
+            errorMessage: `Erro de conexão: ${msg}`.slice(0, 500),
+          }).catch(e => console.warn('[Conversations] Failed to mark message as failed:', e));
         }
       }
     } catch (err) {
@@ -9772,7 +9810,16 @@ export default function ConversasModule() {
                         : undefined;
                     })()
                   }
-                  pipelineStages={pipelineStagesActive}
+                  // Quando o contato JÁ está no pipeline, o label vira "Mover
+                  // no pipeline" e o operador precisa poder fechar como Ganho/
+                  // Perdido (saída do funil) — usamos pipelineStagesAll.
+                  // Sem contato vinculado, é "Enviar para o pipeline" (entrada)
+                  // e Ganho/Perdido não fazem sentido — usamos pipelineStagesActive.
+                  pipelineStages={
+                    selectedConversation.crmContactId && clientStageById.get(selectedConversation.crmContactId)
+                      ? pipelineStagesAll
+                      : pipelineStagesActive
+                  }
                   linkedClientStage={
                     selectedConversation.crmContactId
                       ? clientStageById.get(selectedConversation.crmContactId)
