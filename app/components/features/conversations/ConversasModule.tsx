@@ -1900,7 +1900,15 @@ function MediaAttachment({
 // Renderiza contatos compartilhados (vCard via WA) como card visual com nome,
 // telefones (botão "Copiar") e emails. Substitui a bolha "[Contato]" do
 // fallback. Suporta múltiplos contatos numa única mensagem.
-function SharedContactsCard({ contacts }: { contacts: NonNullable<ConversationMessage['sharedContacts']> }) {
+function SharedContactsCard({
+  contacts,
+  onStartConversation,
+}: {
+  contacts: NonNullable<ConversationMessage['sharedContacts']>;
+  /** Click no telefone abre o dialog "Nova conversa" pré-preenchido. Quando
+   *  ausente, fallback pro comportamento antigo (copia o número). */
+  onStartConversation?: (phone: string, name?: string) => void;
+}) {
   if (!contacts || contacts.length === 0) return null;
   return (
     <div className="mb-1.5 space-y-1.5 max-w-[300px]">
@@ -1918,8 +1926,14 @@ function SharedContactsCard({ contacts }: { contacts: NonNullable<ConversationMe
               <button
                 key={`p-${i}`}
                 type="button"
-                onClick={() => { navigator.clipboard?.writeText(phone).then(() => toast.success('Telefone copiado')).catch(() => {}); }}
-                title="Copiar telefone"
+                onClick={() => {
+                  if (onStartConversation) {
+                    onStartConversation(phone, c.name);
+                  } else {
+                    navigator.clipboard?.writeText(phone).then(() => toast.success('Telefone copiado')).catch(() => {});
+                  }
+                }}
+                title={onStartConversation ? 'Iniciar conversa' : 'Copiar telefone'}
                 className="block text-[11px] text-gray-600 dark:text-gray-400 hover:text-emerald-600 dark:hover:text-emerald-400 truncate text-left"
               >
                 {phone}
@@ -2119,6 +2133,7 @@ function MessageBubble({
   onRetry,
   quotedMessage,
   onReply,
+  onStartConversation,
 }: {
   message: ConversationMessage;
   isGrouped: boolean;
@@ -2131,6 +2146,9 @@ function MessageBubble({
   /** Disparado pelo botão "Responder" do hover. Quando ausente, o botão não
    *  aparece (msg falhada, msg sem externalMessageId, ou canal sem suporte). */
   onReply?: (msg: ConversationMessage) => void;
+  /** Click num telefone do shared contact (vCard) — pai abre o dialog de
+   *  nova conversa pré-preenchido. */
+  onStartConversation?: (phone: string, name?: string) => void;
 }) {
   const { t } = useTranslation();
   const isOut = message.direction === 'outbound';
@@ -2185,7 +2203,7 @@ function MessageBubble({
 
         {/* Shared contacts (vCard) — card visual com nome + telefones + emails. */}
         {message.sharedContacts && message.sharedContacts.length > 0 && (
-          <SharedContactsCard contacts={message.sharedContacts} />
+          <SharedContactsCard contacts={message.sharedContacts} onStartConversation={onStartConversation} />
         )}
 
         {/* Text content — esconde bolha de texto que duplicaria o card de mídia:
@@ -2302,6 +2320,7 @@ function MessageList({
   messagesEndRef,
   onRetry,
   onReply,
+  onStartConversation,
   hasMoreMessages,
   loadingMoreMessages,
   onLoadMore,
@@ -2312,6 +2331,8 @@ function MessageList({
   onRetry?: (msg: ConversationMessage) => void;
   /** Click no botão "Responder" da bolha. Pai persiste em state e injeta no Composer. */
   onReply?: (msg: ConversationMessage) => void;
+  /** Click num telefone de vCard recebido — pai abre dialog de nova conversa. */
+  onStartConversation?: (phone: string, name?: string) => void;
   hasMoreMessages?: boolean;
   loadingMoreMessages?: boolean;
   onLoadMore?: () => void;
@@ -2389,6 +2410,7 @@ function MessageList({
             channel={conversation.channel}
             onRetry={onRetry}
             onReply={onReply}
+            onStartConversation={onStartConversation}
             quotedMessage={
               item.msg.replyToMessageId
                 ? messagesByExtId.get(item.msg.replyToMessageId) ?? null
@@ -3368,7 +3390,7 @@ function AdvancedFilterPanel({ filters, onChange, members, allLabels, slaEnabled
           <label className="flex items-center gap-2 cursor-pointer">
             <button onClick={() => set('unreadOnly', !filters.unreadOnly)}
               className={cn('w-8 h-4 rounded-full transition-colors relative', filters.unreadOnly ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600')}>
-              <span className={cn('absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.unreadOnly ? 'translate-x-4' : 'translate-x-0.5')} />
+              <span className={cn('absolute left-0 top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform', filters.unreadOnly ? 'translate-x-4' : 'translate-x-0.5')} />
             </button>
             <span className="text-xs text-gray-600 dark:text-gray-400">Não lidas</span>
           </label>
@@ -3847,12 +3869,17 @@ function NewConversationDialog({
   connections: import('@/lib/types').ChannelConnection[];
   /** IDs das connections 'user' do operador atual — pra exibir badge. */
   myConnectionIds: Set<string>;
-  /** Pré-preenche o dialog com cliente + canal/modo escolhidos.
-   *  Vem do AppContext.pendingNewConversation quando ChannelsTab do detalhe
-   *  do cliente aciona "Iniciar conversa". null = abre vazio (botão "+" do header). */
+  /** Pré-preenche o dialog. Dois cenários:
+   *   (a) `client` setado → vem do ChannelsTab do detalhe do cliente ou de
+   *       um shared contact resolvido (popula nome + telefone + canal/modo).
+   *   (b) só `phone` setado → vem do vCard recebido cujo telefone não bate com
+   *       nenhum client existente (popula só telefone + nome opcional).
+   *  null = abre vazio (botão "+" do header). */
   prefill?: {
-    client: Client;
-    channel: 'whatsapp' | 'facebook' | 'instagram';
+    client?: Client;
+    phone?: string;
+    name?: string;
+    channel?: 'whatsapp' | 'facebook' | 'instagram';
     whatsappMode?: 'cloud' | 'baileys';
   } | null;
 }) {
@@ -3922,18 +3949,22 @@ function NewConversationDialog({
     setTemplateVars([]);
 
     if (prefill) {
-      // Pré-fill: phone do client + selectedClient setado + mode escolhido.
-      const phone = prefill.client.whatsapp || prefill.client.phone || '';
+      // Resolve phone/name: client (se existir) tem prioridade; cai pra phone
+      // cru quando o vCard recebido não bate com nenhum client cadastrado.
+      const phone = prefill.client?.whatsapp || prefill.client?.phone || prefill.phone || '';
+      const name = prefill.client?.name || prefill.name || '';
       setPhoneInput(phone);
-      setNameInput(prefill.client.name || '');
-      setClientSearch(prefill.client.name || '');
-      setSelectedClient(prefill.client);
+      setNameInput(name);
+      setClientSearch(name);
+      setSelectedClient(prefill.client ?? null);
+      // Canal default = whatsapp quando não explicitado (caso phone cru).
+      const channel = prefill.channel ?? 'whatsapp';
       // FB/IG não tem opção de modo — channelMode é só pra WA. Pra simplicidade
       // mantemos cloud como default em FB/IG (tanto faz, a UI esconde a toggle).
-      if (prefill.channel === 'whatsapp' && prefill.whatsappMode) {
+      if (channel === 'whatsapp' && prefill.whatsappMode) {
         setChannelMode(prefill.whatsappMode);
         setMessageMode(prefill.whatsappMode === 'baileys' ? 'text' : 'template');
-      } else if (prefill.channel === 'whatsapp') {
+      } else if (channel === 'whatsapp') {
         // Sem modo explícito — escolhe o disponível.
         if (baileysAvailable) { setChannelMode('baileys'); setMessageMode('text'); }
         else if (cloudAvailable) { setChannelMode('cloud'); setMessageMode('template'); }
@@ -6270,12 +6301,14 @@ export default function ConversasModule() {
   const [showMergeDialog, setShowMergeDialog] = useState(false);
   const [showTransferChannelDialog, setShowTransferChannelDialog] = useState(false);
   const [showNewConversation, setShowNewConversation] = useState(false);
-  // Prefill consumido do AppContext.pendingNewConversation — ChannelsTab do
-  // detalhe do cliente seta isso ao clicar "Iniciar conversa" no card de WA.
-  // null = dialog abriu sem prefill (botão genérico "+" no header).
+  // Prefill consumido do AppContext.pendingNewConversation (ChannelsTab do
+  // detalhe do cliente) ou de um shared contact recebido (clique no telefone
+  // do vCard). null = dialog abriu vazio (botão genérico "+" no header).
   const [newConvPrefill, setNewConvPrefill] = useState<{
-    client: Client;
-    channel: 'whatsapp' | 'facebook' | 'instagram';
+    client?: Client;
+    phone?: string;
+    name?: string;
+    channel?: 'whatsapp' | 'facebook' | 'instagram';
     whatsappMode?: 'cloud' | 'baileys';
   } | null>(null);
   const [routingRules, setRoutingRules] = useState<RoutingRule[]>(business?.settings?.routingRules ?? []);
@@ -7001,6 +7034,28 @@ export default function ConversasModule() {
     }, 5000);
     return () => clearTimeout(t);
   }, [pendingNewConversation, clientsList, setPendingNewConversation]);
+
+  // Click num telefone de vCard recebido → abre dialog de nova conversa
+  // pré-preenchido. Tenta resolver pra client cadastrado comparando os
+  // últimos 8 dígitos (ignora DDI/formatação/9 inicial variável). Só vincula
+  // quando há match único — se 0 ou >1, abre com phone cru pra não chutar
+  // o client errado (operador busca manualmente no campo "Buscar cliente").
+  const handleStartConvFromPhone = useCallback((phone: string, name?: string) => {
+    const normalized = phone.replace(/\D/g, '');
+    const tail = normalized.slice(-8);
+    const matches = tail.length === 8
+      ? clientsList.filter(c => {
+          const cPhone = (c.whatsapp || c.phone || '').replace(/\D/g, '');
+          return cPhone.length >= 8 && cPhone.slice(-8) === tail;
+        })
+      : [];
+    if (matches.length === 1) {
+      setNewConvPrefill({ client: matches[0], channel: 'whatsapp' });
+    } else {
+      setNewConvPrefill({ phone, name, channel: 'whatsapp' });
+    }
+    setShowNewConversation(true);
+  }, [clientsList]);
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
 
@@ -9786,6 +9841,7 @@ export default function ConversasModule() {
                         setReplyToMessage(msg);
                         composerRef.current?.focus();
                       }}
+                      onStartConversation={handleStartConvFromPhone}
                       hasMoreMessages={hasMoreMessages}
                       loadingMoreMessages={loadingMoreMessages}
                       onLoadMore={loadMoreMessages}
