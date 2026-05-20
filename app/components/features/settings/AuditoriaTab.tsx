@@ -28,14 +28,14 @@ import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { restoreDoc } from '@/lib/services/softDelete';
 import { ROLE_HIERARCHY } from '@/lib/types';
-import { Trash2, RotateCcw, Inbox, AlertCircle, Users, MessageCircle, Loader2, Plug2 } from 'lucide-react';
+import { Trash2, RotateCcw, Inbox, AlertCircle, Users, MessageCircle, Loader2, Plug2, Briefcase } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 
 const RETENTION_DAYS = 30;
 
-type CollectionKey = 'clients' | 'conversations' | 'channelConnections';
+type CollectionKey = 'clients' | 'conversations' | 'channelConnections' | 'services';
 
 interface DeletedRecord {
   id: string;
@@ -49,12 +49,14 @@ const COLLECTION_LABEL: Record<CollectionKey, string> = {
   clients: 'Cliente',
   conversations: 'Conversa',
   channelConnections: 'Canal',
+  services: 'Serviço',
 };
 
 const COLLECTION_ICON: Record<CollectionKey, React.ReactNode> = {
   clients: <Users className="w-4 h-4" />,
   conversations: <MessageCircle className="w-4 h-4" />,
   channelConnections: <Plug2 className="w-4 h-4" />,
+  services: <Briefcase className="w-4 h-4" />,
 };
 
 async function fetchDeletedDocs(
@@ -99,7 +101,7 @@ export function AuditoriaTab() {
     if (!business?.id) return;
     setLoading(true);
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
-    const [clientsRecs, convsRecs, channelsRecs] = await Promise.all([
+    const [clientsRecs, convsRecs, channelsRecs, servicesRecs] = await Promise.all([
       fetchDeletedDocs(
         business.id,
         'clients',
@@ -122,8 +124,14 @@ export function AuditoriaTab() {
           return dn ? `${dn} (${tp})` : `(canal ${tp || 'desconhecido'})`;
         },
       ),
+      fetchDeletedDocs(
+        business.id,
+        'services',
+        cutoff,
+        (data) => (data.name as string) || '(serviço sem nome)',
+      ),
     ]);
-    const all = [...clientsRecs, ...convsRecs, ...channelsRecs].sort((a, b) =>
+    const all = [...clientsRecs, ...convsRecs, ...channelsRecs, ...servicesRecs].sort((a, b) =>
       (b.deletedAt || '').localeCompare(a.deletedAt || ''),
     );
     setRecords(all);
@@ -144,6 +152,7 @@ export function AuditoriaTab() {
     clients: records.filter(r => r.collection === 'clients').length,
     conversations: records.filter(r => r.collection === 'conversations').length,
     channelConnections: records.filter(r => r.collection === 'channelConnections').length,
+    services: records.filter(r => r.collection === 'services').length,
   }), [records]);
 
   const logAudit = useCallback(async (action: 'record_restored' | 'record_purged', rec: DeletedRecord) => {
@@ -237,6 +246,7 @@ export function AuditoriaTab() {
           { id: 'clients',            label: 'Clientes',  count: counts.clients },
           { id: 'conversations',      label: 'Conversas', count: counts.conversations },
           { id: 'channelConnections', label: 'Canais',    count: counts.channelConnections },
+          { id: 'services',           label: 'Serviços',  count: counts.services },
         ] as const).map(opt => (
           <button
             key={opt.id}

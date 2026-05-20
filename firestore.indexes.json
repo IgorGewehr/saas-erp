@@ -35,6 +35,14 @@
       ]
     },
     {
+      "collectionGroup": "services",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "deletedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "crmAuditLog",
       "queryScope": "COLLECTION",
       "fields": [

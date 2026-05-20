@@ -23,6 +23,7 @@ import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import type { AppointmentStatus, CRMContact, Service, User } from '@/lib/types';
 import {
@@ -153,7 +154,7 @@ export function AppointmentFormDialog({
     ).slice(0, 20);
   }, [clientSearch, clients]);
 
-  const activeServices = useMemo(() => services.filter((s) => s.isActive), [services]);
+  const activeServices = useMemo(() => services.filter(isActiveRecord), [services]);
 
   const availableMembers = useMemo(() => {
     if (!formData.serviceId) return members;

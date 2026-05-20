@@ -83,6 +83,8 @@ import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { softDeleteDoc } from '@/lib/services/softDelete';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAppContext } from '@/app/app/AppContext';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
@@ -1670,7 +1672,7 @@ export default function AgendaModule() {
       const snap = await getDocs(q);
       return snap.docs
         .map((d) => ({ ...d.data(), id: d.id } as Service))
-        .filter(s => (s as { isActive?: boolean }).isActive !== false)
+        .filter(isActiveRecord)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
     enabled: !!business?.id,
@@ -1827,12 +1829,18 @@ export default function AgendaModule() {
   }, [business?.id, queryClient, t, buildFiscalFields]);
 
   const handleDeleteService = useCallback(async (id: string) => {
-    if (!business?.id) return;
-    const now = new Date().toISOString();
-    await updateDoc(doc(db, 'services', id), { isActive: false, deletedAt: now, updatedAt: now });
+    if (!business?.id || !user?.uid) return;
+    // Soft-delete via helper canonico (Fase 4b do plano de soft-delete).
+    // O helper grava deletedAt + deletedBy + deletedByName e e idempotente.
+    // Write extra de `isActive: false` por compat com API publica
+    // /api/v1/services?active=false (where('isActive','==',false)) e com
+    // filters inline em pickers (cleanup desse compat fica pra Deploy C).
+    const ref = doc(db, 'services', id);
+    await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
+    await updateDoc(ref, { isActive: false });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
     setSnackbar({ open: true, message: t('agenda.serviceDeleted', 'Serviço excluído.'), severity: 'info' });
-  }, [business?.id, queryClient, t]);
+  }, [business?.id, user?.uid, user?.name, queryClient, t]);
 
   // ==========================================
   // APPOINTMENT CRUD HANDLERS
