@@ -5802,7 +5802,11 @@ function LinkContactDrawer({
         }
         return false;
       });
-      if (existing && !existing.mergedInto && !(existing as { deletedAt?: string }).deletedAt) {
+      // Usa o helper canonico em vez de reimplementar a logica inline. Antes
+      // do fix, faltava checar `isActive === false` (clientes legados deletados
+      // com flag antiga escapavam do dedup). Bug apontado em
+      // docs/soft-delete-strategy.md §2.2 item 7.
+      if (existing && isActiveClient(existing)) {
         setDuplicateMatch(existing);
         return;
       }
@@ -6838,6 +6842,18 @@ export default function ConversasModule() {
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [attachment, setAttachment] = useState<File | null>(null);
+  /** Flag pra forçar envio como tipo 'document' (independente do MIME real do file).
+   *  Setado quando operador aceita o prompt "enviar vídeo/áudio > 16MB como documento"
+   *  — caso em que o file passa como anexo (cap 100MB) ao invés de mídia inline.
+   *  Reseta junto com attachment no removeAttachment / pós-envio. */
+  const [attachmentAsDocument, setAttachmentAsDocument] = useState(false);
+  /** Modal "arquivo oversized" — oferece fallback de enviar como documento pra
+   *  vídeo/áudio acima do limite Cloud API (16MB). null = modal fechado. */
+  const [oversizedPrompt, setOversizedPrompt] = useState<{
+    file: File;
+    originalType: 'video' | 'audio';
+    sizeMb: number;
+  } | null>(null);
 
   // Snippet com mídia "pré-carregado" no Composer: visualmente igual a um
   // anexo, mas a mídia já está no Storage (mediaUrl) — handleSend pula upload
@@ -8278,8 +8294,20 @@ export default function ConversasModule() {
     const limits = { image: 5, video: 16, audio: 16, document: 100 } as const;
     const limitMb = limits[mt];
     if (finalFile.size > limitMb * 1024 * 1024) {
+      // Vídeo/áudio > 16MB: oferece fallback de enviar como DOCUMENTO (cap 100MB
+      // da WhatsApp Cloud). Operador escolhe — cliente recebe como arquivo pra
+      // baixar em vez de player inline, mas a msg passa. Não rola pra imagem
+      // (perde thumbnail) nem pra documento (já no cap maior).
+      if ((mt === 'video' || mt === 'audio') && finalFile.size <= 100 * 1024 * 1024) {
+        setOversizedPrompt({
+          file: finalFile,
+          originalType: mt,
+          sizeMb: Math.round(finalFile.size / 1024 / 1024),
+        });
+        return;
+      }
       const labels = { image: 'imagem', video: 'vídeo', audio: 'áudio', document: 'documento' } as const;
-      alert(`Arquivo de ${labels[mt]} muito grande (máximo ${limitMb}MB).`);
+      toast.error(`Arquivo de ${labels[mt]} muito grande (máximo ${limitMb}MB).`);
       return;
     }
 
@@ -8291,7 +8319,7 @@ export default function ConversasModule() {
     if (finalFile.type.startsWith('audio/') && channel === 'whatsapp') {
       const WA_SUPPORTED_AUDIO = ['audio/aac', 'audio/mp4', 'audio/mpeg', 'audio/amr', 'audio/ogg', 'audio/opus'];
       if (!WA_SUPPORTED_AUDIO.includes(finalFile.type)) {
-        alert(`Formato de áudio não suportado pelo WhatsApp (${finalFile.type}).\nUse MP3, M4A, AAC, AMR ou OGG/Opus.`);
+        toast.error(`Formato de áudio não suportado pelo WhatsApp (${finalFile.type}). Use MP3, M4A, AAC, AMR ou OGG/Opus.`);
         return;
       }
     }
@@ -8304,6 +8332,7 @@ export default function ConversasModule() {
 
   const handleRemoveAttachment = useCallback(() => {
     setAttachment(null);
+    setAttachmentAsDocument(false);
   }, []);
 
   const handleRemovePendingSnippetMedia = useCallback(() => {
@@ -8429,9 +8458,13 @@ export default function ConversasModule() {
     }
   }, [selectedConversation, business?.id, user, t]);
 
-  const sendMediaMessage = useCallback(async (file: File, asInternal = false, isVoiceNote = false) => {
+  const sendMediaMessage = useCallback(async (file: File, asInternal = false, isVoiceNote = false, forceAsDocument = false) => {
     if (!selectedConversation || !business?.id || !user) return;
-    const mediaType: 'image' | 'video' | 'audio' | 'document' = file.type.startsWith('image/') ? 'image'
+    // forceAsDocument: vídeo/áudio acima do limite Cloud (16MB) que o operador
+    // escolheu enviar como documento (cap 100MB) — cliente recebe arquivo pra
+    // baixar em vez de player inline.
+    const mediaType: 'image' | 'video' | 'audio' | 'document' = forceAsDocument ? 'document'
+      : file.type.startsWith('image/') ? 'image'
       : file.type.startsWith('video/') ? 'video'
       : file.type.startsWith('audio/') ? 'audio'
       : 'document';
@@ -8442,6 +8475,8 @@ export default function ConversasModule() {
       const mediaUrl = await getDownloadURL(sref);
       // Caption sempre vazio em anexo do Composer — filename real vai em
       // `fileName` separado e o renderer mostra no card sem virar texto.
+      // Quando forceAsDocument, sempre passa fileName pra que a UI da Meta
+      // mostre o nome original do arquivo no card de documento.
       await sendPreparedMedia({
         mediaUrl,
         mediaType,
@@ -8586,12 +8621,14 @@ export default function ConversasModule() {
 
     const content = sourceText.trim();
     const currentAttachment = attachment;
+    const currentAsDocument = attachmentAsDocument;
     const currentPendingSnippet = pendingSnippetMedia;
     // Snapshot do reply ativo antes de limpar — assim a mensagem que sair
     // já carrega o quote mesmo que o usuário clique noutra coisa enquanto envia.
     const currentReply = replyToMessage;
     composerRef.current?.setText('');
     setAttachment(null);
+    setAttachmentAsDocument(false);
     setPendingSnippetMedia(null);
     setReplyToMessage(null);
     // Apaga o "Fulano digitando..." pros outros operadores assim que envia —
@@ -8620,7 +8657,7 @@ export default function ConversasModule() {
     // continuam paralelas — esta serialização afeta só o par mídia+texto da
     // mesma submissão. sendMediaMessage trata erros internamente.
     if (currentAttachment) {
-      await sendMediaMessage(currentAttachment, isInternalNote);
+      await sendMediaMessage(currentAttachment, isInternalNote, false, currentAsDocument);
     }
 
     if (!hasText) {
@@ -8758,7 +8795,7 @@ export default function ConversasModule() {
       composerRef.current?.focus();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachment, pendingSnippetMedia, selectedConversation, business?.id, user, sendMediaMessage, sendPreparedMedia, isInternalNote, replyToMessage]);
+  }, [attachment, attachmentAsDocument, pendingSnippetMedia, selectedConversation, business?.id, user, sendMediaMessage, sendPreparedMedia, isInternalNote, replyToMessage]);
 
   // handleKeyDown removido daqui — Enter e "/" agora são tratados dentro do
   // próprio Composer, com acesso direto ao text local. Pai só recebe via
@@ -10526,6 +10563,70 @@ export default function ConversasModule() {
               onClose={() => setAgentDebugOpen(false)}
             />
           </>
+        )}
+      </AnimatePresence>
+
+      {/* Oversized file prompt — vídeo/áudio acima do limite WhatsApp Cloud
+          (16MB). Operador decide: cancelar OU enviar como documento (cap 100MB).
+          Sem player inline na ponta, mas o cliente recebe o arquivo. */}
+      <AnimatePresence>
+        {oversizedPrompt && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={(e) => { if (e.target === e.currentTarget) setOversizedPrompt(null); }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 12 }}
+              className="w-full max-w-md bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-5"
+            >
+              <div className="flex items-start gap-3 mb-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-bold text-gray-900 dark:text-white">
+                    Arquivo maior que o limite
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    {oversizedPrompt.originalType === 'video' ? 'Vídeos' : 'Áudios'} pelo WhatsApp têm limite de 16MB.
+                    Seu arquivo tem <strong>{oversizedPrompt.sizeMb}MB</strong>.
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-xl bg-gray-50 dark:bg-white/[0.03] border border-gray-200 dark:border-gray-700 p-3 mb-3">
+                <p className="text-[11px] text-gray-600 dark:text-gray-300 leading-snug">
+                  💡 <strong>Você pode enviar como documento</strong> (limite 100MB). O cliente vai receber o arquivo e baixar pra ver — sem player inline, mas chega normalmente.
+                </p>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setOversizedPrompt(null)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!oversizedPrompt) return;
+                    setAttachment(oversizedPrompt.file);
+                    setAttachmentAsDocument(true);
+                    setPendingSnippetMedia(null);
+                    setOversizedPrompt(null);
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-700 text-white transition-colors"
+                >
+                  Enviar como documento
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 
