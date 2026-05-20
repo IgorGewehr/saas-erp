@@ -49,6 +49,7 @@ import { enUS as enUSLocale } from 'date-fns/locale';
 import { collection, query, where, or, and, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
 import AgentHeroInput from './AgentHeroInput';
 
@@ -190,8 +191,8 @@ export default function DashboardModule() {
     const unsub = onSnapshot(q, (snap) => {
       setConversations(
         snap.docs
-          .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
-          .filter((c) => !c.isDeleted),
+          .map((d) => ({ ...d.data(), id: d.id } as Conversation))
+          .filter(isActiveRecord),
       );
       setLoadingConvs(false);
     }, (err) => { console.warn('[Dashboard] conversations snapshot error:', err); setLoadingConvs(false); });

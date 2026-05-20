@@ -9,6 +9,8 @@ import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { setActiveConversation } from '@/lib/utils/active-conversation';
 import { isActiveClient } from '@/lib/utils/clientFilters';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
+import { softDeleteDoc } from '@/lib/services/softDelete';
 import { createPortal } from 'react-dom';
 import { compressImage, formatFileSize } from '@/lib/utils/imageCompress';
 import { ClientDetailPanel } from '@/app/components/features/clients/detail/ClientDetailPanel';
@@ -6463,18 +6465,17 @@ export default function ConversasModule() {
   }, []);
 
   const executeDeleteConversation = useCallback(async () => {
-    if (!deleteConfirmConv || !business?.id) return;
+    if (!deleteConfirmConv || !business?.id || !user?.uid) return;
     try {
-      // Zerar unreadCount junto com soft-delete: defesa em profundidade contra
-      // badge fantasma no sidebar. O Sidebar já filtra isDeleted, mas se essa
-      // checagem falhar no futuro (ex: refactor que remove o filtro), o doc
-      // residual no Firestore não deveria poder inflar contadores. Custo zero.
-      await updateDoc(doc(db, 'conversations', deleteConfirmConv.id), {
-        isDeleted: true,
-        deletedAt: new Date().toISOString(),
-        unreadCount: 0,
-        updatedAt: new Date().toISOString(),
-      });
+      // Soft-delete via helper canonico + zeragem de unreadCount.
+      // Fase 2 do plano de soft-delete: drop isDeleted, usar so deletedAt +
+      // audit (deletedBy / deletedByName). Reader (isActiveRecord) ainda
+      // aceita o legado `isDeleted: true` durante a janela de backfill.
+      const ref = doc(db, 'conversations', deleteConfirmConv.id);
+      await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
+      // Zerar unreadCount junto: defesa em profundidade contra badge fantasma
+      // no sidebar (filtros poderiam falhar no futuro). Custo zero.
+      await updateDoc(ref, { unreadCount: 0 });
       setSelectedConversation(null);
       setShowMobileThread(false);
       setDeleteConfirmConv(null);
@@ -7139,8 +7140,8 @@ export default function ConversasModule() {
         clearTimeout(loadingTimeout);
         retryCount = 0; // reset on success
         const data = snap.docs
-          .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
-          .filter((c) => !c.isDeleted);
+          .map((d) => ({ ...d.data(), id: d.id } as Conversation))
+          .filter(isActiveRecord);
         setConversations(data);
         setIsLoadingConversations(false);
 

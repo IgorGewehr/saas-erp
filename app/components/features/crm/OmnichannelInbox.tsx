@@ -8,6 +8,7 @@ import { motion } from 'framer-motion';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { db, storage } from '@/lib/config/firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -93,8 +94,8 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
         (snap) => {
           retryCount = 0;
           const docs = snap.docs
-            .map((d) => ({ ...d.data(), id: d.id } as Conversation & { isDeleted?: boolean }))
-            .filter((c) => !c.isDeleted);
+            .map((d) => ({ ...d.data(), id: d.id } as Conversation))
+            .filter(isActiveRecord);
           setConversations(docs);
           setIsLoading(false);
         },

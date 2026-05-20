@@ -45,6 +45,7 @@ import {
   isDesktopNotificationSupported,
 } from '@/lib/utils/notification-alerts';
 import { useNotificationPrefs, type NotificationPrefs } from '@/lib/utils/notification-prefs';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { getActiveConversation, isTabVisible } from '@/lib/utils/active-conversation';
 import { claimGlobalBeepSlot } from '@/lib/utils/notification-throttle';
 
@@ -128,8 +129,9 @@ export function useConversationsAlerts(): void {
         }
 
         // Soneca ativa ou conversa deletada — atualiza state mas não alerta.
+        // isActiveRecord cobre ambos formatos (legado isDeleted + novo deletedAt).
         const snoozedActive = data.snoozedUntil && new Date(data.snoozedUntil).getTime() > now;
-        const isDeleted = !!data.isDeleted;
+        const isDeleted = !isActiveRecord(data);
         if (snoozedActive || isDeleted) {
           lastSeenRef.current.set(id, data);
           continue;

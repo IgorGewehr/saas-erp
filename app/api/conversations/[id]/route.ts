@@ -41,15 +41,19 @@ export async function DELETE(
   }
 
   try {
-    // 2. Soft delete — mark as deleted instead of removing from Firestore
-    //    This prevents the sync engine from recreating the conversation.
-    //    Zerar unreadCount também é defesa em profundidade: o Sidebar filtra
-    //    isDeleted no badge, mas se o filtro falhar/regredir no futuro, o
-    //    doc residual não deve inflar contadores. Custo zero.
+    // 2. Soft delete — mark as deleted instead of removing from Firestore.
+    //    Previne sync engine de recriar a conversa.
+    //    Fase 2 do plano de soft-delete: usa contrato unificado (deletedAt +
+    //    audit). Drop do `isDeleted: true` (reader isActiveRecord aceita o
+    //    legado durante a janela de backfill). authResult tem uid mas nao
+    //    name — usa uid como fallback (ideal: buscar nome do users/{uid},
+    //    pendente).
+    //    Zerar unreadCount: defesa em profundidade contra badge fantasma.
     const now = new Date().toISOString();
     await adminDb.doc(`conversations/${conversationId}`).update({
-      isDeleted: true,
       deletedAt: now,
+      deletedBy: authResult.uid,
+      deletedByName: authResult.uid,
       unreadCount: 0,
       updatedAt: now,
     });

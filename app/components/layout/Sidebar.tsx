@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTranslation } from 'react-i18next';
 import { collection, query, where, doc, updateDoc, onSnapshot } from 'firebase/firestore';
@@ -395,7 +396,8 @@ function SidebarContent({
           // ConversasModule), então não devem inflar o badge. Sem este check
           // o badge mostrava "3" enquanto a UI reportava 0 não lidas — o
           // operador não conseguia clicar pra zerar (a conversa nem aparecia).
-          if (c.isDeleted) return acc;
+          // Helper canonico cobre ambos formatos (legado + novo).
+          if (!isActiveRecord(c)) return acc;
           // Sem mensagens não lidas — não conta
           if (!c.unreadCount || c.unreadCount <= 0) return acc;
           // Soneca ativa — operador silenciou, não deveria notificar

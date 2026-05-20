@@ -2336,8 +2336,16 @@ export interface Conversation {
   closedReason?: 'channel_removed';
   createdAt: string;
   updatedAt: string;
+  /** @deprecated Use `deletedAt` (contrato unificado de soft-delete, Fase 2).
+   *  Mantido pra compat com docs legados; readers usam isActiveRecord que
+   *  reconhece ambos formatos. Sera removido no Deploy C apos backfill. */
   isDeleted?: boolean;
+  /** ISO timestamp do soft-delete. Substitui o legado `isDeleted: true`. */
   deletedAt?: string;
+  /** UID do user que disparou o soft-delete (audit trail). */
+  deletedBy?: string;
+  /** Nome denormalizado do user no momento do delete. */
+  deletedByName?: string;
 }
 
 export interface CSATResponse {

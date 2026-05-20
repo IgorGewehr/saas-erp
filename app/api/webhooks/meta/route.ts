@@ -1751,8 +1751,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
 
       const existingData = matchedDoc.data();
 
-      // Soft-delete guard: only resurrect if the new message is newer than deletedAt
-      if (existingData.isDeleted) {
+      // Soft-delete guard: only resurrect if the new message is newer than deletedAt.
+      // Trata ambos os formatos (legado `isDeleted: true` e novo `deletedAt`).
+      const isDeletedConv = !!existingData.deletedAt || existingData.isDeleted === true;
+      if (isDeletedConv) {
         const deletedAt = existingData.deletedAt ? new Date(existingData.deletedAt).getTime() : 0;
         const messageAt = new Date(params.timestamp).getTime();
         if (messageAt <= deletedAt) {
@@ -1787,9 +1789,12 @@ async function saveInboundMessage(params: InboundMessageParams) {
         lastMessageDirection: 'inbound',
         unreadCount: FieldValue.increment(1),
         updatedAt: now,
-        // Clear soft-delete flags on resurrect
-        isDeleted: false,
-        deletedAt: null,
+        // Clear soft-delete flags on resurrect — limpa AMBOS formatos
+        // (contrato novo + legado pre-Fase 2 do plano de soft-delete).
+        isDeleted: FieldValue.delete(),
+        deletedAt: FieldValue.delete(),
+        deletedBy: FieldValue.delete(),
+        deletedByName: FieldValue.delete(),
         // first-touch do contato — habilita filtro "Cliente não respondeu".
         // Não sobrescreve; conv pré-campanha onde o contato já respondeu antes
         // mantém o timestamp original.
@@ -1830,7 +1835,8 @@ async function saveInboundMessage(params: InboundMessageParams) {
       // Enrich avatar if missing, if the stored URL is an expiring Meta CDN URL,
       // or if the conversation is being resurrected (re-fetch may have gotten a better photo).
       const currentAvatar = existingData.contactAvatarUrl as string | undefined;
-      const isResurrect = existingData.isDeleted === true;
+      // Reusa o flag computado no guard (linha ~1758). Cobre ambos formatos.
+      const isResurrect = isDeletedConv;
       const newAvatarIsBetter = params.senderAvatarUrl && (
         !currentAvatar
         || currentAvatar.includes('fbcdn.net')

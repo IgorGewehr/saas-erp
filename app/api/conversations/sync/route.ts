@@ -16,6 +16,7 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { decryptToken } from '@/lib/utils/encryption';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { FieldValue } from 'firebase-admin/firestore';
 
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
 
@@ -304,8 +305,10 @@ async function syncSingleConversation(
     conversationId = convSnap.docs[0].id;
     const existingData = convSnap.docs[0].data();
 
-    // Soft-delete guard: skip conversations deleted after the latest synced message
-    if (existingData.isDeleted) {
+    // Soft-delete guard: skip conversations deleted after the latest synced message.
+    // Trata ambos formatos (legado `isDeleted: true` + novo `deletedAt`).
+    const isDeletedConv = !!existingData.deletedAt || existingData.isDeleted === true;
+    if (isDeletedConv) {
       const deletedAt = existingData.deletedAt ? new Date(existingData.deletedAt).getTime() : 0;
       const latestMsgAt = new Date(latestMsg.created_time).getTime();
       if (latestMsgAt <= deletedAt) {
@@ -314,11 +317,14 @@ async function syncSingleConversation(
       console.log('[Sync] Resurrecting soft-deleted conversation:', conversationId);
     }
 
-    // Enrich name/avatar if still numeric ID
+    // Enrich name/avatar if still numeric ID. Resurrect: limpa campos de
+    // soft-delete (ambos formatos) via FieldValue.delete().
     const enrichUpdate: Record<string, unknown> = {
       updatedAt: now,
-      isDeleted: false,
-      deletedAt: null,
+      isDeleted: FieldValue.delete(),
+      deletedAt: FieldValue.delete(),
+      deletedBy: FieldValue.delete(),
+      deletedByName: FieldValue.delete(),
     };
     if (contactName !== externalId && (!existingData.contactName || /^\d+$/.test(existingData.contactName))) {
       enrichUpdate.contactName = contactName;

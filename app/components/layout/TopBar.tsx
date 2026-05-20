@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { getInitials } from '@/lib/utils/format';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { collection, query, where, or, and, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
@@ -174,8 +175,9 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
         let total = 0;
         const ids: string[] = [];
         for (const d of snap.docs) {
-          const data = d.data() as { unreadCount?: number; isDeleted?: boolean };
-          if (data.isDeleted) continue;
+          const data = d.data() as { unreadCount?: number; isDeleted?: boolean; deletedAt?: string };
+          // Filter soft-deleted (ambos formatos: legado isDeleted + novo deletedAt)
+          if (!isActiveRecord(data)) continue;
           const n = data.unreadCount || 0;
           if (n > 0) {
             total += n;
