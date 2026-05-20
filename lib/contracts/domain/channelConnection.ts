@@ -72,6 +72,11 @@ export const ChannelConnectionSchema = z.object({
   lastError: z.string().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
+  /** Soft-delete (Fase 4): doc "excluido" — sumiu do painel de Canais.
+   *  Restore exige reconexao manual via UI. */
+  deletedAt: z.string().optional(),
+  deletedBy: z.string().optional(),
+  deletedByName: z.string().optional(),
 }).superRefine((c, ctx) => {
   // INVARIANTE 1: ownerType=user só faz sentido em Baileys
   if (c.ownerType === 'user' && c.type !== 'whatsapp_baileys') {

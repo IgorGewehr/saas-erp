@@ -281,21 +281,32 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
       }, { status: 500 });
     }
 
-    // Para business-primary connections, NÃO apaga o doc — apenas marca
-    // isActive=false e isConnected=false. Senão, perderíamos referência
-    // histórica de conversations vinculadas a ele.
-    // Para 'user' connections, apaga o doc inteiro (conversations já foram
-    // desvinculadas acima, então sem órfãos).
-    if (conn.ownerType === 'business' && conn.isPrimary) {
-      await updateConnection(id, {
-        isConnected: false,
-        isActive: false,
-        disconnectedAt: new Date().toISOString(),
-      });
+    // Fase 4 do plano de soft-delete: TODAS as connections viram soft-delete
+    // unificado (deletedAt + audit + isActive: false). Antes hard-deletava
+    // non-primary — agora preserva pra restore via Lixeira E manter referencias
+    // historicas (conversationMessages Tier 1 podem citar channelConnectionId
+    // mesmo apos delete).
+    //
+    // `isActive: false` mantido por compat com queries existentes (varias
+    // rotas filtram `where('isActive', '==', true)` — cleanup pra usar
+    // deletedAt fica como Deploy C, ver memoria [[soft-delete-deploy-c-cleanup]]).
+    const nowIso = new Date().toISOString();
+    const softDeleteFields = {
+      isConnected: false,
+      isActive: false,
+      disconnectedAt: nowIso,
+      deletedAt: nowIso,
+      deletedBy: authResult.uid,
+      deletedByName: authResult.uid, // verifyAuth nao retorna name
+      updatedAt: nowIso,
+    };
+    await updateConnection(id, softDeleteFields);
 
-      // Phase 3.1: ao desativar a primary, promove outra business connection
-      // do mesmo type a primary se houver. Sem isso, send/route.ts cai no
-      // lazy migration e cria primary nova vazia (estado confuso).
+    // Auto-promote replacement primary (so quando a deletada era primary).
+    // Phase 3.1: ao desativar a primary, promove outra business connection
+    // do mesmo type a primary se houver. Sem isso, send/route.ts cai no
+    // lazy migration e cria primary nova vazia (estado confuso).
+    if (conn.ownerType === 'business' && conn.isPrimary) {
       try {
         const candidatesSnap = await adminDb.collection('channelConnections')
           .where('businessId', '==', conn.businessId)
@@ -313,7 +324,7 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
         if (promoted) {
           await promoted.ref.update({
             isPrimary: true,
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
           });
           console.log(`[connections DELETE] Auto-promoted ${promoted.id} to primary after disabling ${id}`);
         } else if (candidates.length > 0) {
@@ -322,8 +333,6 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: stri
       } catch (promoteErr) {
         console.warn('[connections DELETE] Failed to auto-promote replacement primary:', promoteErr);
       }
-    } else {
-      await adminDb.collection('channelConnections').doc(id).delete();
     }
 
     return NextResponse.json({ success: true });

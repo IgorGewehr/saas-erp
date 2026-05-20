@@ -28,14 +28,14 @@ import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { restoreDoc } from '@/lib/services/softDelete';
 import { ROLE_HIERARCHY } from '@/lib/types';
-import { Trash2, RotateCcw, Inbox, AlertCircle, Users, MessageCircle, Loader2 } from 'lucide-react';
+import { Trash2, RotateCcw, Inbox, AlertCircle, Users, MessageCircle, Loader2, Plug2 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 
 const RETENTION_DAYS = 30;
 
-type CollectionKey = 'clients' | 'conversations';
+type CollectionKey = 'clients' | 'conversations' | 'channelConnections';
 
 interface DeletedRecord {
   id: string;
@@ -48,11 +48,13 @@ interface DeletedRecord {
 const COLLECTION_LABEL: Record<CollectionKey, string> = {
   clients: 'Cliente',
   conversations: 'Conversa',
+  channelConnections: 'Canal',
 };
 
 const COLLECTION_ICON: Record<CollectionKey, React.ReactNode> = {
   clients: <Users className="w-4 h-4" />,
   conversations: <MessageCircle className="w-4 h-4" />,
+  channelConnections: <Plug2 className="w-4 h-4" />,
 };
 
 async function fetchDeletedDocs(
@@ -97,7 +99,7 @@ export function AuditoriaTab() {
     if (!business?.id) return;
     setLoading(true);
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
-    const [clientsRecs, convsRecs] = await Promise.all([
+    const [clientsRecs, convsRecs, channelsRecs] = await Promise.all([
       fetchDeletedDocs(
         business.id,
         'clients',
@@ -110,8 +112,18 @@ export function AuditoriaTab() {
         cutoff,
         (data) => (data.customContactName as string) || (data.contactName as string) || (data.contactPhone as string) || '(conversa sem contato)',
       ),
+      fetchDeletedDocs(
+        business.id,
+        'channelConnections',
+        cutoff,
+        (data) => {
+          const dn = (data.displayName as string) || '';
+          const tp = (data.type as string) || '';
+          return dn ? `${dn} (${tp})` : `(canal ${tp || 'desconhecido'})`;
+        },
+      ),
     ]);
-    const all = [...clientsRecs, ...convsRecs].sort((a, b) =>
+    const all = [...clientsRecs, ...convsRecs, ...channelsRecs].sort((a, b) =>
       (b.deletedAt || '').localeCompare(a.deletedAt || ''),
     );
     setRecords(all);
@@ -131,6 +143,7 @@ export function AuditoriaTab() {
     all: records.length,
     clients: records.filter(r => r.collection === 'clients').length,
     conversations: records.filter(r => r.collection === 'conversations').length,
+    channelConnections: records.filter(r => r.collection === 'channelConnections').length,
   }), [records]);
 
   const logAudit = useCallback(async (action: 'record_restored' | 'record_purged', rec: DeletedRecord) => {
@@ -220,9 +233,10 @@ export function AuditoriaTab() {
       {/* Filtros de coleção */}
       <div className="flex items-center gap-2 flex-wrap">
         {([
-          { id: 'all',           label: 'Todos',     count: counts.all },
-          { id: 'clients',       label: 'Clientes',  count: counts.clients },
-          { id: 'conversations', label: 'Conversas', count: counts.conversations },
+          { id: 'all',                label: 'Todos',     count: counts.all },
+          { id: 'clients',            label: 'Clientes',  count: counts.clients },
+          { id: 'conversations',      label: 'Conversas', count: counts.conversations },
+          { id: 'channelConnections', label: 'Canais',    count: counts.channelConnections },
         ] as const).map(opt => (
           <button
             key={opt.id}

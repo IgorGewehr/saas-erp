@@ -315,6 +315,15 @@ export interface ChannelConnection {
   updatedAt: string;
   createdBy?: string;
   createdByName?: string;
+  // ── Soft-delete (Fase 4 do plano) ────────────────────────────────────
+  /** ISO timestamp do soft-delete. Quando set, doc esta "excluido" — sumiu
+   *  do painel de Canais e pode ser purgado via Lixeira (Settings → Auditoria).
+   *  Restore exige reconexao manual via UI (sessao Baileys nao volta sozinha). */
+  deletedAt?: string;
+  /** UID do user que executou o delete (audit trail). */
+  deletedBy?: string;
+  /** Nome denormalizado do user no momento do delete. */
+  deletedByName?: string;
 }
 
 export const COMPANY_TYPE_LABELS: Record<string, string> = {
