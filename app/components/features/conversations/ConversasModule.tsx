@@ -7718,6 +7718,10 @@ export default function ConversasModule() {
     }
     // Reply ativo é por-conversation — trocar de thread cancela.
     setReplyToMessage(null);
+    // Modal "arquivo oversized" também é per-conversation. Sem isso, operador
+    // que abriu o modal na conv A, troca pra conv B, e clica "enviar como
+    // documento" mandaria o file pra conv B (contexto errado).
+    setOversizedPrompt(null);
   }, [selectedConversation?.id]);
 
   // Detecta scroll UPWARD (operador lendo histórico). Programmatic scrolls

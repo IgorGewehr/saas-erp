@@ -94,10 +94,14 @@ service firebase.storage {
     }
 
     // ── Conversation media (WhatsApp/FB/IG attachments) ───────────────────────
+    // Cap 100MB alinhado com limite de documento da WhatsApp Cloud API.
+    // Imagem/vídeo/áudio inline têm cap mais restrito client-side (5/16/16 MB);
+    // esta rule é o ceiling absoluto pra cobrir documentos (PDFs grandes,
+    // planilhas) + fallback "enviar vídeo > 16MB como documento" do Composer.
     // Path: conversations/{businessId}/{conversationId}/{fileName}
     match /conversations/{businessId}/{conversationId}/{fileName} {
       allow read:  if isAuthenticated();
-      allow write: if isAuthenticated() && isMedia() && isUnderSize(25);
+      allow write: if isAuthenticated() && isMedia() && isUnderSize(100);
     }
 
     // ── Snippet media (mídia anexa a respostas rápidas) ───────────────────────
