@@ -203,6 +203,7 @@ async function sefazRequest<T = SefazResponse>(
       // 422 — SEFAZ rejection (nota rejeitada, dados invalidos, etc.)
       // Return as-is so the caller can inspect status/erros
       if (response.status === 422) {
+        console.warn(`[SEFAZ] ${operation} → 422 rejeição:`, JSON.stringify(parsedBody, null, 2));
         if (parsedBody) return parsedBody as T;
         throw new Error(`[SEFAZ] 422 Rejeição sem corpo válido: ${response.statusText}`);
       }
