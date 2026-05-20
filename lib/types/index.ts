@@ -519,7 +519,15 @@ export interface CRMPipelineConfig {
 export type CRMAuditAction =
   | 'contact_created' | 'contact_updated' | 'contact_deleted' | 'contact_removed_from_crm'
   | 'status_changed' | 'tags_changed'
-  | 'deal_created' | 'deal_updated' | 'deal_deleted';
+  | 'deal_created' | 'deal_updated' | 'deal_deleted'
+  /** Restore via UI Lixeira (Settings → Auditoria). Cobre qualquer Tier 3
+   *  (clients, conversations, kanbanBoards futuros, etc). O alvo especifico
+   *  e gravado em `details` (JSON: {collection, id, name}). */
+  | 'record_restored'
+  /** Purge permanente via UI Lixeira (founder-only). Hard-delete do doc;
+   *  cascade pra subcollections segue a regra por entidade (mensagens sao
+   *  imutaveis Tier 1, nao sao deletadas). */
+  | 'record_purged';
 
 export interface CRMAuditEntry {
   id: string;

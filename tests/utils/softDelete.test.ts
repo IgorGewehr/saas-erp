@@ -74,14 +74,18 @@ describe('restoreDoc', () => {
     vi.clearAllMocks();
   });
 
-  it('limpa os 3 campos via deleteField sentinel + atualiza updatedAt', async () => {
+  it('limpa todos os campos de delete (novos + legados) via deleteField sentinel + atualiza updatedAt', async () => {
     const result = await restoreDoc(stubRef);
     expect(result).toBe(true);
     expect(updateDoc).toHaveBeenCalledTimes(1);
     const payload = vi.mocked(updateDoc).mock.calls[0][1] as unknown as Record<string, unknown>;
+    // Novos (Fase 0)
     expect(payload.deletedAt).toBe('__DELETE_FIELD__');
     expect(payload.deletedBy).toBe('__DELETE_FIELD__');
     expect(payload.deletedByName).toBe('__DELETE_FIELD__');
+    // Legados (clients pre-Fase 1 + conversations pre-Fase 2)
+    expect(payload.isActive).toBe('__DELETE_FIELD__');
+    expect(payload.isDeleted).toBe('__DELETE_FIELD__');
     expect(typeof payload.updatedAt).toBe('string');
   });
 

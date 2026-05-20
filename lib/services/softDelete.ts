@@ -72,8 +72,12 @@ export async function softDeleteDoc(
 }
 
 /**
- * Restaura doc soft-deletado limpando os 3 campos de delete. Nao limpa
- * `mergedInto` — merge nao deve ser revertido por restore individual.
+ * Restaura doc soft-deletado limpando TODOS os campos de delete — formato
+ * novo (deletedAt/deletedBy/deletedByName) E legados (isActive=false em
+ * clients, isDeleted=true em conversations). Sem limpar os legados, docs
+ * backfilled (que tem ambos) ficariam invisiveis no reader apos restore.
+ *
+ * NAO limpa `mergedInto` — merge nao deve ser revertido por restore individual.
  *
  * @param ref DocumentReference do client SDK
  * @returns true sempre (operacao trivial; caller decide se quer retry em erro)
@@ -84,6 +88,11 @@ export async function restoreDoc(ref: DocumentReference): Promise<true> {
     deletedAt: deleteField(),
     deletedBy: deleteField(),
     deletedByName: deleteField(),
+    // Limpa flags legadas — clients pre-Fase 1 (isActive=false) e conversations
+    // pre-Fase 2 (isDeleted=true). Inofensivo pra docs novos que nao tem esses
+    // campos (deleteField num campo ausente e no-op).
+    isActive: deleteField(),
+    isDeleted: deleteField(),
     updatedAt: now,
   });
   return true;
