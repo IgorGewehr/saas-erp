@@ -36,9 +36,13 @@ Esse documento define a **estratégia alvo** pro sistema chegar num modelo coere
 | `stockMovements` | Ledger de estoque (append-only) |
 | `fiscalDocuments` | Legal — NF-e/NFC-e/NFSe |
 | `crmAuditLog` | Trilha de auditoria imutável |
+| `budgets` | Orçamentos versionados — imutáveis por contrato |
+| `dasRecords` | Registros DAS (Simples Nacional) — fiscal |
 
 #### Hard-delete sem cascade (problemático)
-`appointments`, `services`, `products`, `sales`, `transactions`, `kanbanBoards`, `kanbanCards`, `kanbanTemplates`, `crmContacts`, `crmDeals`, `crmActivities`, `broadcasts`, `birthdayCampaigns`, `notes`, `spreadsheets`, `menuCategories`
+`appointments`, `services`, `products`, `sales`, `transactions`, `kanbanBoards`, `kanbanCards`, `kanbanTemplates`, `crmContacts`, `crmDeals`, `crmActivities`*, `broadcasts`, `birthdayCampaigns`, `notes`, `spreadsheets`, `menuCategories`, `channelConnections`*
+
+\* `crmActivities` migra pra Tier 1 (imutável — é log). `channelConnections` migra pra Tier 3 (preserva referências em conversations). Ver §3.
 
 ### 2.2 Inconsistências críticas
 
@@ -48,7 +52,7 @@ Esse documento define a **estratégia alvo** pro sistema chegar num modelo coere
 4. **Cascade só no merge** — `reassociateRelatedDocs()` em [mergeClients.ts:24](../app/components/features/clients/shared/mergeClients.ts#L24) reatribui filhos no merge de clientes; **nenhum outro fluxo cascade**.
 5. **Hard-delete cria órfãos** — deletar product não limpa SaleItems históricos, deletar appointment não atualiza relatórios financeiros, etc.
 6. **Filtros só client-side** — nenhuma query Firestore filtra `where('deletedAt', '==', null)`. Funciona mas é menos seguro.
-7. **Bug interno em Conversations** — listagem filtra `!c.isDeleted`, lookup de duplicatas (linha 5805) checa `!existing.mergedInto && !existing.deletedAt`. Dois critérios diferentes pro mesmo "doc válido".
+7. **Lógica de filtro duplicada (não usa helper canônico)** — [`lib/utils/clientFilters.ts:26`](../lib/utils/clientFilters.ts#L26) define `isActiveClient(c)` checando 3 condições (`deletedAt`, `isActive === false`, `mergedInto`). Mas [`ConversasModule.tsx:5805`](../app/components/features/conversations/ConversasModule.tsx#L5805) reimplementa a lógica inline pra detectar duplicata de cliente (`!existing.mergedInto && !existing.deletedAt`), esquecendo o ramo `isActive === false`. Resultado: clientes desativados com flag legada (`isActive=false` sem `deletedAt`) escapam do dedup. Padrão correto seria importar e usar `isActiveClient()`.
 
 ---
 
@@ -72,8 +76,11 @@ A regra de exclusão depende do **papel da entidade** no sistema. Não é one-si
 - `stockMovements` ✅
 - `fiscalDocuments` ✅
 - `crmAuditLog` ✅
+- `budgets` ✅
+- `dasRecords` ✅
+- `crmActivities` — **migrar** (hoje hard-delete, mas é log de eventos do CRM. Validar com o time se há caso real de delete legítimo antes de migrar)
 
-**Já implementado corretamente.** Sem mudanças.
+**Já implementado corretamente** exceto `crmActivities`. Sem mudanças nas demais.
 
 ---
 
@@ -120,6 +127,7 @@ A regra de exclusão depende do **papel da entidade** no sistema. Não é one-si
 | `services` | Hard hoje — migrar (referenciado por appointments históricos) |
 | `spreadsheets` | Validar atual (parece soft, mas inconsistente) |
 | `notes` | Opcional (baixo custo, mas leve) |
+| `channelConnections` | Hard hoje — migrar. Conversas guardam `channelConnectionId` denormalizado; deletar conexão quebra resolução de transporte em mensagens históricas. Soft permite reconectar canal sem perder vínculo. |
 
 ---
 
@@ -143,7 +151,7 @@ A regra de exclusão depende do **papel da entidade** no sistema. Não é one-si
 | `kanbanTemplates` | Reusables, fácil recriar |
 | `menuCategories` | Configuração de cardápio |
 
-**Nota sobre `crmActivities`:** são logs de eventos do CRM — provavelmente deveriam ser **Tier 1 (imutável)** em vez de Tier 4. Validar quando tocar.
+**`crmActivities`** foi movido pra **Tier 1** (logs de eventos não deveriam deletar — ver §3 Tier 1).
 
 ---
 
@@ -199,13 +207,15 @@ Distinto do soft-delete normal. Operação explícita, admin-only, irreversível
 
 **Implementação:** endpoint dedicado `/api/admin/purge` ou service `lib/services/dataRetention.ts`. Não confundir com delete normal.
 
+> ⚠ **R1 (multi-tenant) crítico aqui:** o purge endpoint **DEVE** validar que o `businessId` do alvo bate com o `businessId` do user autenticado. Sem isso, um admin de um tenant poderia purgar dados de outro via path manipulation. Use `verifyAuth(req, businessId)` antes de qualquer operação. Cron de retenção: itera `businesses` e roda purge per-tenant, nunca cross-tenant numa query única.
+
 ---
 
 ## 5. Plano de migração incremental
 
 **Princípio:** não fazer big-bang. Migrar entidade por entidade conforme o módulo for tocado em features futuras. Cada migração é commit independente, testável isoladamente.
 
-### Fase 0 — Infra compartilhada (~2h)
+### Fase 0 — Infra compartilhada (~4-5h, incluindo testes)
 
 **Bloqueante das outras fases.** Cria os primitives.
 
@@ -219,6 +229,11 @@ Distinto do soft-delete normal. Operação explícita, admin-only, irreversível
 - [ ] **Helper de delete** `lib/services/softDelete.ts`
   - `softDeleteDoc(ref, user)` → `updateDoc(ref, { deletedAt: ISO, deletedBy: uid, deletedByName: name })`
   - `restoreDoc(ref)` → `updateDoc(ref, { deletedAt: deleteField(), deletedBy: deleteField(), deletedByName: deleteField() })`
+- [ ] **Testes unitários** `tests/utils/softDelete.test.ts` + `tests/utils/recordFilters.test.ts`
+  - `isActiveRecord`: aceita ausência de campos, rejeita `deletedAt` presente, rejeita `mergedInto` presente, aceita docs legados sem nenhum dos campos
+  - `softDeleteDoc`: idempotência (chamar 2x não duplica audit), preserva `updatedAt`
+  - `restoreDoc`: limpa os 3 campos atomicamente
+  - Edge case: `deletedAt: ''` (string vazia) deve tratar como "não deletado"
 
 ### Fase 1 — Padronizar contrato em `clients` (~1h)
 
@@ -254,9 +269,11 @@ Adicionar soft-delete em entidades de alto risco:
 
 Cada uma é um PR independente. Modelo: adicionar `deletedAt + deletedBy + deletedByName` na rule, mudar UI de "Excluir" pra `softDeleteDoc`, validar que pickers/listagens filtram.
 
-### Fase 5 — Tier 2 migration (~6h, faseado por entidade)
+### Fase 5 — Tier 2 migration (~16-25h, faseado por entidade)
 
-Migrar de hard-delete pra status-driven. **Mais arriscado** — touches reports/comissões. Cada entidade é commit/PR isolado:
+Migrar de hard-delete pra status-driven. **Mais arriscado** — touches reports/comissões/estoque/fiscal. Cada entidade é commit/PR isolado.
+
+> ⚠ **Estimativa realista:** o ~6h original subestima. `appointments` sozinho tem 5+ side-effects cross-módulo (comissões via [commission.ts](../lib/services/commission.ts), loyalty, GCal sync, conversation outbound, financial transaction). Cada lugar precisa decidir como filtrar `status === 'cancelled'`. Realista por entidade: `appointments` 4-6h, `sales` 3-5h (mexe em fiscal + stockMovements), `transactions` 2-3h, `broadcasts` 2h, `deliveryOrders` 2h.
 
 - [ ] `appointments` → adicionar status `cancelled`/`no_show`, remover `allow delete` da rule, UI "Cancelar" em vez de "Excluir"
 - [ ] `sales` → status `cancelled`/`refunded`, mesma estrutura
@@ -270,6 +287,33 @@ Pra cada uma:
 3. Remover `allow delete` da rule
 4. Refatorar UI (botão "Excluir" → "Cancelar")
 5. Reports/exports: filtrar `status !== 'cancelled'` por default, oferecer toggle "incluir cancelados"
+
+### Padrão de migração de dados (aplicável a Fases 1, 2, 4 e 5)
+
+Sempre que mudar o **shape** de um campo existente (ex: `isActive=false` → `deletedAt: ISO`, ou `isDeleted: true` → `deletedAt: ISO`), seguir o **padrão dual-write em 3 deploys** pra evitar janela de inconsistência:
+
+**Deploy A — Backwards-compat read**
+- Código novo lê AMBOS os formatos (`!doc.deletedAt && doc.isActive !== false` ou `!doc.isDeleted && !doc.deletedAt`)
+- Continua escrevendo no formato VELHO (zero risco)
+- Deploy estável por pelo menos 24h
+
+**Backfill script**
+- `scripts/backfill-{entity}-soft-delete.ts`
+- Idempotente — skipa docs já migrados
+- `--dry-run` primeiro pra contar quantos
+- Rodar fora de horário de pico (~3 AM) pra reduzir contenção
+
+**Deploy B — Write novo formato**
+- Código passa a escrever APENAS o formato novo (`deletedAt`)
+- Continua LENDO ambos (cobre docs antigos que escaparam do backfill por race)
+- Pode rodar backfill de novo se necessário
+
+**Deploy C — Cleanup**
+- Remove leitura do formato velho
+- Adiciona migration final (campo legado vira `null` ou é removido via FieldValue.delete)
+- Documenta no migrações de schema
+
+**Anti-pattern:** Big bang (Deploy único que muda tudo) — qualquer falha durante deploy gradual deixa parte dos containers escrevendo no formato velho enquanto outros leem só o novo. Resultado: docs aparecem "vivos" pra alguns usuários e "deletados" pra outros até estabilizar.
 
 ### Fase 6 — Cron de purge LGPD (~2h)
 
@@ -344,3 +388,4 @@ Todos convergem em: **transações nunca deletam, identidades têm restore, conf
 | Data | Versão | Mudança |
 |---|---|---|
 | 2026-05-19 | 1.0 | Documento inicial — modelo conceitual + plano de migração |
+| 2026-05-19 | 1.1 | Auditoria contra código real. Inventário Tier 1 completo (`budgets`, `dasRecords`). `crmActivities` movido pra Tier 1. `channelConnections` adicionado a Tier 3. §2.2 item 7 reescrito (era descrição imprecisa do bug). Nova seção "Padrão de migração de dados" (dual-write 3 deploys). Estimativas Fase 0 e Fase 5 corrigidas. Nota explícita de R1 (businessId) em LGPD purge. Checklist de testes em Fase 0. |

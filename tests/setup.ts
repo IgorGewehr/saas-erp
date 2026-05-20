@@ -35,6 +35,7 @@ vi.mock('firebase/firestore', () => ({
   limit: vi.fn(),
   startAfter: vi.fn(),
   Timestamp: { now: vi.fn() },
+  deleteField: vi.fn(() => '__DELETE_FIELD__'),
 }));
 
 // Mock firebase/storage
