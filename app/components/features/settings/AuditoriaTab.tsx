@@ -26,16 +26,16 @@ import { motion } from 'framer-motion';
 import { collection, query, where, getDocs, deleteDoc, addDoc, doc } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { restoreDoc } from '@/lib/services/softDelete';
+import { restoreDoc, restoreDocWithCascade } from '@/lib/services/softDelete';
 import { ROLE_HIERARCHY } from '@/lib/types';
-import { Trash2, RotateCcw, Inbox, AlertCircle, Users, MessageCircle, Loader2, Plug2, Briefcase } from 'lucide-react';
+import { Trash2, RotateCcw, Inbox, AlertCircle, Users, MessageCircle, Loader2, Plug2, Briefcase, LayoutGrid } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 
 const RETENTION_DAYS = 30;
 
-type CollectionKey = 'clients' | 'conversations' | 'channelConnections' | 'services';
+type CollectionKey = 'clients' | 'conversations' | 'channelConnections' | 'services' | 'kanbanBoards';
 
 interface DeletedRecord {
   id: string;
@@ -50,6 +50,7 @@ const COLLECTION_LABEL: Record<CollectionKey, string> = {
   conversations: 'Conversa',
   channelConnections: 'Canal',
   services: 'Serviço',
+  kanbanBoards: 'Board',
 };
 
 const COLLECTION_ICON: Record<CollectionKey, React.ReactNode> = {
@@ -57,6 +58,7 @@ const COLLECTION_ICON: Record<CollectionKey, React.ReactNode> = {
   conversations: <MessageCircle className="w-4 h-4" />,
   channelConnections: <Plug2 className="w-4 h-4" />,
   services: <Briefcase className="w-4 h-4" />,
+  kanbanBoards: <LayoutGrid className="w-4 h-4" />,
 };
 
 async function fetchDeletedDocs(
@@ -101,7 +103,7 @@ export function AuditoriaTab() {
     if (!business?.id) return;
     setLoading(true);
     const cutoff = new Date(Date.now() - RETENTION_DAYS * 86_400_000).toISOString();
-    const [clientsRecs, convsRecs, channelsRecs, servicesRecs] = await Promise.all([
+    const [clientsRecs, convsRecs, channelsRecs, servicesRecs, boardsRecs] = await Promise.all([
       fetchDeletedDocs(
         business.id,
         'clients',
@@ -130,8 +132,14 @@ export function AuditoriaTab() {
         cutoff,
         (data) => (data.name as string) || '(serviço sem nome)',
       ),
+      fetchDeletedDocs(
+        business.id,
+        'kanbanBoards',
+        cutoff,
+        (data) => (data.name as string) || '(board sem nome)',
+      ),
     ]);
-    const all = [...clientsRecs, ...convsRecs, ...channelsRecs, ...servicesRecs].sort((a, b) =>
+    const all = [...clientsRecs, ...convsRecs, ...channelsRecs, ...servicesRecs, ...boardsRecs].sort((a, b) =>
       (b.deletedAt || '').localeCompare(a.deletedAt || ''),
     );
     setRecords(all);
@@ -153,6 +161,7 @@ export function AuditoriaTab() {
     conversations: records.filter(r => r.collection === 'conversations').length,
     channelConnections: records.filter(r => r.collection === 'channelConnections').length,
     services: records.filter(r => r.collection === 'services').length,
+    kanbanBoards: records.filter(r => r.collection === 'kanbanBoards').length,
   }), [records]);
 
   const logAudit = useCallback(async (action: 'record_restored' | 'record_purged', rec: DeletedRecord) => {
@@ -173,16 +182,32 @@ export function AuditoriaTab() {
   }, [business?.id, user?.uid, user?.name]);
 
   const handleRestore = async (rec: DeletedRecord) => {
-    if (!canRestore || !user?.uid) {
+    if (!canRestore || !user?.uid || !business?.id) {
       toast.error('Apenas admin ou founder pode restaurar.');
       return;
     }
     setActionInFlight(rec.id);
     try {
-      await restoreDoc(doc(db, rec.collection, rec.id));
-      await logAudit('record_restored', rec);
-      setRecords(prev => prev.filter(r => r.id !== rec.id));
-      toast.success(`${COLLECTION_LABEL[rec.collection]} "${rec.name}" restaurado`);
+      const ref = doc(db, rec.collection, rec.id);
+      // kanbanBoards: restore com cascade nos kanbanCards (filhos cascateados
+      // pelo delete do board). Fase 4c — containers per §4.2 do plano.
+      if (rec.collection === 'kanbanBoards') {
+        const { restoredChildren } = await restoreDocWithCascade(
+          ref, db, 'kanbanCards', business.id,
+        );
+        await logAudit('record_restored', rec);
+        setRecords(prev => prev.filter(r => r.id !== rec.id));
+        toast.success(
+          restoredChildren > 0
+            ? `Board "${rec.name}" restaurado (+${restoredChildren} card${restoredChildren === 1 ? '' : 's'})`
+            : `Board "${rec.name}" restaurado`,
+        );
+      } else {
+        await restoreDoc(ref);
+        await logAudit('record_restored', rec);
+        setRecords(prev => prev.filter(r => r.id !== rec.id));
+        toast.success(`${COLLECTION_LABEL[rec.collection]} "${rec.name}" restaurado`);
+      }
     } catch (err) {
       console.error('[Auditoria] restore failed:', err);
       toast.error('Erro ao restaurar');
@@ -247,6 +272,7 @@ export function AuditoriaTab() {
           { id: 'conversations',      label: 'Conversas', count: counts.conversations },
           { id: 'channelConnections', label: 'Canais',    count: counts.channelConnections },
           { id: 'services',           label: 'Serviços',  count: counts.services },
+          { id: 'kanbanBoards',       label: 'Boards',    count: counts.kanbanBoards },
         ] as const).map(opt => (
           <button
             key={opt.id}

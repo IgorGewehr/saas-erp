@@ -43,6 +43,22 @@
       ]
     },
     {
+      "collectionGroup": "kanbanBoards",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "deletedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "kanbanCards",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "cascadeFromParentId", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "crmAuditLog",
       "queryScope": "COLLECTION",
       "fields": [

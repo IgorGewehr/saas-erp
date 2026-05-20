@@ -1767,10 +1767,17 @@ export interface KanbanBoard {
   sectorIds?: string[];
   visibility: KanbanVisibility;
   createdBy: string;
+  /** Flag separada de `deletedAt`. Operador pode arquivar board sem deletar
+   *  (continua acessivel via "Arquivados"); delete vai pra Lixeira. */
   isArchived: boolean;
   automations?: KanbanAutomation[];
   createdAt: string;
   updatedAt: string;
+  /** Soft-delete (Fase 4c): board "excluido" — cards filhos recebem cascade
+   *  soft via cascadeFromParentId=boardId. Restore via Lixeira reverte ambos. */
+  deletedAt?: string;
+  deletedBy?: string;
+  deletedByName?: string;
 }
 
 export interface KanbanColumn {
@@ -1835,6 +1842,15 @@ export interface KanbanCard {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  /** Soft-delete (Fase 4c): card "excluido". Setado individualmente (operador
+   *  clica em "Excluir card") OU via cascade do board. */
+  deletedAt?: string;
+  deletedBy?: string;
+  deletedByName?: string;
+  /** Quando set, este card foi soft-deletado por cascade do board com este id.
+   *  Restore do board (restoreDocWithCascade) restaura todos os cards com
+   *  cascadeFromParentId apontando pra ele. */
+  cascadeFromParentId?: string;
 }
 
 export interface KanbanLabel {

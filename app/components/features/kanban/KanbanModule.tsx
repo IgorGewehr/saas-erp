@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { getInitials } from '@/lib/utils/format';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { softDeleteDoc } from '@/lib/services/softDelete';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import {
   collection,
   query,
@@ -3231,6 +3233,8 @@ export default function KanbanModule() {
     const unsub = onSnapshot(q, (snap) => {
       const allBoards = snap.docs
         .map(d => ({ ...d.data(), id: d.id } as KanbanBoard))
+        // Filtra soft-deletados (Fase 4c). isArchived continua como flag separada.
+        .filter(isActiveRecord)
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
       // Separate active and archived boards
@@ -3271,7 +3275,8 @@ export default function KanbanModule() {
       where('boardId', '==', activeBoardId)
     );
     const unsub = onSnapshot(q, (snap) => {
-      setCards(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard)));
+      // Filtra cards soft-deletados (cascade do board OU delete individual).
+      setCards(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard)).filter(isActiveRecord));
       setLoadingCards(false);
     }, () => setLoadingCards(false));
     return () => {
@@ -3291,7 +3296,8 @@ export default function KanbanModule() {
       where('assigneeIds', 'array-contains', user.uid)
     );
     const unsub = onSnapshot(q, (snap) => {
-      setMyTasksCards(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard)));
+      // Filtra cards soft-deletados (cascade do board OU delete individual).
+      setMyTasksCards(snap.docs.map(d => ({ ...d.data(), id: d.id } as KanbanCard)).filter(isActiveRecord));
     });
     return () => unsub();
   }, [business?.id, user?.uid]);
@@ -3664,16 +3670,21 @@ export default function KanbanModule() {
   }, [business?.id, user, canEdit, cards, showToast, t]);
 
   const handleDeleteCard = useCallback(async (cardId: string) => {
-    if (!business?.id) return;
+    if (!business?.id || !user?.uid) return;
     if (!canEdit) { showToast(t('kanban.errors.noPermission', 'Sem permissão para excluir cards')); return; }
     try {
-      await deleteDoc(doc(db, 'kanbanCards', cardId));
+      // Soft-delete card individual (Fase 4c). Sem cascadeFromParentId — esse
+      // delete e voluntario do operador, NAO via cascade do board.
+      await softDeleteDoc(
+        doc(db, 'kanbanCards', cardId),
+        { uid: user.uid, name: user.name || user.uid },
+      );
       setSelectedCard(null);
     } catch (err) {
       console.error('Error deleting card:', err);
       showToast(t('kanban.errors.deleteCard', 'Erro ao excluir card'));
     }
-  }, [business?.id, canEdit, showToast, t]);
+  }, [business?.id, canEdit, user?.uid, user?.name, showToast, t]);
 
   const handleMoveCardToBoard = useCallback(async (cardId: string, targetBoardId: string, targetColumnId: string) => {
     if (!business?.id || !canEdit) {
@@ -3829,20 +3840,46 @@ export default function KanbanModule() {
   }, [business?.id, canManageBoard, showToast, t]);
 
   const handleDeleteBoardConfirmed = useCallback(async () => {
-    if (!business?.id || !deleteBoardConfirmId) return;
+    if (!business?.id || !deleteBoardConfirmId || !user?.uid) return;
     if (!canManageBoard) { showToast(t('kanban.errors.noPermission', 'Sem permissão')); return; }
     try {
-      const batch = writeBatch(db);
-      // delete all cards in this board
+      // Fase 4c do plano de soft-delete: board vira soft-delete + cascade
+      // soft nos cards (container, §4.2 do doc). Restore via Lixeira reverte
+      // ambos via restoreDocWithCascade.
+      const actor = { uid: user.uid, name: user.name || user.uid };
+      const boardRef = doc(db, 'kanbanBoards', deleteBoardConfirmId);
+
+      // 1. Soft-delete o board (audit + idempotente)
+      await softDeleteDoc(boardRef, actor);
+
+      // 2. Cascade soft-delete nos cards via batch (limite 500 ops). Cada
+      //    card recebe deletedAt + audit + cascadeFromParentId=boardId pra
+      //    que restoreDocWithCascade saiba quais restaurar juntos.
       const cardsSnap = await getDocs(query(
         collection(db, 'kanbanCards'),
         where('businessId', '==', business.id),
-        where('boardId', '==', deleteBoardConfirmId)
+        where('boardId', '==', deleteBoardConfirmId),
       ));
-      cardsSnap.docs.forEach(d => batch.delete(d.ref));
-      // delete the board itself
-      batch.delete(doc(db, 'kanbanBoards', deleteBoardConfirmId));
-      await batch.commit();
+      // Pula cards ja deletados individualmente (idempotencia).
+      const activeCards = cardsSnap.docs.filter(d => isActiveRecord(d.data()));
+      if (activeCards.length > 0) {
+        const now = new Date().toISOString();
+        for (let i = 0; i < activeCards.length; i += 400) {
+          const slice = activeCards.slice(i, i + 400);
+          const batch = writeBatch(db);
+          for (const d of slice) {
+            batch.update(d.ref, {
+              deletedAt: now,
+              deletedBy: actor.uid,
+              deletedByName: actor.name,
+              cascadeFromParentId: deleteBoardConfirmId,
+              updatedAt: now,
+            });
+          }
+          await batch.commit();
+        }
+      }
+
       // switch to first remaining board
       const remaining = boards.filter(b => b.id !== deleteBoardConfirmId);
       if (remaining.length > 0) setActiveBoardId(remaining[0].id);
@@ -3853,7 +3890,7 @@ export default function KanbanModule() {
     } finally {
       setDeleteBoardConfirmId(null);
     }
-  }, [business?.id, deleteBoardConfirmId, boards, canManageBoard, showToast, t]);
+  }, [business?.id, deleteBoardConfirmId, boards, canManageBoard, user?.uid, user?.name, showToast, t]);
 
   // ─── Board CRUD ───────────────────────────────────────────
   const handleCreateBoard = useCallback(async (name: string, color: string, presetId?: string) => {

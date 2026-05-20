@@ -27,7 +27,17 @@
  * Ver docs/soft-delete-strategy.md §5 Fase 0.
  */
 
-import { updateDoc, deleteField, type DocumentReference } from 'firebase/firestore';
+import {
+  updateDoc,
+  deleteField,
+  collection,
+  query,
+  where,
+  getDocs,
+  writeBatch,
+  type DocumentReference,
+  type Firestore,
+} from 'firebase/firestore';
 
 export interface SoftDeleteActor {
   uid: string;
@@ -96,6 +106,67 @@ export async function restoreDoc(ref: DocumentReference): Promise<true> {
     updatedAt: now,
   });
   return true;
+}
+
+/**
+ * Restaura um doc pai E todos os filhos que foram cascateados por ele
+ * (`cascadeFromParentId === parentRef.id`). Usado por containers (kanbanBoard
+ * → kanbanCards). Limpa AMBOS formatos do soft-delete + o campo
+ * `cascadeFromParentId` dos filhos pra que possam ser cascateados de novo
+ * caso o pai seja redeletado.
+ *
+ * NAO toca em filhos que foram soft-deletados INDIVIDUALMENTE (sem cascade) —
+ * `cascadeFromParentId` undefined pra esses, query NAO pega.
+ *
+ * @param parentRef       DocumentReference do pai
+ * @param db              Firestore instance (precisa pra query nos filhos)
+ * @param childCollection Nome da colecao dos filhos (ex: 'kanbanCards')
+ * @param businessId      Pra filtrar a query (R1)
+ * @returns Contagem de filhos restaurados
+ */
+export async function restoreDocWithCascade(
+  parentRef: DocumentReference,
+  db: Firestore,
+  childCollection: string,
+  businessId: string,
+): Promise<{ restoredChildren: number }> {
+  // 1. Restore parent (limpa todos os campos legados + novos)
+  await restoreDoc(parentRef);
+
+  // 2. Encontra filhos cascateados por este pai
+  const childrenSnap = await getDocs(query(
+    collection(db, childCollection),
+    where('businessId', '==', businessId),
+    where('cascadeFromParentId', '==', parentRef.id),
+  ));
+
+  if (childrenSnap.empty) return { restoredChildren: 0 };
+
+  // 3. Restaura em batch (limite Firestore: 500 ops/batch)
+  const now = new Date().toISOString();
+  const docs = childrenSnap.docs;
+  let restored = 0;
+  for (let i = 0; i < docs.length; i += 400) {
+    const slice = docs.slice(i, i + 400);
+    const batch = writeBatch(db);
+    for (const childDoc of slice) {
+      batch.update(childDoc.ref, {
+        deletedAt: deleteField(),
+        deletedBy: deleteField(),
+        deletedByName: deleteField(),
+        // Limpa cascadeFromParentId — futuros cascades funcionam normal.
+        cascadeFromParentId: deleteField(),
+        // Compat legados.
+        isActive: deleteField(),
+        isDeleted: deleteField(),
+        updatedAt: now,
+      });
+      restored++;
+    }
+    await batch.commit();
+  }
+
+  return { restoredChildren: restored };
 }
 
 /**
