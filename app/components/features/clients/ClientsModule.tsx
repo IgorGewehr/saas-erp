@@ -18,6 +18,7 @@ import { useAppContext } from '@/app/app/AppContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { isActiveClient } from '@/lib/utils/clientFilters';
+import { softDeleteDoc } from '@/lib/services/softDelete';
 import { cn } from '@/lib/utils';
 import type { Client, ClientDuplicateIgnore, LeadStatus, LoyaltyConfig, LoyaltyTier } from '@/lib/types';
 import {
@@ -1045,18 +1046,19 @@ export default function ClientsModule() {
 
   const { mutate: deleteClient, isPending: isDeleting } = useMutation({
     mutationFn: async (id: string) => {
-      // Soft delete em vez de deleteDoc. Hard delete deixava órfãos em
-      // conversations, sales, transactions, appointments, kanbanCards,
-      // crmDeals, crmActivities — todos ainda apontavam pro doc fantasma.
-      // Soft delete preserva a integridade histórica + audit trail e
-      // permite rollback caso o operador tenha clicado errado.
-      await updateDoc(doc(db, 'clients', id), {
-        isActive: false,
-        deletedAt: new Date().toISOString(),
-        deletedBy: user?.uid || '',
-        deletedByName: user?.name || '',
-        updatedAt: new Date().toISOString(),
-      });
+      // Soft delete via helper centralizado (Fase 1 do plano de soft-delete).
+      // O helper grava `deletedAt + deletedBy + deletedByName` e e idempotente.
+      // Hard delete deixaria orfaos em conversations, sales, transactions,
+      // appointments, kanbanCards, crmDeals, crmActivities.
+      if (!user?.uid) throw new Error('user nao autenticado');
+      const ref = doc(db, 'clients', id);
+      await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
+      // Compat: API publica /api/v1/crm/contacts?active=false ainda filtra
+      // via where('isActive','==',false). Mantemos esse campo durante a
+      // janela de Deploy B do dual-write — remover quando a API for atualizada
+      // pra filtrar via deletedAt (Deploy C). Ver docs/soft-delete-strategy.md
+      // §5 "Padrao de migracao de dados".
+      await updateDoc(ref, { isActive: false });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
@@ -1068,17 +1070,20 @@ export default function ClientsModule() {
   });
 
   // Soft-delete em massa via writeBatch (limite Firestore: 500 ops por batch).
-  // Mantém o mesmo padrão do deleteClient single (isActive=false + deletedAt
-  // pra preservar audit trail e referências em vendas/agendamentos/etc.).
+  // Mesmo payload que softDeleteDoc grava (deletedAt + audit fields) +
+  // `isActive: false` por compat com API publica /api/v1/crm/contacts?active=false
+  // (ver deleteClient single acima pra contexto). softDeleteDoc e per-doc;
+  // aqui usamos batch direto pra performance.
   const { mutate: bulkDeleteClients, isPending: isBulkDeleting } = useMutation({
     mutationFn: async (ids: string[]) => {
       if (ids.length === 0) return;
+      if (!user?.uid) throw new Error('user nao autenticado');
       const now = new Date().toISOString();
       const meta = {
-        isActive: false,
         deletedAt: now,
-        deletedBy: user?.uid || '',
-        deletedByName: user?.name || '',
+        deletedBy: user.uid,
+        deletedByName: user.name || user.uid,
+        isActive: false,  // compat — remover no Deploy C (ver deleteClient)
         updatedAt: now,
       };
       // Quebra em chunks de 500 (limite por writeBatch).

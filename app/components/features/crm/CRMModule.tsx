@@ -1105,10 +1105,10 @@ function SegmentsTab({ contacts, businessId, userId, userName }: {
 
   // Espelha o backend: exclui clientes merged/deletados/inativos da audiência.
   // Sem isso, contagem do preview inclui contatos que o broadcast NÃO vai mandar.
+  // Usa o helper canonico em vez de reimplementar a logica inline (single source
+  // of truth pra "client ativo" — Fase 1 do plano de soft-delete).
   const activeContacts = useMemo(
-    () => contacts.filter(c =>
-      !c.mergedInto && !(c as { deletedAt?: string }).deletedAt && c.isActive !== false,
-    ),
+    () => contacts.filter(isActiveClient),
     [contacts],
   );
 

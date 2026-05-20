@@ -6,27 +6,20 @@
  * aparecer em listas/autocompletes vivos de outros módulos (PDV, Agenda,
  * Conversas, etc). Mesma coisa pra docs absorvidos por merge de duplicatas.
  *
- * Use como `.filter(isActiveClient)` ao carregar `clients` em qualquer módulo
- * que mostre clientes vivos. Comportamento:
- *   - rejeita `deletedAt` presente (soft-deleted via Clientes ou CRM)
- *   - rejeita `isActive === false` (mesmo soft-delete escrito antes do
- *     campo `deletedAt` existir, ou docs explicitamente desativados)
- *   - rejeita `mergedInto` presente (duplicata absorvida pelo merge)
- *   - aceita docs legados sem nenhum desses campos (default = ativo)
+ * Esta função e um WRAPPER fino sobre `isActiveRecord` (lib/utils/recordFilters)
+ * — toda logica de "registro ativo" vive la, centralizada. Mantemos o nome
+ * `isActiveClient` como alias semantico pra que callers (~15 modulos) nao
+ * precisem atualizar o import.
+ *
+ * Compatibilidade: `isActiveRecord` aceita formato novo (`deletedAt`) E legado
+ * (`isActive=false`) — clientes antigos pré-padronizacao do contrato (Fase 1
+ * do plano de soft-delete) continuam ocultos enquanto o backfill nao roda.
+ * Ver docs/soft-delete-strategy.md §5 "Padrao de migracao de dados".
  */
 
 import type { Client } from '@/lib/types';
+import { isActiveRecord, type RecordWithSoftDelete } from '@/lib/utils/recordFilters';
 
-type ClientLike = {
-  deletedAt?: string;
-  isActive?: boolean;
-  mergedInto?: string;
-};
-
-export function isActiveClient(c: ClientLike | Client): boolean {
-  const x = c as ClientLike;
-  if (x.deletedAt) return false;
-  if (x.isActive === false) return false;
-  if (x.mergedInto) return false;
-  return true;
+export function isActiveClient(c: RecordWithSoftDelete | Client): boolean {
+  return isActiveRecord(c as RecordWithSoftDelete);
 }

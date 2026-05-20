@@ -130,7 +130,12 @@ export async function mergeClients(opts: {
   const batch = writeBatch(db);
   batch.update(doc(db, 'clients', primary.id), updates);
   batch.update(doc(db, 'clients', secondary.id), {
-    isActive: false,
+    // `mergedInto` sozinho ja faz isActiveRecord retornar false — o helper
+    // canonico (lib/utils/recordFilters) trata merged como nao-ativo. Antes
+    // gravavamos `isActive: false` redundantemente; removido na Fase 1.
+    // OBS: API publica /api/v1/crm/contacts?active=false NAO retorna merged,
+    // mas o consumer dela tipicamente quer "deletados", nao "merged" — o
+    // delta semantico e aceitavel.
     mergedInto: primary.id,
     mergedAt: now,
     updatedAt: now,
