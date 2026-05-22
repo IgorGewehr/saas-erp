@@ -315,17 +315,25 @@ Sempre que mudar o **shape** de um campo existente (ex: `isActive=false` → `de
 
 **Anti-pattern:** Big bang (Deploy único que muda tudo) — qualquer falha durante deploy gradual deixa parte dos containers escrevendo no formato velho enquanto outros leem só o novo. Resultado: docs aparecem "vivos" pra alguns usuários e "deletados" pra outros até estabilizar.
 
-### Fase 6 — Cron de purge LGPD (~2h)
+### Fase 6 — Cron de purge LGPD
 
-- [ ] Service `lib/services/dataRetention.ts` com `purgeExpiredSoftDeletes()`
-- [ ] Endpoint `/api/data-retention/run` com auth `Bearer CRON_SECRET`
-- [ ] Cron diário no [docker-compose.yml](../docker-compose.yml) (3 AM, baixo tráfego)
-- [ ] Cobre Tier 3 com `deletedAt < (now - 30d)`
-- [ ] Anonimização PII em Tier 1 cascade
-- [ ] Log de purge em `crmAuditLog`
+**MVP (concluído 2026-05-22):**
 
-**Opcional/depois:**
-- [ ] Endpoint manual `/api/admin/purge-client/:id` pra LGPD direito-ao-esquecimento por demanda
+- [x] Service `lib/services/dataRetention.ts` com `purgeExpiredSoftDeletes()` + `purgeAllBusinesses()`
+- [x] Endpoint `/api/data-retention/run` com auth `Bearer CRON_SECRET`, query `?dryRun` e `?businessId`
+- [x] Cron diário no [docker-compose.yml](../docker-compose.yml) — dispara às 03:00 UTC (baixo tráfego)
+- [x] Cobre Tier 3 com `deletedAt <= (now - 30d)`: clients, conversations, kanbanBoards, services, channelConnections
+- [x] Cascade hard-delete dos `kanbanCards` cascateados (via `cascadeFromParentId`)
+- [x] `conversations` usa Admin SDK `recursiveDelete` pra cobrir subcoleção `messages`
+- [x] Log de purge em `crmAuditLog` (`action: 'lgpd-purge'`, `userId: 'system'`)
+- [x] Iteração per-tenant (R1) — `purgeAllBusinesses` itera `businesses` e chama `purgeExpiredSoftDeletes(businessId)` per business
+- [x] Testes unitários em `tests/services/dataRetention.test.ts`
+
+**Item 6.1 — follow-up (deferido):**
+
+- [ ] Anonimização PII denormalizada em filhos Tier 1 (sales.clientName, appointments.clientName/serviceName, transactions.clientName, crmActivities.contactName, etc) — hoje filhos viram orphans com placeholder `[Cliente excluído]` na UI, o que preserva contabilidade mas n remove PII formalmente.
+- [ ] Nulificar referências em filhos Tier 2/3 (e.g. `channelConnectionId: null` em conversations após purge de channelConnection).
+- [ ] Endpoint manual `/api/admin/purge-client/:id` pra LGPD direito-ao-esquecimento por demanda.
 
 ---
 

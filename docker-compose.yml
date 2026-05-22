@@ -84,6 +84,7 @@ services:
   #   - appointments/run-reminders (lembretes):   a cada 5 minutos (minuto % 5 == 0)
   #   - agent/scheduled/run (agente IA):          a cada 1 hora (HH:00)
   #   - birthday-campaigns/run (aniversário):     a cada 1 hora (HH:00)
+  #   - data-retention/run (purge LGPD soft-deletes >30d): 1x ao dia, 03:00
   # Todos autenticam com Authorization: Bearer ${CRON_SECRET}
   # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
   # pelo Cloudflare/internet (mais rápido e não consome quota tunnel).
@@ -106,7 +107,7 @@ services:
     command: |
       sh -c '
         apk add --no-cache curl > /dev/null 2>&1
-        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, agent+birthday 1h (HH:00)"
+        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, agent+birthday 1h (HH:00), data-retention diario 03:00"
 
         call_endpoint() {
           # $$1=path, $$2=timeout
@@ -139,6 +140,15 @@ services:
           if [ "$$MIN_NOW" = "00" ]; then
             call_endpoint "/api/agent/scheduled/run" 60
             call_endpoint "/api/birthday-campaigns/run" 120
+
+            # data-retention: 1x ao dia, 03:00 — purga soft-deletes >30d.
+            # Janela de baixo tráfego pra n competir com cargas diurnas.
+            # Runner é idempotente (re-rodar n duplica), timeout 5min generoso
+            # pra varrer múltiplos businesses.
+            HOUR_NOW=$$(date +%H)
+            if [ "$$HOUR_NOW" = "03" ]; then
+              call_endpoint "/api/data-retention/run" 300
+            fi
           fi
         done
       '
