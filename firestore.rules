@@ -450,9 +450,10 @@ service cloud.firestore {
                     && isManager()
                     && incomingBelongsToBusiness();
 
-      allow delete: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isAdmin();
+      // Fase 5c: transactions e Tier 2 status-driven. "Excluir" agora e
+      // transicao FSM pra status='cancelado'. Hard-delete proibido —
+      // historico financeiro depende do doc persistir (audit + reconciliacao).
+      allow delete: if false;
     }
 
     // ============================================

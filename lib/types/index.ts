@@ -1055,6 +1055,12 @@ export interface Transaction {
   projectId?: string;
   projectName?: string;
   appointmentId?: string; // Link back to the originating appointment (for commission transactions)
+  // ── Cancellation audit (Fase 5c — Tier 2 status-driven) ──
+  /** ISO timestamp do cancelamento. Setado quando `status` vira `cancelado`.
+   *  Preserva doc pra historico financeiro/auditoria. */
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelledByName?: string;
   /** Parcelamento: grupo compartilhado entre todas as parcelas */
   installmentGroupId?: string;
   installmentNumber?: number;   // ex: 1 de 3

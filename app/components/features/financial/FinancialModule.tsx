@@ -1255,10 +1255,27 @@ function FinancialModuleBody() {
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id || !user) return;
     try {
-      // Fetch before-state for the audit log
+      // Fase 5c (Tier 2): em vez de hard-delete, transitamos pra status='cancelado'
+      // com audit. Preserva doc pra historico financeiro + auditoria legal.
+      // financialAuditLog ja vinha sendo gravado — mantemos.
       const snap = await getDocs(query(collection(db, 'transactions'), where('__name__', '==', id)));
       const before = snap.docs[0]?.data() as Transaction | undefined;
-      await deleteDoc(doc(db, 'transactions', id));
+
+      // Idempotente: se ja cancelado, skip silencioso (audit nao reescreve).
+      if (before?.status === 'cancelado') {
+        setShowDeleteConfirm(null);
+        toast.info(t('financial.toast.transactionAlreadyCancelled', 'Transação já cancelada'));
+        return;
+      }
+
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'transactions', id), {
+        status: 'cancelado',
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name,
+        updatedAt: now,
+      });
       if (before) {
         await logAudit(db, {
           businessId: business.id,
