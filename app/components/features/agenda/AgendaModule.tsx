@@ -80,6 +80,7 @@ import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/com
 import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
+import { createAppointmentSafe, updateAppointmentSafe, AppointmentConflictError } from '@/lib/services/appointmentTxGuard';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -1909,7 +1910,28 @@ export default function AgendaModule() {
       if (data.notes) payload.notes = data.notes;
 
       if (editingAppointment) {
-        await updateDoc(doc(db, 'appointments', editingAppointment.id), payload);
+        // Re-check atomico via tx — fecha race window de ~100-200ms onde
+        // 2 operadores editando o mesmo prof+dia podiam ambos salvar com
+        // overlap. Tx Firestore reexecuta com optimistic locking; o
+        // "perdedor" ve o doc novo do outro e detecta o conflito.
+        await updateAppointmentSafe(
+          db,
+          editingAppointment.id,
+          {
+            businessId: business.id,
+            professionalId: data.professionalId,
+            date: data.date,
+            startTime: data.startTime,
+            endTime,
+            ...payload,
+          },
+          members,
+          // Passa snapshot anterior pra que mudanca de prof/data bumpe
+          // ambos os locks (origem + destino) — senao operadores na origem
+          // continuariam vendo slot "ocupado" pelo apt movido.
+          { professionalId: editingAppointment.professionalId, date: editingAppointment.date },
+          (key, fallback) => t(key, fallback),
+        );
 
         // Sync Client metrics for the edit paths that affect "concluído" state/price/clientId.
         const wasDone = editingAppointment.status === 'concluido';
@@ -2033,7 +2055,23 @@ export default function AgendaModule() {
             severity: 'success',
           });
         } else {
-          const newDocRef = await addDoc(collection(db, 'appointments'), payload);
+          // Re-check atomico via tx (single create). Veja updateAppointmentSafe
+          // pra contexto da race window. Recurrence (acima) mantem o batch
+          // pre-validado — tx n cobre N writes sem perda de performance.
+          const newDocId = await createAppointmentSafe(
+            db,
+            {
+              businessId: business.id,
+              professionalId: data.professionalId,
+              date: data.date,
+              startTime: data.startTime,
+              endTime,
+              ...payload,
+            },
+            members,
+            (key, fallback) => t(key, fallback),
+          );
+          const newDocRef = doc(db, 'appointments', newDocId);
           // SDD Fase 4: emit domain event se criado já concluido (auditoria)
           if (data.status === 'concluido') {
             void emitAppointmentCompletedEvent({
@@ -2137,6 +2175,16 @@ export default function AgendaModule() {
       setShowFormDialog(false);
       setEditingAppointment(null);
     } catch (err) {
+      // Race lost: outro operador salvou no mesmo slot entre o pre-check da
+      // UI e o commit da tx. Mensagem detalhada do conflito vem do servidor.
+      if (err instanceof AppointmentConflictError) {
+        setSnackbar({
+          open: true,
+          message: `${t('agenda.conflictBlocked', 'Conflito de horário')}: ${err.message}`,
+          severity: 'error',
+        });
+        return;
+      }
       console.error('Error saving appointment:', err);
       setSnackbar({ open: true, message: t('agenda.errorSavingAppointment', 'Erro ao salvar agendamento.'), severity: 'error' });
     } finally {

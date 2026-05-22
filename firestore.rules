@@ -321,6 +321,26 @@ service cloud.firestore {
     }
 
     // ============================================
+    // APPOINTMENT DAY LOCKS COLLECTION
+    // ============================================
+    // Doc-lock por professionalId+date usado pelo appointmentTxGuard pra
+    // atomicidade do check de conflito (Firestore client n suporta query
+    // reads em runTransaction). Operador escreve junto com appointment na
+    // mesma tx; sem rule write, tx falha e race condition volta.
+    match /appointmentDayLocks/{lockId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create, update: if isAuthenticated()
+                            && isOperator()
+                            && incomingBelongsToBusiness();
+
+      // Nao deletamos lock docs (sao append-only, version monotonic).
+      allow delete: if false;
+    }
+
+    // ============================================
     // SERVICES COLLECTION
     // ============================================
     match /services/{serviceId} {
