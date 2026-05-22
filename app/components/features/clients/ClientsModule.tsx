@@ -1046,19 +1046,15 @@ export default function ClientsModule() {
 
   const { mutate: deleteClient, isPending: isDeleting } = useMutation({
     mutationFn: async (id: string) => {
-      // Soft delete via helper centralizado (Fase 1 do plano de soft-delete).
-      // O helper grava `deletedAt + deletedBy + deletedByName` e e idempotente.
-      // Hard delete deixaria orfaos em conversations, sales, transactions,
-      // appointments, kanbanCards, crmDeals, crmActivities.
+      // Soft delete via helper centralizado. Grava deletedAt + audit; cobre
+      // historico em conversations, sales, transactions, etc.
+      // Deploy C concluido: /v1/crm/contacts ja filtra via isActiveRecord,
+      // entao nao precisa mais escrever isActive=false em paralelo.
       if (!user?.uid) throw new Error('user nao autenticado');
-      const ref = doc(db, 'clients', id);
-      await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
-      // Compat: API publica /api/v1/crm/contacts?active=false ainda filtra
-      // via where('isActive','==',false). Mantemos esse campo durante a
-      // janela de Deploy B do dual-write — remover quando a API for atualizada
-      // pra filtrar via deletedAt (Deploy C). Ver docs/soft-delete-strategy.md
-      // §5 "Padrao de migracao de dados".
-      await updateDoc(ref, { isActive: false });
+      await softDeleteDoc(
+        doc(db, 'clients', id),
+        { uid: user.uid, name: user.name || user.uid },
+      );
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['clients', business?.id] });
@@ -1070,10 +1066,9 @@ export default function ClientsModule() {
   });
 
   // Soft-delete em massa via writeBatch (limite Firestore: 500 ops por batch).
-  // Mesmo payload que softDeleteDoc grava (deletedAt + audit fields) +
-  // `isActive: false` por compat com API publica /api/v1/crm/contacts?active=false
-  // (ver deleteClient single acima pra contexto). softDeleteDoc e per-doc;
-  // aqui usamos batch direto pra performance.
+  // Mesmo payload que softDeleteDoc grava — batch direto pra performance.
+  // Deploy C concluido: nao escreve mais isActive=false (API publica ja
+  // filtra via isActiveRecord client-side).
   const { mutate: bulkDeleteClients, isPending: isBulkDeleting } = useMutation({
     mutationFn: async (ids: string[]) => {
       if (ids.length === 0) return;
@@ -1083,7 +1078,6 @@ export default function ClientsModule() {
         deletedAt: now,
         deletedBy: user.uid,
         deletedByName: user.name || user.uid,
-        isActive: false,  // compat — remover no Deploy C (ver deleteClient)
         updatedAt: now,
       };
       // Quebra em chunks de 500 (limite por writeBatch).

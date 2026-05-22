@@ -17,7 +17,7 @@
 
  * Filtros aplicados:
  *  - snoozedUntil > now → silencia (operador escolheu não receber agora)
- *  - isDeleted → ignora
+ *  - deletedAt → ignora
  *  - lastMessageDirection !== 'inbound' → ignora (filtra "marcar como não
  *    lida" manual via handleMarkUnread, que incrementa unreadCount sem
  *    mexer em lastMessage* — beep falso positivo na auditoria)
@@ -83,7 +83,7 @@ const THROTTLE_MS = 3000;
 interface ConvoSnapshot {
   unreadCount: number;
   snoozedUntil?: string;
-  isDeleted?: boolean;
+  deletedAt?: string;
   contactName?: string;
   lastMessageDirection?: string; // 'inbound' | 'outbound'
 }
@@ -129,7 +129,6 @@ export function useConversationsAlerts(): void {
         }
 
         // Soneca ativa ou conversa deletada — atualiza state mas não alerta.
-        // isActiveRecord cobre ambos formatos (legado isDeleted + novo deletedAt).
         const snoozedActive = data.snoozedUntil && new Date(data.snoozedUntil).getTime() > now;
         const isDeleted = !isActiveRecord(data);
         if (snoozedActive || isDeleted) {

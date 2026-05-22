@@ -9,24 +9,19 @@
  *
  * REGRA: doc e ATIVO quando nao tem `deletedAt` nem `mergedInto`.
  *
- * Compatibilidade retroativa: aceita tambem `isActive === false` (legacy
- * clients) e `isDeleted === true` (legacy conversations). Estes formatos
- * antigos sao reconhecidos pra que o filtro funcione durante a janela
- * entre o deploy do refactor e o backfill dos dados. Apos cleanup (Deploy C
- * do padrao dual-write), os checks legados podem ser removidos.
+ * Deploy C concluido (2026-05-22): writes de clients/services nao gravam
+ * mais isActive=false; conversations nao grava mais isDeleted=true. Os
+ * backfills (rodados em 2026-05-22) migraram todos os legados pra deletedAt.
+ * Os ramos legados de detecao foram removidos — qualquer doc residual com
+ * isActive=false sem deletedAt sera tratado como ativo (caso edge improvavel).
  *
  * Ver docs/soft-delete-strategy.md §5 "Padrao de migracao de dados".
  */
 
-/** Shape minimo aceito pelo filtro. Aceita todos os campos opcionais —
- *  docs legados sem nenhum sao tratados como ativos (default). */
+/** Shape minimo aceito pelo filtro. */
 export interface RecordWithSoftDelete {
   deletedAt?: string | null;
   mergedInto?: string | null;
-  /** Legado de `clients` — pre-padronizacao do contrato. */
-  isActive?: boolean;
-  /** Legado de `conversations` — pre-padronizacao do contrato. */
-  isDeleted?: boolean;
 }
 
 /** True quando o doc deve ser considerado vivo na UI/queries. */
@@ -36,9 +31,6 @@ export function isActiveRecord(doc: RecordWithSoftDelete | null | undefined): bo
   // contra docs com `deletedAt: ''` ou `mergedInto: null` por bugs antigos).
   if (typeof doc.deletedAt === 'string' && doc.deletedAt.length > 0) return false;
   if (typeof doc.mergedInto === 'string' && doc.mergedInto.length > 0) return false;
-  // Compat legado — remover apos cleanup.
-  if (doc.isActive === false) return false;
-  if (doc.isDeleted === true) return false;
   return true;
 }
 

@@ -34,22 +34,12 @@ describe('isActiveRecord', () => {
     expect(isActiveRecord({ mergedInto: null })).toBe(true);
   });
 
-  it('rejeita doc com isActive=false (legado clients)', () => {
-    expect(isActiveRecord({ isActive: false })).toBe(false);
-  });
-
-  it('aceita doc com isActive=true ou ausente', () => {
-    expect(isActiveRecord({ isActive: true })).toBe(true);
-    expect(isActiveRecord({})).toBe(true);
-  });
-
-  it('rejeita doc com isDeleted=true (legado conversations)', () => {
-    expect(isActiveRecord({ isDeleted: true })).toBe(false);
-  });
-
-  it('aceita doc com isDeleted=false ou ausente', () => {
-    expect(isActiveRecord({ isDeleted: false })).toBe(true);
-    expect(isActiveRecord({})).toBe(true);
+  it('Deploy C concluido: legados isActive=false e isDeleted=true viram extra fields ignorados', () => {
+    // Pos-Deploy C, helper ignora os campos legados — tratamos doc como
+    // ativo a nao ser que tenha deletedAt/mergedInto. Backfill ja migrou
+    // todos os legados pra deletedAt antes desse cleanup.
+    expect(isActiveRecord({ isActive: false } as never)).toBe(true);
+    expect(isActiveRecord({ isDeleted: true } as never)).toBe(true);
   });
 
   it('rejeita null e undefined (defensivo)', () => {
@@ -58,7 +48,7 @@ describe('isActiveRecord', () => {
   });
 
   it('combinacao: doc com deletedAt + isActive=true continua rejeitado', () => {
-    expect(isActiveRecord({ deletedAt: '2026-01-01T00:00:00Z', isActive: true })).toBe(false);
+    expect(isActiveRecord({ deletedAt: '2026-01-01T00:00:00Z', isActive: true } as never)).toBe(false);
   });
 
   it('combinacao: doc mergedInto + deletedAt ausente continua rejeitado', () => {
@@ -67,21 +57,20 @@ describe('isActiveRecord', () => {
 });
 
 describe('filterActive', () => {
-  it('filtra array preservando so ativos', () => {
+  it('filtra array preservando so ativos (deletedAt/mergedInto presentes)', () => {
     const docs = [
       { id: 1 },
       { id: 2, deletedAt: '2026-01-01T00:00:00Z' },
       { id: 3, mergedInto: 'p' },
-      { id: 4, isActive: false },
-      { id: 5 },
+      { id: 4 },
     ];
-    expect(filterActive(docs).map(d => d.id)).toEqual([1, 5]);
+    expect(filterActive(docs).map(d => d.id)).toEqual([1, 4]);
   });
 
-  it('retorna array vazio quando todos deletados', () => {
+  it('retorna array vazio quando todos com deletedAt', () => {
     const docs = [
       { id: 1, deletedAt: '2026-01-01T00:00:00Z' },
-      { id: 2, isDeleted: true },
+      { id: 2, deletedAt: '2026-02-01T00:00:00Z' },
     ];
     expect(filterActive(docs)).toEqual([]);
   });

@@ -1830,14 +1830,12 @@ export default function AgendaModule() {
 
   const handleDeleteService = useCallback(async (id: string) => {
     if (!business?.id || !user?.uid) return;
-    // Soft-delete via helper canonico (Fase 4b do plano de soft-delete).
-    // O helper grava deletedAt + deletedBy + deletedByName e e idempotente.
-    // Write extra de `isActive: false` por compat com API publica
-    // /api/v1/services?active=false (where('isActive','==',false)) e com
-    // filters inline em pickers (cleanup desse compat fica pra Deploy C).
-    const ref = doc(db, 'services', id);
-    await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
-    await updateDoc(ref, { isActive: false });
+    // Soft-delete via helper canonico. Deploy C concluido: nao escreve mais
+    // isActive=false (API publica e pickers ja usam isActiveRecord).
+    await softDeleteDoc(
+      doc(db, 'services', id),
+      { uid: user.uid, name: user.name || user.uid },
+    );
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
     setSnackbar({ open: true, message: t('agenda.serviceDeleted', 'Serviço excluído.'), severity: 'info' });
   }, [business?.id, user?.uid, user?.name, queryClient, t]);
