@@ -9,29 +9,38 @@
  * Escopo intencional (MVP):
  *   - Cria 1 Appointment (sem recorrência — recorrência exige conflict
  *     check em série, fluxo só faz sentido no AgendaModule completo)
- *   - SEM checagem de conflito (caller fluxo conversa tipicamente não tem
- *     a lista completa de appointments do profissional carregada)
+ *   - Conflict-check atomico via createAppointmentSafe (mesma camada do
+ *     AgendaModule — fecha race quando operador do dialog e operador da
+ *     agenda salvam no mesmo slot em <200ms)
  *   - SEM atualização de syncClientMetrics nem loyalty (esses só fazem
  *     sentido quando status='concluido'; agendamento da conversa entra
  *     como 'agendado' por padrão)
  *
- * Quem precisa de recorrência/loyalty/conflict-detection rigoroso usa o
- * AgendaModule diretamente. O fluxo de conversa é otimizado pra rapidez:
- * "cliente pediu horário, marco agora pra próximo slot".
+ * Quem precisa de recorrência/loyalty rigoroso usa o AgendaModule
+ * diretamente. O fluxo de conversa é otimizado pra rapidez: "cliente
+ * pediu horário, marco agora pra próximo slot".
  *
  * Multi-tenant: payload inclui businessId; rule do Firestore
  * `appointments` exige incomingBelongsToBusiness em create.
  */
 
-import { addDoc, collection } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
-import type { Conversation } from '@/lib/types';
+import { createAppointmentSafe, AppointmentConflictError } from '@/lib/services/appointmentTxGuard';
+import type { Conversation, User } from '@/lib/types';
 import { addDurationToTime, type AppointmentFormData } from '@/app/components/features/agenda/shared';
+
+// Re-export pra que callers (ScheduleFromConversationDialog) consigam
+// diferenciar conflito vs falha generica sem importar do txGuard direto.
+export { AppointmentConflictError };
 
 export interface ScheduleFromConversationParams {
   formData: AppointmentFormData;
   conversation: Conversation;
   businessId: string;
+  /** Lista de members do business — usado pelo check de conflito pra
+   *  validar working hours do profissional. Opcional: sem ela, o check
+   *  ignora working hours mas detecta overlap normalmente. */
+  members?: User[];
 }
 
 export interface ScheduleFromConversationResult {
@@ -55,7 +64,7 @@ function resolveAppointmentChannel(conv: Conversation): import('@/lib/types').Ap
 export async function scheduleFromConversation(
   params: ScheduleFromConversationParams,
 ): Promise<ScheduleFromConversationResult> {
-  const { formData, conversation, businessId } = params;
+  const { formData, conversation, businessId, members = [] } = params;
   const now = new Date().toISOString();
 
   // Validações mínimas — UI deveria ter bloqueado mas é defesa em profundidade.
@@ -96,6 +105,22 @@ export async function scheduleFromConversation(
     if (payload[k] === undefined) delete payload[k];
   }
 
-  const ref = await addDoc(collection(db, 'appointments'), payload);
-  return { appointmentId: ref.id };
+  // createAppointmentSafe envolve o write em runTransaction + day lock,
+  // fechando a race window de ~100-200ms onde 2 operadores (ex: um aqui
+  // no dialog da conversa, outro no AgendaModule) podiam ambos salvar
+  // no mesmo slot. Em conflito, lanca AppointmentConflictError que o
+  // caller traduz pro toast/snackbar do dialog.
+  const id = await createAppointmentSafe(
+    db,
+    {
+      businessId,
+      professionalId: formData.professionalId || undefined,
+      date: formData.date,
+      startTime: formData.startTime,
+      endTime,
+      ...payload,
+    },
+    members,
+  );
+  return { appointmentId: id };
 }

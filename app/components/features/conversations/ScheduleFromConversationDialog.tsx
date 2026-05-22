@@ -32,7 +32,7 @@ import {
   type AppointmentFormData,
 } from '@/app/components/features/agenda/AppointmentFormDialog';
 import { nextPracticalSlot, addDurationToTime } from '@/app/components/features/agenda/shared';
-import { scheduleFromConversation } from '@/lib/services/scheduleFromConversation';
+import { scheduleFromConversation, AppointmentConflictError } from '@/lib/services/scheduleFromConversation';
 import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 
@@ -203,10 +203,18 @@ export function ScheduleFromConversationDialog({
         },
         conversation,
         businessId,
+        members,
       });
       toast.success(`Agendamento criado para ${formData.date} às ${formData.startTime}.`);
       onClose();
     } catch (err) {
+      // Race lost: outro operador (agenda ou outra conversa) salvou no
+      // mesmo slot entre nosso pre-check e o commit da tx. Mensagem
+      // detalhada vem do servidor com nome do cliente conflitante.
+      if (err instanceof AppointmentConflictError) {
+        toast.error(`Não foi possível agendar: ${err.message}`);
+        return;
+      }
       console.error('[ScheduleFromConversation] save failed:', err);
       toast.error('Falha ao criar agendamento. Tente novamente.');
     } finally {
