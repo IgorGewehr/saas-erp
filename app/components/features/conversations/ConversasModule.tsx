@@ -48,6 +48,7 @@ import { getVisibleStages } from '@/app/components/features/crm/shared';
 import { ScheduleFromConversationDialog } from './ScheduleFromConversationDialog';
 import ExportPhonesDialog from './ExportPhonesDialog';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
+import EmojiPicker, { EmojiStyle, Theme as EmojiPickerTheme } from 'emoji-picker-react';
 import { pickReadableTextColor } from '@/lib/utils/color';
 import debounce from 'lodash.debounce';
 import {
@@ -2700,6 +2701,7 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
   onSendAudio,
 }, ref) {
   const { t } = useTranslation();
+  const { isDark } = useTheme();
   const cfg = getConvConfig({ channel, connectedVia: connectedVia as 'baileys' | 'embedded_signup' | undefined });
 
   // Estado local — re-renders ficam contidos no Composer.
@@ -2914,8 +2916,6 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
     document.addEventListener('mousedown', h);
     return () => document.removeEventListener('mousedown', h);
   }, [showEmojiPicker]);
-
-  const EMOJIS = ['😀','😂','😍','🥰','😊','😎','😭','😤','🙏','👍','👎','❤️','🔥','✅','⚠️','🎉','💡','📌','🕐','💰','📞','📧','🤝','👋','😅','🤔','💪','🎯','📢','🚀'];
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -3139,23 +3139,29 @@ const Composer = memo(forwardRef<ComposerHandle, ComposerProps>(function Compose
             <AnimatePresence>
               {showEmojiPicker && (
                 <motion.div initial={{ opacity: 0, y: 6, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 6, scale: 0.97 }}
-                  className="absolute bottom-full mb-2 left-0 z-20 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 p-2.5 w-56">
-                  <div className="grid grid-cols-6 gap-1">
-                    {EMOJIS.map(e => (
-                      <button key={e} onClick={() => {
-                        setText(prev => {
-                          const next = prev + e;
-                          textRef.current = next;
-                          return next;
-                        });
-                        setShowEmojiPicker(false);
-                        taRef.current?.focus();
-                      }}
-                        className="w-8 h-8 flex items-center justify-center text-lg rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-                        {e}
-                      </button>
-                    ))}
-                  </div>
+                  className="absolute bottom-full mb-2 left-0 z-20 rounded-2xl shadow-2xl overflow-hidden">
+                  {/* Picker da emoji-picker-react: 9 categorias (Smileys, Animals,
+                      Food, Activity, Travel, Objects, Symbols, Flags + Frequently
+                      Used auto via localStorage), busca, skin tones, ~1800 emojis.
+                      Tema acompanha o app via useTheme. Não fecha ao selecionar —
+                      operador pode inserir vários em sequência (igual WhatsApp Web). */}
+                  <EmojiPicker
+                    onEmojiClick={(emojiData) => {
+                      setText(prev => {
+                        const next = prev + emojiData.emoji;
+                        textRef.current = next;
+                        return next;
+                      });
+                      taRef.current?.focus();
+                    }}
+                    theme={isDark ? EmojiPickerTheme.DARK : EmojiPickerTheme.LIGHT}
+                    emojiStyle={EmojiStyle.NATIVE}
+                    width={320}
+                    height={400}
+                    searchPlaceHolder="Buscar emoji..."
+                    skinTonesDisabled={false}
+                    lazyLoadEmojis
+                  />
                 </motion.div>
               )}
             </AnimatePresence>
