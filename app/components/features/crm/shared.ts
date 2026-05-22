@@ -169,6 +169,7 @@ export const BROADCAST_STATUS_LABELS: Record<BroadcastStatus, { label: string; c
   sent: { label: 'Enviada', color: 'text-emerald-600 dark:text-emerald-400', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
   paused: { label: 'Pausada', color: 'text-orange-600 dark:text-orange-400', bg: 'bg-orange-50 dark:bg-orange-500/10' },
   failed: { label: 'Falha', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-500/10' },
+  archived: { label: 'Arquivada', color: 'text-slate-600 dark:text-slate-400', bg: 'bg-slate-100 dark:bg-slate-800' },
 };
 
 // Tag System

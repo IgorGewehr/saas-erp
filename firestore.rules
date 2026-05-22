@@ -1040,9 +1040,10 @@ service cloud.firestore {
                     && isOperator()
                     && incomingBelongsToBusiness();
 
-      allow delete: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isManager();
+      // Fase 5e: deliveryOrders e Tier 2 status-driven. "Excluir" agora e
+      // transicao FSM pra status='cancelado'. Hard-delete proibido —
+      // historico de pedidos depende do doc persistir (reports + audit).
+      allow delete: if false;
     }
 
     // Contadores sequenciais (subcollection businesses/{id}/counters/{name})

@@ -36,6 +36,7 @@ const STATUS_TONE: Record<BroadcastStatus, ModernPillTone> = {
   paused: 'amber',
   sent: 'emerald',
   failed: 'red',
+  archived: 'slate',
 };
 const STATUS_LABEL: Record<BroadcastStatus, string> = {
   draft: 'Rascunho',
@@ -44,6 +45,7 @@ const STATUS_LABEL: Record<BroadcastStatus, string> = {
   paused: 'Pausada',
   sent: 'Enviada',
   failed: 'Falhou',
+  archived: 'Arquivada',
 };
 
 /** Formata duração em ms pra string curta (~1h 30min, ~5min 20s, ~45s, <1s). */

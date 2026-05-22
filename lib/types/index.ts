@@ -1629,6 +1629,13 @@ export interface DeliveryOrder {
   number: number;
   status: DeliveryOrderStatus;
 
+  // ── Cancellation audit (Fase 5e — Tier 2 status-driven) ──
+  /** ISO timestamp do cancelamento. Setado quando `status` vira `cancelado`.
+   *  Preserva doc pra historico de pedidos + reports financeiros. */
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelledByName?: string;
+
   clientId?: string;
   clientName: string;
   clientPhone?: string;
@@ -3018,7 +3025,7 @@ export interface Segment {
 // Broadcasts / Campaigns
 // ============================================
 
-export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'failed';
+export type BroadcastStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'paused' | 'failed' | 'archived';
 export type BroadcastAudienceType = 'segment' | 'tags' | 'all_contacts' | 'manual' | 'list' | 'filtered_clients';
 
 /** Recipiente direto de uma lista (paste/CSV) — não exige contato CRM. */

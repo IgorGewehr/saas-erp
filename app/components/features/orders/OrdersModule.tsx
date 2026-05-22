@@ -1315,14 +1315,33 @@ export default function OrdersModule() {
   }
 
   const handleDelete = async (order: Order) => {
-    if (!confirm(`Excluir o pedido #${order.number}? Esta ação não pode ser desfeita.`)) return;
+    if (!confirm(`Cancelar o pedido #${order.number}? O pedido fica no histórico marcado como cancelado.`)) return;
+    if (!user) return;
     try {
-      await deleteDoc(doc(db, 'deliveryOrders',order.id));
+      // Fase 5e (Tier 2): em vez de hard-delete, transitamos pra
+      // status='cancelado' com audit. Preserva doc pra reports + historico.
+      // Idempotente: se ja cancelado, skip.
+      if (order.status === 'cancelado') {
+        setSelectedOrder(null);
+        toast.info('Pedido já estava cancelado');
+        return;
+      }
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'deliveryOrders', order.id), {
+        status: 'cancelado',
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name || user.uid,
+        updatedAt: now,
+      });
       setSelectedOrder(null);
-      toast.info('Pedido excluído');
+      toast.info('Pedido cancelado');
+      // TODO bug pre-existente: cancelar pedido com stockDeductedAt nao
+      // restaura estoque. Separar PR pra reverter stock no handleStatusChange
+      // tambem (sales.handleCancelSale serve de pattern).
     } catch (err) {
       console.error('[Orders] Delete failed:', err);
-      toast.error('Erro ao excluir');
+      toast.error('Erro ao cancelar');
     }
   };
 
