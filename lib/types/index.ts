@@ -3238,6 +3238,10 @@ export interface Broadcast {
   lastResetAt?: string;
   /** UID do admin que resetou (auditoria). */
   lastResetBy?: string;
+  /** Timestamp ISO de quando foi arquivada. Set pelo POST /archive. */
+  archivedAt?: string;
+  /** UID do user que arquivou. */
+  archivedBy?: string;
   /**
    * Sessões de envio. Cada vez que o operador dispara (parcial ou total),
    * cria-se uma sessão. Permite split de campanha em batches escalonados

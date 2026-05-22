@@ -20,7 +20,7 @@ import { getAuth } from 'firebase/auth';
 import { db } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
-import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause, Layers, Megaphone } from 'lucide-react';
+import { X, RefreshCw, Loader2, AlertTriangle, Check, CheckCheck, Clock, Send, Shield, RotateCcw, Trash2, Pause, Layers, Megaphone, Archive } from 'lucide-react';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { Broadcast, BroadcastMessage, BroadcastMessageStatus, BroadcastStatus } from '@/lib/types';
 import { CONSENT_BASIS_LABELS } from '@/lib/types';
@@ -455,6 +455,7 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
   const [pausing, setPausing] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [cancelingSchedule, setCancelingSchedule] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const canDispatch = broadcast.status === 'draft' && (broadcast.recipients?.length ?? 0) > 0;
   // Resume: confia no status do broadcast doc, não em pendingCount (que pode
   // ainda não ter carregado se o snapshot está atrasado/bloqueado por index).
@@ -751,6 +752,30 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
     }
   };
 
+  const handleArchive = async () => {
+    if (!confirm(
+      `Arquivar a campanha "${broadcast.name}"?\n\nEla some da lista principal mas continua acessivel via filtro "Mostrar arquivadas". Pra apagar de vez, use a lixeira.`
+    )) return;
+    setArchiving(true);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      const res = await fetch(`/api/broadcasts/${broadcast.id}/archive`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ businessId: broadcast.businessId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(data.message || 'Campanha arquivada.');
+      onClose();
+    } catch (err) {
+      console.error('[BroadcastDetail] archive failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Erro ao arquivar campanha');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   const handleRetryFailed = async () => {
     if (failedCount === 0) return;
     if (!confirm(`Criar nova campanha de retry com ${failedCount} contato(s) que falharam?`)) return;
@@ -794,6 +819,19 @@ export default function BroadcastDetailDialog({ broadcast: initialBroadcast, onC
           <ModernPill tone={STATUS_TONE[broadcast.status] ?? 'slate'}>
             {STATUS_LABEL[broadcast.status] ?? broadcast.status}
           </ModernPill>
+          {/* Arquivar — so faz sentido apos finalizar (sent/failed). Esconde
+              da lista principal sem apagar historico. */}
+          {(broadcast.status === 'sent' || broadcast.status === 'failed') && (
+            <button
+              type="button"
+              onClick={handleArchive}
+              disabled={archiving}
+              title="Arquivar campanha"
+              className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/[0.06] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              {archiving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5" />}
+            </button>
+          )}
           {/* Lixeira inline ao lado do status — bloqueada durante envio
               (force reset antes pra evitar deletar com sessão em flight). */}
           <button

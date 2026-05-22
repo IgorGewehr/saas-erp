@@ -12,7 +12,7 @@ import {
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
   Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
-  Check, Link as LinkIcon, CheckSquare, Repeat, Cake, Info,
+  Check, Link as LinkIcon, CheckSquare, Repeat, Cake, Info, Archive,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -1576,6 +1576,9 @@ function CampaignsTab({ businessId }: { businessId: string }) {
   const [loading, setLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [openBroadcast, setOpenBroadcast] = useState<Broadcast | null>(null);
+  // Esconde 'archived' da lista principal por default — toggle deixa ver
+  // o histórico arquivado quando o operador precisar.
+  const [showArchived, setShowArchived] = useState(false);
   // PR-B: campanhas recorrentes de aniversário. Coleção separada
   // (`birthdayCampaigns`) — não se misturam com broadcasts pontuais.
   const [birthdayCampaigns, setBirthdayCampaigns] = useState<BirthdayCampaign[]>([]);
@@ -1835,6 +1838,17 @@ function CampaignsTab({ businessId }: { businessId: string }) {
     const unsub = onSnapshot(q, (snap) => { setBroadcasts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Broadcast))); setLoading(false); }, (err) => { console.error('[CRM:Campaigns] Error fetching broadcasts:', err); setLoading(false); });
     return () => unsub();
   }, [businessId]);
+
+  // Aplica filtro de arquivadas — quando showArchived=false (default),
+  // esconde da lista principal mas mantem o doc no state pra contar no toggle.
+  const visibleBroadcasts = useMemo(
+    () => showArchived ? broadcasts : broadcasts.filter(b => b.status !== 'archived'),
+    [broadcasts, showArchived],
+  );
+  const archivedCount = useMemo(
+    () => broadcasts.filter(b => b.status === 'archived').length,
+    [broadcasts],
+  );
 
   // Ofertas (Fase 4B do módulo Clientes) — alimenta o select opcional na
   // criação de broadcast pra vincular campanha à oferta. Limit implícito
@@ -2234,17 +2248,35 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         <div>
           <h3 className="text-base font-bold text-gray-900 dark:text-gray-100 font-display">{t('crm.campaign.title', 'Campanhas')}</h3>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            {broadcasts.length} {broadcasts.length !== 1 ? 'pontuais' : 'pontual'}
+            {visibleBroadcasts.length} {visibleBroadcasts.length !== 1 ? 'pontuais' : 'pontual'}
             {birthdayCampaigns.length > 0 && (
               <> · {birthdayCampaigns.length} recorrente{birthdayCampaigns.length !== 1 ? 's' : ''}</>
             )}
           </p>
         </div>
-        {/* CTA único — abre chooser pra escolher entre Pontual e Recorrente.
-            Substitui os 2 botões antigos (aniversariante / nova campanha). */}
-        <button onClick={() => setShowCampaignChooser(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25">
-          <Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}
-        </button>
+        <div className="flex items-center gap-2">
+          {archivedCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowArchived(v => !v)}
+              className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[11px] font-semibold border transition-colors',
+                showArchived
+                  ? 'border-slate-300 dark:border-slate-600 bg-slate-100 dark:bg-white/[0.08] text-slate-700 dark:text-slate-200'
+                  : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.04]'
+              )}
+              title={showArchived ? 'Ocultar campanhas arquivadas' : 'Mostrar campanhas arquivadas'}
+            >
+              <Archive className="w-3.5 h-3.5" />
+              {showArchived ? 'Ocultar arquivadas' : `Mostrar arquivadas (${archivedCount})`}
+            </button>
+          )}
+          {/* CTA único — abre chooser pra escolher entre Pontual e Recorrente.
+              Substitui os 2 botões antigos (aniversariante / nova campanha). */}
+          <button onClick={() => setShowCampaignChooser(true)} className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-gradient-to-r from-red-600 to-red-500 shadow-lg shadow-red-500/25">
+            <Plus size={16} />{t('crm.action.newCampaign', 'Nova Campanha')}
+          </button>
+        </div>
       </div>
 
       {/* Seção de campanhas recorrentes — só aparece quando há ≥ 1.
@@ -2360,17 +2392,17 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         </div>
       )}
 
-      {broadcasts.length === 0 && birthdayCampaigns.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">{t('crm.campaign.none', 'Nenhuma campanha')}</p></div>
+      {visibleBroadcasts.length === 0 && birthdayCampaigns.length === 0 ? <div className="text-center py-16 bg-white dark:bg-gray-900/50 rounded-2xl border border-gray-200 dark:border-gray-700/50"><Send className="w-12 h-12 text-gray-300 dark:text-gray-600 mx-auto mb-3" /><p className="text-sm font-semibold text-gray-600 dark:text-gray-400">{t('crm.campaign.none', 'Nenhuma campanha')}</p></div>
       : <div className="space-y-3">
           {/* Header da seção pontuais — só renderiza se houver as duas listas
               coexistindo, pra orientar o operador. Quando só pontuais, header
               redundante (título "Campanhas" no topo já cobre). */}
-          {broadcasts.length > 0 && birthdayCampaigns.length > 0 && (
+          {visibleBroadcasts.length > 0 && birthdayCampaigns.length > 0 && (
             <p className="text-[11px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1 mt-2">
               Campanhas pontuais
             </p>
           )}
-          {broadcasts.map((b) => {
+          {visibleBroadcasts.map((b) => {
           const sc = BROADCAST_STATUS_LABELS[b.status];
           // Taxas derivadas: deliveryRate sobre sent (não total), readRate sobre delivered.
           const deliveryRate = b.stats.sent > 0 ? b.stats.delivered / b.stats.sent : 0;
