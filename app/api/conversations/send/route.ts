@@ -1082,29 +1082,29 @@ async function convertAudio(
     const cmd = ffmpeg(inputPath);
     if (target === 'ogg') {
       if (forceVoiceMono) {
-        // Voice note: re-encoda Opus mono. Re-encode é mais caro que copy
-        // (~300ms num áudio de 30s) mas obrigatório — Meta só renderiza PTT
-        // com OGG/Opus MONO. Bitrate 32k é o sweet spot pra voz humana
-        // (qualidade indistinguível vs 64k pra fala, metade do tamanho).
-        // 48000 Hz: Opus roda nativamente nessa taxa. -af aresample garante
-        // que o filtro de resampling rode mesmo quando a fonte e 16k
-        // (MediaRecorder Chrome) — sem ele, ffmpeg as vezes deixa passar
-        // sample rate mismatch que produz frames vazios e WhatsApp renderiza
-        // "audio mudo" no client.
-        // Voice note: re-encoda Opus mono 48kHz. Usa apenas -af aresample
-        // (sem .audioFrequency) pra evitar conflito de double-resample que
-        // em certos codecs gera frames vazios → áudio mudo no WhatsApp.
-        // async=1 corrige jitter de timestamps de gravações de browser
-        // (MediaRecorder pode emitir frames com PTS irregulares). NÃO usar
-        // first_pts=0 — zerar o PTS inicial corrompe o granulepos do OGG/Opus
-        // (que é como WhatsApp infere duração do PTT). Sintoma: bolha aparece
-        // como "arquivo de áudio" em vez de voice note, e mostra duração
-        // surreal (ex: 17:15 num áudio de 6s).
+        // Voice note: recipe canônica libopus pra PTT WhatsApp. Meta exige
+        // OGG/Opus mono pra renderizar como bolha de áudio gravado (mic azul,
+        // waveform). Caso contrário cai em "arquivo de áudio" (ícone laranja).
+        //
+        // Histórico de problemas dessa cadeia:
+        //   1. Versão A (.audioFrequency + -af aresample): double resample em
+        //      certos codecs Chrome → frames vazios → áudio mudo.
+        //   2. Versão B (-af aresample=async=1:first_pts=0): consertou mudo
+        //      mas first_pts=0 corrompia granulepos do OGG → duração surreal
+        //      (17min num áudio de 6s) + WhatsApp desclassificava como PTT.
+        //   3. Versão C (-af aresample=async=1): sem first_pts mas async=1
+        //      ainda confundia granulepos em alguns inputs.
+        //
+        // Versão atual: recipe canônica sem filter chain. Resample feito pelo
+        // swresample nativo via -ar (mais conservador, não mexe em timestamps).
+        // -application voip otimiza libopus pra voz (frames de 20ms, SILK mode
+        // dominante) — mais tolerante a inputs com PTS irregular.
         cmd
           .audioCodec('libopus')
           .audioBitrate('32k')
           .audioChannels(1)
-          .outputOptions(['-af', 'aresample=async=1:out_sample_rate=48000'])
+          .audioFrequency(48000)
+          .outputOptions(['-application', 'voip'])
           .format('ogg');
       } else {
         // Áudio comum (paperclip): stream copy preserva qualidade original.
