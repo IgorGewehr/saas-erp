@@ -219,20 +219,48 @@ export async function DELETE(req: NextRequest) {
       return apiError('Board not found', 404);
     }
 
-    // Cascade delete: remove all cards belonging to this board
+    // Fase 4c (Item 3 backlog): kanbanBoards e Tier 3 soft-delete com cascade
+    // soft nos cards. Espelha o que KanbanModule.tsx faz no fluxo UI. Idempotente.
+    if (docSnap.data()?.deletedAt) {
+      return apiSuccess({ id, cancelled: true, alreadyDeleted: true });
+    }
+
+    const now = new Date().toISOString();
+    const auditMeta = {
+      // API key nao tem user.name — usa businessId como identificador grosseiro.
+      // Endpoint pode evoluir pra incluir user info via header se necessario.
+      deletedBy: auth.businessId,
+      deletedByName: `API key (${auth.businessId})`,
+    };
+
+    // Cascade soft-delete: filhos pegam cascadeFromParentId pra restoreDocWithCascade
+    // saber quais restaurar juntos via Lixeira.
     const cardsSnap = await adminDb.collection('kanbanCards')
       .where('boardId', '==', id)
       .where('businessId', '==', auth.businessId)
       .get();
 
     const batch = adminDb.batch();
-    batch.delete(docRef);
+    batch.update(docRef, {
+      deletedAt: now,
+      ...auditMeta,
+      updatedAt: now,
+    });
+    let cardsCascaded = 0;
     for (const cardDoc of cardsSnap.docs) {
-      batch.delete(cardDoc.ref);
+      // Pula cards ja deletados individualmente (idempotencia).
+      if (cardDoc.data().deletedAt) continue;
+      batch.update(cardDoc.ref, {
+        deletedAt: now,
+        ...auditMeta,
+        cascadeFromParentId: id,
+        updatedAt: now,
+      });
+      cardsCascaded++;
     }
     await batch.commit();
 
-    return apiSuccess({ id, deleted: true, cardsDeleted: cardsSnap.size });
+    return apiSuccess({ id, cancelled: true, cardsCascaded });
   } catch (error: any) {
     console.error('[API v1/kanban/boards DELETE]', error);
     return apiError(error.message || 'Failed to delete kanban board', 500);
