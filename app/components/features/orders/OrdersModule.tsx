@@ -21,7 +21,7 @@ import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { toast } from 'react-toastify';
-import { deductStock, checkStockAvailability } from '@/lib/services/stock';
+import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { notifyLowStock } from '@/lib/services/notifications';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
@@ -1263,6 +1263,22 @@ export default function OrdersModule() {
         stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
         patch.stockDeductedAt = now;
       }
+      // Restaura estoque quando vai pra 'cancelado' e tinha sido deduzido.
+      // Idempotente via stockDeductedAt: se ja restaurado (campo limpo) nao
+      // restaura duas vezes. Pattern espelha sales.handleCancelSale.
+      if (newStatus === 'cancelado' && order.stockDeductedAt) {
+        const productIndex = new Map(products.map(p => [p.id, p]));
+        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
+        await restoreStock(db, stockLines, {
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name,
+          sourceId: order.id,
+          reason: `Cancelamento pedido #${order.number}`,
+          productIndex,
+        });
+        patch.stockDeductedAt = null;
+      }
       if (newStatus === 'entregue') {
         patch.deliveredAt = now;
       }
@@ -1315,6 +1331,7 @@ export default function OrdersModule() {
   }
 
   const handleDelete = async (order: Order) => {
+    if (!business?.id) return;
     if (!confirm(`Cancelar o pedido #${order.number}? O pedido fica no histórico marcado como cancelado.`)) return;
     if (!user) return;
     try {
@@ -1327,18 +1344,32 @@ export default function OrdersModule() {
         return;
       }
       const now = new Date().toISOString();
-      await updateDoc(doc(db, 'deliveryOrders', order.id), {
+      const patch: Record<string, unknown> = {
         status: 'cancelado',
         cancelledAt: now,
         cancelledBy: user.uid,
         cancelledByName: user.name || user.uid,
         updatedAt: now,
-      });
+      };
+      // Restaura estoque se foi deduzido (Item 2 backlog). Mesma logica que
+      // handleStatusChange — operador pode usar qualquer fluxo (mover pra
+      // cancelado ou clicar Excluir).
+      if (order.stockDeductedAt) {
+        const productIndex = new Map(products.map(p => [p.id, p]));
+        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
+        await restoreStock(db, stockLines, {
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name,
+          sourceId: order.id,
+          reason: `Cancelamento pedido #${order.number}`,
+          productIndex,
+        });
+        patch.stockDeductedAt = null;
+      }
+      await updateDoc(doc(db, 'deliveryOrders', order.id), patch);
       setSelectedOrder(null);
       toast.info('Pedido cancelado');
-      // TODO bug pre-existente: cancelar pedido com stockDeductedAt nao
-      // restaura estoque. Separar PR pra reverter stock no handleStatusChange
-      // tambem (sales.handleCancelSale serve de pattern).
     } catch (err) {
       console.error('[Orders] Delete failed:', err);
       toast.error('Erro ao cancelar');
