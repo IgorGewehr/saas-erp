@@ -1059,12 +1059,24 @@ async function convertAudio(
   if (!res.ok) throw new Error(`Failed to download audio: ${res.status}`);
   const srcBuffer = Buffer.from(await res.arrayBuffer());
 
+  // Source vazio = bug upstream (upload corrompido, URL expirou, etc).
+  // Sem esse check, ffmpeg recebe arquivo de 0 byte, gera output vazio,
+  // e o cliente recebe "audio mudo" no WhatsApp sem qualquer log.
+  if (srcBuffer.length < 100) {
+    throw new Error(`[convertAudio] Source audio buffer empty/tiny (${srcBuffer.length} bytes) — upstream upload likely failed`);
+  }
+
   // 2. Converte via tempfiles (ffmpeg precisa de I/O seekable pra mux M4A/OGG)
   const inputPath = join(tmpdir(), `input_${Date.now()}.audio`);
   const outExt = target === 'ogg' ? '.ogg' : '.m4a';
   const outputPath = join(tmpdir(), `output_${Date.now()}${outExt}`);
 
   await writeFile(inputPath, srcBuffer);
+
+  // Captura stderr do ffmpeg pra debugar conversao silenciosa. ffmpeg-fluent
+  // resolve o promise no 'end' mesmo quando o output tem 0 frames de audio —
+  // sem o stderr nao da pra diferenciar "ok" de "passou batido com warning".
+  const stderrLines: string[] = [];
 
   await new Promise<void>((resolve, reject) => {
     const cmd = ffmpeg(inputPath);
@@ -1074,9 +1086,18 @@ async function convertAudio(
         // (~300ms num áudio de 30s) mas obrigatório — Meta só renderiza PTT
         // com OGG/Opus MONO. Bitrate 32k é o sweet spot pra voz humana
         // (qualidade indistinguível vs 64k pra fala, metade do tamanho).
-        // 48000 Hz: Opus roda nativamente nessa taxa; explicitar evita Meta
-        // dropar frames quando fonte é 16k (MediaRecorder Chrome às vezes).
-        cmd.audioCodec('libopus').audioBitrate('32k').audioChannels(1).audioFrequency(48000).format('ogg');
+        // 48000 Hz: Opus roda nativamente nessa taxa. -af aresample garante
+        // que o filtro de resampling rode mesmo quando a fonte e 16k
+        // (MediaRecorder Chrome) — sem ele, ffmpeg as vezes deixa passar
+        // sample rate mismatch que produz frames vazios e WhatsApp renderiza
+        // "audio mudo" no client.
+        cmd
+          .audioCodec('libopus')
+          .audioBitrate('32k')
+          .audioChannels(1)
+          .audioFrequency(48000)
+          .outputOptions(['-af', 'aresample=48000'])
+          .format('ogg');
       } else {
         // Áudio comum (paperclip): stream copy preserva qualidade original.
         cmd.audioCodec('copy').format('ogg');
@@ -1084,12 +1105,44 @@ async function convertAudio(
     } else {
       cmd.audioCodec('aac').audioBitrate('128k').audioChannels(1).format('ipod');
     }
-    cmd.on('error', reject).on('end', () => resolve()).save(outputPath);
+    // Timeout hard: ffmpeg-fluent n tem timeout nativo. Container Docker as
+    // vezes trava em codec missing sem retornar erro. 20s e generoso pra
+    // PTT (~5min de fala max) e suficiente pra audio comum.
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`[convertAudio] ffmpeg timeout (>20s) — stderr tail: ${stderrLines.slice(-5).join(' | ')}`));
+    }, 20_000);
+    cmd
+      .on('stderr', (line: string) => {
+        // ffmpeg emite muita coisa em stderr (banner, progresso, etc) — guarda
+        // ultimas 20 linhas pra incluir em erro/log sem inflar memoria.
+        stderrLines.push(line);
+        if (stderrLines.length > 20) stderrLines.shift();
+      })
+      .on('error', (err: Error) => {
+        clearTimeout(timeoutId);
+        reject(new Error(`[convertAudio] ffmpeg failed: ${err.message} — stderr tail: ${stderrLines.slice(-5).join(' | ')}`));
+      })
+      .on('end', () => {
+        clearTimeout(timeoutId);
+        resolve();
+      })
+      .save(outputPath);
   });
 
   const outBuffer = await readFile(outputPath);
   await unlink(inputPath).catch(() => {});
   await unlink(outputPath).catch(() => {});
+
+  // Output vazio/pequeno = ffmpeg passou batido com codec issue. Sem esse
+  // check, upload de OGG vazio acontece e WhatsApp renderiza audio mudo
+  // (~200 bytes e o header puro do OGG, sem qualquer frame de audio).
+  if (outBuffer.length < 500) {
+    throw new Error(
+      `[convertAudio] Output too small (${outBuffer.length} bytes) — ffmpeg likely produced empty audio. ` +
+      `Target=${target} forceVoiceMono=${forceVoiceMono} srcSize=${srcBuffer.length}. ` +
+      `stderr tail: ${stderrLines.slice(-5).join(' | ')}`,
+    );
+  }
 
   // 3. Re-upload via Admin SDK (server-side não tem auth Firebase pra usar
   //    client SDK contra as Storage Rules).
