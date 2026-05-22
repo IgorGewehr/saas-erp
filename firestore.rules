@@ -423,10 +423,11 @@ service cloud.firestore {
                     && isOperator()
                     && incomingBelongsToBusiness();
 
-      // Only managers can delete sales
-      allow delete: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isManager();
+      // Fase 5b: sales e Tier 2 status-driven. "Cancelar" via status='cancelada'
+      // ja existia (PDVModule.handleCancelSale + agent tool cancelSale).
+      // Tier 2 enforcement: hard-delete proibido — historico fiscal/financeiro/
+      // estoque depende do doc persistir.
+      allow delete: if false;
     }
 
     // ============================================

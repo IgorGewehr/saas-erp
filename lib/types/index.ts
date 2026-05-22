@@ -980,6 +980,12 @@ export interface Sale {
   sectorId?: string;
   createdAt: string;
   updatedAt: string;
+  // ── Cancellation audit (Fase 5b — Tier 2 status-driven) ──
+  /** ISO timestamp do cancelamento. Setado quando `status` vira `cancelada`.
+   *  Preserva doc pra historico fiscal/financeiro/estoque. */
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelledByName?: string;
 }
 
 // ---- Financial ----

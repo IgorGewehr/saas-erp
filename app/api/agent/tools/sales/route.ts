@@ -182,7 +182,16 @@ async function cancelSale(businessId: string, id: string, reason?: string): Prom
     ? `${sale.notes ? `${sale.notes}\n---\n` : ''}[Cancelada ${now.slice(0, 10)}] ${reason.slice(0, 200)}`
     : sale.notes;
 
-  const patch: Partial<Sale> = { status: 'cancelada', notes, updatedAt: now };
+  // Fase 5b: grava audit trail do cancelamento. Agent nao tem `user` —
+  // usa identificador agente (operatorId stays = autor original da venda).
+  const patch: Partial<Sale> = {
+    status: 'cancelada',
+    notes,
+    cancelledAt: now,
+    cancelledBy: 'agent',
+    cancelledByName: 'IA agente',
+    updatedAt: now,
+  };
   await ref.update(patch);
   return { ...sale, ...patch, id: snap.id };
 }
