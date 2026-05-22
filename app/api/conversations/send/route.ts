@@ -1091,12 +1091,14 @@ async function convertAudio(
         // (MediaRecorder Chrome) — sem ele, ffmpeg as vezes deixa passar
         // sample rate mismatch que produz frames vazios e WhatsApp renderiza
         // "audio mudo" no client.
+        // Voice note: re-encoda Opus mono 48kHz. Usa apenas -af aresample
+        // (sem .audioFrequency) pra evitar conflito de double-resample que
+        // em certos codecs gera frames vazios → áudio mudo no WhatsApp.
         cmd
           .audioCodec('libopus')
           .audioBitrate('32k')
           .audioChannels(1)
-          .audioFrequency(48000)
-          .outputOptions(['-af', 'aresample=48000'])
+          .outputOptions(['-af', 'aresample=async=1:first_pts=0:out_sample_rate=48000'])
           .format('ogg');
       } else {
         // Áudio comum (paperclip): stream copy preserva qualidade original.
