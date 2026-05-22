@@ -891,9 +891,13 @@ async function sendWhatsApp(
       },
     };
   } else if (templateOptions?.type === 'media' && templateOptions.media) {
-    const { mediaUrl, mediaType, fileName } = templateOptions.media;
+    const { mediaUrl, mediaType, fileName, voice } = templateOptions.media;
     // WhatsApp media message format.
     // - audio: nem caption nem filename são suportados pela Cloud API.
+    //   Voice notes (PTT) precisam EXPLICITAMENTE de `voice: true` no payload
+    //   — sem este flag, Meta renderiza como "arquivo de áudio" (ícone laranja)
+    //   mesmo se o OGG/Opus tá mono e bem formado. Sintoma clássico: bolha
+    //   sem waveform + microfone, duração ficando incoerente.
     // - document: usa `filename` (não caption) pra preservar nome real do
     //   arquivo no card do contato. Caption só vai se operador digitou texto.
     // - image/video: caption só se houver texto explícito.
@@ -901,6 +905,8 @@ async function sendWhatsApp(
     if (mediaType === 'document') {
       if (fileName) mediaPayload.filename = fileName;
       if (content) mediaPayload.caption = content;
+    } else if (mediaType === 'audio' && voice) {
+      mediaPayload.voice = true;
     } else if (mediaType !== 'audio' && content) {
       mediaPayload.caption = content;
     }
