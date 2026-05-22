@@ -211,6 +211,50 @@ function isSameDay(a: string, b: string): boolean {
   );
 }
 
+// ─── Search helpers ──────────────────────────────────────────────────────────
+
+// NFD + strip de diacríticos pra "joão" casar "joao", "açaí" casar "acai" etc.
+// Lowercase no fim — a busca toda é case-insensitive.
+function normalizeForSearch(s: string | undefined | null): string {
+  if (!s) return '';
+  return s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+}
+
+// Só dígitos — pra comparar telefones independente de máscara/DDI.
+// "(11) 99999-1234" ↔ "5511999991234" passa a casar via includes mútuo
+// (ver matchesPhoneToken).
+function digitsOnly(s: string | undefined | null): string {
+  if (!s) return '';
+  return s.replace(/\D/g, '');
+}
+
+// Tokeniza por whitespace; descarta vazios. Cada token é normalizado
+// independentemente — todos precisam casar (AND) pra conversa entrar
+// no resultado.
+function tokenizeSearch(q: string): string[] {
+  return q.split(/\s+/).map(t => t.trim()).filter(Boolean);
+}
+
+// Match de telefone: passa se os dígitos do contato/cliente contêm OU
+// estão contidos nos dígitos do token. O segundo ramo cobre o caso onde
+// o operador digita o número completo com DDI mas o doc só tem o local
+// (e vice-versa).
+function matchesPhoneToken(tokenDigits: string, ...phones: (string | undefined | null)[]): boolean {
+  if (!tokenDigits) return false;
+  for (const p of phones) {
+    const d = digitsOnly(p);
+    if (!d) continue;
+    if (d.includes(tokenDigits) || tokenDigits.includes(d)) return true;
+  }
+  return false;
+}
+
+// Janela de mensagens varrida pelo lookup "buscar nas mensagens". Bounded
+// porque cada mensagem retornada custa +1 get() da conv pai via rule
+// (parentConversationAccessible). 500 cobre ~dias/semana recentes pra
+// tenants ativos; pra histórico mais profundo precisaria indexador externo.
+const MESSAGE_SEARCH_LIMIT = 500;
+
 // ─── SLA helpers ─────────────────────────────────────────────────────────────
 
 type ConvSLAConfig = NonNullable<BusinessSettings['conversationSLA']>;
@@ -2072,7 +2116,14 @@ function QuotedMessagePreview({
         </p>
         <p
           className={cn(
-            'text-[11px] truncate',
+            // line-clamp-2 + break-words + whitespace-normal:
+            // - line-clamp limita a 2 linhas com ellipsis no fim
+            // - break-words quebra palavras longas (URLs, identificadores)
+            // - whitespace-normal anula o `pre-wrap` herdado da bolha pai,
+            //   senão newlines do quote viram quebras extras e estouram
+            //   a altura. Antes era `truncate` (nowrap) — em quote longo
+            //   o nowrap pressionava a largura do balão pra além do cap.
+            'text-[11px] line-clamp-2 break-words whitespace-normal',
             isOnBubble ? 'opacity-75' : 'text-gray-500 dark:text-gray-400',
           )}
         >
@@ -2229,7 +2280,12 @@ function MessageBubble({
               // original — sem isso o WhatsApp mostra com quebras e o painel
               // interno colapsa tudo em linha contínua. break-words evita
               // overflow horizontal em URLs longas (Play/Apple Store).
-              'relative px-3.5 py-2.5 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words',
+              // min-w-0 + max-w-full: item em flex column shrink-to-fit cresce
+              // pelo min-content do conteúdo interno (ex: QuotedMessagePreview
+              // antes usava `truncate`/nowrap e empurrava a bolha pra além
+              // do cap de 600px do wrapper). Com min-w-0 a bolha respeita
+              // o bound do parent mesmo com conteúdo "preferindo" ser largo.
+              'relative px-3.5 py-2.5 text-sm leading-relaxed shadow-sm whitespace-pre-wrap break-words min-w-0 max-w-full',
               message.isInternal
                 ? 'bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-500/30 text-amber-900 dark:text-amber-100 rounded-2xl'
                 : isOut
@@ -6825,6 +6881,38 @@ export default function ConversasModule() {
   // useDeferredValue dispara o re-render do filtro como low-priority — input
   // permanece responsivo enquanto a lista atualiza no próximo idle.
   const deferredSearchQuery = useDeferredValue(searchQuery);
+  // Toggle de "buscar nas mensagens" — quando ligado, dispara um lookup
+  // em conversationMessages e une os conversationIds que casam ao filtro.
+  // Firestore não tem full-text nativo, então varremos as N mensagens
+  // mais recentes e filtramos client-side. Cobre buscas dos últimos
+  // dias/semanas; pra histórico profundo seria necessário Algolia/Typesense.
+  const [searchInMessages, setSearchInMessages] = useState(false);
+  const { data: messageSearchConvIds, isFetching: messageSearchFetching } = useQuery<Set<string>>({
+    queryKey: ['conv-message-search', business?.id, deferredSearchQuery, searchInMessages],
+    enabled: !!business?.id && searchInMessages && deferredSearchQuery.trim().length >= 2,
+    staleTime: 60_000,
+    queryFn: async () => {
+      if (!business?.id) return new Set<string>();
+      const tokens = tokenizeSearch(deferredSearchQuery).map(normalizeForSearch).filter(Boolean);
+      if (tokens.length === 0) return new Set<string>();
+      const snap = await getDocs(query(
+        collection(db, 'conversationMessages'),
+        where('businessId', '==', business.id),
+        orderBy('sentAt', 'desc'),
+        limit(MESSAGE_SEARCH_LIMIT),
+      ));
+      const hits = new Set<string>();
+      for (const d of snap.docs) {
+        const data = d.data() as ConversationMessage;
+        const content = normalizeForSearch(data.content);
+        if (!content) continue;
+        if (tokens.every(t => content.includes(t))) {
+          if (data.conversationId) hits.add(data.conversationId);
+        }
+      }
+      return hits;
+    },
+  });
   // messageInput removido: vive agora dentro do Composer (perf — antes
   // cada keystroke causava re-render do módulo inteiro). Pai lê/escreve
   // via composerRef.
@@ -9069,11 +9157,51 @@ export default function ConversasModule() {
         const conn = c.channelConnectionId ? connectionsById.get(c.channelConnectionId) : null;
         matchesScope = !conn || conn.ownerType === 'business';
       }
-      const matchesSearch =
-        !deferredSearchQuery ||
-        (c.customContactName ?? c.contactName).toLowerCase().includes(deferredSearchQuery.toLowerCase()) ||
-        c.lastMessage.toLowerCase().includes(deferredSearchQuery.toLowerCase()) ||
-        (c.contactPhone && c.contactPhone.includes(deferredSearchQuery));
+      // Busca tokenizada com normalização de acento e dígitos.
+      // - Cada token (separado por whitespace) precisa casar (AND).
+      // - Token só-de-dígitos: compara contra dígitos do telefone do contato
+      //   E do cliente vinculado (phone/whatsapp), aceitando includes mútuo
+      //   pra absorver diferença de DDI/máscara.
+      // - Token textual: casa em haystack normalizado (sem acento) que
+      //   concatena nome, última mensagem, tags, labels, assignedToName e —
+      //   se houver crmContactId — nome/email do cliente vinculado.
+      // Ver tokenizeSearch / normalizeForSearch / matchesPhoneToken no topo.
+      let matchesSearch = true;
+      if (deferredSearchQuery) {
+        const tokens = tokenizeSearch(deferredSearchQuery);
+        if (tokens.length > 0) {
+          const linkedClient = c.crmContactId ? clientsById.get(c.crmContactId) : undefined;
+          const haystack = normalizeForSearch([
+            c.customContactName ?? '',
+            c.contactName,
+            c.lastMessage,
+            c.assignedToName ?? '',
+            (c.tags ?? []).join(' '),
+            (c.labels ?? []).join(' '),
+            linkedClient?.name ?? '',
+            linkedClient?.email ?? '',
+          ].join(' '));
+          matchesSearch = tokens.every(tok => {
+            const tokDigits = digitsOnly(tok);
+            // Token puramente numérico → casa só por dígitos do telefone.
+            if (tokDigits && tokDigits === tok) {
+              return matchesPhoneToken(tokDigits, c.contactPhone, linkedClient?.phone, linkedClient?.whatsapp);
+            }
+            // Token alfanumérico → primeiro tenta texto; se contém dígitos,
+            // ainda assim tenta o ramo de telefone como fallback.
+            const normTok = normalizeForSearch(tok);
+            if (normTok && haystack.includes(normTok)) return true;
+            if (tokDigits && matchesPhoneToken(tokDigits, c.contactPhone, linkedClient?.phone, linkedClient?.whatsapp)) return true;
+            return false;
+          });
+        }
+      }
+      // Fallback server-side: se a busca em mensagens está ativa e o ID
+      // da conversa está no set retornado pelo lookup, a conversa entra
+      // mesmo que o haystack local não case.
+      if (!matchesSearch && deferredSearchQuery && messageSearchConvIds?.has(c.id)) {
+        matchesSearch = true;
+      }
       const matchesAssigned = !advFilters.assignedTo || c.assignedTo === advFilters.assignedTo;
       const matchesPriority = !advFilters.priority || c.priority === advFilters.priority;
       const matchesLabel = !advFilters.label || c.labels?.includes(advFilters.label) || c.tags?.includes(advFilters.label);
@@ -9106,7 +9234,7 @@ export default function ConversasModule() {
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
       return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesEngagement;
     });
-  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById]);
+  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById, clientsById, clientIdsInPipeline, messageSearchConvIds]);
 
   // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
   // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,
@@ -9380,8 +9508,29 @@ export default function ConversasModule() {
                   placeholder={t('conversations.searchPlaceholder', 'Buscar conversas...')}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-3 py-2 text-sm bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors"
+                  className="w-full pl-8 pr-9 py-2 text-sm bg-gray-100 dark:bg-white/[0.04] border border-transparent dark:border-white/[0.06] rounded-xl text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-red-500/50 focus:bg-white dark:focus:bg-white/[0.06] transition-colors"
                 />
+                {/* Toggle "buscar nas mensagens" — quando ligado, faz lookup
+                    em conversationMessages (até 2000 últimas) e une convIds
+                    matched ao resultado local. Custo extra: 1 getDocs com
+                    cache de 60s (TanStack Query). */}
+                <button
+                  type="button"
+                  onClick={() => setSearchInMessages(v => !v)}
+                  title={searchInMessages
+                    ? `Buscar nas mensagens: ligado (até ${MESSAGE_SEARCH_LIMIT} últimas)`
+                    : 'Buscar nas mensagens: desligado'}
+                  className={cn(
+                    'absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-lg flex items-center justify-center transition-colors',
+                    searchInMessages
+                      ? 'bg-red-500/15 text-red-500 dark:text-red-400'
+                      : 'text-gray-400 hover:bg-gray-200/70 dark:hover:bg-white/[0.06] dark:text-gray-500'
+                  )}
+                >
+                  {messageSearchFetching
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <FileText className="w-3.5 h-3.5" />}
+                </button>
               </div>
               <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
                 onClick={() => setShowNewConversation(true)}
@@ -9677,10 +9826,26 @@ export default function ConversasModule() {
                     : hasOtherFilters
                       ? t('conversations.noConversationsFoundDesc', 'Tente mudar o filtro ou a busca')
                       : ctx.subtitle;
+                  // CTA pra ligar busca em mensagens quando o operador
+                  // tem query de texto e não há resultado local. Só faz
+                  // sentido com ≥2 chars e ainda não ligado.
+                  const showMessageSearchCTA = !!searchQuery
+                    && searchQuery.trim().length >= 2
+                    && !searchInMessages;
                   return (
                     <>
                       <p className="text-sm font-medium text-gray-500 dark:text-gray-400">{title}</p>
                       <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 max-w-[260px] leading-relaxed">{subtitle}</p>
+                      {showMessageSearchCTA && (
+                        <button
+                          type="button"
+                          onClick={() => setSearchInMessages(true)}
+                          className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                          Buscar nas mensagens
+                        </button>
+                      )}
                     </>
                   );
                 })()}

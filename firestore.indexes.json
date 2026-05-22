@@ -686,6 +686,14 @@
       ]
     },
     {
+      "collectionGroup": "conversationMessages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "sentAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "bankAccounts",
       "queryScope": "COLLECTION",
       "fields": [
