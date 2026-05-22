@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 
 const VALID_STATUSES = ['novo', 'contatado', 'qualificado', 'proposta', 'negociacao', 'ganho', 'perdido'];
 const VALID_SOURCES = ['site', 'indicacao', 'whatsapp', 'instagram', 'facebook', 'google_ads', 'linkedin', 'evento', 'email', 'telefone', 'outro'];
@@ -87,9 +88,11 @@ export async function GET(req: NextRequest) {
     if (tipo) {
       query = query.where('tipo', '==', tipo);
     }
-    if (active) {
-      query = query.where('isActive', '==', active === 'true');
-    }
+    // Filtro `active` mudou de server-side via isActive pra client-side via
+    // isActiveRecord (Item 4 backlog). Helper canonico cobre o contrato
+    // unificado (deletedAt + mergedInto) E formatos legados (isActive=false).
+    // Trade-off: traz ATIVOS+DELETADOS do Firestore e filtra em JS — aceitavel
+    // pra tenants tipicos (<5k clientes); evita indice composto adicional.
 
     query = query.orderBy(sort, order as FirebaseFirestore.OrderByDirection);
 
@@ -99,6 +102,14 @@ export async function GET(req: NextRequest) {
       id: doc.id,
       ...doc.data(),
     }));
+
+    if (active) {
+      const wantActive = active === 'true';
+      contacts = contacts.filter(c => {
+        const isActiveDoc = isActiveRecord(c as Parameters<typeof isActiveRecord>[0]);
+        return wantActive ? isActiveDoc : !isActiveDoc;
+      });
+    }
 
     // Filter by minimum churn risk in-memory (nested field)
     if (minChurnRisk) {

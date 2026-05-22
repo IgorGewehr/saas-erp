@@ -4,6 +4,7 @@ import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middlew
 import type { Query } from 'firebase-admin/firestore';
 import { CreateServiceBodySchema, UpdateServiceBodySchema } from '@/contracts/api/v1/services';
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/services — List services for the authenticated business
@@ -24,13 +25,10 @@ export async function GET(req: NextRequest) {
       .collection('services')
       .where('businessId', '==', auth.businessId);
 
-    // Optional filters
+    // Filtro `active` mudou de server-side via isActive pra client-side via
+    // isActiveRecord (Item 4 backlog). Cobre contrato unificado (deletedAt)
+    // + formato legado (isActive=false) sem indice composto adicional.
     const active = searchParams.get('active');
-    if (active === 'true') {
-      query = query.where('isActive', '==', true);
-    } else if (active === 'false') {
-      query = query.where('isActive', '==', false);
-    }
 
     const category = searchParams.get('category');
     if (category) {
@@ -47,6 +45,14 @@ export async function GET(req: NextRequest) {
     const snapshot = await query.get();
 
     let services = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+
+    if (active) {
+      const wantActive = active === 'true';
+      services = services.filter(s => {
+        const isActiveDoc = isActiveRecord(s as Parameters<typeof isActiveRecord>[0]);
+        return wantActive ? isActiveDoc : !isActiveDoc;
+      });
+    }
 
     // Client-side search filter (Firestore doesn't support LIKE)
     const search = searchParams.get('search')?.toLowerCase();
