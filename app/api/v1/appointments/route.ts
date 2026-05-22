@@ -1,6 +1,11 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import {
+  createAppointmentSafeAdmin,
+  updateAppointmentSafeAdmin,
+  AppointmentConflictError,
+} from '@/lib/services/appointmentTxGuardAdmin';
 
 // Valid appointment statuses
 const VALID_STATUSES = new Set([
@@ -197,13 +202,27 @@ export async function POST(req: NextRequest) {
     if (body.notes) appointmentData.notes = body.notes;
     if (body.color) appointmentData.color = body.color;
 
-    const docRef = await adminDb.collection('appointments').add(appointmentData);
+    // Tx atomica: re-checa conflito de overlap dentro da transacao Admin
+    // SDK (que suporta query reads, ao contrario do client). Sem isso, 2
+    // integracoes externas podiam criar appointments concorrentes pro
+    // mesmo prof+slot e ambos persistiam.
+    const newId = await createAppointmentSafeAdmin(adminDb, {
+      businessId: auth.businessId,
+      professionalId: appointmentData.professionalId as string | undefined,
+      date: body.date,
+      startTime: body.startTime,
+      endTime,
+      ...appointmentData,
+    });
 
     return apiSuccess(
-      { id: docRef.id, ...appointmentData },
+      { id: newId, ...appointmentData },
       201,
     );
   } catch (error) {
+    if (error instanceof AppointmentConflictError) {
+      return apiError(`Conflict: ${error.message}`, 409);
+    }
     console.error('[API] POST /api/v1/appointments error:', error);
     return apiError('Failed to create appointment', 500);
   }
@@ -299,12 +318,21 @@ export async function PUT(req: NextRequest) {
 
     updateData.updatedAt = new Date().toISOString();
 
-    await docRef.update(updateData);
+    // Tx atomica: re-checa conflito incluindo campos herdados (quando
+    // patch omite date/startTime/professionalId, helper resolve do doc
+    // existente dentro da tx). excludeId garantido como o proprio doc.
+    await updateAppointmentSafeAdmin(adminDb, body.id, {
+      businessId: auth.businessId,
+      ...updateData,
+    });
 
     const updated = await docRef.get();
 
     return apiSuccess({ id: updated.id, ...updated.data() });
   } catch (error) {
+    if (error instanceof AppointmentConflictError) {
+      return apiError(`Conflict: ${error.message}`, 409);
+    }
     console.error('[API] PUT /api/v1/appointments error:', error);
     return apiError('Failed to update appointment', 500);
   }

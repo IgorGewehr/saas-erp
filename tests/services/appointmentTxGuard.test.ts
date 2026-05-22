@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const txGet = vi.fn();
 const txSet = vi.fn();
 const txUpdate = vi.fn();
-const docsResolver = vi.fn(() => [] as Array<{ id: string; data: () => Record<string, unknown> }>);
+const docsResolver = vi.fn(() => [] as Array<{ id: string; data: () => unknown }>);
 let runTransactionImpl = vi.fn();
 
 vi.mock('firebase/firestore', () => ({
