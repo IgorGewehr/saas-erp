@@ -151,6 +151,8 @@ const TomadorSchema = z
     cpf: z.string().optional(),
     cnpj: z.string().optional(),
     email: z.string().email().optional().or(z.literal('')),
+    telefone: z.string().optional(),
+    endereco: AddressSchema.optional(),
   })
   .passthrough();
 

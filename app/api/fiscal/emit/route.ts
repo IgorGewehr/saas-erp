@@ -525,6 +525,36 @@ export async function POST(request: NextRequest) {
       const aliquotaIss = Number(data.aliquotaIss) || 0;
       const valorISS = +((baseCalculo * aliquotaIss) / 100).toFixed(2);
 
+      // Tomador: SP exige endereço (cidade/UF) quando tomador tem CNPJ.
+      // Se o frontend enviou endereco, usa. Senão, fallback pro endereço do prestador.
+      let tomadorPayload: Record<string, unknown> | undefined;
+      if (data.tomador) {
+        const tomadorCnpj = data.tomador.cnpj?.replace(/\D/g, '') || undefined;
+        const tomadorCpf = data.tomador.cpf?.replace(/\D/g, '') || undefined;
+
+        let tomadorEndereco: Record<string, unknown> | undefined;
+        if (data.tomador.endereco) {
+          tomadorEndereco = {
+            logradouro: data.tomador.endereco.logradouro,
+            numero: data.tomador.endereco.numero || 'SN',
+            complemento: data.tomador.endereco.complemento || undefined,
+            bairro: data.tomador.endereco.bairro,
+            codigoMunicipio: data.tomador.endereco.codigoMunicipio,
+            uf: data.tomador.endereco.uf?.toUpperCase(),
+            cep: data.tomador.endereco.cep?.replace(/\D/g, ''),
+          };
+        }
+
+        tomadorPayload = {
+          nome: data.tomador.nome,
+          cpf: tomadorCpf,
+          cnpj: tomadorCnpj,
+          email: data.tomador.email,
+          telefone: data.tomador.telefone,
+          endereco: tomadorEndereco,
+        };
+      }
+
       const nfsePayload = stripEmpty({
         numeroDPS: number,
         serie: series,
@@ -536,14 +566,7 @@ export async function POST(request: NextRequest) {
           nomeFantasia: business.nomeFantasia,
           simplesNacional: isSimples ? '1' : '2',
         },
-        tomador: data.tomador
-          ? {
-              nome: data.tomador.nome,
-              cpf: data.tomador.cpf?.replace(/\D/g, '') || undefined,
-              cnpj: data.tomador.cnpj?.replace(/\D/g, '') || undefined,
-              email: data.tomador.email,
-            }
-          : undefined,
+        tomador: tomadorPayload,
         servico: {
           codigoTributacaoNacional: (data.codigoServico || '').replace(/\D/g, '').padEnd(6, '0'),
           codigoTributacaoMunicipal: data.codigoServicoMunicipal || undefined,
