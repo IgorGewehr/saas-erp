@@ -5,6 +5,7 @@ import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/li
 import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
+import { updateAppointmentSafeAdmin, AppointmentConflictError } from '@/lib/services/appointmentTxGuardAdmin';
 
 type Action = AgendaToolAction;
 
@@ -111,7 +112,23 @@ export async function POST(req: NextRequest) {
         data = await getAppointment(businessId, params.id as string);
         break;
       case 'update':
-        data = await updateAppointment(businessId, params.id as string, params.patch as Partial<Appointment>);
+        try {
+          data = await updateAppointment(businessId, params.id as string, params.patch as Partial<Appointment>);
+        } catch (updateErr) {
+          // Conflict struturado pra que a IA reconheca e proponha outro
+          // horario em vez de ficar tentando o mesmo slot. Mesma forma
+          // de resposta do bookAppointment em conflito (sem alternatives
+          // pq update n busca slots livres — IA decide o proximo passo).
+          if (updateErr instanceof AppointmentConflictError) {
+            data = {
+              status: 'conflict' as const,
+              id: params.id as string,
+              conflictReason: updateErr.message,
+            };
+            break;
+          }
+          throw updateErr;
+        }
         break;
       case 'cancel':
         data = await cancelAppointment(businessId, params.id as string);
@@ -602,7 +619,14 @@ async function updateAppointment(businessId: string, id: string, patch: Partial<
     cleanPatch.endTime = addMinutes(startTime, duration);
   }
 
-  await ref.update(cleanPatch);
+  // Tx atomica: helper re-checa conflito DENTRO da tx (Admin SDK suporta
+  // query reads), herdando date/startTime/professionalId do existente
+  // quando o patch n inclui. Sem isso, IA podia mover apt pra slot ja
+  // ocupado por outro apt e ambos ficavam validos.
+  await updateAppointmentSafeAdmin(adminDb, id, {
+    businessId,
+    ...cleanPatch,
+  });
 
   // ── Commission handling on status change ──
   const wasDone = data.status === 'concluido';

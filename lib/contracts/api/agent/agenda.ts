@@ -197,7 +197,25 @@ export const UpdateParamsSchema = z.object({
     notes: z.string().max(2000).optional(),
   }).strict(),
 }).strict();
-export const UpdateDataSchema = AppointmentShortSchema;
+
+// Sucesso: id + campos patched. Conflict: shape estruturado pra que a
+// IA reconheca e proponha outro horario em vez de loopar no mesmo slot.
+const UpdateSuccessDataSchema = z.object({
+  id: DocIdSchema,
+  updatedAt: z.string().optional(),
+  date: DateYmdSchema.optional(),
+  startTime: TimeHmSchema.optional(),
+  endTime: TimeHmSchema.optional(),
+  duration: z.number().int().positive().optional(),
+  status: AppointmentStatusSchema.optional(),
+  notes: z.string().optional(),
+});
+const UpdateConflictDataSchema = z.object({
+  status: z.literal('conflict'),
+  id: DocIdSchema,
+  conflictReason: z.string(),
+});
+export const UpdateDataSchema = z.union([UpdateSuccessDataSchema, UpdateConflictDataSchema]);
 
 // ---------- cancel ----------
 export const CancelParamsSchema = z.object({ id: DocIdSchema }).strict();
