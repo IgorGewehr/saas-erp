@@ -314,9 +314,10 @@ service cloud.firestore {
                     && isOperator()
                     && incomingBelongsToBusiness();
 
-      allow delete: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isManager();
+      // Fase 5 do plano de soft-delete: appointments e Tier 2 status-driven.
+      // Em vez de hard-delete, transitamos pra status='cancelado'. Preserva
+      // doc pra reports/comissoes/historico. allow delete fica `false`.
+      allow delete: if false;
     }
 
     // ============================================

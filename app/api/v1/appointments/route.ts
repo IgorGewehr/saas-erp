@@ -313,6 +313,10 @@ export async function PUT(req: NextRequest) {
 // ---------------------------------------------------------------------------
 // DELETE /api/v1/appointments
 // ---------------------------------------------------------------------------
+// Fase 5 (Tier 2 status-driven): "delete" agora e transicao FSM pra
+// status='cancelado'. Preserva doc pra reports/comissoes/historico. Resposta
+// muda de `{deleted: true}` pra `{cancelled: true}` — clients da API publica
+// que dependiam do delete real precisam adaptar.
 export async function DELETE(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:appointments']);
   if (isApiKeyError(auth)) return auth;
@@ -335,11 +339,26 @@ export async function DELETE(req: NextRequest) {
       return apiError('Appointment not found', 404);
     }
 
-    await docRef.delete();
+    // Idempotente — se ja cancelado, retorna sucesso sem reescrever audit.
+    if (docSnap.data()?.status === 'cancelado') {
+      return apiSuccess({ id, cancelled: true, alreadyCancelled: true });
+    }
 
-    return apiSuccess({ id, deleted: true });
+    const now = new Date().toISOString();
+    await docRef.update({
+      status: 'cancelado',
+      cancelledAt: now,
+      // API publica nao tem `name` do user — usa o businessId como audit
+      // grosseiro (melhor que vazio). Endpoint pode evoluir pra incluir
+      // user info via header se necessario.
+      cancelledBy: auth.businessId,
+      cancelledByName: `API key (${auth.businessId})`,
+      updatedAt: now,
+    });
+
+    return apiSuccess({ id, cancelled: true });
   } catch (error) {
     console.error('[API] DELETE /api/v1/appointments error:', error);
-    return apiError('Failed to delete appointment', 500);
+    return apiError('Failed to cancel appointment', 500);
   }
 }

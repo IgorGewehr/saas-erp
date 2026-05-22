@@ -871,6 +871,14 @@ export interface Appointment {
   googleCalendarEventId?: string;   // Google Calendar event ID for sync
   createdAt: string;
   updatedAt: string;
+  // ── Cancellation audit (Fase 5 — Tier 2 status-driven, antes era hard-delete) ──
+  /** ISO timestamp do cancelamento. Setado quando `status` vira `cancelado`.
+   *  Diferente de soft-delete `deletedAt` — appointments nunca sao deletados,
+   *  cancelar e mudanca de estado da FSM. Preserva o doc pra historico em
+   *  reports/comissoes. */
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelledByName?: string;
 }
 
 export interface Service {

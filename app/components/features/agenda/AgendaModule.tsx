@@ -2147,10 +2147,30 @@ export default function AgendaModule() {
   }, [business?.id, editingAppointment, services, queryClient, checkConflicts, t, members, user]);
 
   const handleDeleteAppointment = useCallback(async () => {
-    if (!editingAppointment || !business?.id) return;
+    if (!editingAppointment || !business?.id || !user?.uid) return;
+    // Fase 5 do plano de soft-delete: appointments e Tier 2 status-driven.
+    // Em vez de hard-delete, transitamos pra status 'cancelado' (FSM). Preserva
+    // doc pra reports/comissoes e mantem trilha de auditoria. Side-effects
+    // (calendar, comissao, metricas de cliente) ainda rodam — semantica
+    // identica ao delete antigo.
+    // Idempotente: se ja estava 'cancelado', side-effects ja foram aplicados —
+    // skip pra evitar revert duplicado.
+    if (editingAppointment.status === 'cancelado') {
+      setShowDeleteDialog(false);
+      setShowFormDialog(false);
+      setEditingAppointment(null);
+      return;
+    }
     setDeleteLoading(true);
     try {
-      await deleteDoc(doc(db, 'appointments', editingAppointment.id));
+      const now = new Date().toISOString();
+      await updateDoc(doc(db, 'appointments', editingAppointment.id), {
+        status: 'cancelado',
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name || user.uid,
+        updatedAt: now,
+      });
       // Google Calendar sync — remove event
       if (editingAppointment.googleCalendarEventId) {
         syncToGoogleCalendar('delete', {
@@ -2180,28 +2200,37 @@ export default function AgendaModule() {
       setShowDeleteDialog(false);
       setShowFormDialog(false);
       setEditingAppointment(null);
-      setSnackbar({ open: true, message: t('agenda.appointmentDeleted', 'Agendamento excluído.'), severity: 'info' });
+      setSnackbar({ open: true, message: t('agenda.appointmentCancelled', 'Agendamento cancelado.'), severity: 'info' });
     } catch (err) {
-      console.error('Error deleting appointment:', err);
-      setSnackbar({ open: true, message: t('agenda.errorDeletingAppointment', 'Erro ao excluir agendamento.'), severity: 'error' });
+      console.error('Error cancelling appointment:', err);
+      setSnackbar({ open: true, message: t('agenda.errorCancellingAppointment', 'Erro ao cancelar agendamento.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient, t]);
+  }, [editingAppointment, business?.id, user?.uid, user?.name, queryClient, t]);
 
   const handleDeleteSeries = useCallback(async () => {
-    if (!editingAppointment?.recurrenceId || !business?.id) return;
+    if (!editingAppointment?.recurrenceId || !business?.id || !user?.uid) return;
     setDeleteLoading(true);
     try {
       // Filtra a série em memória (appointments já carregados via onSnapshot
       // single-field). Evita composite index appointments/businessId+recurrenceId.
+      // Pula itens ja cancelados (idempotencia — side-effects ja foram aplicados).
       const seriesItems = appointments.filter(
-        a => a.recurrenceId === editingAppointment.recurrenceId,
+        a => a.recurrenceId === editingAppointment.recurrenceId && a.status !== 'cancelado',
       );
 
       // Aggregate client metric deltas from any 'concluido' items in the series.
       const clientDeltas = new Map<string, { visits: number; price: number }>();
       const commissionIds: (string | undefined)[] = [];
+      const now = new Date().toISOString();
+      const cancelMeta = {
+        status: 'cancelado' as const,
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name || user.uid,
+        updatedAt: now,
+      };
       const batch = writeBatch(db);
       for (const a of seriesItems) {
         if (a.status === 'concluido') {
@@ -2211,10 +2240,11 @@ export default function AgendaModule() {
             d.price += a.price || 0;
             clientDeltas.set(a.clientId, d);
           }
-          // Collect commission IDs to cancel after batch delete
+          // Collect commission IDs to cancel after batch update
           if (a.commissionTransactionId) commissionIds.push(a.commissionTransactionId);
         }
-        batch.delete(doc(db, 'appointments', a.id));
+        // Fase 5: status-driven em vez de hard-delete. Preserva doc na FSM.
+        batch.update(doc(db, 'appointments', a.id), cancelMeta);
       }
       await batch.commit();
 
@@ -2246,15 +2276,21 @@ export default function AgendaModule() {
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient, t, appointments]);
+  }, [editingAppointment, business?.id, user?.uid, user?.name, queryClient, t, appointments]);
 
   const handleCancelAppointment = useCallback(async () => {
-    if (!editingAppointment || !business?.id) return;
+    if (!editingAppointment || !business?.id || !user?.uid) return;
     setDeleteLoading(true);
     try {
+      // Fase 5: grava audit junto com a transicao FSM. Mesma operacao do
+      // handleDeleteAppointment — Tier 2 unificou ambos os fluxos.
+      const now = new Date().toISOString();
       await updateDoc(doc(db, 'appointments', editingAppointment.id), {
         status: 'cancelado',
-        updatedAt: new Date().toISOString(),
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name || user.uid,
+        updatedAt: now,
       });
       if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
         await syncClientMetrics({
@@ -2281,7 +2317,7 @@ export default function AgendaModule() {
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, queryClient, t]);
+  }, [editingAppointment, business?.id, user?.uid, user?.name, queryClient, t]);
 
   const handleStatusChange = useCallback(async (status: AppointmentStatus) => {
     if (!selectedAppointment || !business?.id) return;
