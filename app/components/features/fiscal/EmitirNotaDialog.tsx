@@ -37,6 +37,7 @@ import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 import { maskCpfCnpj, maskPhone, maskCep, unmaskDigits } from '@/lib/utils/fiscal-masks';
 import { isActiveClient } from '@/lib/utils/clientFilters';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useTranslation } from 'react-i18next';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -268,7 +269,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         const snapshot = await getDocs(q);
         setServices(snapshot.docs
           .map(d => ({ ...d.data(), id: d.id }) as Service)
-          .filter(s => s.isActive !== false && !s.deletedAt));
+          .filter(isActiveRecord));
       } catch { /* silent */ }
     };
     loadServices();

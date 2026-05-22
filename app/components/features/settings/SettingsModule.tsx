@@ -6,6 +6,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc, arrayRemove } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -294,8 +295,9 @@ function ProfileTab() {
   useEffect(() => {
     if (!business?.id) { setIsLoadingServices(false); return; }
     setIsLoadingServices(true);
-    // Single-field — isActive filtrado client-side (evita composite
-    // index services/businessId+isActive).
+    // Single-field — filtragem por isActiveRecord client-side (evita composite
+    // index services/businessId+deletedAt). Helper cobre ambos formatos
+    // (deletedAt novo + isActive=false legado).
     const q = query(
       collection(db, 'services'),
       where('businessId', '==', business.id),
@@ -305,7 +307,7 @@ function ProfileTab() {
       (snap) => {
         const list = snap.docs
           .map(d => ({ ...d.data(), id: d.id } as Service))
-          .filter(s => (s as { isActive?: boolean }).isActive !== false);
+          .filter(isActiveRecord);
         setServices(list);
         setIsLoadingServices(false);
       },

@@ -54,6 +54,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate, formatDateTime, generateId } from '@/lib/utils/format';
 import { isActiveClient } from '@/lib/utils/clientFilters';
+import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -285,7 +286,7 @@ export default function PDVModule() {
       const snap = await getDocs(q);
       return snap.docs
         .map(d => ({ ...d.data(), id: d.id } as Service))
-        .filter(s => (s as { isActive?: boolean }).isActive !== false)
+        .filter(isActiveRecord)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     },
     enabled: !!business?.id,

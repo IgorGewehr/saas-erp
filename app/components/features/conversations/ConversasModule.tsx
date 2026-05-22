@@ -6404,7 +6404,9 @@ export default function ConversasModule() {
   useEffect(() => {
     if (!business?.id) return;
     const q = query(collection(db, 'services'), where('businessId', '==', business.id));
-    const unsub = onSnapshot(q, snap => setServicesList(snap.docs.map(d => ({ ...d.data(), id: d.id } as import('@/lib/types').Service))));
+    const unsub = onSnapshot(q, snap => setServicesList(
+      snap.docs.map(d => ({ ...d.data(), id: d.id } as import('@/lib/types').Service)).filter(isActiveRecord),
+    ));
     return () => unsub();
   }, [business?.id]);
 
