@@ -1094,11 +1094,17 @@ async function convertAudio(
         // Voice note: re-encoda Opus mono 48kHz. Usa apenas -af aresample
         // (sem .audioFrequency) pra evitar conflito de double-resample que
         // em certos codecs gera frames vazios → áudio mudo no WhatsApp.
+        // async=1 corrige jitter de timestamps de gravações de browser
+        // (MediaRecorder pode emitir frames com PTS irregulares). NÃO usar
+        // first_pts=0 — zerar o PTS inicial corrompe o granulepos do OGG/Opus
+        // (que é como WhatsApp infere duração do PTT). Sintoma: bolha aparece
+        // como "arquivo de áudio" em vez de voice note, e mostra duração
+        // surreal (ex: 17:15 num áudio de 6s).
         cmd
           .audioCodec('libopus')
           .audioBitrate('32k')
           .audioChannels(1)
-          .outputOptions(['-af', 'aresample=async=1:first_pts=0:out_sample_rate=48000'])
+          .outputOptions(['-af', 'aresample=async=1:out_sample_rate=48000'])
           .format('ogg');
       } else {
         // Áudio comum (paperclip): stream copy preserva qualidade original.
