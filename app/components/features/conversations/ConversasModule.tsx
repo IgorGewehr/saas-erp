@@ -2210,6 +2210,19 @@ function MessageBubble({
   // internas também são out — operador não responde nota interna como reply.
   const canReply = !!onReply && !!message.externalMessageId && !message.isInternal;
 
+  // Espelha a condicao que decide se a bolha de texto eh renderizada — usada
+  // pra escolher onde mostrar o quote. Bolha de texto presente: quote vai
+  // dentro dela (variante on-bubble). Ausente (midia sem caption): renderiza
+  // standalone acima da midia (variante composer) — senao o quote some
+  // visualmente em audio/imagem/video puros, apesar de estar no doc Firestore.
+  const willRenderTextBubble = !!message.content
+    && !(message.mediaType
+      && /^\[(Imagem|Audio|Áudio|Video|Vídeo|Sticker|Documento|Midia|Mídia)\]$/i.test(message.content))
+    && !(message.mediaType === 'document'
+      && (message.content === message.fileName || looksLikeFilename(message.content)))
+    && !(message.sharedContacts && message.sharedContacts.length > 0
+      && (message.content.startsWith('📇') || message.content === '[Contato]'));
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8, scale: 0.97 }}
@@ -2249,6 +2262,15 @@ function MessageBubble({
             <Reply className="w-3.5 h-3.5" />
           </button>
         )}
+        {/* Quote standalone — so quando NAO ha bolha de texto pra embutir o
+            quote (midia pura sem caption). Renderiza acima da midia/card pra
+            espelhar layout do WhatsApp em reply de audio/imagem/video. */}
+        {message.replyToMessageId && !willRenderTextBubble && (
+          <div className={cn('max-w-full', isOut ? 'self-end' : 'self-start', 'mb-1')}>
+            <QuotedMessagePreview quoted={quotedMessage ?? null} variant="composer" />
+          </div>
+        )}
+
         {/* Media attachment */}
         {message.mediaUrl && message.mediaType && (
           <MediaAttachment mediaUrl={message.mediaUrl} mediaType={message.mediaType} fileName={message.fileName} />
@@ -2259,21 +2281,9 @@ function MessageBubble({
           <SharedContactsCard contacts={message.sharedContacts} onStartConversation={onStartConversation} />
         )}
 
-        {/* Text content — esconde bolha de texto que duplicaria o card de mídia:
-            (1) placeholders genéricos "[Documento]"/"[Imagem]" gravados no
-            inbound quando não há caption real;
-            (2) filename como content (legado pré-fix gravava file.name aqui)
-            ou content == fileName (UI nova com fileName explícito);
-            (3) preview "📇 Nome..." quando há sharedContacts — o card já mostra
-            o nome, evitamos duplicar texto na bolha. */}
-        {message.content
-          && !(message.mediaType
-            && /^\[(Imagem|Audio|Áudio|Video|Vídeo|Sticker|Documento|Midia|Mídia)\]$/i.test(message.content))
-          && !(message.mediaType === 'document'
-            && (message.content === message.fileName || looksLikeFilename(message.content)))
-          && !(message.sharedContacts && message.sharedContacts.length > 0
-            && (message.content.startsWith('📇') || message.content === '[Contato]'))
-          && (
+        {/* Text content — bolha de texto so renderiza quando ha content
+            relevante (ver willRenderTextBubble pra criterios de filtro). */}
+        {willRenderTextBubble && (
           <div
             className={cn(
               // whitespace-pre-wrap preserva \n e espaços múltiplos da mensagem
@@ -8446,6 +8456,7 @@ export default function ConversasModule() {
     caption = '',
     asInternal = false,
     isVoiceNote = false,
+    replyTo = null,
   }: {
     mediaUrl: string;
     mediaType: 'image' | 'video' | 'audio' | 'document';
@@ -8456,9 +8467,15 @@ export default function ConversasModule() {
      *  microfone. Default false (áudio comum, ícone amarelo de arquivo). Composer
      *  passa true pra gravações via MediaRecorder; paperclip passa false. */
     isVoiceNote?: boolean;
+    /** Snapshot da mensagem que esta sendo respondida. Caller passa o doc
+     *  inteiro (mesmo pattern do envio de texto) pra que sendPreparedMedia
+     *  consiga gravar `replyToMessageId` no doc local E passar o conteudo
+     *  pro Baileys montar o `quoted` (Cloud/IG/Messenger usam so o ID). */
+    replyTo?: ConversationMessage | null;
   }) => {
     if (!selectedConversation || !business?.id || !user) return;
     const now = new Date().toISOString();
+    const replyExtId = replyTo?.externalMessageId || null;
     let msgRef: Awaited<ReturnType<typeof addDoc>> | null = null;
     try {
       msgRef = await addDoc(collection(db, 'conversationMessages'), {
@@ -8474,6 +8491,7 @@ export default function ConversasModule() {
         // Persiste pra retry preservar o modo (PTT vs arquivo) sem precisar
         // distinguir lá. Só seta se for áudio (campo zumbi em outros tipos).
         ...(mediaType === 'audio' && isVoiceNote ? { isVoiceNote: true } : {}),
+        ...(replyExtId ? { replyToMessageId: replyExtId } : {}),
         status: asInternal ? 'delivered' as const : 'sending' as const,
         senderName: user.name,
         ...(asInternal ? { isInternal: true } : {}),
@@ -8531,6 +8549,15 @@ export default function ConversasModule() {
           // voice=true → Cloud força re-encode pra OGG/Opus mono (Meta exige
           // pra renderizar PTT azul) e Baileys seta ptt:true.
           ...(mediaType === 'audio' && isVoiceNote ? { voice: true } : {}),
+          // Reply nativo do WhatsApp — mesma estrutura do envio de texto.
+          // Sem isso, midia respondendo a uma msg sai sem o quote no app
+          // do cliente (Cloud usa context.message_id; Baileys monta quoted
+          // a partir do conteudo+fromMe).
+          ...(replyExtId ? {
+            replyToMessageId: replyExtId,
+            replyToMessageContent: replyTo?.content ?? '',
+            replyToMessageFromMe: replyTo?.direction === 'outbound',
+          } : {}),
         }),
       });
 
@@ -8553,7 +8580,13 @@ export default function ConversasModule() {
     }
   }, [selectedConversation, business?.id, user, t]);
 
-  const sendMediaMessage = useCallback(async (file: File, asInternal = false, isVoiceNote = false, forceAsDocument = false) => {
+  const sendMediaMessage = useCallback(async (
+    file: File,
+    asInternal = false,
+    isVoiceNote = false,
+    forceAsDocument = false,
+    replyTo: ConversationMessage | null = null,
+  ) => {
     if (!selectedConversation || !business?.id || !user) return;
     // forceAsDocument: vídeo/áudio acima do limite Cloud (16MB) que o operador
     // escolheu enviar como documento (cap 100MB) — cliente recebe arquivo pra
@@ -8579,6 +8612,7 @@ export default function ConversasModule() {
         caption: '',
         asInternal,
         isVoiceNote,
+        replyTo,
       });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -8741,6 +8775,7 @@ export default function ConversasModule() {
         fileName: currentPendingSnippet.mediaType === 'document' ? currentPendingSnippet.fileName : undefined,
         caption: content,
         asInternal: isInternalNote,
+        replyTo: currentReply,
       });
       composerRef.current?.focus();
       return;
@@ -8752,7 +8787,7 @@ export default function ConversasModule() {
     // continuam paralelas — esta serialização afeta só o par mídia+texto da
     // mesma submissão. sendMediaMessage trata erros internamente.
     if (currentAttachment) {
-      await sendMediaMessage(currentAttachment, isInternalNote, false, currentAsDocument);
+      await sendMediaMessage(currentAttachment, isInternalNote, false, currentAsDocument, currentReply);
     }
 
     if (!hasText) {
@@ -10263,7 +10298,14 @@ export default function ConversasModule() {
                       crossOperatorWarning={crossOpWarning}
                       replyTo={replyToMessage}
                       onCancelReply={() => setReplyToMessage(null)}
-                      onSendAudio={(file) => { void sendMediaMessage(file, isInternalNote, /* isVoiceNote */ true); }}
+                      onSendAudio={(file) => {
+                        // Snapshot do reply ANTES de limpar o state — sem isso, o
+                        // setReplyToMessage(null) sincrono perde a referencia que
+                        // sendMediaMessage precisaria capturar via closure.
+                        const replySnap = replyToMessage;
+                        setReplyToMessage(null);
+                        void sendMediaMessage(file, isInternalNote, /* isVoiceNote */ true, false, replySnap);
+                      }}
                     />
                   );
                 })()}
