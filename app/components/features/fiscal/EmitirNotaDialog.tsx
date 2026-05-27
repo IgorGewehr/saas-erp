@@ -226,6 +226,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   const [nfeRecipientIE, setNfeRecipientIE] = useState('');
   const [nfeNatureza, setNfeNatureza] = useState<string>(NFE_NATUREZAS[0]);
   const [nfeFinalidade, setNfeFinalidade] = useState<'1' | '2' | '3' | '4'>('1');
+  // Chave de acesso (44 dígitos) da NF-e referenciada. Obrigatória quando
+  // finalidade=4 (devolução). Operador cola a chave do DANFE da nota original.
+  const [nfeRefNFe, setNfeRefNFe] = useState('');
   const [nfeInfoAdicionais, setNfeInfoAdicionais] = useState('');
   const [nfeItems, setNfeItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
   const [nfePayments, setNfePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
@@ -639,6 +642,19 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       return;
     }
 
+    // Devolução (finalidade=4) exige chave da NF-e original. Validamos aqui
+    // pra evitar roundtrip — SEFAZ devolve erro 235 que confunde o operador.
+    const refDigits = nfeRefNFe.replace(/\D/g, '');
+    if (nfeFinalidade === '4' && refDigits.length !== 44) {
+      toast.error(
+        t(
+          'fiscal.emit.errors.refNFeRequired',
+          'Devolução exige a chave de acesso (44 dígitos) da NF-e original.',
+        ),
+      );
+      return;
+    }
+
     setIsEmitting(true);
     try {
       const destinatarioEndereco = nfeRecipientAddress.logradouro && nfeRecipientAddress.codigoMunicipio
@@ -684,6 +700,8 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         finalidadeEmissao: Number(nfeFinalidade) || 1,
         consumidorFinal: isDestPJ ? 0 : 1,
         presencaComprador: 9,
+        // refNFe é normalizado server-side (replace /\D/g), enviamos só dígitos.
+        refNFe: refDigits.length === 44 ? refDigits : undefined,
         informacoesAdicionais: nfeInfoAdicionais.trim() || undefined,
       };
 
@@ -1269,6 +1287,33 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     </select>
                   </div>
                 </div>
+
+                {/* Chave de acesso da NF-e referenciada — obrigatória pra
+                    finalidade=4 (devolução). Aceita 44 dígitos com ou sem máscara. */}
+                {nfeFinalidade === '4' && (
+                  <div className="bg-amber-50/60 dark:bg-amber-500/10 rounded-xl p-4 border border-amber-200 dark:border-amber-500/30 space-y-2">
+                    <label className="text-xs font-semibold text-amber-800 dark:text-amber-300 uppercase tracking-wide block">
+                      {t('fiscal.emit.refNFe', 'Chave da NF-e original *')}
+                    </label>
+                    <input
+                      value={nfeRefNFe}
+                      onChange={(e) => setNfeRefNFe(e.target.value.replace(/[^\d\s]/g, '').slice(0, 54))}
+                      placeholder={t('fiscal.emit.refNFePlaceholder', '44 dígitos da chave de acesso da nota sendo devolvida')}
+                      className={cn(inputClasses, 'font-mono tracking-wider')}
+                    />
+                    <p className="text-[11px] text-amber-700/80 dark:text-amber-400/70">
+                      {t(
+                        'fiscal.emit.refNFeHint',
+                        'Cole a chave de 44 dígitos do DANFE da NF-e original. Sem isso, a SEFAZ rejeita a devolução.',
+                      )}
+                      {' '}
+                      <span className="font-medium">
+                        {nfeRefNFe.replace(/\D/g, '').length}/44
+                      </span>
+                    </p>
+                  </div>
+                )}
+
                 <div className="bg-blue-50/50 dark:bg-blue-500/5 rounded-xl p-4 border border-blue-100 dark:border-blue-500/20 space-y-3">
                   <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">{t('fiscal.emit.enderecoDestinatario', 'Endereço do Destinatário')}</p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

@@ -179,6 +179,13 @@ export const NfeRequestSchema = z
     consumidorFinal: z.union([z.string(), z.number()]).optional(),
     presencaComprador: z.union([z.string(), z.number()]).optional(),
     modalidadeFrete: z.union([z.string(), z.number()]).optional(),
+    /**
+     * Chave de acesso (44 dígitos) da NF-e referenciada. Obrigatório quando
+     * finalidadeEmissao='4' (devolução). Aceita máscara — `replace(/\D/g, '')`
+     * normaliza no handler antes de validar comprimento. Validação cross-field
+     * "finalidade=4 ⇒ refNFe presente" fica no route (precisa do contexto).
+     */
+    refNFe: z.string().optional(),
   })
   .passthrough();
 

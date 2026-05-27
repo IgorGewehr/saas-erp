@@ -809,6 +809,34 @@ export async function POST(request: NextRequest) {
         })
       : undefined;
 
+    const finalidade = String(data.finalidadeEmissao ?? 1);
+
+    // Devolução (finalidade=4) exige referência à NF-e original (tag <NFref>
+    // dentro de <ide>). Sem isso, a SEFAZ rejeita como "nota nova inválida"
+    // (rejeição 235/236). Validamos no boundary pra dar mensagem acionável
+    // antes do roundtrip.
+    let referencias: Array<{ refNFe: string }> | undefined;
+    if (finalidade === '4') {
+      const refDigits = String(data.refNFe ?? '').replace(/\D/g, '');
+      if (refDigits.length !== 44) {
+        return NextResponse.json(
+          {
+            error:
+              'NF-e de devolução (finalidade=4) exige a chave de acesso (44 dígitos) da NF-e original sendo devolvida. Informe no campo "Chave da NF-e original" do formulário.',
+          },
+          { status: 400 },
+        );
+      }
+      referencias = [{ refNFe: refDigits }];
+    } else if (data.refNFe) {
+      // Operador informou referência mas a finalidade não é devolução —
+      // envia mesmo assim (complemento/ajuste também aceitam refs).
+      const refDigits = String(data.refNFe).replace(/\D/g, '');
+      if (refDigits.length === 44) {
+        referencias = [{ refNFe: refDigits }];
+      }
+    }
+
     const nfePayload = stripEmpty({
       emitente,
       numero: number,
@@ -817,7 +845,7 @@ export async function POST(request: NextRequest) {
       ambiente,
       naturezaOperacao: data.naturezaOperacao || 'VENDA DE MERCADORIA',
       tipoOperacao: '1',
-      finalidade: String(data.finalidadeEmissao ?? 1),
+      finalidade,
       consumidorFinal: String(data.consumidorFinal ?? 0),
       presencaComprador: String(data.presencaComprador ?? 1),
       destinatario,
@@ -826,6 +854,7 @@ export async function POST(request: NextRequest) {
       transporte: {
         modFrete: String(data.modalidadeFrete ?? 9),
       },
+      referencias,
       informacoesAdicionais: data.informacoesAdicionais
         ? { contribuinte: data.informacoesAdicionais }
         : undefined,
