@@ -199,6 +199,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
   // o município do emitente (default na maioria dos casos).
   const [nfseLocalPrestacao, setNfseLocalPrestacao] = useState('');
 
+  // Código CNAE (7 dígitos) da atividade prestada. Algumas prefeituras
+  // exigem (BH); outras tornam opcional. Aceita máscara ('6201-5/01').
+  const [nfseCnae, setNfseCnae] = useState('');
+
   // Endereço do tomador (NFS-e). São Paulo (IBGE 3550308) exige endereço
   // completo — sem isso, a Prefeitura Paulistana rejeita. Outras prefeituras
   // toleram parcial; mantemos campos visíveis sempre pra consistência com NF-e.
@@ -520,6 +524,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         codigoServicoMunicipal: nfseForm.codigoTributacaoMunicipal || undefined,
         nbs: nfseNbs.trim() || undefined,
         codigoMunicipioPrestacao: nfseLocalPrestacao.length === 7 ? nfseLocalPrestacao : undefined,
+        cnae: nfseCnae.replace(/\D/g, '') || undefined,
         discriminacao: nfseForm.discriminacao,
         valorServicos: nfseForm.valorServicos,
         valorDeducoes: nfseForm.valorDeducoes > 0 ? nfseForm.valorDeducoes : undefined,
@@ -1072,6 +1077,28 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                       'Default: município da empresa. Diferente quando o serviço foi prestado in-loco em outra cidade — o ISS é recolhido lá.',
                     )}
                   </p>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">
+                    {t('fiscal.emit.cnae', 'Código CNAE')}
+                    <span className="ml-1 text-gray-400 dark:text-gray-500 font-normal">
+                      {t('fiscal.emit.cnaeHint', '(opcional — obrigatório em algumas prefeituras, ex: BH)')}
+                    </span>
+                  </label>
+                  <input
+                    value={nfseCnae}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, '').slice(0, 7);
+                      let masked = digits;
+                      if (digits.length > 4) masked = `${digits.slice(0, 4)}-${digits.slice(4)}`;
+                      if (digits.length > 5) masked = `${digits.slice(0, 4)}-${digits.slice(4, 5)}/${digits.slice(5)}`;
+                      setNfseCnae(masked);
+                    }}
+                    placeholder="Ex: 6201-5/01"
+                    maxLength={9}
+                    className={inputClasses}
+                  />
                 </div>
               </div>
 

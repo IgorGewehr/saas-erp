@@ -373,6 +373,16 @@ export interface NfsePayload {
     cnpj?: string;
     email?: string;
     telefone?: string;
+    endereco?: {
+      logradouro?: string;
+      numero?: string;
+      complemento?: string;
+      bairro?: string;
+      municipio?: string;
+      codigoMunicipio?: string;
+      uf?: string;
+      cep?: string;
+    };
   };
   servico: {
     codigoTributacaoNacional: string;
@@ -380,6 +390,8 @@ export interface NfsePayload {
     discriminacao: string;
     localPrestacao?: { codigoMunicipio: string };
     nbs?: string;
+    /** Código CNAE (7 dígitos). Exigido por algumas prefeituras (BH obrigatório). */
+    cnae?: string;
   };
   valores: {
     valorServicos: number;

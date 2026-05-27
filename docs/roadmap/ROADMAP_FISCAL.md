@@ -67,8 +67,8 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 - [x] **Local da prestação ≠ estabelecimento (NFS-e)** `code-only`
   Schema aceita `codigoMunicipioPrestacao` opcional. Route respeita o payload com fallback pro emitente quando vazio, e retorna 400 acionável se vier código inválido (≠ 7 dígitos). UI tem campo opcional "Local da prestação (cód. IBGE)" no bloco Serviço Prestado. ISS agora é recolhido no município correto quando empresa atende in-loco fora da sede.
 
-- [ ] **CNAE em NFS-e** `cross`
-  Não há campo CNAE no `NfseRequestSchema` ([lib/contracts/api/fiscal/emit.ts:202](../../lib/contracts/api/fiscal/emit.ts#L202)). Algumas prefeituras exigem (Paulistana aceita opcional, mas outras como BH são obrigatórias). Adicionar campo + propagar pro provider no sefaz-api.
+- [x] **CNAE em NFS-e** `code-only`
+  Sefaz-api já aceitava `servico.cnae` nos 3 providers (Nacional, Betha-legacy, Paulistana via xml-builder). Faltava só o saas-erp propagar: schema aceita `cnae` opcional, route normaliza com replace(/\D/g, '') e envia em `nfsePayload.servico.cnae`, UI tem novo input com máscara `XXXX-X/XX` no bloco Serviço Prestado. Tag muda de "cross" pra "code-only" porque sefaz-api já estava pronto.
 
 - [ ] **Devolução fiscal parcial (itemização)** `cross`
   Hoje só cancela venda inteira (status='cancelada'). Para devolução parcial (cliente devolveu 1 de 3 itens), precisa emitir NF-e de devolução referenciando só os itens devolvidos. Depende do item de devolução NF-e acima.

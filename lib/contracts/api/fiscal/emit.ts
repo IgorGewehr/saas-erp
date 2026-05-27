@@ -228,6 +228,13 @@ export const NfseRequestSchema = z
      * município da prestação. Aceita máscara — handler normaliza com replace(/\D/g, '').
      */
     codigoMunicipioPrestacao: z.string().optional(),
+    /**
+     * Código CNAE (Classificação Nacional de Atividades Econômicas) — 7 dígitos.
+     * Exigido por algumas prefeituras (BH obrigatório; SP/Paulistana opcional;
+     * Padrão Nacional aceita). Aceita máscara (ex: '6201-5/01') — handler
+     * normaliza com replace(/\D/g, ''). sefaz-api propaga pros 3 providers.
+     */
+    cnae: z.string().optional(),
   })
   .passthrough();
 

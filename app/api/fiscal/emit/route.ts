@@ -612,6 +612,9 @@ export async function POST(request: NextRequest) {
           discriminacao: data.discriminacao || data.descricaoServico,
           localPrestacao: { codigoMunicipio: codigoMunicipioPrestacao },
           nbs: data.nbs,
+          // CNAE normalizado (só dígitos). Mantém undefined quando ausente
+          // pra stripEmpty descartar — algumas prefeituras rejeitam tag vazia.
+          cnae: data.cnae ? String(data.cnae).replace(/\D/g, '') || undefined : undefined,
         },
         valores: {
           valorServicos: baseCalculo,
