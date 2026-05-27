@@ -520,13 +520,39 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // São Paulo (IBGE 3550308): a Prefeitura Paulistana rejeita NFS-e
+      // sem endereço completo do tomador (logradouro, bairro, codigoMunicipio,
+      // UF, CEP). Validamos no boundary pra dar mensagem acionável antes do
+      // roundtrip SOAP — o erro do governo é genérico e confunde o operador.
+      // numero pode ser 'SN' (sem número); municipio textual é opcional pois
+      // codigoMunicipio é o que entra no XML.
+      const SP_IBGE = '3550308';
+      if (codigoMunicipioEmitente === SP_IBGE && data.tomador) {
+        const end = data.tomador.endereco as Record<string, string> | undefined;
+        const missing: string[] = [];
+        if (!end?.logradouro?.trim()) missing.push('logradouro');
+        if (!end?.bairro?.trim()) missing.push('bairro');
+        if (!end?.codigoMunicipio?.replace(/\D/g, '')) missing.push('código IBGE da cidade');
+        if (!end?.uf?.trim()) missing.push('UF');
+        if (!end?.cep?.replace(/\D/g, '') || end.cep.replace(/\D/g, '').length !== 8) missing.push('CEP');
+        if (missing.length > 0) {
+          return NextResponse.json(
+            {
+              error: `Em São Paulo, NFS-e exige endereço completo do tomador. Campos faltando: ${missing.join(', ')}.`,
+              missingFields: missing,
+            },
+            { status: 400 },
+          );
+        }
+      }
+
       const isSimples = crt === '1' || crt === '2';
       const baseCalculo = +(Number(data.valorServicos) || 0).toFixed(2);
       const aliquotaIss = Number(data.aliquotaIss) || 0;
       const valorISS = +((baseCalculo * aliquotaIss) / 100).toFixed(2);
 
-      // Tomador: SP exige endereço (cidade/UF) quando tomador tem CNPJ.
-      // Se o frontend enviou endereco, usa. Senão, fallback pro endereço do prestador.
+      // Tomador: usa endereço quando fornecido. Validação obrigatória pra SP
+      // ficou acima — aqui o caminho é só montar o payload.
       let tomadorPayload: Record<string, unknown> | undefined;
       if (data.tomador) {
         const tomadorCnpj = data.tomador.cnpj?.replace(/\D/g, '') || undefined;

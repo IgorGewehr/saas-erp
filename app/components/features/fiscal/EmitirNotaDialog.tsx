@@ -194,6 +194,20 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     informacoesAdicionais: '',
   });
 
+  // Endereço do tomador (NFS-e). São Paulo (IBGE 3550308) exige endereço
+  // completo — sem isso, a Prefeitura Paulistana rejeita. Outras prefeituras
+  // toleram parcial; mantemos campos visíveis sempre pra consistência com NF-e.
+  const [nfseTomadorAddress, setNfseTomadorAddress] = useState({
+    logradouro: '',
+    numero: '',
+    complemento: '',
+    bairro: '',
+    municipio: '',
+    codigoMunicipio: '',
+    uf: '',
+    cep: '',
+  });
+
   // ── NFCe State ──
   const [nfceConsumidorCpf, setNfceConsumidorCpf] = useState('');
   const [nfceConsumidorNome, setNfceConsumidorNome] = useState('');
@@ -306,6 +320,18 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         tomadorEmail: client.email || '',
         tomadorPhone: client.phone || '',
       }));
+      if (client.endereco) {
+        setNfseTomadorAddress({
+          logradouro: client.endereco.logradouro || '',
+          numero: client.endereco.numero || '',
+          complemento: client.endereco.complemento || '',
+          bairro: client.endereco.bairro || '',
+          municipio: client.endereco.municipio || '',
+          codigoMunicipio: client.endereco.codigoMunicipio || '',
+          uf: client.endereco.uf || '',
+          cep: client.endereco.cep || '',
+        });
+      }
     } else if (type === 'nfce') {
       setNfceConsumidorCpf(client.cpfCnpj || '');
       setNfceConsumidorNome(client.name);
@@ -329,8 +355,24 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     }
   };
 
-  // ── CEP lookup via ViaCEP (NFe recipient address) ──
-  const fetchCep = async (cep: string) => {
+  // ── CEP lookup via ViaCEP ──
+  // Genérico: aceita o setter do state alvo (NF-e recipient OU NFS-e tomador).
+  // Ambos os states têm o mesmo shape de endereço.
+  type AddressState = {
+    logradouro: string;
+    numero: string;
+    complemento: string;
+    bairro: string;
+    municipio: string;
+    codigoMunicipio: string;
+    uf: string;
+    cep: string;
+  };
+
+  const fetchCepInto = async (
+    cep: string,
+    setter: React.Dispatch<React.SetStateAction<AddressState>>,
+  ) => {
     const digits = unmaskDigits(cep);
     if (digits.length !== 8) return;
     setIsFetchingCep(true);
@@ -338,7 +380,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       const res = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
       const data = await res.json();
       if (data.erro) { toast.error('CEP não encontrado'); return; }
-      setNfeRecipientAddress(prev => ({
+      setter(prev => ({
         ...prev,
         logradouro: data.logradouro || prev.logradouro,
         bairro: data.bairro || prev.bairro,
@@ -352,6 +394,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       setIsFetchingCep(false);
     }
   };
+
+  const fetchCep = (cep: string) => fetchCepInto(cep, setNfeRecipientAddress);
+  const fetchCepNfseTomador = (cep: string) => fetchCepInto(cep, setNfseTomadorAddress);
 
   // ── Emit Handlers ──
   // Certificate is loaded server-side via getCertificadoPayload(businessId).
@@ -404,9 +449,50 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
       return;
     }
 
+    // SP exige endereço completo do tomador. Mostra o erro localmente antes
+    // do roundtrip pra evitar rejeição genérica da Prefeitura Paulistana.
+    // IBGE pode vir de fiscal.* (canônico) ou endereco.codigoMunicipio (lookup CEP).
+    const ibgeEmitente =
+      (business.fiscal?.ibgeCodigoMunicipio || business.endereco?.codigoMunicipio || '').replace(/\D/g, '');
+    const SP_IBGE = '3550308';
+    if (ibgeEmitente === SP_IBGE) {
+      const a = nfseTomadorAddress;
+      const missing: string[] = [];
+      if (!a.logradouro.trim()) missing.push('logradouro');
+      if (!a.bairro.trim()) missing.push('bairro');
+      if (!a.codigoMunicipio.trim()) missing.push('código IBGE da cidade');
+      if (!a.uf.trim()) missing.push('UF');
+      if (a.cep.replace(/\D/g, '').length !== 8) missing.push('CEP');
+      if (missing.length > 0) {
+        toast.error(
+          t(
+            'fiscal.emit.errors.spEnderecoTomador',
+            'São Paulo exige endereço completo do tomador. Faltando: {{missing}}.',
+            { missing: missing.join(', ') },
+          ),
+        );
+        return;
+      }
+    }
+
     setIsEmitting(true);
     try {
       const cleanDoc = nfseForm.tomadorDocumento.replace(/\D/g, '');
+
+      // Monta o endereço do tomador se houver logradouro preenchido. Mantemos
+      // o objeto opcional pra prefeituras que aceitam tomador sem endereço.
+      const tomadorEndereco = nfseTomadorAddress.logradouro.trim()
+        ? {
+            logradouro: nfseTomadorAddress.logradouro.trim(),
+            numero: nfseTomadorAddress.numero.trim() || 'SN',
+            complemento: nfseTomadorAddress.complemento.trim() || undefined,
+            bairro: nfseTomadorAddress.bairro.trim(),
+            municipio: nfseTomadorAddress.municipio.trim() || undefined,
+            codigoMunicipio: nfseTomadorAddress.codigoMunicipio.replace(/\D/g, ''),
+            uf: nfseTomadorAddress.uf.toUpperCase(),
+            cep: nfseTomadorAddress.cep.replace(/\D/g, ''),
+          }
+        : undefined;
 
       // Build flat body matching the backend contract in /api/fiscal/emit
       // The backend reads: businessId, type, tomador, codigoServico, codigoServicoMunicipal,
@@ -420,6 +506,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
           nome: nfseForm.tomadorNome,
           email: nfseForm.tomadorEmail || undefined,
           telefone: unmaskDigits(nfseForm.tomadorPhone) || undefined,
+          endereco: tomadorEndereco,
         },
         codigoServico: nfseForm.codigoTributacaoNacional || undefined,
         codigoServicoMunicipal: nfseForm.codigoTributacaoMunicipal || undefined,
@@ -764,6 +851,73 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                       maxLength={15}
                       className={inputClasses}
                     />
+                  </div>
+                </div>
+
+                {/* Endereço do tomador — obrigatório completo em São Paulo (IBGE 3550308).
+                    Outras prefeituras toleram parcial, mas exibimos sempre por consistência. */}
+                <div className="bg-blue-50/50 dark:bg-blue-500/5 rounded-xl p-4 border border-blue-100 dark:border-blue-500/20 space-y-3">
+                  <p className="text-xs font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wide">
+                    {t('fiscal.emit.enderecoTomador', 'Endereço do Tomador')}
+                    <span className="ml-2 normal-case text-[10px] font-normal text-blue-600/80 dark:text-blue-300/70">
+                      ({t('fiscal.emit.enderecoTomadorHint', 'obrigatório em São Paulo')})
+                    </span>
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="sm:col-span-2">
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.logradouro', 'Logradouro')}</label>
+                      <input value={nfseTomadorAddress.logradouro} onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, logradouro: e.target.value }))} placeholder={t('fiscal.emit.logradouroPlaceholder', 'Rua, Av...')} className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.numero', 'Número')}</label>
+                      <input value={nfseTomadorAddress.numero} onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, numero: e.target.value }))} placeholder="123 ou SN" className={inputClasses} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.bairro', 'Bairro')}</label>
+                      <input value={nfseTomadorAddress.bairro} onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, bairro: e.target.value }))} placeholder="Centro" className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.municipio', 'Município')}</label>
+                      <input value={nfseTomadorAddress.municipio} onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, municipio: e.target.value }))} placeholder="São Paulo" className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.codIbge', 'Cod. IBGE *')}</label>
+                      <input value={nfseTomadorAddress.codigoMunicipio} onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, codigoMunicipio: e.target.value }))} placeholder="3550308" className={inputClasses} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.uf', 'UF')}</label>
+                      <input value={nfseTomadorAddress.uf} onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, uf: e.target.value.toUpperCase().slice(0, 2) }))} placeholder="SP" maxLength={2} className={inputClasses} />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.cep', 'CEP')}</label>
+                      <div className="flex gap-2">
+                        <input
+                          value={nfseTomadorAddress.cep}
+                          onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, cep: maskCep(e.target.value) }))}
+                          onBlur={(e) => fetchCepNfseTomador(e.target.value)}
+                          placeholder="00000-000"
+                          maxLength={9}
+                          className={cn(inputClasses, 'flex-1')}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => fetchCepNfseTomador(nfseTomadorAddress.cep)}
+                          disabled={isFetchingCep}
+                          title="Buscar endereço pelo CEP"
+                          className="px-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-500/40 transition-colors disabled:opacity-50"
+                        >
+                          {isFetchingCep ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">{t('fiscal.emit.complemento', 'Complemento')}</label>
+                      <input value={nfseTomadorAddress.complemento} onChange={(e) => setNfseTomadorAddress(prev => ({ ...prev, complemento: e.target.value }))} placeholder={t('fiscal.emit.opcionalPlaceholder', 'Opcional')} className={inputClasses} />
+                    </div>
                   </div>
                 </div>
               </div>
