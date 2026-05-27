@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import QRCode from 'qrcode';
+import bwipjs from 'bwip-js/node';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
@@ -209,6 +210,32 @@ async function generateQRCodeSvg(url: string | undefined, sizePx: number): Promi
   }
 }
 
+/**
+ * Gera SVG inline do CODE128 da chave de acesso (44 dígitos). Obrigatório no
+ * DANFE NF-e A4 (parte superior, faixa lateral) conforme manual de orientação
+ * do contribuinte. Retorna string vazia em falha — DANFE continua imprimindo,
+ * mas sem o barcode (deficiência legal logada).
+ */
+function generateCode128Svg(chave: string, widthPx: number, heightPx: number): string {
+  if (!chave || !/^\d{44}$/.test(chave)) return '';
+  try {
+    const svg = bwipjs.toSVG({
+      bcid: 'code128',
+      text: chave,
+      scaleX: 2,
+      scaleY: 2,
+      height: heightPx / 4,
+      includetext: false,
+      paddingwidth: 4,
+      paddingheight: 0,
+    });
+    return svg.replace('<svg ', `<svg width="${widthPx}" height="${heightPx}" preserveAspectRatio="none" `);
+  } catch (err) {
+    console.warn('[DANFE] Falha ao gerar CODE128:', err);
+    return '';
+  }
+}
+
 async function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): Promise<string> {
   const isHomolog = data.tpAmb === '2';
   const cancelDate = opts.canceledAt ? new Date(opts.canceledAt).toLocaleString('pt-BR') : '';
@@ -278,9 +305,18 @@ ${qrSvg ? `
 </body></html>`;
 }
 
-function generateDanfeNFeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): string {
+async function generateDanfeNFeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): Promise<string> {
   const isHomolog = data.tpAmb === '2';
   const cancelDate = opts.canceledAt ? new Date(opts.canceledAt).toLocaleString('pt-BR') : '';
+  // CODE128 obrigatório no DANFE A4 (manual orientação contribuinte).
+  // Largura ~210mm A4 menos margens → ~80mm pra barra; altura ~14mm.
+  const code128Svg = generateCode128Svg(data.chaveAcesso, 300, 50);
+  // QR Code com URL de consulta nacional + chave. Não obrigatório, mas útil
+  // pra fiscalização rápida. NT 2020.005 sugere mas não exige no modelo 55.
+  const qrCodeUrl = data.chaveAcesso
+    ? `https://www.nfe.fazenda.gov.br/portal/consultaResumo.aspx?chNFe=${data.chaveAcesso}&tpAmb=${data.tpAmb || '1'}`
+    : '';
+  const qrSvg = await generateQRCodeSvg(qrCodeUrl, 90);
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>DANFE NFe #${data.numero}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
@@ -325,8 +361,13 @@ ${isHomolog ? '<div class="homolog-banner">EMITIDA EM AMBIENTE DE HOMOLOGACAO - 
 </div>
 
 <div class="section">
-  <div class="key" style="border: 1px solid #333; padding: 4px; text-align: center;">
-    CHAVE DE ACESSO: ${formatChave(data.chaveAcesso)}
+  <div style="border: 1px solid #333; padding: 4px; display: flex; align-items: center; gap: 10px;">
+    <div style="flex: 1;">
+      <div style="font-size: 8px; color: #555; margin-bottom: 2px;">CHAVE DE ACESSO</div>
+      <div class="key" style="font-size: 9px;">${formatChave(data.chaveAcesso)}</div>
+      ${code128Svg ? `<div style="margin-top: 4px;">${code128Svg}</div>` : ''}
+    </div>
+    ${qrSvg ? `<div style="width: 90px; height: 90px; flex-shrink: 0;">${qrSvg}</div>` : ''}
   </div>
 </div>
 
@@ -419,7 +460,7 @@ export async function POST(request: NextRequest) {
 
     const html = isNFCe
       ? await generateDanfeNFCeHtml(data, cancelOpts)
-      : generateDanfeNFeHtml(data, cancelOpts);
+      : await generateDanfeNFeHtml(data, cancelOpts);
 
     return new NextResponse(html, {
       status: 200,

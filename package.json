@@ -29,6 +29,7 @@
     "@univerjs/preset-sheets-core": "^0.21.1",
     "@univerjs/presets": "^0.21.1",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "bwip-js": "^4.10.1",
     "clsx": "^2.1.0",
     "date-fns": "^4.1.0",
     "emoji-picker-react": "^4.19.1",
