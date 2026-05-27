@@ -21,28 +21,8 @@ Entregue em [item movido pro ROADMAP_FISCAL.md histórico](./ROADMAP_FISCAL.md).
 
 ---
 
-### 2. Documentação de cobertura municipal NFS-e
-**Esforço:** ~4-6 horas | **Tag:** `code-only` | **ROI:** Alto
-
-**Por que existe:** Sem visibilidade de quais municípios estão suportados, operador pode tentar emitir NFS-e em cidade que vai falhar silenciosamente (provider Nacional rejeita ou aceita errado). Também ajuda na decisão de quais providers municipais priorizar.
-
-**O que entrega:**
-- Tabela JSON estática em `lib/fiscal/nfse-coverage.ts` com:
-  - codigoIBGE, nomeCidade, UF
-  - provider usado (Nacional ADN / Betha / Paulistana / "fallback Nacional — não testado")
-  - status: `'tested-prod'` / `'tested-homolog'` / `'untested'` / `'known-broken'`
-  - features suportadas: emissão ✅, cancelamento ✅, consulta ⚠️
-- Hook `useNFSeCoverage(codigoIBGE)` que retorna o status
-- No `EmitirNotaDialog` NFS-e, antes do botão "Emitir":
-  - Verde quando `tested-prod`
-  - Amarelo "homologação não testada em produção" quando `tested-homolog`
-  - Vermelho "Sua cidade não foi homologada — tentativa pode falhar" quando `untested` ou `known-broken`
-- Página em `app/components/features/settings/FiscalCoverageTab.tsx` listando todas as cidades cobertas e seu status
-
-**Detalhes:**
-- Começar populando só as cidades que sabemos: SP, ~20 municípios Betha (SC/RS), e flagar todas as 5570 outras como `untested`
-- Estrutura permitir atualização incremental: quando homologar um município, troca o status
-- Bonus: contagem agregada ("📊 Cobertura: 23 cidades em produção, 2 homologadas, 5545 não testadas")
+### 2. ~~Documentação de cobertura municipal NFS-e~~ ✅ Concluído
+Entregue: [lib/fiscal/nfse-coverage.ts](../../lib/fiscal/nfse-coverage.ts) com tabela explícita das 24 cidades suportadas (SP + 23 Betha SC/RS), 6 cidades grandes conhecidamente sem provider dedicado (RJ, BH, POA, Curitiba, DF, Salvador) com notas explicativas, e fallback genérico pra demais 5540+ municípios. Banner semáforo no [EmitirNotaDialog NFS-e](../../app/components/features/fiscal/EmitirNotaDialog.tsx): verde quando `supported`, amarelo quando `experimental` (DF migrando pro Nacional), vermelho quando `unsupported` com nota explicando o motivo. Página admin de listagem (`FiscalCoverageTab`) fica como nice-to-have separado se necessário — banner já cobre o uso principal.
 
 ---
 

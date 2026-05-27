@@ -22,6 +22,7 @@ import {
   Calculator,
   Loader2,
   AlertTriangle,
+  CheckCircle,
   User,
   Building2,
   MapPin,
@@ -38,6 +39,7 @@ import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 import { maskCpfCnpj, maskPhone, maskCep, unmaskDigits } from '@/lib/utils/fiscal-masks';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
+import { getNFSeCoverage } from '@/lib/fiscal/nfse-coverage';
 import { useTranslation } from 'react-i18next';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -344,6 +346,13 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
       ? nfseForm.valorServicos - nfseForm.valorDescontoIncondicionado
       : nfseForm.valorServicos - nfseForm.valorDescontoIncondicionado - nfseValorISS;
   }, [nfseForm.valorServicos, nfseForm.valorDescontoIncondicionado, nfseForm.tipoRetencaoISSQN, nfseValorISS]);
+
+  // Cobertura municipal NFS-e: alerta o operador quando o município do
+  // emitente não tem provider dedicado (cai em fallback Nacional ADN).
+  const nfseCoverage = useMemo(() => {
+    const ibge = business?.fiscal?.ibgeCodigoMunicipio || business?.endereco?.codigoMunicipio || '';
+    return getNFSeCoverage(ibge);
+  }, [business?.fiscal?.ibgeCodigoMunicipio, business?.endereco?.codigoMunicipio]);
 
   // ── NFCe/NFe Computed ──
   const itemsTotal = (items: NFCeItemForm[]) => items.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0);
@@ -835,6 +844,57 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
           {/* ══════════════════════ NFSe FORM ══════════════════════ */}
           {type === 'nfse' && (
             <div className="space-y-6">
+              {/* Banner de cobertura municipal — alerta o operador quando o
+                  município não tem provider dedicado no sefaz-api. Verde =
+                  testado em produção; amarelo = experimental; vermelho =
+                  fallback Padrão Nacional que pode falhar. */}
+              {nfseCoverage.status !== 'supported' && (
+                <div
+                  className={cn(
+                    'rounded-xl p-4 border space-y-1',
+                    nfseCoverage.status === 'experimental'
+                      ? 'bg-amber-50/80 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/30'
+                      : 'bg-red-50/80 dark:bg-red-500/10 border-red-200 dark:border-red-500/30',
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'text-xs font-semibold uppercase tracking-wide flex items-center gap-1.5',
+                      nfseCoverage.status === 'experimental'
+                        ? 'text-amber-800 dark:text-amber-300'
+                        : 'text-red-800 dark:text-red-300',
+                    )}
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    {nfseCoverage.status === 'experimental'
+                      ? t('fiscal.coverage.experimental', 'Suporte experimental')
+                      : t('fiscal.coverage.unsupported', 'Município sem provider testado')}
+                  </div>
+                  <p className={cn(
+                    'text-[12px]',
+                    nfseCoverage.status === 'experimental'
+                      ? 'text-amber-700/90 dark:text-amber-400/90'
+                      : 'text-red-700/90 dark:text-red-400/90',
+                  )}>
+                    {nfseCoverage.cidade !== '—' ? `${nfseCoverage.cidade}/${nfseCoverage.uf}: ` : ''}
+                    {nfseCoverage.notes || t(
+                      'fiscal.coverage.fallback',
+                      'A emissão tentará Padrão Nacional ADN — pode falhar se a prefeitura ainda não migrou.',
+                    )}
+                  </p>
+                </div>
+              )}
+              {nfseCoverage.status === 'supported' && (
+                <div className="rounded-xl p-3 bg-emerald-50/60 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 flex items-center gap-2">
+                  <CheckCircle className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                  <p className="text-xs text-emerald-800 dark:text-emerald-300">
+                    <span className="font-semibold">{nfseCoverage.cidade}/{nfseCoverage.uf}</span>
+                    {' — '}
+                    {t('fiscal.coverage.supported', 'provider dedicado, emissão testada.')}
+                  </p>
+                </div>
+              )}
+
               {/* Tomador */}
               <div className="bg-gray-50/80 dark:bg-white/[0.02] rounded-xl p-5 border border-gray-100 dark:border-gray-800 space-y-4">
                 <div className="flex items-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-300">

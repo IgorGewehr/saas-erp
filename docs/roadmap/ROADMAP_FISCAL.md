@@ -106,7 +106,8 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 - [ ] **Pesquisa de consulta automática (verificação de status de notas pendentes)** `cross`
   Cron que verifica notas com status `processando` há mais de X minutos e consulta SEFAZ pelo recibo. Hoje depende do gateway responder síncrono.
 
-- [ ] **Documentação de cobertura municipal NFS-e** `code-only`
+- [x] **Documentação de cobertura municipal NFS-e** `code-only`
+  Entregue: tabela em [lib/fiscal/nfse-coverage.ts](../../lib/fiscal/nfse-coverage.ts) com `getNFSeCoverage(codigoIBGE)` retornando status (supported/experimental/unsupported), provider, cidade, UF e nota explicativa. Banner semáforo no EmitirNotaDialog NFS-e: verde pra 24 cidades suportadas (SP + 23 Betha), amarelo pra DF (migrando ADN), vermelho com nota específica pra RJ/BH/POA/Curitiba/Salvador e fallback genérico pras demais. Lista também expõe `listSupportedNFSeMunicipios()` pra UI admin futura.
   Página em settings/admin listando: "Sua cidade ({nomeCidade}) usa o provider {X}. Funcionalidades suportadas: emissão ✅ / cancelamento ✅ / consulta ⚠️". Evita venda errada e dá transparência operacional.
 
 ---
