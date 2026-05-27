@@ -51,8 +51,11 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 - [ ] **Devolução NF-e com referência à nota original** `cross`
   Finalidade 4 (devolução) já é aceita no schema, mas faltam os campos `refNFe` (chave de 44 dígitos da NF-e original) e `refNFeCnpj` no payload enviado pro sefaz-api — sem isso a devolução é rejeitada como nota nova inválida. Schema em [lib/contracts/api/fiscal/emit.ts:178](../../lib/contracts/api/fiscal/emit.ts#L178) + envelope no `sefaz-api`.
 
-- [ ] **DANFE A4 / DANFCE PDF — confirmar geração** `cross`
-  Rota [app/api/fiscal/danfe/route.ts](../../app/api/fiscal/danfe/route.ts) existe mas não foi auditado se gera PDF ou se depende de `sefaz-api` retornar. Verificar e implementar template (jsPDF ou pdfkit) caso esteja apenas placeholder. Bloqueador legal: sem DANFE física, motorista pode ser autuado em fiscalização.
+- [x] **DANFE A4 / DANFCE — auditoria e QR Code NFC-e** `code-only`
+  Auditado em 2026-05-27: rota [app/api/fiscal/danfe/route.ts](../../app/api/fiscal/danfe/route.ts) já gerava HTML print-ready completo (A4 pra NF-e modelo 55, 80mm pra NFC-e), com watermark CANCELADA e faixa de homologação. Faltava apenas QR Code obrigatório no DANFCE — adicionado neste PR usando lib `qrcode` (já instalada) e extração da tag `<qrCode>` do XML retornado pelo sefaz-api.
+
+- [ ] **CODE128 + QR Code no DANFE NF-e A4** `code-only`
+  NT 2020.005 exige QR Code de consulta no DANFE NF-e. Lei também exige código de barras CODE128 da chave de acesso na parte superior do DANFE A4. Hoje só temos a chave em texto. QR Code é construído com URL da SEFAZ + chave; CODE128 exige lib (avaliar `bwip-js` ~500KB ou implementação SVG manual). Não bloqueia operação porque DANFE imprime e SEFAZ aceita — mas em fiscalização pode gerar autuação por documento auxiliar incompleto.
 
 ---
 

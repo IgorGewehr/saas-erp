@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import QRCode from 'qrcode';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
@@ -83,6 +84,11 @@ interface DanfeData {
   pagamentos: { tipo: string; valor: string }[];
   natOp: string;
   infAdic: string;
+  /** URL completa do QR Code (NFC-e) — exigida pela NT 2015.002. Vem da tag
+   * <qrCode> em <infNFeSupl>, preenchida pelo sefaz-api após autorização. */
+  qrCodeUrl?: string;
+  /** URL de consulta textual (NFC-e) — tag <urlChave>. Exibida abaixo do QR. */
+  urlChave?: string;
 }
 
 function extractDanfeData(xml: string): DanfeData {
@@ -177,12 +183,36 @@ function extractDanfeData(xml: string): DanfeData {
     pagamentos,
     natOp: tag(xml, 'natOp'),
     infAdic: tag(xml, 'infCpl'),
+    qrCodeUrl: tag(xml, 'qrCode') || undefined,
+    urlChave: tag(xml, 'urlChave') || undefined,
   };
 }
 
-function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): string {
+/**
+ * Gera SVG inline do QR Code da NFC-e. Margem mínima (1) e nível de correção M
+ * (suficiente para impressão térmica). Retorna string vazia se gerar falhar —
+ * o DANFCE continua imprimindo (só fica sem o QR), mas isso é violação da NT
+ * 2015.002, então logamos warn.
+ */
+async function generateQRCodeSvg(url: string | undefined, sizePx: number): Promise<string> {
+  if (!url) return '';
+  try {
+    return await QRCode.toString(url, {
+      type: 'svg',
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: sizePx,
+    });
+  } catch (err) {
+    console.warn('[DANFE] Falha ao gerar QR Code:', err);
+    return '';
+  }
+}
+
+async function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): Promise<string> {
   const isHomolog = data.tpAmb === '2';
   const cancelDate = opts.canceledAt ? new Date(opts.canceledAt).toLocaleString('pt-BR') : '';
+  const qrSvg = await generateQRCodeSvg(data.qrCodeUrl, 180);
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>DANFE NFCe #${data.numero}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
@@ -232,6 +262,14 @@ ${data.pagamentos.map(p => `<div class="item"><span>${p.tipo}</span><span>R$ ${p
 ${data.destinatario ? `<div style="font-size: 9px;">Consumidor: ${data.destinatario.nome || ''} ${data.destinatario.cpf ? `CPF: ${formatCnpjCpf(data.destinatario.cpf)}` : ''}</div><div class="divider"></div>` : ''}
 <div class="center key">Chave de Acesso:<br>${formatChave(data.chaveAcesso)}</div>
 <div class="divider"></div>
+${qrSvg ? `
+<div class="center" style="margin: 6px auto;">
+  <div style="width: 180px; height: 180px; margin: 0 auto;">${qrSvg}</div>
+  <div style="font-size: 8px; margin-top: 2px;">Consulta pela chave de acesso em:</div>
+  ${data.urlChave ? `<div style="font-size: 8px; word-break: break-all;">${data.urlChave}</div>` : ''}
+</div>
+<div class="divider"></div>
+` : ''}
 <div class="center" style="font-size: 9px;">
   NFC-e n. ${data.numero} Serie ${data.serie}<br>
   Emissao: ${data.dataEmissao ? new Date(data.dataEmissao).toLocaleString('pt-BR') : '-'}<br>
@@ -380,7 +418,7 @@ export async function POST(request: NextRequest) {
     const cancelOpts = { isCancelled: status === 'cancelada', cancelReason, canceledAt };
 
     const html = isNFCe
-      ? generateDanfeNFCeHtml(data, cancelOpts)
+      ? await generateDanfeNFCeHtml(data, cancelOpts)
       : generateDanfeNFeHtml(data, cancelOpts);
 
     return new NextResponse(html, {
