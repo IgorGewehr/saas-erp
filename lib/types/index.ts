@@ -1697,7 +1697,8 @@ export type FiscalDocStatus =
   | 'autorizada'
   | 'rejeitada'
   | 'cancelada'
-  | 'pendente'  // SEFAZ indisponível/timeout — aguardando retry
+  | 'pendente'      // SEFAZ indisponível/timeout — aguardando retry (sem XML pré-gerado)
+  | 'contingencia'  // NFC-e off-line tpEmis=9 — XML assinado salvo, aguardando transmissão (até 24h)
   | 'erro';
 
 export interface FiscalDocument {

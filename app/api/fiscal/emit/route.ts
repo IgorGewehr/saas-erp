@@ -3,7 +3,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
-import { emitirNFe, emitirNFCe, emitirNFSe, NfsePayload, CertificadoPayload, SefazAmbiente, resolveAmbiente, isTransientSefazError } from '@/lib/services/sefaz-gateway';
+import { emitirNFe, emitirNFCe, emitirNFSe, prepararNFCeContingencia, NfsePayload, CertificadoPayload, SefazAmbiente, resolveAmbiente, isTransientSefazError } from '@/lib/services/sefaz-gateway';
 import {
   peekNextInvoiceNumber,
   commitInvoiceNumber,
@@ -802,6 +802,71 @@ export async function POST(request: NextRequest) {
           : undefined,
         certificado,
       });
+
+      // Contingência off-line NFC-e (tpEmis=9): operador marcou explicitamente
+      // que SEFAZ está fora. Gera XML assinado localmente, salva como
+      // 'contingencia', responde 200 com chave + xml pra impressão do DANFCE
+      // em contingência. Transmissão posterior via /api/fiscal/retry.
+      if (data.forcarContingencia) {
+        const motivo = String(data.motivoContingencia || '').trim();
+        if (motivo.length < 15) {
+          return NextResponse.json(
+            { error: 'Contingência exige motivoContingencia com 15-256 caracteres (justificativa).' },
+            { status: 400 },
+          );
+        }
+        const dhCont = new Date().toISOString();
+        const payloadContingencia = {
+          ...(nfcePayload as Record<string, unknown>),
+          contingencia: { dhCont, xJust: motivo },
+        } as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente; contingencia: { dhCont: string; xJust: string } };
+
+        const prep = await prepararNFCeContingencia(payloadContingencia);
+        if (!prep.success || !prep.xml || !prep.chaveAcesso) {
+          return NextResponse.json(
+            {
+              error: 'Falha ao preparar contingência.',
+              details: prep.motivoStatus || prep.erros?.[0] || 'Resposta sem XML',
+            },
+            { status: 502 },
+          );
+        }
+
+        // Commit número de série (a chave já foi reservada).
+        await commitInvoiceNumber(businessId, 'nfce', number);
+
+        const docRef = await adminDb.collection('fiscalDocuments').add(
+          stripEmpty({
+            businessId,
+            type: 'nfce',
+            number,
+            series,
+            accessKey: prep.chaveAcesso,
+            protocol: null,
+            status: 'contingencia',
+            statusMessage: `Em contingência off-line. Motivo: ${motivo}`,
+            clientName: data.nomeConsumidor || null,
+            clientCpfCnpj: data.cpfConsumidor?.replace(/\D/g, '') || null,
+            xml: prep.xml,
+            sefazResponse: prep,
+            totalValue: totalNF,
+            contingencia: { dhCont, xJust: motivo, ufEmitente, ambiente },
+            issueDate: now,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        );
+
+        return NextResponse.json(
+          {
+            success: true,
+            data: { ...prep, status: 'contingencia' },
+            documentId: docRef.id,
+            message: 'NFC-e emitida em contingência off-line. Imprima o DANFCE e transmita à SEFAZ quando o serviço voltar.',
+          },
+          { status: 201 },
+        );
+      }
 
       let result: Awaited<ReturnType<typeof emitirNFCe>>;
       try {

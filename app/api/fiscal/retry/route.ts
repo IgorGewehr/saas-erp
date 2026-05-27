@@ -7,10 +7,12 @@ import {
   emitirNFe,
   emitirNFCe,
   emitirNFSe,
+  transmitirNFCeContingencia,
   NfsePayload,
   CertificadoPayload,
   SefazAmbiente,
   isTransientSefazError,
+  resolveAmbiente,
 } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 
@@ -59,15 +61,22 @@ export async function POST(request: NextRequest) {
     if (docData.businessId !== businessId) {
       return NextResponse.json({ error: 'Documento de outro tenant.' }, { status: 403 });
     }
-    if (docData.status !== 'pendente') {
+    if (docData.status !== 'pendente' && docData.status !== 'contingencia') {
       return NextResponse.json(
-        { error: `Documento não está pendente (status atual: ${docData.status}). Apenas pendentes podem ser reenviados.` },
+        { error: `Documento não está pendente nem em contingência (status atual: ${docData.status}). Apenas esses podem ser reenviados.` },
         { status: 400 },
       );
     }
-    if (!docData.originalRequest) {
+    // Pendente precisa do payload original; contingência precisa do XML pré-assinado.
+    if (docData.status === 'pendente' && !docData.originalRequest) {
       return NextResponse.json(
-        { error: 'Documento sem originalRequest — não há como reenviar. Emita uma nova nota.' },
+        { error: 'Documento pendente sem originalRequest — não há como reenviar. Emita uma nova nota.' },
+        { status: 400 },
+      );
+    }
+    if (docData.status === 'contingencia' && !docData.xml) {
+      return NextResponse.json(
+        { error: 'Documento em contingência sem XML salvo — caso anômalo. Reemita a nota.' },
         { status: 400 },
       );
     }
@@ -86,18 +95,38 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const originalRequest = docData.originalRequest as Record<string, unknown>;
-    const payload = { ...originalRequest, certificado };
+    const originalRequest = (docData.originalRequest || {}) as Record<string, unknown>;
     const now = new Date().toISOString();
     const type = docData.type as 'nfe' | 'nfce' | 'nfse';
+    const isContingencia = docData.status === 'contingencia';
 
     try {
       let result: Awaited<ReturnType<typeof emitirNFe>>;
-      if (type === 'nfse') {
+      if (isContingencia) {
+        // Em contingência: o XML já foi assinado quando emitido. Só transmite.
+        // Pega UF/ambiente do snapshot salvo (originalRequest pode estar vazio).
+        const meta = (docData.contingencia || {}) as { ufEmitente?: string; ambiente?: string };
+        const ufEmitente = meta.ufEmitente || (originalRequest.ufEmitente as string) || '';
+        if (!ufEmitente) {
+          return NextResponse.json(
+            { error: 'UF do emitente não encontrada no documento de contingência.' },
+            { status: 400 },
+          );
+        }
+        result = await transmitirNFCeContingencia({
+          signedXml: docData.xml as string,
+          ufEmitente,
+          certificado,
+          ambiente: resolveAmbiente(meta.ambiente),
+        });
+      } else if (type === 'nfse') {
+        const payload = { ...originalRequest, certificado };
         result = await emitirNFSe(payload as NfsePayload);
       } else if (type === 'nfce') {
+        const payload = { ...originalRequest, certificado };
         result = await emitirNFCe(payload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
       } else {
+        const payload = { ...originalRequest, certificado };
         result = await emitirNFe(payload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
       }
 

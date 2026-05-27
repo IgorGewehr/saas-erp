@@ -315,6 +315,61 @@ export async function emitirNFCe(
   return sefazRequest('emitirNFCe', '/nfe/nfce/emitir', payload);
 }
 
+/**
+ * Resposta do prepare contingência: traz o XML já assinado + chave de acesso
+ * gerada localmente. NÃO foi enviado pra SEFAZ ainda. Operador imprime DANFCE,
+ * armazena, transmite via transmitirNFCeContingencia quando SEFAZ voltar.
+ */
+export interface NFCeContingenciaResult {
+  success: boolean;
+  status: string;
+  chaveAcesso?: string;
+  numero?: number;
+  xml?: string;
+  motivoStatus?: string;
+  erros?: string[];
+}
+
+/**
+ * Prepara NFC-e em contingência off-line (tpEmis=9). Retorna XML assinado +
+ * chave de acesso sem enviar pra SEFAZ. Payload precisa incluir
+ * `contingencia: { dhCont, xJust }`. Mesma rota de NFC-e normal, endpoint
+ * diferente — sefaz-api não envia.
+ */
+export async function prepararNFCeContingencia(
+  payload: Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente; contingencia: { dhCont: string; xJust: string } },
+): Promise<NFCeContingenciaResult> {
+  if (isMockMode()) {
+    console.log('[SEFAZ] Mock mode — prepararNFCeContingencia');
+    return {
+      success: true,
+      status: 'contingencia',
+      chaveAcesso: '35260112345678000195650010000000091000000091',
+      numero: 9,
+      xml: '<NFe>mock-contingencia</NFe>',
+    };
+  }
+  return sefazRequest<NFCeContingenciaResult>('prepararNFCeContingencia', '/nfe/nfce/contingencia/prepare', payload);
+}
+
+/**
+ * Transmite XML de NFC-e em contingência (gerado por prepararNFCeContingencia)
+ * pra SEFAZ. Usado quando SEFAZ volta — preferencialmente em até 24h após
+ * dhCont pra evitar rejeição por extemporaneidade.
+ */
+export async function transmitirNFCeContingencia(payload: {
+  signedXml: string;
+  ufEmitente: string;
+  certificado: CertificadoPayload;
+  ambiente: SefazAmbiente;
+}): Promise<SefazResponse> {
+  if (isMockMode()) {
+    console.log('[SEFAZ] Mock mode — transmitirNFCeContingencia');
+    return buildMockResponse('nfce');
+  }
+  return sefazRequest('transmitirNFCeContingencia', '/nfe/nfce/contingencia/transmit', payload as unknown as Record<string, unknown>);
+}
+
 export async function cancelarNFe(payload: {
   chaveAcesso: string;
   protocolo: string;

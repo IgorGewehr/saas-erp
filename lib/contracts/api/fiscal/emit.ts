@@ -202,6 +202,14 @@ export const NfceRequestSchema = z
     paymentValue: z.coerce.number().optional(),
     naturezaOperacao: z.string().optional(),
     presencaComprador: z.union([z.string(), z.number()]).optional(),
+    /**
+     * Modo contingência off-line NFC-e (tpEmis=9). Quando true, o sefaz-api
+     * gera XML assinado + chave SEM enviar pra SEFAZ. O documento fica
+     * salvo com status='contingencia' até ser transmitido via /api/fiscal/retry.
+     * Requer motivoContingencia (15-256 caracteres) com a justificativa.
+     */
+    forcarContingencia: z.boolean().optional(),
+    motivoContingencia: z.string().min(15).max(256).optional(),
   })
   .passthrough();
 

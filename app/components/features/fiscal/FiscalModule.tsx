@@ -116,6 +116,7 @@ function StatusChip({ status }: { status: FiscalDocStatus }) {
     rejeitada: t('fiscal.status.rejeitada', 'Rejeitada'),
     cancelada: t('fiscal.status.cancelada', 'Cancelada'),
     pendente: t('fiscal.status.pendente', 'Pendente (retry)'),
+    contingencia: t('fiscal.status.contingencia', 'Contingência off-line'),
     erro: t('fiscal.status.erro', 'Erro'),
   };
 
@@ -757,14 +758,21 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               {t('fiscal.actions.emitirDevolucao', 'Emitir Devolução')}
             </button>
           )}
-          {doc.status === 'pendente' && onRetryPendente && (
+          {(doc.status === 'pendente' || doc.status === 'contingencia') && onRetryPendente && (
             <button
               onClick={() => onRetryPendente(doc)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                doc.status === 'contingencia'
+                  ? 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30'
+                  : 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30',
+              )}
               title={t('fiscal.actions.retryTooltip', 'Tenta reenviar pra SEFAZ. Use quando o serviço voltar.')}
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              {t('fiscal.actions.retrySefaz', 'Reenviar para SEFAZ')}
+              {doc.status === 'contingencia'
+                ? t('fiscal.actions.transmitirContingencia', 'Transmitir Contingência')
+                : t('fiscal.actions.retrySefaz', 'Reenviar para SEFAZ')}
             </button>
           )}
           {doc.type === 'nfe' && doc.status === 'autorizada' && !onCartaCorrecao && (
@@ -997,6 +1005,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     { value: 'processando', label: t('fiscal.tabs.processando', 'Processando') },
     { value: 'autorizada', label: t('fiscal.tabs.autorizada', 'Autorizadas') },
     { value: 'pendente', label: t('fiscal.tabs.pendente', 'Pendentes') },
+    { value: 'contingencia', label: t('fiscal.tabs.contingencia', 'Contingência') },
     { value: 'rejeitada', label: t('fiscal.tabs.rejeitada', 'Rejeitadas') },
     { value: 'cancelada', label: t('fiscal.tabs.cancelada', 'Canceladas') },
     { value: 'erro', label: t('fiscal.tabs.erro', 'Erros') },
@@ -1146,6 +1155,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
       toast.error(t('fiscal.danfe.noXml', 'XML não disponível para gerar DANFE.'));
       return;
     }
+    const contMeta = (document as unknown as { contingencia?: { xJust?: string } }).contingencia;
     try {
       const res = await fetch('/api/fiscal/danfe', {
         method: 'POST',
@@ -1156,6 +1166,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           status: document.status,
           canceledAt: document.canceledAt,
           cancelReason: document.cancelReason,
+          contingenciaMotivo: contMeta?.xJust,
         }),
       });
       if (!res.ok) { toast.error(t('fiscal.danfe.error', 'Erro ao gerar DANFE.')); return; }

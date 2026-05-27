@@ -236,10 +236,12 @@ function generateCode128Svg(chave: string, widthPx: number, heightPx: number): s
   }
 }
 
-async function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string }): Promise<string> {
+async function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boolean; cancelReason?: string; canceledAt?: string; isContingencia?: boolean; contingenciaMotivo?: string }): Promise<string> {
   const isHomolog = data.tpAmb === '2';
+  const isContingencia = !!opts.isContingencia;
   const cancelDate = opts.canceledAt ? new Date(opts.canceledAt).toLocaleString('pt-BR') : '';
-  const qrSvg = await generateQRCodeSvg(data.qrCodeUrl, 180);
+  // Em contingência não há QR Code SEFAZ — SEFAZ ainda não autorizou.
+  const qrSvg = isContingencia ? '' : await generateQRCodeSvg(data.qrCodeUrl, 180);
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>DANFE NFCe #${data.numero}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
@@ -258,10 +260,14 @@ async function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boole
   .cancelled-banner { background: #fee2e2; border: 2px solid #dc2626; padding: 6px; text-align: center; color: #991b1b; font-weight: bold; margin-bottom: 4px; font-size: 11px; }
   .cancelled-watermark { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-25deg); font-size: 64px; font-weight: bold; color: rgba(220, 38, 38, 0.18); border: 6px solid rgba(220, 38, 38, 0.18); padding: 12px 30px; pointer-events: none; z-index: 9999; white-space: nowrap; }
   ` : ''}
+  ${isContingencia ? `
+  .contingencia-banner { background: #faf5ff; border: 2px solid #a855f7; padding: 6px; text-align: center; color: #6b21a8; font-weight: bold; margin-bottom: 4px; font-size: 11px; }
+  ` : ''}
   @media print { body { width: 80mm; } }
 </style></head><body>
 ${opts.isCancelled ? '<div class="cancelled-watermark">CANCELADA</div>' : ''}
 ${opts.isCancelled ? `<div class="cancelled-banner">NOTA FISCAL CANCELADA${cancelDate ? `<br>Em: ${cancelDate}` : ''}${opts.cancelReason ? `<br>Motivo: ${opts.cancelReason}` : ''}</div>` : ''}
+${isContingencia ? `<div class="contingencia-banner">EMITIDA EM CONTINGENCIA OFF-LINE<br><span style="font-weight: normal; font-size: 9px;">Aguardando transmissao a SEFAZ${opts.contingenciaMotivo ? `<br>Motivo: ${opts.contingenciaMotivo}` : ''}</span></div>` : ''}
 ${isHomolog ? '<div class="homolog">EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</div>' : ''}
 <div class="header center">
   <div class="bold">${data.emitente.fantasia || data.emitente.nome}</div>
@@ -442,12 +448,13 @@ export async function POST(request: NextRequest) {
     if (isAuthError(auth)) return auth;
 
     const body = await request.json();
-    const { xml, type, status, canceledAt, cancelReason } = body as {
+    const { xml, type, status, canceledAt, cancelReason, contingenciaMotivo } = body as {
       xml?: string;
       type?: string;
       status?: string;
       canceledAt?: string;
       cancelReason?: string;
+      contingenciaMotivo?: string;
     };
 
     if (!xml) {
@@ -456,7 +463,10 @@ export async function POST(request: NextRequest) {
 
     const data = extractDanfeData(xml);
     const isNFCe = (type === 'nfce') || data.modelo === '65';
-    const cancelOpts = { isCancelled: status === 'cancelada', cancelReason, canceledAt };
+    // Contingência: status do doc OR tpEmis=9 no XML (defesa em profundidade).
+    const isContingencia =
+      status === 'contingencia' || /<tpEmis>\s*9\s*<\/tpEmis>/i.test(xml);
+    const cancelOpts = { isCancelled: status === 'cancelada', cancelReason, canceledAt, isContingencia, contingenciaMotivo };
 
     const html = isNFCe
       ? await generateDanfeNFCeHtml(data, cancelOpts)

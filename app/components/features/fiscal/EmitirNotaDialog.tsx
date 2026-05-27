@@ -239,6 +239,11 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
   // ── NFCe extras ──
   const [nfceInfoAdicionais, setNfceInfoAdicionais] = useState('');
+  // Contingência off-line (tpEmis=9). Operador marca quando SEFAZ tá fora —
+  // sistema gera XML/chave localmente, imprime DANFCE em contingência, e
+  // transmite depois via botão "Reenviar" no detalhe.
+  const [nfceForcarContingencia, setNfceForcarContingencia] = useState(false);
+  const [nfceMotivoContingencia, setNfceMotivoContingencia] = useState('');
 
   // ── NFe State (same items/payment structure as NFCe + recipient details) ──
   const [nfeRecipientDoc, setNfeRecipientDoc] = useState('');
@@ -610,6 +615,11 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
     const total = itemsTotal(nfceItems);
     if (total <= 0) { toast.error(t('fiscal.emit.errors.valorTotalPositivo', 'Valor total deve ser maior que zero')); return; }
 
+    if (nfceForcarContingencia && nfceMotivoContingencia.trim().length < 15) {
+      toast.error(t('fiscal.emit.errors.contingenciaMotivo', 'Justifique a contingência com pelo menos 15 caracteres.'));
+      return;
+    }
+
     setIsEmitting(true);
     try {
       // Build the API body (flat, English-named fields). The backend rebuilds
@@ -635,6 +645,8 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
         cpfConsumidor: nfceConsumidorCpf ? nfceConsumidorCpf.replace(/\D/g, '') : undefined,
         nomeConsumidor: nfceConsumidorNome || undefined,
         informacoesAdicionais: nfceInfoAdicionais.trim() || undefined,
+        forcarContingencia: nfceForcarContingencia || undefined,
+        motivoContingencia: nfceForcarContingencia ? nfceMotivoContingencia.trim() : undefined,
       };
 
       const res = await fetch('/api/fiscal/emit', {
@@ -645,12 +657,23 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
       const result = await res.json();
       if (!res.ok || !result.success) {
+        // Caminho de fallback: SEFAZ caiu e backend salvou como pendente.
+        if (result.fallback === 'pending') {
+          toast.warn(result.message || t('fiscal.emit.pending.nfce', 'NFC-e salva como pendente — SEFAZ indisponível.'));
+          onSuccess?.();
+          onClose();
+          return;
+        }
         toast.error(result.data?.motivoStatus || result.data?.erros?.[0] || result.details || result.error || 'Erro ao emitir NFCe');
         return;
       }
 
-      // Backend já persiste fiscalDocument e incrementa nextNumber via commitInvoiceNumber.
-      toast.success(t('fiscal.emit.success.nfce', 'NFCe emitida com sucesso!'));
+      // Sucesso: pode ser autorização normal ou contingência off-line.
+      if (result.data?.status === 'contingencia') {
+        toast.success(result.message || t('fiscal.emit.success.contingencia', 'NFC-e emitida em contingência — imprima e transmita depois.'));
+      } else {
+        toast.success(t('fiscal.emit.success.nfce', 'NFCe emitida com sucesso!'));
+      }
       onSuccess?.();
       onClose();
     } catch (error) {
@@ -1288,6 +1311,50 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
                   rows={2}
                   className={cn(inputClasses, 'resize-none')}
                 />
+              </div>
+
+              {/* Contingência off-line (tpEmis=9) — só usar quando SEFAZ tá fora.
+                  Gera XML/chave localmente, imprime DANFCE com aviso, transmite depois. */}
+              <div className="bg-purple-50/60 dark:bg-purple-500/10 rounded-xl p-4 border border-purple-200 dark:border-purple-500/30 space-y-3">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={nfceForcarContingencia}
+                    onChange={(e) => setNfceForcarContingencia(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
+                  />
+                  <div className="flex-1">
+                    <div className="text-sm font-semibold text-purple-800 dark:text-purple-300">
+                      {t('fiscal.emit.contingencia.label', 'Emitir em CONTINGÊNCIA off-line')}
+                    </div>
+                    <div className="text-[11px] text-purple-700/80 dark:text-purple-400/80 mt-0.5">
+                      {t(
+                        'fiscal.emit.contingencia.hint',
+                        'Use quando a SEFAZ estiver fora do ar. Gera cupom localmente; transmite depois.',
+                      )}
+                    </div>
+                  </div>
+                </label>
+                {nfceForcarContingencia && (
+                  <div>
+                    <label className="text-xs font-medium text-purple-800 dark:text-purple-300 mb-1 block">
+                      {t('fiscal.emit.contingencia.motivo', 'Justificativa *')}
+                      <span className="ml-1 font-normal opacity-70">
+                        {t('fiscal.emit.contingencia.motivoHint', '(15-256 caracteres)')}
+                      </span>
+                    </label>
+                    <textarea
+                      value={nfceMotivoContingencia}
+                      onChange={(e) => setNfceMotivoContingencia(e.target.value.slice(0, 256))}
+                      placeholder={t('fiscal.emit.contingencia.motivoPlaceholder', 'Ex: SEFAZ-SP indisponivel desde 14h00 (instabilidade do servico)')}
+                      rows={2}
+                      className={cn(inputClasses, 'resize-none')}
+                    />
+                    <p className="text-[11px] text-purple-700/80 dark:text-purple-400/80 mt-1">
+                      {nfceMotivoContingencia.trim().length}/256
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           )}

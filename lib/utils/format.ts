@@ -84,6 +84,7 @@ export function getStatusColor(status: string): string {
     rejeitada: '#EF4444',
     processando: '#3B82F6',
     rascunho: '#6B7280',
+    contingencia: '#A855F7', // purple — emitido off-line, aguardando transmissão
     erro: '#EF4444',
   };
   return colors[status] || '#6B7280';
