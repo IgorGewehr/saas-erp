@@ -1,6 +1,12 @@
 # Roadmap — Fiscal (NFC-e / NF-e / NFS-e)
 **Atualizado:** 2026-05-27 | Repos: `saas-erp` (consumidor) + `sefaz-api` (gateway SEFAZ/prefeituras)
 
+> **Sprint principal concluído** (2026-05-27): 11 commits cobrindo NFS-e SP, devolução NF-e, DANFE/DANFCE com QR Code + CODE128, contingência NFC-e Fase 1+2, local de prestação, CNAE, devolução parcial.
+>
+> **Trabalho ativo:** veja [ROADMAP_FISCAL_BACKLOG.md](./ROADMAP_FISCAL_BACKLOG.md) — backlog ordenado por ROI dos itens que ainda fazem sentido.
+>
+> **Pausado:** providers municipais NFS-e (RJ, BH, POA, Curitiba, DF, Salvador) — implementar on-demand quando aparecer cliente real em cada cidade.
+
 ## Legenda
 - `code-only` — implementável 100% no Aevo (saas-erp) sem dep externa
 - `sefaz-api` — exige mudança no gateway (repo lateral)
@@ -67,7 +73,7 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
   Entregue contingência off-line REAL (tpEmis=9): operador marca "Emitir em CONTINGÊNCIA" no form NFC-e + justificativa (15-256 chars). sefaz-api gera chave de acesso com tpEmis=9 (módulo 11 já existia), monta XML com dhCont + xJust, assina com cert A1, retorna sem enviar. saas-erp persiste como status='contingencia' com XML + chave. DANFCE imprime com banner roxo "EMITIDA EM CONTINGENCIA OFF-LINE" (sem QR Code SEFAZ — não foi autorizada ainda). Cliente sai com cupom válido. Quando SEFAZ volta, operador clica "Transmitir Contingência" no detalhe → rota /api/fiscal/retry detecta status='contingencia' + xml e usa transmitirNFCeContingencia (em vez de re-emitir do zero). Cron worker automático fica em backlog separado — operador transmite manualmente por enquanto, suficiente pra MVP.
 
 - [ ] **Cron worker de transmissão automática de contingência** `code-only`
-  Aproveitar a infra já feita: cron que roda a cada N minutos, busca fiscalDocuments com status='contingencia' e dhCont < 23h atrás (margem antes do limite SEFAZ de 24h), chama o mesmo endpoint /api/fiscal/retry pra cada um. Sem isso, operador precisa transmitir manualmente — funciona mas exige disciplina. Nice-to-have, não bloqueia operação.
+  Movido pro [ROADMAP_FISCAL_BACKLOG.md](./ROADMAP_FISCAL_BACKLOG.md) item #1. Intervalo conservador de 30min (não 10min) pra evitar load desnecessário no sefaz-api e respeitar circuit breaker.
 
 - [x] **Local da prestação ≠ estabelecimento (NFS-e)** `code-only`
   Schema aceita `codigoMunicipioPrestacao` opcional. Route respeita o payload com fallback pro emitente quando vazio, e retorna 400 acionável se vier código inválido (≠ 7 dígitos). UI tem campo opcional "Local da prestação (cód. IBGE)" no bloco Serviço Prestado. ISS agora é recolhido no município correto quando empresa atende in-loco fora da sede.
