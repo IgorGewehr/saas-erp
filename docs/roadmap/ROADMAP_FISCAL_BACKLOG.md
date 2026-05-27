@@ -85,6 +85,32 @@ Entregue: [lib/services/consultaStatusRunner.ts](../../lib/services/consultaStat
 
 ---
 
+## 📡 Sinais de alerta — quando reavaliar os pendentes
+
+Os itens pendentes ficam dormentes até aparecer algum destes sinais em produção.
+Monitorar via logs e revisitar este arquivo quando bater algum:
+
+### Pra #5 (Certificado A3)
+- Cliente prospect/ativo perguntando "vocês aceitam token físico A3?"
+- Contador exigindo emissão com cert A3 do CNPJ matriz (alguns contadores ainda exigem)
+
+### Pra #6 (Fila persistente Redis/Bull)
+- `[SEFAZ] 429 Rate limit excedido` aparecendo nos logs do gateway com frequência **semanal**
+- `[SEFAZ] Timeout apos 60s` aparecendo **mais de 1×/dia**
+- Pod do sefaz-api reiniciando por OOM (memória) durante picos de emissão
+- Cliente exigindo SLA específico (ex: "1000 notas em < 1min durante Black Friday")
+- Volume passar de **~500 emissões/min** total em um único tenant
+
+### Pra #7 (MDF-e)
+- Cliente com **frota própria** (indústria, transportadora, atacado com entrega) emitindo NF-e interestadual
+- Cliente pedindo "como eu emito o manifesto pra levar mercadoria entre filiais?"
+
+### Pra providers municipais NFS-e (RJ/BH/POA/Curitiba/Salvador)
+- Cliente real em uma dessas cidades tentando emitir NFS-e via banner vermelho de cobertura
+- Mesmo cliente comprando o plano vai justificar o investimento (~3-6 dias/cidade)
+
+---
+
 ## Como executar este backlog
 
 **Sugestão:** atacar #1 e #2 em sequência (~1 dia total) pra fechar o ciclo do fiscal com tudo automatizado e transparente. Depois pausar real e deixar #3-#7 surgirem quando aparecer demanda.
