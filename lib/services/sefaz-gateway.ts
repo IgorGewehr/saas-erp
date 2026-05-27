@@ -136,6 +136,27 @@ export function resolveAmbiente(environment?: string): SefazAmbiente {
   return (environment === 'production' || environment === 'producao') ? 'producao' : 'homologacao';
 }
 
+/**
+ * Determina se um erro do gateway é transiente (SEFAZ indisponível, timeout,
+ * 5xx, circuit breaker aberto) — nesse caso vale a pena salvar como pendente
+ * e oferecer retry. Erros não-transientes (auth, validação, 422 rejeição)
+ * indicam problema no payload que retry não resolve.
+ */
+export function isTransientSefazError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return (
+    msg.includes('Timeout') ||
+    msg.includes('Erro do servidor') ||
+    msg.includes('Serviço indisponível') ||
+    msg.includes('falhou apos') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ENOTFOUND') ||
+    msg.includes('ETIMEDOUT') ||
+    msg.includes('fetch failed')
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Core request helper
 // ---------------------------------------------------------------------------

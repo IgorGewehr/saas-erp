@@ -3,7 +3,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
-import { emitirNFe, emitirNFCe, emitirNFSe, NfsePayload, CertificadoPayload, SefazAmbiente, resolveAmbiente } from '@/lib/services/sefaz-gateway';
+import { emitirNFe, emitirNFCe, emitirNFSe, NfsePayload, CertificadoPayload, SefazAmbiente, resolveAmbiente, isTransientSefazError } from '@/lib/services/sefaz-gateway';
 import {
   peekNextInvoiceNumber,
   commitInvoiceNumber,
@@ -48,6 +48,55 @@ function stripEmpty<T>(obj: T): T {
     ) as T;
   }
   return obj;
+}
+
+/**
+ * Persiste documento fiscal como 'pendente' (SEFAZ indisponível) e responde
+ * 200 ao cliente. Salva o payload original menos o certificado pra permitir
+ * retry pela rota /api/fiscal/retry — operador clica "Reenviar para SEFAZ"
+ * quando o serviço voltar. NUNCA persistir certificado no Firestore (sensível).
+ */
+async function persistPendingAndRespond(params: {
+  businessId: string;
+  type: 'nfe' | 'nfce' | 'nfse';
+  number: number;
+  series: string;
+  clientName: string | null;
+  clientCpfCnpj: string | null;
+  totalValue: number;
+  originalRequest: Record<string, unknown>;
+  error: Error;
+  now: string;
+}): Promise<NextResponse> {
+  const { certificado: _certCleanup, ...payloadForRetry } = params.originalRequest as Record<string, unknown>;
+  void _certCleanup;
+  const docRef = await adminDb.collection('fiscalDocuments').add(
+    stripEmpty({
+      businessId: params.businessId,
+      type: params.type,
+      number: params.number,
+      series: params.series,
+      status: 'pendente',
+      statusMessage: params.error.message || 'SEFAZ temporariamente indisponível',
+      clientName: params.clientName,
+      clientCpfCnpj: params.clientCpfCnpj,
+      totalValue: params.totalValue,
+      originalRequest: payloadForRetry,
+      issueDate: params.now,
+      createdAt: params.now,
+      updatedAt: params.now,
+    }),
+  );
+  return NextResponse.json(
+    {
+      success: false,
+      fallback: 'pending',
+      documentId: docRef.id,
+      message:
+        'SEFAZ temporariamente indisponível. Documento salvo como pendente — use "Reenviar para SEFAZ" no detalhe da nota quando o serviço voltar.',
+    },
+    { status: 200 },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -633,7 +682,26 @@ export async function POST(request: NextRequest) {
         certificado,
       });
 
-      const result = await emitirNFSe(nfsePayload as NfsePayload);
+      let result: Awaited<ReturnType<typeof emitirNFSe>>;
+      try {
+        result = await emitirNFSe(nfsePayload as NfsePayload);
+      } catch (sefazErr) {
+        if (sefazErr instanceof Error && isTransientSefazError(sefazErr)) {
+          return persistPendingAndRespond({
+            businessId,
+            type: 'nfse',
+            number,
+            series,
+            clientName: data.tomador?.nome ?? null,
+            clientCpfCnpj: (data.tomador?.cnpj || data.tomador?.cpf || '').replace(/\D/g, '') || null,
+            totalValue: baseCalculo,
+            originalRequest: data,
+            error: sefazErr,
+            now,
+          });
+        }
+        throw sefazErr;
+      }
 
       // Commit number only after success
       if (result.status === 'autorizado') {
@@ -735,7 +803,26 @@ export async function POST(request: NextRequest) {
         certificado,
       });
 
-      const result = await emitirNFCe(nfcePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
+      let result: Awaited<ReturnType<typeof emitirNFCe>>;
+      try {
+        result = await emitirNFCe(nfcePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
+      } catch (sefazErr) {
+        if (sefazErr instanceof Error && isTransientSefazError(sefazErr)) {
+          return persistPendingAndRespond({
+            businessId,
+            type: 'nfce',
+            number,
+            series,
+            clientName: data.nomeConsumidor ?? null,
+            clientCpfCnpj: data.cpfConsumidor?.replace(/\D/g, '') || null,
+            totalValue: totalNF,
+            originalRequest: data,
+            error: sefazErr,
+            now,
+          });
+        }
+        throw sefazErr;
+      }
 
       // Commit number only after SEFAZ accepts
       if (result.status === 'autorizado') {
@@ -885,7 +972,26 @@ export async function POST(request: NextRequest) {
       certificado,
     });
 
-    const result = await emitirNFe(nfePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
+    let result: Awaited<ReturnType<typeof emitirNFe>>;
+    try {
+      result = await emitirNFe(nfePayload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
+    } catch (sefazErr) {
+      if (sefazErr instanceof Error && isTransientSefazError(sefazErr)) {
+        return persistPendingAndRespond({
+          businessId,
+          type: 'nfe',
+          number,
+          series,
+          clientName: data.recipient?.name ?? null,
+          clientCpfCnpj: data.recipient?.document?.replace(/\D/g, '') || null,
+          totalValue: totalNF,
+          originalRequest: data,
+          error: sefazErr,
+          now,
+        });
+      }
+      throw sefazErr;
+    }
 
     // Commit number only after SEFAZ accepts
     if (result.status === 'autorizado' || result.status === 'processando') {

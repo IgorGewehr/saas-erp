@@ -61,8 +61,11 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 
 ### 🟧 Média prioridade (refinamento que evita rejeição/limitação)
 
-- [ ] **Modo contingência NFC-e (SVC-RS / SVC-AN / off-line)** `cross`
-  Hoje se SEFAZ cai, a venda trava. Implementar modo contingência: emitir com chave temporária, salvar em fila local, reenviar quando SEFAZ voltar. Toda venda de varejo em produção precisa disso — risco de operação parar inteira por instabilidade SEFAZ.
+- [x] **Modo contingência NFC-e — Fase 1: pendência + retry manual** `code-only`
+  Implementado MVP: novo status `'pendente'` em `FiscalDocStatus`. Quando SEFAZ retorna erro transiente (timeout, 5xx, circuit breaker), o documento é salvo com status pendente + `originalRequest` (sem certificado) ao invés do route retornar 500. Helper `isTransientSefazError` distingue transientes de erros de payload. Nova rota `POST /api/fiscal/retry` aceita `{businessId, documentId}` e reenvia usando o payload salvo + certificado do business. UI: nova aba "Pendentes", badge no status, botão "Reenviar para SEFAZ" no DocumentDetailDialog.
+
+- [ ] **Modo contingência NFC-e — Fase 2: emissão off-line com chave local** `cross`
+  Quando SEFAZ cai, hoje o operador ainda precisa esperar (não dá pra entregar cupom ao cliente). Contingência off-line REAL (tpEmis=9): sistema gera chave de acesso localmente (módulo 11), assina XML, imprime DANFCE com aviso "EM CONTINGÊNCIA", cliente sai com cupom válido. Quando SEFAZ volta, cron transmite a fila. Exige: geração de chave/cDV no sefaz-api, assinatura XML local com cert A1, DANFCE em modo contingência, cron worker de transmissão. Fase pesada (~3-5 dias).
 
 - [x] **Local da prestação ≠ estabelecimento (NFS-e)** `code-only`
   Schema aceita `codigoMunicipioPrestacao` opcional. Route respeita o payload com fallback pro emitente quando vazio, e retorna 400 acionável se vier código inválido (≠ 7 dígitos). UI tem campo opcional "Local da prestação (cód. IBGE)" no bloco Serviço Prestado. ISS agora é recolhido no município correto quando empresa atende in-loco fora da sede.

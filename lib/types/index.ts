@@ -1697,6 +1697,7 @@ export type FiscalDocStatus =
   | 'autorizada'
   | 'rejeitada'
   | 'cancelada'
+  | 'pendente'  // SEFAZ indisponível/timeout — aguardando retry
   | 'erro';
 
 export interface FiscalDocument {

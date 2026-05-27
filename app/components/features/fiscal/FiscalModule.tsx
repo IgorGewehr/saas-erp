@@ -115,6 +115,7 @@ function StatusChip({ status }: { status: FiscalDocStatus }) {
     autorizada: t('fiscal.status.autorizada', 'Autorizada'),
     rejeitada: t('fiscal.status.rejeitada', 'Rejeitada'),
     cancelada: t('fiscal.status.cancelada', 'Cancelada'),
+    pendente: t('fiscal.status.pendente', 'Pendente (retry)'),
     erro: t('fiscal.status.erro', 'Erro'),
   };
 
@@ -184,9 +185,10 @@ interface DocumentDetailDialogProps {
   onPrintDanfe?: (document: FiscalDocument) => void;
   onCartaCorrecao?: (document: FiscalDocument) => void;
   onEmitirDevolucao?: (document: FiscalDocument) => void;
+  onRetryPendente?: (document: FiscalDocument) => void;
 }
 
-function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, businessId, business, onPrintDanfe, onCartaCorrecao, onEmitirDevolucao }: DocumentDetailDialogProps) {
+function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, businessId, business, onPrintDanfe, onCartaCorrecao, onEmitirDevolucao, onRetryPendente }: DocumentDetailDialogProps) {
   const { t } = useTranslation();
   const { firebaseUser } = useAuth();
   const [showXml, setShowXml] = useState(false);
@@ -755,6 +757,16 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               {t('fiscal.actions.emitirDevolucao', 'Emitir Devolução')}
             </button>
           )}
+          {doc.status === 'pendente' && onRetryPendente && (
+            <button
+              onClick={() => onRetryPendente(doc)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors"
+              title={t('fiscal.actions.retryTooltip', 'Tenta reenviar pra SEFAZ. Use quando o serviço voltar.')}
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              {t('fiscal.actions.retrySefaz', 'Reenviar para SEFAZ')}
+            </button>
+          )}
           {doc.type === 'nfe' && doc.status === 'autorizada' && !onCartaCorrecao && (
             <Button
               onClick={() => setCcOpen(true)}
@@ -984,6 +996,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     { value: 'rascunho', label: t('fiscal.tabs.rascunho', 'Rascunho') },
     { value: 'processando', label: t('fiscal.tabs.processando', 'Processando') },
     { value: 'autorizada', label: t('fiscal.tabs.autorizada', 'Autorizadas') },
+    { value: 'pendente', label: t('fiscal.tabs.pendente', 'Pendentes') },
     { value: 'rejeitada', label: t('fiscal.tabs.rejeitada', 'Rejeitadas') },
     { value: 'cancelada', label: t('fiscal.tabs.cancelada', 'Canceladas') },
     { value: 'erro', label: t('fiscal.tabs.erro', 'Erros') },
@@ -1095,6 +1108,37 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   // filhos forem refactorados pra não exigir esses callbacks.
   const handleRefresh = useCallback(() => { /* no-op — onSnapshot ativo */ }, []);
   const handleEmitSuccess = useCallback(() => { /* no-op — onSnapshot ativo */ }, []);
+
+  // ── Retry pendente (SEFAZ voltou) ──
+  const handleRetryPendente = async (document: FiscalDocument) => {
+    if (!business || !firebaseUser) return;
+    try {
+      const res = await fetch('/api/fiscal/retry', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${await firebaseUser.getIdToken()}`,
+        },
+        body: JSON.stringify({ businessId: business.id, documentId: document.id }),
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        toast.error(result.error || t('fiscal.retry.error', 'Erro ao reenviar documento.'));
+        return;
+      }
+      if (result.fallback === 'pending') {
+        toast.warn(result.message || t('fiscal.retry.stillPending', 'SEFAZ ainda indisponível. Tente novamente em alguns minutos.'));
+        return;
+      }
+      if (result.success) {
+        toast.success(t('fiscal.retry.success', 'Documento reenviado com sucesso!'));
+      } else {
+        toast.warn(result.data?.motivoStatus || t('fiscal.retry.rejected', 'SEFAZ recebeu mas rejeitou. Veja o detalhe.'));
+      }
+    } catch {
+      toast.error(t('fiscal.retry.error', 'Erro ao reenviar documento.'));
+    }
+  };
 
   // ── DANFE Print ──
   const handlePrintDanfe = async (document: FiscalDocument) => {
@@ -1756,6 +1800,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
           setSelectedDoc(null);
           setEmitirOpen(true);
         }}
+        onRetryPendente={handleRetryPendente}
       />
 
       {/* Carta de Correção Dialog */}
