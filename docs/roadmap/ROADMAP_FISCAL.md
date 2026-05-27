@@ -44,12 +44,11 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 
 ### 🟥 Alta prioridade (bug ou bloqueador comercial)
 
-- [ ] **Validar endereço completo do tomador em NFS-e SP** `code-only`
-  SP exige `EnderecoTomador` completo (logradouro, número, bairro, codigoMunicipio IBGE, UF, CEP). Hoje o schema aceita `tomador.endereco` opcional sem `superRefine` condicional por município, e [emit/route.ts:528-556](../../app/api/fiscal/emit/route.ts#L528-L556) tem comentário admitindo o requisito mas **sem validação**. Resultado: usuário SP emite, a rejeição vem só após roundtrip SOAP com erro genérico.
-  **Fix:** adicionar guard logo no início do branch `if (type === 'nfse')` quando `codigoMunicipioEmitente === '3550308'` + `superRefine` no `NfseRequestSchema`.
+- [x] **Validar endereço completo do tomador em NFS-e SP** `code-only`
+  Entregue em commit `00d7e8d`: guard no route `/api/fiscal/emit` que retorna 400 com `missingFields[]` quando emitente é SP (IBGE 3550308) e tomador não tem endereço completo (logradouro, bairro, codigoMunicipio, UF, CEP). UI EmitirNotaDialog ganhou bloco "Endereço do Tomador" no form NFS-e com lookup ViaCEP e auto-populate do cliente.
 
-- [ ] **Devolução NF-e com referência à nota original** `cross`
-  Finalidade 4 (devolução) já é aceita no schema, mas faltam os campos `refNFe` (chave de 44 dígitos da NF-e original) e `refNFeCnpj` no payload enviado pro sefaz-api — sem isso a devolução é rejeitada como nota nova inválida. Schema em [lib/contracts/api/fiscal/emit.ts:178](../../lib/contracts/api/fiscal/emit.ts#L178) + envelope no `sefaz-api`.
+- [x] **Devolução NF-e com referência à nota original** `cross`
+  Entregue em commits `759ebd5` (saas-erp) + `9c5fd31` (sefaz-api). Schema aceita `refNFe` (string opcional); route valida 44 dígitos quando finalidade=4 e propaga `referencias[]` pro sefaz-api. sefaz-api ganhou `NFeReference` type e emite `<NFref><refNFe>...</refNFe></NFref>` por último em `<ide>`. UI mostra input amber condicional quando "Devolução" selecionada, com contador X/44 e validação client-side.
 
 - [x] **DANFE A4 / DANFCE — auditoria e QR Code NFC-e** `code-only`
   Auditado em 2026-05-27: rota [app/api/fiscal/danfe/route.ts](../../app/api/fiscal/danfe/route.ts) já gerava HTML print-ready completo (A4 pra NF-e modelo 55, 80mm pra NFC-e), com watermark CANCELADA e faixa de homologação. Faltava apenas QR Code obrigatório no DANFCE — adicionado neste PR usando lib `qrcode` (já instalada) e extração da tag `<qrCode>` do XML retornado pelo sefaz-api.
