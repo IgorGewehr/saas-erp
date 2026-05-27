@@ -82,8 +82,10 @@ services:
   # Self-contained (não depende de cron-job.org externo). Roda sempre.
   #   - process-scheduled (broadcasts):           a cada 1 minuto
   #   - appointments/run-reminders (lembretes):   a cada 5 minutos (minuto % 5 == 0)
+  #   - fiscal/cron/transmit-contingencia:        a cada 30 minutos (HH:00 e HH:30)
   #   - agent/scheduled/run (agente IA):          a cada 1 hora (HH:00)
   #   - birthday-campaigns/run (aniversário):     a cada 1 hora (HH:00)
+  #   - fiscal/cron/consultar-processando:        a cada 1 hora (HH:00)
   #   - data-retention/run (purge LGPD soft-deletes >30d): 1x ao dia, 03:00
   # Todos autenticam com Authorization: Bearer ${CRON_SECRET}
   # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
@@ -107,7 +109,7 @@ services:
     command: |
       sh -c '
         apk add --no-cache curl > /dev/null 2>&1
-        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, agent+birthday 1h (HH:00), data-retention diario 03:00"
+        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, fiscal-contingencia 30min, agent+birthday+fiscal-consulta 1h (HH:00), data-retention diario 03:00"
 
         call_endpoint() {
           # $$1=path, $$2=timeout
@@ -135,11 +137,25 @@ services:
             call_endpoint "/api/appointments/run-reminders" 60
           fi
 
+          # fiscal/contingencia: a cada 30min (HH:00 e HH:30). Transmite
+          # NFC-e em status='contingencia' pra SEFAZ quando o serviço voltar.
+          # Idempotente via lastCronAttemptAt; respeita janela 30min-23h
+          # depois de dhCont. Timeout generoso (3min) pra varrer até 50 docs.
+          if [ "$$((10#$$MIN_NOW % 30))" = "0" ]; then
+            call_endpoint "/api/fiscal/cron/transmit-contingencia" 180
+          fi
+
           # tarefas horárias: só dispara quando minuto == 00.
           # Sequencial pra evitar pico simultâneo na app.
           if [ "$$MIN_NOW" = "00" ]; then
             call_endpoint "/api/agent/scheduled/run" 60
             call_endpoint "/api/birthday-campaigns/run" 120
+
+            # fiscal/consulta-status: 1h. Atualiza docs em status='processando'
+            # consultando SEFAZ pela chave de acesso. Cenário raro (sefaz-api
+            # responde síncrono em ~99% dos casos), ciclo conservador. Timeout
+            # 3min pra cobrir até 50 docs.
+            call_endpoint "/api/fiscal/cron/consultar-processando" 180
 
             # data-retention: 1x ao dia, 03:00 — purga soft-deletes >30d.
             # Janela de baixo tráfego pra n competir com cargas diurnas.
