@@ -33,18 +33,10 @@ Entregue: [lib/fiscal/municipalRequirements.ts](../../lib/fiscal/municipalRequir
 
 ---
 
-### 4. Pesquisa de consulta automática (status de notas pendentes)
-**Esforço:** ~1 dia | **Tag:** `cross` | **ROI:** Médio-baixo
+### 4. ~~Pesquisa de consulta automática (status de notas pendentes)~~ ✅ Concluído
+Verificado: sefaz-api já tinha `consultarProtocolo` em `nfe.service.ts:895` exposto via `/nfe/consultar`, com helper `consultarNFe()` no gateway saas-erp. **Confirmou ser só saas-erp** — nenhuma mudança no sefaz-api necessária.
 
-**Por que existe:** Notas com `status='processando'` ficariam assim pra sempre se o sefaz-api não respondesse síncrono (caso raro mas possível em assíncrono). Cron periódico consulta SEFAZ pela chave/recibo e atualiza status.
-
-**O que entrega:**
-- sefaz-api: endpoint `POST /nfe/consultar-recibo` (provavelmente já existe — verificar)
-- saas-erp: cron route `/api/fiscal/cron/consultar-processando` que roda **a cada 1 hora**
-- Busca docs com `status='processando'` há mais de 5min
-- Chama consulta, atualiza pra `autorizada`/`rejeitada` conforme retorno SEFAZ
-
-**Pré-requisito:** verificar se sefaz-api já tem consulta por recibo (provavelmente sim, ver `consultarProtocolo`).
+Entregue: [lib/services/consultaStatusRunner.ts](../../lib/services/consultaStatusRunner.ts) varre docs com `status='processando'` + `accessKey` válida + idade > 5min + `lastConsultaAt > 55min` atrás. Mapeia cStat SEFAZ pra status interno: 100/150 → autorizada; 101/151/155 → cancelada; ≥200 → rejeitada; 105 → continua processando. Cron route em [app/api/fiscal/cron/consultar-processando/route.ts](../../app/api/fiscal/cron/consultar-processando/route.ts) com auth Bearer CRON_SECRET. Intervalo recomendado: **1 hora** (cenário é raro em produção, ciclo conservador).
 
 ---
 

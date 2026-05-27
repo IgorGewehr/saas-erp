@@ -104,7 +104,8 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
   Entregue (Opção C): [lib/fiscal/municipalRequirements.ts](../../lib/fiscal/municipalRequirements.ts) com `validateMunicipalRequirements(codigoIBGE, data)` aplicando regras específicas via map `MUNICIPAL_VALIDATORS`. Hoje só SP (exige endereço tomador completo); BH/RJ entram quando aparecerem. Route ficou 10 linhas mais limpo. `superRefine` completo no schema Zod fica pra futuro caso justifique — não vale enquanto só SP tem regra específica.
   Generalização da validação SP: schema deveria validar campos obrigatórios por município no boundary Zod (não em runtime no route). Permite mensagem de erro precisa antes do envio.
 
-- [ ] **Pesquisa de consulta automática (verificação de status de notas pendentes)** `cross`
+- [x] **Pesquisa de consulta automática (verificação de status de notas pendentes)** `code-only`
+  Confirmado ser só saas-erp (sefaz-api já tinha `consultarProtocolo`/helper `consultarNFe`). Service em [lib/services/consultaStatusRunner.ts](../../lib/services/consultaStatusRunner.ts), rota em [app/api/fiscal/cron/consultar-processando/route.ts](../../app/api/fiscal/cron/consultar-processando/route.ts). Mapeia cStat SEFAZ (100/150=autorizada, 101/151/155=cancelada, 105=processando, ≥200=rejeitada). Intervalo: 1h.
   Cron que verifica notas com status `processando` há mais de X minutos e consulta SEFAZ pelo recibo. Hoje depende do gateway responder síncrono.
 
 - [x] **Documentação de cobertura municipal NFS-e** `code-only`
