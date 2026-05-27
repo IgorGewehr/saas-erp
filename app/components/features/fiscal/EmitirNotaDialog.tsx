@@ -47,6 +47,17 @@ interface EmitirNotaDialogProps {
   onClose: () => void;
   type: FiscalDocType;
   onSuccess?: () => void;
+  /**
+   * Pré-preenche o form como NF-e de devolução (finalidade=4) referenciando
+   * a nota original. Usado pelo botão "Emitir Devolução" no
+   * DocumentDetailDialog. Itens não são copiados — operador adiciona apenas
+   * os itens efetivamente devolvidos (suporte a devolução parcial).
+   */
+  prefillNFeDevolution?: {
+    accessKey: string;
+    clientName?: string;
+    clientCpfCnpj?: string;
+  };
 }
 
 interface NFSeFormData {
@@ -137,7 +148,7 @@ const TYPE_ICONS_EMIT: Record<FiscalDocType, { icon: React.ReactNode; color: str
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: EmitirNotaDialogProps) {
+export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefillNFeDevolution }: EmitirNotaDialogProps) {
   const { business, user, firebaseUser } = useAuth();
   const { t } = useTranslation();
   const config = useMemo(() => ({
@@ -300,6 +311,19 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     };
     loadServices();
   }, [open, business, type]);
+
+  // Pré-preenche form de devolução quando aberto pelo botão "Emitir Devolução"
+  // do DocumentDetailDialog. Itens NÃO são copiados — operador preenche apenas
+  // os itens efetivamente devolvidos (suporta devolução parcial).
+  useEffect(() => {
+    if (!open || type !== 'nfe' || !prefillNFeDevolution) return;
+    const { accessKey, clientName, clientCpfCnpj } = prefillNFeDevolution;
+    setNfeFinalidade('4');
+    setNfeRefNFe(accessKey.replace(/\D/g, '').slice(0, 44));
+    setNfeNatureza('Devolução de mercadoria');
+    if (clientCpfCnpj) setNfeRecipientDoc(clientCpfCnpj);
+    if (clientName) setNfeRecipientName(clientName);
+  }, [open, type, prefillNFeDevolution]);
 
   // ── NFSe Computed Values ──
   const nfseBaseCalculo = useMemo(() => {

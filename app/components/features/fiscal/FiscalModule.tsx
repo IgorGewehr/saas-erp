@@ -42,6 +42,7 @@ import {
   BookOpen,
   Hash,
   ExternalLink,
+  RotateCcw,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { collection, query, where, orderBy, getDocs, doc as firestoreDoc, updateDoc, onSnapshot } from 'firebase/firestore';
@@ -182,9 +183,10 @@ interface DocumentDetailDialogProps {
   business: { razaoSocial: string; cnpj: string } | null;
   onPrintDanfe?: (document: FiscalDocument) => void;
   onCartaCorrecao?: (document: FiscalDocument) => void;
+  onEmitirDevolucao?: (document: FiscalDocument) => void;
 }
 
-function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, businessId, business, onPrintDanfe, onCartaCorrecao }: DocumentDetailDialogProps) {
+function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, businessId, business, onPrintDanfe, onCartaCorrecao, onEmitirDevolucao }: DocumentDetailDialogProps) {
   const { t } = useTranslation();
   const { firebaseUser } = useAuth();
   const [showXml, setShowXml] = useState(false);
@@ -743,6 +745,16 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               {t('fiscal.actions.cartaCorrecao', 'Carta de Correção')}
             </button>
           )}
+          {doc.type === 'nfe' && doc.status === 'autorizada' && doc.accessKey && onEmitirDevolucao && (
+            <button
+              onClick={() => onEmitirDevolucao(doc)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors"
+              title={t('fiscal.actions.devolucaoTooltip', 'Abre nova NF-e com finalidade=4 referenciando esta nota')}
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              {t('fiscal.actions.emitirDevolucao', 'Emitir Devolução')}
+            </button>
+          )}
           {doc.type === 'nfe' && doc.status === 'autorizada' && !onCartaCorrecao && (
             <Button
               onClick={() => setCcOpen(true)}
@@ -936,6 +948,14 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
   const [emitirOpen, setEmitirOpen] = useState(false);
+  // Pré-preenche o EmitirNotaDialog quando aberto pelo botão "Emitir Devolução"
+  // do DocumentDetailDialog. Limpa quando o dialog fecha pra evitar
+  // contaminar emissões normais subsequentes.
+  const [nfeDevolutionPrefill, setNfeDevolutionPrefill] = useState<{
+    accessKey: string;
+    clientName?: string;
+    clientCpfCnpj?: string;
+  } | undefined>(undefined);
   const [certOpen, setCertOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<FiscalDocument | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -1702,9 +1722,10 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
       {/* Dialogs */}
       <EmitirNotaDialog
         open={emitirOpen}
-        onClose={() => setEmitirOpen(false)}
+        onClose={() => { setEmitirOpen(false); setNfeDevolutionPrefill(undefined); }}
         type={type}
         onSuccess={handleEmitSuccess}
+        prefillNFeDevolution={nfeDevolutionPrefill}
       />
 
       <CertificateManager
@@ -1724,6 +1745,17 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         business={business ? { razaoSocial: business.razaoSocial, cnpj: business.cnpj } : null}
         onPrintDanfe={handlePrintDanfe}
         onCartaCorrecao={(doc) => { setCartaCorrecaoDoc(doc); setCartaCorrecaoOpen(true); }}
+        onEmitirDevolucao={(doc) => {
+          if (!doc.accessKey) return;
+          setNfeDevolutionPrefill({
+            accessKey: doc.accessKey,
+            clientName: doc.clientName ?? undefined,
+            clientCpfCnpj: doc.clientCpfCnpj ?? undefined,
+          });
+          setDetailOpen(false);
+          setSelectedDoc(null);
+          setEmitirOpen(true);
+        }}
       />
 
       {/* Carta de Correção Dialog */}

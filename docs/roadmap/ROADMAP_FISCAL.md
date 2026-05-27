@@ -70,8 +70,8 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 - [x] **CNAE em NFS-e** `code-only`
   Sefaz-api já aceitava `servico.cnae` nos 3 providers (Nacional, Betha-legacy, Paulistana via xml-builder). Faltava só o saas-erp propagar: schema aceita `cnae` opcional, route normaliza com replace(/\D/g, '') e envia em `nfsePayload.servico.cnae`, UI tem novo input com máscara `XXXX-X/XX` no bloco Serviço Prestado. Tag muda de "cross" pra "code-only" porque sefaz-api já estava pronto.
 
-- [ ] **Devolução fiscal parcial (itemização)** `cross`
-  Hoje só cancela venda inteira (status='cancelada'). Para devolução parcial (cliente devolveu 1 de 3 itens), precisa emitir NF-e de devolução referenciando só os itens devolvidos. Depende do item de devolução NF-e acima.
+- [x] **Devolução fiscal parcial (itemização)** `code-only`
+  Depende do item #2 (refNFe) que já foi entregue. Implementado UX: botão "Emitir Devolução" no DocumentDetailDialog (visível só em NF-e autorizadas com accessKey) abre o EmitirNotaDialog pré-preenchido com finalidade=4, refNFe da nota original, natureza="Devolução de mercadoria", destinatário copiado. Itens NÃO são copiados automaticamente — operador adiciona apenas os itens efetivamente devolvidos (suporta devolução parcial sem complexidade extra de UI). Route força tipoOperacao='0' (entrada) automaticamente quando finalidade=4, corrigindo bug pré-existente onde devolução saía como saída.
 
 - [ ] **Providers NFS-e para RJ, BH, Porto Alegre, Curitiba, DF, Salvador** `sefaz-api`
   Hoje fallback para Nacional ADN. Se a prefeitura não migrou pro Padrão Nacional, rejeita. Cada município tem provider próprio (Coplan, Infisc, ISS.NET, etc.) — implementar conforme demanda comercial. Documentar provisoriamente quais cidades estão garantidas hoje.

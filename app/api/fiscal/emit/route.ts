@@ -853,6 +853,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // tipoOperacao: '1'=saída, '0'=entrada. Devolução (finalidade=4) é
+    // sempre entrada de mercadoria (cliente devolve pra empresa). Operador
+    // pode override explicitamente via data.tipoOperacao, mas o default
+    // muda automaticamente baseado na finalidade.
+    const tipoOperacao = data.tipoOperacao !== undefined
+      ? String(data.tipoOperacao)
+      : finalidade === '4' ? '0' : '1';
+
     const nfePayload = stripEmpty({
       emitente,
       numero: number,
@@ -860,7 +868,7 @@ export async function POST(request: NextRequest) {
       ufEmitente,
       ambiente,
       naturezaOperacao: data.naturezaOperacao || 'VENDA DE MERCADORIA',
-      tipoOperacao: '1',
+      tipoOperacao,
       finalidade,
       consumidorFinal: String(data.consumidorFinal ?? 0),
       presencaComprador: String(data.presencaComprador ?? 1),
