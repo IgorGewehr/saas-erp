@@ -221,6 +221,13 @@ export const NfseRequestSchema = z
     issRetido: z.boolean().optional(),
     valorDeducoes: z.coerce.number().nonnegative().optional(),
     valorDesconto: z.coerce.number().nonnegative().optional(),
+    /**
+     * Código IBGE (7 dígitos) do município onde o serviço foi efetivamente
+     * prestado. Default: município do prestador (emitente). Diferente quando
+     * a empresa atende in-loco em outra cidade — o ISS deve ser recolhido no
+     * município da prestação. Aceita máscara — handler normaliza com replace(/\D/g, '').
+     */
+    codigoMunicipioPrestacao: z.string().optional(),
   })
   .passthrough();
 

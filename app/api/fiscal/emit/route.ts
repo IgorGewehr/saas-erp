@@ -551,6 +551,19 @@ export async function POST(request: NextRequest) {
       const aliquotaIss = Number(data.aliquotaIss) || 0;
       const valorISS = +((baseCalculo * aliquotaIss) / 100).toFixed(2);
 
+      // Local da prestação: município onde o serviço foi efetivamente prestado.
+      // Default: município do emitente. Diferente quando empresa atende in-loco
+      // em outra cidade (ex: dentista de SP atende em Campinas — ISS recolhido
+      // em Campinas). Validamos 7 dígitos pra evitar XML rejeitado pelo IBGE.
+      const codigoMunicipioPrestacaoRaw = String(data.codigoMunicipioPrestacao || '').replace(/\D/g, '');
+      if (codigoMunicipioPrestacaoRaw && codigoMunicipioPrestacaoRaw.length !== 7) {
+        return NextResponse.json(
+          { error: 'Código IBGE do município de prestação inválido. Deve ter 7 dígitos.' },
+          { status: 400 },
+        );
+      }
+      const codigoMunicipioPrestacao = codigoMunicipioPrestacaoRaw || codigoMunicipioEmitente;
+
       // Tomador: usa endereço quando fornecido. Validação obrigatória pra SP
       // ficou acima — aqui o caminho é só montar o payload.
       let tomadorPayload: Record<string, unknown> | undefined;
@@ -597,7 +610,7 @@ export async function POST(request: NextRequest) {
           codigoTributacaoNacional: (data.codigoServico || '').replace(/\D/g, '').padEnd(6, '0'),
           codigoTributacaoMunicipal: data.codigoServicoMunicipal || undefined,
           discriminacao: data.discriminacao || data.descricaoServico,
-          localPrestacao: { codigoMunicipio: codigoMunicipioEmitente },
+          localPrestacao: { codigoMunicipio: codigoMunicipioPrestacao },
           nbs: data.nbs,
         },
         valores: {

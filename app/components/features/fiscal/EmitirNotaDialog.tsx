@@ -194,6 +194,11 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
     informacoesAdicionais: '',
   });
 
+  // Município onde o serviço foi efetivamente prestado (NFS-e). Quando
+  // diferente do município do prestador, o ISS é recolhido lá. Vazio = usa
+  // o município do emitente (default na maioria dos casos).
+  const [nfseLocalPrestacao, setNfseLocalPrestacao] = useState('');
+
   // Endereço do tomador (NFS-e). São Paulo (IBGE 3550308) exige endereço
   // completo — sem isso, a Prefeitura Paulistana rejeita. Outras prefeituras
   // toleram parcial; mantemos campos visíveis sempre pra consistência com NF-e.
@@ -514,6 +519,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
         codigoServico: nfseForm.codigoTributacaoNacional || undefined,
         codigoServicoMunicipal: nfseForm.codigoTributacaoMunicipal || undefined,
         nbs: nfseNbs.trim() || undefined,
+        codigoMunicipioPrestacao: nfseLocalPrestacao.length === 7 ? nfseLocalPrestacao : undefined,
         discriminacao: nfseForm.discriminacao,
         valorServicos: nfseForm.valorServicos,
         valorDeducoes: nfseForm.valorDeducoes > 0 ? nfseForm.valorDeducoes : undefined,
@@ -1044,6 +1050,28 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess }: Emi
                     maxLength={9}
                     className={inputClasses}
                   />
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 block">
+                    {t('fiscal.emit.localPrestacao', 'Local da prestação (cód. IBGE)')}
+                    <span className="ml-1 text-gray-400 dark:text-gray-500 font-normal">
+                      {t('fiscal.emit.localPrestacaoHint', '(opcional — preencha apenas se prestou em outra cidade)')}
+                    </span>
+                  </label>
+                  <input
+                    value={nfseLocalPrestacao}
+                    onChange={(e) => setNfseLocalPrestacao(e.target.value.replace(/\D/g, '').slice(0, 7))}
+                    placeholder="Ex: 3509502 (Campinas)"
+                    maxLength={7}
+                    className={inputClasses}
+                  />
+                  <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                    {t(
+                      'fiscal.emit.localPrestacaoExplain',
+                      'Default: município da empresa. Diferente quando o serviço foi prestado in-loco em outra cidade — o ISS é recolhido lá.',
+                    )}
+                  </p>
                 </div>
               </div>
 

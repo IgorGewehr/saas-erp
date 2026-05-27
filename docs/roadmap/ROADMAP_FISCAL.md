@@ -64,8 +64,8 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 - [ ] **Modo contingência NFC-e (SVC-RS / SVC-AN / off-line)** `cross`
   Hoje se SEFAZ cai, a venda trava. Implementar modo contingência: emitir com chave temporária, salvar em fila local, reenviar quando SEFAZ voltar. Toda venda de varejo em produção precisa disso — risco de operação parar inteira por instabilidade SEFAZ.
 
-- [ ] **Local da prestação ≠ estabelecimento (NFS-e)** `code-only`
-  Schema aceita `servico.localPrestacao` mas [emit/route.ts:574](../../app/api/fiscal/emit/route.ts#L574) sempre força `codigoMunicipio: codigoMunicipioEmitente`. Empresas que prestam serviço in-loco em outra cidade não conseguem registrar corretamente — gera ISS no município errado.
+- [x] **Local da prestação ≠ estabelecimento (NFS-e)** `code-only`
+  Schema aceita `codigoMunicipioPrestacao` opcional. Route respeita o payload com fallback pro emitente quando vazio, e retorna 400 acionável se vier código inválido (≠ 7 dígitos). UI tem campo opcional "Local da prestação (cód. IBGE)" no bloco Serviço Prestado. ISS agora é recolhido no município correto quando empresa atende in-loco fora da sede.
 
 - [ ] **CNAE em NFS-e** `cross`
   Não há campo CNAE no `NfseRequestSchema` ([lib/contracts/api/fiscal/emit.ts:202](../../lib/contracts/api/fiscal/emit.ts#L202)). Algumas prefeituras exigem (Paulistana aceita opcional, mas outras como BH são obrigatórias). Adicionar campo + propagar pro provider no sefaz-api.
