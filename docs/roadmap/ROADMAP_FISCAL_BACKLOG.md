@@ -28,17 +28,8 @@ Entregue: [lib/fiscal/nfse-coverage.ts](../../lib/fiscal/nfse-coverage.ts) com t
 
 ## 🟡 Médio prazo (fazer quando aparecer caso real)
 
-### 3. `superRefine` condicional por município no NfseRequestSchema
-**Esforço:** ~2-3 horas | **Tag:** `code-only` | **ROI:** Médio
-
-**Por que existe:** Hoje a validação SP de endereço do tomador está no route (`app/api/fiscal/emit/route.ts`). Funciona, mas mistura validação de shape com lógica de negócio. Generalizar pro schema Zod com `superRefine` deixa a validação mais perto da borda e o erro chega ao cliente com mensagem mais consistente.
-
-**O que entrega:**
-- Mapa `MUNICIPAL_REQUIREMENTS: Record<IBGE, RequirementSet>` em `lib/contracts/api/fiscal/emit.ts`
-- `superRefine` no `NfseRequestSchema` que lê o IBGE e aplica as validações específicas
-- Route fica mais limpo (só consome resultado parseado)
-
-**Quando vale fazer:** quando adicionar 3º município com regras específicas (hoje só SP). Antes disso, custo > benefício.
+### 3. ~~Refactor mínimo: extrair regras municipais SP num módulo~~ ✅ Concluído (Opção C)
+Entregue: [lib/fiscal/municipalRequirements.ts](../../lib/fiscal/municipalRequirements.ts) com `validateMunicipalRequirements(codigoIBGE, data)` que aplica regras específicas registradas num `MUNICIPAL_VALIDATORS` map. Comportamento equivalente ao anterior (SP exige endereço completo do tomador), mas estrutura preparada pra adicionar BH/RJ/etc. sem tocar no route. Route ficou 10 linhas mais limpo. `superRefine` completo no schema Zod fica pra quando aparecer 2º município com regra específica (over-engineering agora).
 
 ---
 

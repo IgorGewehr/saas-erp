@@ -16,6 +16,7 @@ import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 import { decryptToken } from '@/lib/utils/encryption';
 import type { Product } from '@/lib/types';
 import { EmitFiscalRequestSchema } from '@/lib/contracts/api/fiscal/emit';
+import { validateMunicipalRequirements } from '@/lib/fiscal/municipalRequirements';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -569,30 +570,17 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // São Paulo (IBGE 3550308): a Prefeitura Paulistana rejeita NFS-e
-      // sem endereço completo do tomador (logradouro, bairro, codigoMunicipio,
-      // UF, CEP). Validamos no boundary pra dar mensagem acionável antes do
-      // roundtrip SOAP — o erro do governo é genérico e confunde o operador.
-      // numero pode ser 'SN' (sem número); municipio textual é opcional pois
-      // codigoMunicipio é o que entra no XML.
-      const SP_IBGE = '3550308';
-      if (codigoMunicipioEmitente === SP_IBGE && data.tomador) {
-        const end = data.tomador.endereco as Record<string, string> | undefined;
-        const missing: string[] = [];
-        if (!end?.logradouro?.trim()) missing.push('logradouro');
-        if (!end?.bairro?.trim()) missing.push('bairro');
-        if (!end?.codigoMunicipio?.replace(/\D/g, '')) missing.push('código IBGE da cidade');
-        if (!end?.uf?.trim()) missing.push('UF');
-        if (!end?.cep?.replace(/\D/g, '') || end.cep.replace(/\D/g, '').length !== 8) missing.push('CEP');
-        if (missing.length > 0) {
-          return NextResponse.json(
-            {
-              error: `Em São Paulo, NFS-e exige endereço completo do tomador. Campos faltando: ${missing.join(', ')}.`,
-              missingFields: missing,
-            },
-            { status: 400 },
-          );
-        }
+      // Regras municipais específicas (ex: SP exige endereço do tomador
+      // completo; BH/RJ/etc. virão aqui no futuro). Concentradas em
+      // `lib/fiscal/municipalRequirements.ts` pra evitar `if (cidade === X)`
+      // espalhados pelo route. Validação no boundary dá mensagem acionável
+      // antes do roundtrip — o erro do governo é genérico e confunde.
+      const municipal = validateMunicipalRequirements(codigoMunicipioEmitente, data);
+      if (!municipal.valid) {
+        return NextResponse.json(
+          { error: municipal.message, missingFields: municipal.missingFields },
+          { status: 400 },
+        );
       }
 
       const isSimples = crt === '1' || crt === '2';

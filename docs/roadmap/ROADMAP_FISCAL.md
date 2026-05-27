@@ -100,7 +100,8 @@ Prioridade reflete impacto operacional + frequência do bug em produção.
 - [ ] **Fila persistente (Redis/Bull) no sefaz-api** `sefaz-api`
   Retry hoje é in-memory. Se o pod do Cloudflare/sefaz-api cai durante envio, a nota se perde. Migrar retry pra fila persistente — depende do volume atingir nível em que isso vire problema real.
 
-- [ ] **`superRefine` condicional por município no NfseRequestSchema** `code-only`
+- [x] **Refactor mínimo: regras municipais em módulo dedicado** `code-only`
+  Entregue (Opção C): [lib/fiscal/municipalRequirements.ts](../../lib/fiscal/municipalRequirements.ts) com `validateMunicipalRequirements(codigoIBGE, data)` aplicando regras específicas via map `MUNICIPAL_VALIDATORS`. Hoje só SP (exige endereço tomador completo); BH/RJ entram quando aparecerem. Route ficou 10 linhas mais limpo. `superRefine` completo no schema Zod fica pra futuro caso justifique — não vale enquanto só SP tem regra específica.
   Generalização da validação SP: schema deveria validar campos obrigatórios por município no boundary Zod (não em runtime no route). Permite mensagem de erro precisa antes do envio.
 
 - [ ] **Pesquisa de consulta automática (verificação de status de notas pendentes)** `cross`
