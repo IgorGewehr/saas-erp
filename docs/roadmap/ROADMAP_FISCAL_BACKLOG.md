@@ -16,26 +16,8 @@ Ordem reflete recomendação de execução por ROI decrescente.
 
 ## 🟢 Curto prazo (vale fazer logo, baixo custo)
 
-### 1. Cron worker de transmissão automática de contingência
-**Esforço:** ~3-4 horas | **Tag:** `code-only` | **ROI:** Alto
-
-**Por que existe:** Quando a SEFAZ cai e o operador emite NFC-e em contingência (status=`contingencia`), hoje é responsabilidade dele clicar "Transmitir Contingência" no detalhe quando o serviço voltar. Se esquecer ou demorar mais de 24h após `dhCont`, a SEFAZ rejeita por extemporaneidade.
-
-**O que entrega:**
-- Cron route em `app/api/fiscal/cron/transmit-contingencia/route.ts`
-- Roda a cada **30 minutos** (intervalo conservador — evita load desnecessário no sefaz-api e tem margem confortável dentro do limite SEFAZ de 24h)
-- Busca `fiscalDocuments` com `status='contingencia'` e `dhCont` entre 30min e 23h atrás
-- Para cada um, chama a função interna do route `/api/fiscal/retry` (ou refatora a lógica em helper compartilhado)
-- Log estruturado: quantos tentou, quantos sucesso, quantos ainda pendentes
-- Guarda flag `lastCronAttemptAt` no documento pra evitar retry em loop quando SEFAZ continua fora
-
-**Detalhes de implementação:**
-- Decidir mecanismo de cron: Vercel Cron (cron-jobs.json) OU cron interno do Docker (já tem o `cron` ativo no projeto pelo `birthdayCampaignRunner`)
-- Idempotência via `lastCronAttemptAt` — se outro processo já tentou nos últimos 25min, pula
-- Limite de 50 docs por execução pra evitar explosão de carga
-- Notificar admin via Slack/email se houver doc com `dhCont` chegando perto das 24h sem ter conseguido transmitir
-
-**Pré-requisito:** nenhum. Toda infra (status, XML salvo, rota retry) já existe.
+### 1. ~~Cron worker de transmissão automática de contingência~~ ✅ Concluído
+Entregue em [item movido pro ROADMAP_FISCAL.md histórico](./ROADMAP_FISCAL.md). Service em [lib/services/contingenciaRunner.ts](../../lib/services/contingenciaRunner.ts), rota em [app/api/fiscal/cron/transmit-contingencia/route.ts](../../app/api/fiscal/cron/transmit-contingencia/route.ts). Agendar com `GET /api/fiscal/cron/transmit-contingencia` + `Authorization: Bearer ${CRON_SECRET}` a cada 30min.
 
 ---
 
