@@ -586,11 +586,58 @@ export interface CRMSequenceEnrollment {
   enrolledByUserName: string;
 }
 
+/**
+ * Ramo/vertical do contratante. Selecionado explicitamente em
+ * Settings → Agente IA. Ajusta vocabulário, exemplos (few-shots) e persona
+ * do /agent SEM violar a constituição. `generico` é o fallback neutro.
+ */
+export type BusinessSegment = 'academia' | 'salao' | 'clinica' | 'consultoria' | 'generico';
+
+export const BUSINESS_SEGMENTS: readonly BusinessSegment[] = [
+  'academia',
+  'salao',
+  'clinica',
+  'consultoria',
+  'generico',
+] as const;
+
+export const SEGMENT_LABELS: Record<BusinessSegment, string> = {
+  academia: 'Academia / Fitness / Artes Marciais',
+  salao: 'Salão / Estética',
+  clinica: 'Clínica / Saúde',
+  consultoria: 'Consultoria / Serviços Profissionais',
+  generico: 'Genérico (padrão)',
+};
+
+/** Vocabulário pt-BR por ramo. UI usa para rótulos; o /agent espelha (via wire
+ *  field `segment` + `segment_vocab`) para humanizar respostas sem viés salão. */
+export interface SegmentVocabulary {
+  /** Como o ramo chama o cliente final. */
+  cliente: string;
+  /** Como o ramo chama o serviço/atividade. */
+  servico: string;
+  /** Como o ramo chama o profissional executante. */
+  profissional: string;
+  /** Verbo/ação de agendar no jargão do ramo. */
+  agendar: string;
+}
+
+export const SEGMENT_VOCAB: Record<BusinessSegment, SegmentVocabulary> = {
+  academia:    { cliente: 'aluno',    servico: 'aula/treino', profissional: 'professor/instrutor', agendar: 'marcar aula' },
+  salao:       { cliente: 'cliente',  servico: 'serviço',     profissional: 'profissional',        agendar: 'agendar' },
+  clinica:     { cliente: 'paciente', servico: 'consulta',    profissional: 'profissional',        agendar: 'marcar consulta' },
+  consultoria: { cliente: 'cliente',  servico: 'sessão',      profissional: 'consultor',           agendar: 'agendar sessão' },
+  generico:    { cliente: 'cliente',  servico: 'serviço',     profissional: 'profissional',        agendar: 'agendar' },
+};
+
 export interface AiAgentSettings {
   enabled: boolean;
   /** Contexto de negócio inserido no prompt do agente */
   businessDescription?: string;
   tone?: 'formal' | 'casual' | 'friendly';
+  /** Ramo/vertical — ajusta vocabulário, exemplos e persona do /agent.
+   *  Ausente → tratado como `generico` pelo agente (fallback neutro). */
+  segment?: BusinessSegment;
   enabledAt?: string;
 
   /** === Modo: pedidos === */
@@ -862,6 +909,23 @@ export interface Appointment {
   conversationId?: string;
   // Idempotência para evitar duplicate bookings em retry/race
   idempotencyKey?: string;
+  /**
+   * Chave canônica da turma/sessão compartilhada. Cada aluno de uma turma é
+   * UM Appointment próprio com o MESMO sessionKey (NÃO usar attendees[] num
+   * doc único — cada aluno mantém status/no-show/comissão individuais).
+   * Formato: `${serviceId}_${date}_${startTime}_${professionalId|'any'}`.
+   * Monte sempre com `buildSessionKey()` (lib/utils/sessionKey.ts).
+   * AUSENTE em agendamentos exclusivos (capacity ausente/1) → comportamento
+   * atual de conflito (qualquer sobreposição BLOQUEIA) permanece BIT-A-BIT.
+   * Vagas da turma = capacity - count(appointments não-cancelados c/ este key).
+   */
+  sessionKey?: string;
+  /** true quando o appointment pertence a uma turma (capacity>1). Derivável de
+   *  sessionKey presente; mantido como flag explícita pra filtros/queries. */
+  isGroupSession?: boolean;
+  /** Snapshot da capacidade da turma no momento da reserva (auditoria — a
+   *  capacity do Service pode mudar depois; isto preserva a regra aplicada). */
+  capacitySnapshot?: number;
   // Agent-driven automation tracking (idempotência)
   reminderSentAt?: string;
   confirmationRequestedAt?: string;
@@ -881,6 +945,28 @@ export interface Appointment {
   cancelledByName?: string;
 }
 
+/**
+ * Sessão fixa de uma grade semanal de um serviço (turmas).
+ * Quando um Service tem `sessions[]`, a disponibilidade derivada do horário
+ * de funcionamento é SUBSTITUÍDA por essas sessões fixas (checkAvailability
+ * enumera só elas no período). Sem `sessions[]`, o comportamento atual (grade
+ * contínua derivada do expediente) permanece INTACTO.
+ */
+export interface WeeklySession {
+  /** Dia da semana — 0=Domingo ... 6=Sábado (mesma convenção de WorkSchedule/openingHours). */
+  weekday: number;
+  /** Início da sessão — 'HH:MM' (24h). */
+  startTime: string;
+  /** Duração em minutos. Ausente = herda Service.duration. */
+  duration?: number;
+  /** Vagas desta sessão específica. Ausente = herda Service.capacity. */
+  capacity?: number;
+  /** Professor/instrutor fixo da sessão. Ausente = qualquer profissional habilitado. */
+  professionalId?: string;
+  /** Nome denormalizado do profissional (display sem lookup). */
+  professionalName?: string;
+}
+
 export interface Service {
   id: string;
   businessId: string;
@@ -892,6 +978,19 @@ export interface Service {
   price: number;
   category?: string;
   color: string;
+  /**
+   * Capacidade do serviço (vagas por janela/sessão).
+   * AUSENTE ou 1 → agendamento EXCLUSIVO (1 cliente fecha a janela —
+   * comportamento atual, BIT-A-BIT). >1 → turma (vários alunos por horário).
+   * REQUISITO: qualquer serviço sem capacity>1 deve se comportar como hoje.
+   */
+  capacity?: number;
+  /**
+   * Grade semanal fixa de sessões (turmas). Quando presente, a
+   * disponibilidade passa a enumerar SÓ estas sessões; quando ausente, a
+   * disponibilidade contínua derivada do expediente permanece INTACTA.
+   */
+  sessions?: WeeklySession[];
   commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
   formTemplateId?: string; // Intake form auto-requested when this service is booked
   operatorIds?: string[];  // UIDs autorizados a executar o serviço (vazio = todos profissionais ativos)

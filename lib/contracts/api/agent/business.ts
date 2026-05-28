@@ -13,6 +13,15 @@ export const BusinessGetContextDataSchema = z.object({
   useCase: z.string().optional(),
   description: z.string().optional(),
   tone: z.string().optional(),
+  // Ramo/vertical — humaniza o agente sem viés salão. Ausente = 'generico'.
+  segment: z.enum(['academia', 'salao', 'clinica', 'consultoria', 'generico']).optional(),
+  // Vocabulário pt-BR derivado do segment (cliente/servico/profissional/agendar).
+  segmentVocab: z.object({
+    cliente: z.string(),
+    servico: z.string(),
+    profissional: z.string(),
+    agendar: z.string(),
+  }).optional(),
   timezone: z.string().optional(),
   currency: z.string().optional(),
   address: z.string().optional(),

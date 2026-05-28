@@ -34,7 +34,25 @@ export interface AdminAppointmentPayload {
   date: string;       // 'YYYY-MM-DD'
   startTime: string;  // 'HH:mm'
   endTime: string;    // 'HH:mm'
+  /**
+   * Turma (capacity>1): chave canônica da sessão compartilhada. Quando presente,
+   * appointments com o MESMO sessionKey são ignorados no check de conflito
+   * (são colegas da mesma turma, não competem pelo slot). Ausente = exclusivo,
+   * comportamento BIT-A-BIT atual. As VAGAS da turma (capacity) NÃO são contadas
+   * aqui — este guard só garante que a turma não colide com OUTRO compromisso do
+   * profissional; a contagem de vagas mora no caller (ex: rota de agenda do agente).
+   */
+  sessionKey?: string;
   [key: string]: unknown;
+}
+
+/**
+ * Remove da lista os appointments da MESMA turma (mesmo sessionKey) — colegas
+ * não conflitam entre si. Sem sessionKey: retorna a lista intacta (exclusivo).
+ */
+function excludeSameSession(appointments: Appointment[], sessionKey?: string): Appointment[] {
+  if (!sessionKey) return appointments;
+  return appointments.filter((a) => a.sessionKey !== sessionKey);
 }
 
 /** Carrega so o member relevante pro check (working hours). N busca todos
@@ -80,7 +98,10 @@ export async function createAppointmentSafeAdmin(
       .where('professionalId', '==', professionalId)
       .where('date', '==', date);
     const snap = await tx.get(q);
-    const appointments = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    const appointments = excludeSameSession(
+      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
+      payload.sessionKey,
+    );
 
     const result = checkAppointmentConflict({
       appointments,
@@ -132,6 +153,7 @@ export async function updateAppointmentSafeAdmin(
   const finalDate = (patch.date ?? existing.date) as string;
   const finalStartTime = (patch.startTime ?? existing.startTime) as string;
   const finalEndTime = (patch.endTime ?? existing.endTime) as string;
+  const finalSessionKey = (patch.sessionKey ?? existing.sessionKey) as string | undefined;
 
   // Sem prof: pula re-check.
   if (!finalProfessionalId) {
@@ -148,7 +170,10 @@ export async function updateAppointmentSafeAdmin(
       .where('professionalId', '==', finalProfessionalId)
       .where('date', '==', finalDate);
     const snap = await tx.get(q);
-    const appointments = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    const appointments = excludeSameSession(
+      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
+      finalSessionKey,
+    );
 
     const result = checkAppointmentConflict({
       appointments,

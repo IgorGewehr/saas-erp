@@ -86,7 +86,8 @@ import {
   Wrench,
   PlayCircle,
 } from 'lucide-react';
-import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase, BusinessSegment, WeeklySession } from '@/lib/types';
+import { BUSINESS_SEGMENTS, SEGMENT_LABELS, SEGMENT_VOCAB } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
 import NotificationServerSection from './NotificationServerConfig';
@@ -3920,6 +3921,7 @@ function AgenteTab() {
 
   const [enabled, setEnabled] = useState<boolean>(current?.enabled ?? false);
   const [tone, setTone] = useState<'formal' | 'casual' | 'friendly'>(current?.tone || 'friendly');
+  const [segment, setSegment] = useState<BusinessSegment>(current?.segment || 'generico');
   const [businessDescription, setBusinessDescription] = useState<string>(current?.businessDescription || '');
 
   // Pedidos-specific
@@ -3963,6 +3965,7 @@ function AgenteTab() {
   useEffect(() => {
     setEnabled(current?.enabled ?? false);
     setTone(current?.tone || 'friendly');
+    setSegment(current?.segment || 'generico');
     setBusinessDescription(current?.businessDescription || '');
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
@@ -4068,6 +4071,7 @@ function AgenteTab() {
         'settings.aiAgent': {
           enabled,
           tone,
+          segment,
           businessDescription: businessDescription.trim() || null,
           pedidos: pedidos || null,
           agenda: agenda || null,
@@ -4268,6 +4272,42 @@ function AgenteTab() {
                   {t.label}
                 </button>
               ))}
+            </div>
+          </SectionCard>
+
+          {/* Ramo do negócio — ajusta vocabulário/exemplos/persona do agente */}
+          <SectionCard title="Ramo do negócio" icon={Briefcase}>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Define o vocabulário e os exemplos do agente. O assistente fala como o seu ramo (ex.: aluno, paciente, cliente).
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {BUSINESS_SEGMENTS.map((seg) => {
+                const vocab = SEGMENT_VOCAB[seg];
+                const active = segment === seg;
+                return (
+                  <button
+                    key={seg}
+                    type="button"
+                    onClick={() => setSegment(seg)}
+                    className={cn(
+                      'flex flex-col items-start gap-1 px-4 py-3 rounded-xl border-2 text-left transition-all',
+                      active
+                        ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600',
+                    )}
+                  >
+                    <span className={cn(
+                      'text-sm font-semibold',
+                      active ? 'text-red-700 dark:text-red-400' : 'text-gray-800 dark:text-gray-200',
+                    )}>
+                      {SEGMENT_LABELS[seg]}
+                    </span>
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400 leading-tight">
+                      {vocab.cliente} · {vocab.servico} · {vocab.profissional}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </SectionCard>
 

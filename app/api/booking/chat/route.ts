@@ -23,7 +23,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import type { Business } from '@/lib/types';
+import type { Business, BusinessSegment, WeeklySession } from '@/lib/types';
+import { SEGMENT_VOCAB } from '@/lib/types';
 
 export const runtime = 'nodejs';
 
@@ -105,7 +106,13 @@ export async function POST(req: NextRequest) {
   }
 
   // Pre-load services list — web visitors frequently ask "what services do you have?"
-  type ServiceSnapshot = { id: string; name: string; price: number; duration: number; category?: string; description?: string };
+  // capacity/sessions são aditivos: presentes só quando o serviço é turma (capacity>1),
+  // permitindo ao agente contar vagas sem nova tool call. Serviços exclusivos não os enviam.
+  type ServiceSnapshot = {
+    id: string; name: string; price: number; duration: number;
+    category?: string; description?: string;
+    capacity?: number; sessions?: WeeklySession[];
+  };
   let servicesList: ServiceSnapshot[] = [];
   const useCase = business.settings?.useCase || 'servicos';
   if (useCase === 'servicos') {
@@ -116,6 +123,8 @@ export async function POST(req: NextRequest) {
         .get();
       servicesList = servicesSnap.docs.map(d => {
         const s = d.data();
+        const capacity = typeof s.capacity === 'number' ? (s.capacity as number) : undefined;
+        const sessions = Array.isArray(s.sessions) ? (s.sessions as WeeklySession[]) : undefined;
         return {
           id: d.id,
           name: s.name as string,
@@ -123,10 +132,16 @@ export async function POST(req: NextRequest) {
           duration: (s.duration as number) || 60,
           ...(s.category ? { category: s.category as string } : {}),
           ...(s.description ? { description: s.description as string } : {}),
+          ...(capacity !== undefined ? { capacity } : {}),
+          ...(sessions && sessions.length > 0 ? { sessions } : {}),
         };
       });
     } catch { /* non-fatal — agent falls back to agenda_list_services tool */ }
   }
+
+  // Ramo/vertical — humaniza o agente sem viés salão. Ausente → 'generico'.
+  const segment: BusinessSegment = business.settings?.aiAgent?.segment || 'generico';
+  const segmentVocab = SEGMENT_VOCAB[segment];
 
   // Compute today's effective opening hours (applies holidays + seasonal overrides)
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -147,6 +162,9 @@ export async function POST(req: NextRequest) {
     recipient_id: sessionId, // not used for web, but required by schema
     history: history.slice(-10), // last 10 turns
     use_case: useCase,
+    // Ramo/vertical (snake_case no fio) — ajusta vocabulário/persona do /agent.
+    segment,
+    segment_vocab: segmentVocab,
     business_name: business.nomeFantasia || business.razaoSocial,
     business_description: business.settings?.aiAgent?.businessDescription || null,
     tone: business.settings?.aiAgent?.tone || 'friendly',

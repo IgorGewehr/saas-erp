@@ -24,6 +24,12 @@ class ProcessRequest(BaseModel):
     business_name: str | None = None
     business_description: str | None = None
     tone: Literal["formal", "casual", "friendly"] = "friendly"
+    # Business vertical — adjusts vocabulary, examples and persona of the agent.
+    # Absent → treated as "generico". Wire field is snake_case (see business_context).
+    segment: Literal["academia", "salao", "clinica", "consultoria", "generico"] = "generico"
+    # Per-segment vocabulary { cliente, servico, profissional, agendar }. When the
+    # webhook omits it, prompts.py falls back to the local SEGMENT_VOCAB map.
+    segment_vocab: dict[str, str] | None = None
     # Per-mode granular settings that influence the prompt
     pedidos_settings: dict[str, Any] | None = None
     agenda_settings: dict[str, Any] | None = None

@@ -183,6 +183,9 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             "description": req.business_description,
             "tone": req.tone,
             "model": model,
+            # Vertical/segment — drives vocabulary + few-shot selection in prompts.
+            "segment": req.segment or "generico",
+            "segment_vocab": req.segment_vocab or None,
             # Settings específicas por modo — consumidas pelos prompts
             "pedidos": req.pedidos_settings or {},
             "agenda": req.agenda_settings or {},

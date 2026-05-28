@@ -243,6 +243,41 @@ describe('createAppointmentSafeAdmin', () => {
       }),
     ).rejects.toThrow(/businessId obrigatorio/);
   });
+
+  it('TURMA: colega de mesma turma (mesmo sessionKey) NAO bloqueia', async () => {
+    const key = 'svc1_2026-05-22_09:00_p1';
+    env.collections.appointments.docs.push({
+      id: 'm1',
+      data: apt({ id: 'm1', startTime: '09:00', endTime: '10:00', sessionKey: key, isGroupSession: true }) as unknown as Record<string, unknown>,
+    });
+    const id = await createAppointmentSafeAdmin(env.fake as never, {
+      businessId,
+      professionalId: 'p1',
+      date: '2026-05-22',
+      startTime: '09:00',
+      endTime: '10:00',
+      sessionKey: key, // mesmo sessionKey -> colega, sem conflito
+    });
+    expect(typeof id).toBe('string');
+    expect(env.collections.appointments.docs.length).toBe(2);
+  });
+
+  it('TURMA: appointment de OUTRO sessionKey sobreposto BLOQUEIA (prof dando aula)', async () => {
+    env.collections.appointments.docs.push({
+      id: 'aula',
+      data: apt({ id: 'aula', startTime: '09:00', endTime: '10:00', sessionKey: 'svc1_2026-05-22_09:00_p1', isGroupSession: true }) as unknown as Record<string, unknown>,
+    });
+    // 1:1 sem sessionKey tentando o mesmo horario do prof -> bloqueia.
+    await expect(
+      createAppointmentSafeAdmin(env.fake as never, {
+        businessId,
+        professionalId: 'p1',
+        date: '2026-05-22',
+        startTime: '09:30',
+        endTime: '10:30',
+      }),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
+  });
 });
 
 describe('updateAppointmentSafeAdmin', () => {

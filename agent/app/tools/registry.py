@@ -201,7 +201,11 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
                 "Return free time slots for a given date. Always call before booking. "
                 "If the user mentions a relative date, resolve it to YYYY-MM-DD first. "
                 "Pass serviceId to filter professionals that actually offer the service, "
-                "and the correct durationMinutes from the service catalog."
+                "and the correct durationMinutes from the service catalog. "
+                "GROUP SERVICES: when the service has capacity>1 or a weekly grid (sessions), "
+                "slots are FIXED grid sessions and each carries `capacity` + `seatsAvailable`. "
+                "Offer those fixed sessions and talk in terms of open seats; seatsAvailable=0 "
+                "means the class is full (a business rule, NOT a technical error)."
             ),
             "parameters": {
                 "type": "object",
@@ -244,7 +248,12 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
                 "the client picked an exact time via interactive list or typed confirmation.\n"
                 'Example: {"clientName":"Ana","clientPhone":"5547999998888",'
                 '"serviceId":"svc_corte","professionalId":"usr_lucas",'
-                '"date":"2026-04-25","startTime":"14:30","duration":45,"price":60}'
+                '"date":"2026-04-25","startTime":"14:30","duration":45,"price":60}\n'
+                "GROUP SERVICES: pass the SAME serviceId/date/startTime/professionalId of the "
+                "chosen grid session — the server derives the class key and seats the client. "
+                "Possible status values: 'created' (booked / 1:1), 'joined' (added to a class with "
+                "room), 'full' (class is full → offer another grid session, NOT a technical error), "
+                "'conflict' (slot taken between check and book → use returned alternatives)."
             ),
             "parameters": {
                 "type": "object",

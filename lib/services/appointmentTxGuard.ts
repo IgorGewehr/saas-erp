@@ -67,8 +67,24 @@ export interface AppointmentTxPayload {
   date: string;       // 'YYYY-MM-DD'
   startTime: string;  // 'HH:mm'
   endTime: string;    // 'HH:mm'
+  /**
+   * Turma (capacity>1): chave canônica da sessão. Quando presente, appointments
+   * com o MESMO sessionKey são ignorados no check de conflito (colegas de turma).
+   * Ausente = exclusivo, comportamento BIT-A-BIT atual. A contagem de vagas
+   * (capacity) é responsabilidade do caller, não deste guard.
+   */
+  sessionKey?: string;
   /** Restante do payload — passado direto pro tx.set/tx.update. */
   [key: string]: unknown;
+}
+
+/**
+ * Remove da lista os appointments da MESMA turma (mesmo sessionKey) — colegas
+ * não conflitam. Sem sessionKey: lista intacta (exclusivo).
+ */
+function excludeSameSession(appointments: Appointment[], sessionKey?: string): Appointment[] {
+  if (!sessionKey) return appointments;
+  return appointments.filter((a) => a.sessionKey !== sessionKey);
 }
 
 /** Path determinístico do lock doc — 1 por prof+data. */
@@ -121,7 +137,10 @@ export async function createAppointmentSafe(
       where('date', '==', date),
     );
     const snap = await getDocs(q);
-    const appointments = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    const appointments = excludeSameSession(
+      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
+      payload.sessionKey,
+    );
 
     // 3. Check overlap puro.
     const result = checkAppointmentConflict({
@@ -210,7 +229,10 @@ export async function updateAppointmentSafe(
       where('date', '==', date),
     );
     const snap = await getDocs(q);
-    const appointments = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    const appointments = excludeSameSession(
+      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
+      payload.sessionKey,
+    );
 
     // 3. Check overlap, ignorando o proprio doc.
     const result = checkAppointmentConflict({
