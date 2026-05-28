@@ -15,7 +15,7 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
-import { checkRateLimit, checkBusinessRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ensureBaileysSessionConnected } from '@/app/api/whatsapp/baileys-manager';
 import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
 import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
@@ -205,18 +205,6 @@ export async function POST(req: NextRequest) {
     } else {
       const authResult = await verifyAuth(req, businessId);
       if (isAuthError(authResult)) return authResult;
-    }
-
-    // Rate limit por business (5.13): 300 msgs/hora — generoso para atendimento
-    // humano sustentado (~5 msgs/min) mas freia abuso por IP rotation.
-    if (businessId) {
-      const bizLimit = checkBusinessRateLimit('conversation-send', businessId, 300, 3_600_000);
-      if (!bizLimit.allowed) {
-        return NextResponse.json(
-          { error: 'Limite de mensagens atingido para este negócio. Aguarde antes de enviar mais.' },
-          { status: 429 },
-        );
-      }
     }
 
     // Validate required fields
