@@ -271,7 +271,7 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
                     "price": {"type": "number"},
                     "notes": {"type": "string"},
                 },
-                "required": ["clientName", "date", "startTime", "durationMinutes"],
+                "required": ["clientName", "serviceId", "date", "startTime", "durationMinutes"],
             },
         },
     },
@@ -566,8 +566,8 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                 "the client's selection directly from their reply.\n"
                 'Example: {"conversationId":"conv_abc","bodyText":"Qual horário fica melhor?",'
                 '"buttonText":"Ver horários","sections":[{"title":"Amanhã (25/04)","rows":['
-                '{"id":"09:00","title":"09:00","description":"Corte — R$ 50"},'
-                '{"id":"14:30","title":"14:30","description":"Corte — R$ 50"}]}]}'
+                '{"id":"09:00","title":"09:00","description":"<serviço> — R$ <preço>"},'
+                '{"id":"14:30","title":"14:30","description":"<serviço> — R$ <preço>"}]}]}'
             ),
             "parameters": {
                 "type": "object",
@@ -606,7 +606,7 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                                         "properties": {
                                             "id": {"type": "string", "description": "Time string used as selection value, e.g. '09:00'"},
                                             "title": {"type": "string", "description": "Display title, e.g. '09:00'"},
-                                            "description": {"type": "string", "description": "Subtitle, e.g. 'Corte de Cabelo — R$ 50,00'"},
+                                            "description": {"type": "string", "description": "Subtitle, e.g. '<serviço> — R$ <preço>'"},
                                         },
                                         "required": ["id", "title"],
                                     },
@@ -1176,6 +1176,100 @@ PURCHASE_NOTES_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# ─── Dashboard tool groups — for intent-based pre-selection (operator/analyst) ─
+#
+# The operator use_case exposes ~109 tools (~12.9k tokens of JSON-schema) and the
+# planner re-sends them on every iteration. Most are irrelevant to a given command
+# ("fluxo de caixa" doesn't need kanban/suppliers/notes schemas). We group tools by
+# module and pre-select 1-3 groups from the operator's message via cheap keyword
+# matching, cutting the per-iteration tool payload from ~12.9k to ~2-4k tokens.
+# `clients`/`knowledge`/`memory` are always-on base context.
+
+_DASHBOARD_GROUPS: dict[str, list[dict[str, Any]]] = {
+    "financial": FINANCIAL_TOOLS,
+    "inventory": INVENTORY_TOOLS,
+    "sales": SALES_TOOLS,
+    "agenda": AGENDA_TOOLS,
+    "services": SERVICES_MGMT_TOOLS,
+    "orders": CATALOG_TOOLS + ORDERS_TOOLS,
+    "kanban": KANBAN_TOOLS,
+    "notes": NOTES_TOOLS,
+    "crm": CRM_TOOLS,
+    "conversations": CONVERSATIONS_ADMIN_TOOLS + CONVERSATION_TOOLS,
+    "team": TEAM_TOOLS,
+    "suppliers": SUPPLIERS_TOOLS,
+    "purchase-notes": PURCHASE_NOTES_TOOLS,
+}
+
+# Keyword → group. Matched (accent-insensitive, substring) against the message.
+_GROUP_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "financial": ("financ", "caixa", "receb", "pagar", "pagamento", "despesa", "receita", "fatur", "boleto", "pix", "conta", "saldo", "lucro", "atrasad", "vencim"),
+    "inventory": ("estoque", "produto", "inventario", "sku", "low stock", "reposi", "mercadoria", "preco de custo"),
+    "sales": ("venda", "pdv", "ticket", "vendido", "vendeu", "caixa do dia"),
+    "agenda": ("agenda", "agendamento", "horario", "marcar", "consulta", "appointment", "remarcar", "no-show", "no show", "compareceu"),
+    "services": ("servico", "serviços", "catalogo de servico", "comissao"),
+    "orders": ("pedido", "delivery", "entrega", "cardapio", "menu", "retirada"),
+    "kanban": ("kanban", "board", "cartao", "card", "tarefa", "coluna", "quadro"),
+    "notes": ("nota pessoal", "nota da equipe", "anota", "lembrete", "post-it", "postit"),
+    "crm": ("crm", "lead", "deal", "contato", "pipeline", "negociac", "segmento", "oportunidade", "cliente novo"),
+    "conversations": ("conversa", "chat", "mensagem", "atendimento", "label", "snippet", "prioridade", "whatsapp", "interativ"),
+    "team": ("equipe", "membro", "setor", "colaborador", "funcionario", "capacidade", "profissional"),
+    "suppliers": ("fornecedor", "cnpj", "razao social"),
+    "purchase-notes": ("nota de compra", "nf-e", "nfe", "nota fiscal", "importar nota", "compra"),
+}
+
+
+def _normalize(text: str) -> str:
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", text.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def select_dashboard_groups(message: str, *, max_groups: int = 3) -> list[str]:
+    """Pick the most relevant dashboard tool groups for an operator/analyst message
+    via keyword scoring. Returns up to `max_groups` group names (best first). Empty
+    list means 'no confident match' → caller should fall back to the full tool set."""
+    if not message:
+        return []
+    norm = _normalize(message)
+    scores: list[tuple[int, str]] = []
+    for group, kws in _GROUP_KEYWORDS.items():
+        hits = sum(1 for kw in kws if _normalize(kw) in norm)
+        if hits:
+            scores.append((hits, group))
+    scores.sort(key=lambda x: (-x[0], x[1]))
+    return [g for _, g in scores[:max_groups]]
+
+
+def dashboard_tools_for_groups(groups: list[str], *, read_only: bool = False) -> list[dict[str, Any]]:
+    """Assemble the operator/analyst tool list for the selected groups, always on
+    top of the base (clients + knowledge + memory). When `read_only`, the write
+    tools are filtered out (analyst mode)."""
+    base = CLIENT_TOOLS[:] + KNOWLEDGE_TOOLS + MEMORY_TOOLS
+    selected: list[dict[str, Any]] = []
+    for g in groups:
+        selected += _DASHBOARD_GROUPS.get(g, [])
+    pool = base + selected
+    if read_only:
+        pool = [t for t in pool if _is_read_only_tool(t["function"]["name"])]
+        # memory_recall is read; clients_lookup is read — base already mostly read.
+    return pool
+
+
+_READ_ONLY_PREFIXES = (
+    "_list", "_get", "_search", "_summary", "_recall", "_capacity",
+    "_next_available", "_availability", "_check_", "_full_history",
+    "_by_client", "_find_by", "_categories", "_menu", "_recent",
+    "_segments", "_messages", "_activities", "_boards", "_cards",
+    "_today", "_month", "_low_stock", "_unmatched", "_match_products",
+    "_context", "_services", "_professionals", "lookup_by_phone",
+)
+
+
+def _is_read_only_tool(name: str) -> bool:
+    return any(name.endswith(suf) or suf in name for suf in _READ_ONLY_PREFIXES)
+
+
 def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
     """Return the subset of tools the LLM should see, given the business mode."""
     base = CLIENT_TOOLS[:] + KNOWLEDGE_TOOLS + MEMORY_TOOLS
@@ -1206,19 +1300,7 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
             + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
             + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
         )
-        read_only_prefixes = (
-            "_list", "_get", "_search", "_summary", "_recall", "_capacity",
-            "_next_available", "_availability", "_check_", "_full_history",
-            "_by_client", "_find_by", "_categories", "_menu", "_recent",
-            "_segments", "_messages", "_activities", "_boards", "_cards",
-            "_today", "_month", "_low_stock", "_unmatched", "_match_products",
-            "_context", "_services", "_professionals",
-        )
-        read_only = [
-            t for t in all_operator
-            if any(t["function"]["name"].endswith(suf) or suf in t["function"]["name"]
-                   for suf in read_only_prefixes)
-        ]
+        read_only = [t for t in all_operator if _is_read_only_tool(t["function"]["name"])]
         return base + read_only
     # simples / times — generic CRM only
     return base

@@ -34,7 +34,12 @@ from ..logging_config import get_logger
 from ..observability import redact_if_enabled
 from ..tools.client import ToolError, call_tool
 from ..tools.guardrails import check_tool_call
-from ..tools.registry import get_tool, tools_for_use_case
+from ..tools.registry import (
+    dashboard_tools_for_groups,
+    get_tool,
+    select_dashboard_groups,
+    tools_for_use_case,
+)
 from ..tools.validator import validate as validate_tool_args
 from . import prompts
 from .state import AgentState
@@ -275,6 +280,27 @@ async def _invoke_with_retry(llm: Any, messages: list[Any], max_attempts: int = 
     raise last_err or RuntimeError("LLM invoke failed")
 
 
+def _latest_user_text(state: AgentState) -> str:
+    for m in reversed(state.get("messages") or []):
+        if isinstance(m, HumanMessage):
+            return m.content if isinstance(m.content, str) else str(m.content)
+    return ""
+
+
+def _select_planner_tools(use_case: str, state: AgentState) -> list[dict[str, Any]]:
+    """Tools exposed to the planner. Customer flows are already small. For the
+    dashboard modes (operator/analyst) we pre-select 1-3 module groups from the
+    operator's message — cutting ~12.9k tok of tool schema down to ~2-4k per
+    iteration. No confident keyword match → fall back to the full set so we never
+    block a command we failed to classify."""
+    if use_case not in ("operator", "analyst"):
+        return tools_for_use_case(use_case)
+    groups = select_dashboard_groups(_latest_user_text(state))
+    if not groups:
+        return tools_for_use_case(use_case)
+    return dashboard_tools_for_groups(groups, read_only=(use_case == "analyst"))
+
+
 @traceable(run_type="chain", name="agent.planner")
 async def planner_node(state: AgentState) -> dict[str, Any]:
     settings = get_settings()
@@ -286,7 +312,7 @@ async def planner_node(state: AgentState) -> dict[str, Any]:
     if state.get("iterations", 0) > 3:
         model = settings.openai_model_fallback
 
-    tools = tools_for_use_case(use_case)  # filtered by mode
+    tools = _select_planner_tools(use_case, state)
     llm = _planner_llm(model, tools)
 
     system = prompts.planner_system_for(use_case, business_ctx)
@@ -536,6 +562,49 @@ def _is_destructive_tool(name: str) -> bool:
 # ─── 4. Responder — polish the final answer ─────────────────────────────────
 
 
+# Robotic "I'll go check" tells — their presence means the draft still leaks the
+# fact that a lookup happened, so it needs humanizing by the responder.
+_ROBOTIC_TELLS: tuple[str, ...] = (
+    "vou verificar", "vou conferir", "vou checar", "deixa eu verificar",
+    "deixa eu checar", "deixa eu conferir", "um momento", "só um momento",
+    "preciso verificar", "aguarde", "aguardando", "verificando",
+)
+
+
+def _draft_is_clean(draft: str) -> bool:
+    """True when the planner draft is already customer-ready and the polish pass
+    can be skipped. Conservative: any markdown asterisk, robotic tell, or an
+    over-long draft sends it through the responder for humanizing."""
+    if not draft:
+        return False
+    low = draft.lower()
+    if "*" in draft or "_" in draft:
+        return False
+    if any(tell in low for tell in _ROBOTIC_TELLS):
+        return False
+    if len(draft) > 600:
+        return False
+    return True
+
+
+def _facts_from_tool_log(tool_log: list[dict[str, Any]]) -> str:
+    """Compact factual block from this run's successful tool results, so the
+    responder can ground numbers/values it cites instead of inventing them."""
+    lines: list[str] = []
+    for e in tool_log:
+        if e.get("error") is not None:
+            continue
+        result = e.get("result")
+        if result is None:
+            continue
+        try:
+            rendered = json.dumps(result, ensure_ascii=False, default=str)
+        except Exception:
+            rendered = str(result)
+        lines.append(f"- {e.get('name', '?')}: {rendered[:600]}")
+    return "\n".join(lines[-8:])
+
+
 @traceable(run_type="chain", name="agent.responder")
 async def responder_node(state: AgentState) -> dict[str, Any]:
     """Take the last planner AIMessage and rewrite for the customer in the business tone."""
@@ -557,23 +626,43 @@ async def responder_node(state: AgentState) -> dict[str, Any]:
         # Shouldn't normally happen; gracefully fall back
         draft = "Estou com dificuldade para processar. Pode tentar de novo?"
 
+    # If the planner produced a clean, customer-ready draft (no markdown, no
+    # robotic "vou verificar" tells, short enough), skip the second LLM call —
+    # the polish pass only risks flattening tone + costs a turn. We still run
+    # the responder when the draft looks rough so it can be humanized.
+    if _draft_is_clean(draft):
+        log.info("node.responder.skip_clean", run_id=state.get("run_id"))
+        return {"final_response": draft.strip()}
+
     business_ctx = state.get("business_context") or {}
     model = business_ctx.get("model") or settings.openai_model_default
     llm = ChatOpenAI(
         model=model,
         api_key=settings.openai_api_key,
-        temperature=0.4,
+        temperature=0.2,
         max_tokens=300,
     )
+
+    # Factual grounding: give the responder the tool outputs from THIS run so it
+    # can only cite values that actually exist. Without this it was a blind text
+    # rewriter that could mutate price/time/order-number.
+    facts_block = _facts_from_tool_log(state.get("tool_calls_log") or [])
+    human = (
+        "Rascunho que o sistema gerou (pode conter linguagem robótica):\n\n"
+        f"{draft}\n\n"
+    )
+    if facts_block:
+        human += (
+            "RESULTADOS DAS FERRAMENTAS deste atendimento (única fonte de números/dados — "
+            "cite SÓ valores daqui ou do rascunho, nunca invente):\n"
+            f"{facts_block}\n\n"
+        )
+    human += "Reescreva como mensagem direta para o cliente seguindo as regras."
 
     t0 = time.time()
     result = await _invoke_with_retry(llm, [
         SystemMessage(content=prompts.responder_system(business_ctx)),
-        HumanMessage(content=(
-            "Rascunho que o sistema gerou (pode conter informações técnicas ou linguagem robótica):\n\n"
-            f"{draft}\n\n"
-            "Reescreva como mensagem direta para o cliente seguindo as regras."
-        )),
+        HumanMessage(content=human),
     ])
     latency = int((time.time() - t0) * 1000)
 
