@@ -4324,7 +4324,13 @@ function AgenteTab() {
                 useCase === 'pedidos'
                   ? 'Ex.: Pizzaria familiar, aberta ter–dom 18h–23h. Pizzas artesanais. Entrega em até 3km por R$ 8. PIX / cartão / dinheiro.'
                   : useCase === 'servicos'
-                    ? 'Ex.: Clínica odontológica na Zona Sul, atendimento seg–sex 8h–18h, especialidade em ortodontia. Chegada 15min antes.'
+                    ? ({
+                        academia: 'Ex.: Academia de jiu-jitsu, treinos seg/qua/sex 19h e sáb 10h. Aula experimental gratuita. Foco em iniciantes e defesa pessoal.',
+                        salao: 'Ex.: Salão de beleza no Centro, ter–sáb 9h–19h. Corte, coloração e manicure com hora marcada. Chegada 10min antes.',
+                        clinica: 'Ex.: Clínica odontológica na Zona Sul, seg–sex 8h–18h, especialidade em ortodontia. Chegada 15min antes.',
+                        consultoria: 'Ex.: Consultoria financeira, sessões online ou presenciais. Primeira conversa de diagnóstico gratuita.',
+                        generico: 'Ex.: Descreva horário, especialidades, políticas e diferenciais do seu negócio.',
+                      } as Record<BusinessSegment, string>)[segment]
                     : 'Descreva seu negócio em poucas linhas.'
               }
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
