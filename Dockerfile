@@ -25,7 +25,7 @@ RUN groupadd --system --gid 1001 nextjs \
 WORKDIR /app
 
 # Copy pre-built app (standalone nests files under the project path)
-COPY --chown=nextjs:nextjs .next/standalone/development/service-provider-pro ./
+COPY --chown=nextjs:nextjs .next/standalone/air/saas-erp ./
 COPY --chown=nextjs:nextjs .next/static ./.next/static
 COPY --chown=nextjs:nextjs public ./public
 
