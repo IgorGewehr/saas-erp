@@ -3,7 +3,6 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTranslation } from 'react-i18next';
 import { collection, query, where, doc, updateDoc, onSnapshot } from 'firebase/firestore';
@@ -364,16 +363,13 @@ function SidebarContent({
     return () => unsub();
   }, [business?.id]);
 
-  // Badge de Conversas: conta quantas conversas têm mensagens NÃO LIDAS
-  // visíveis pro usuário atual. Real-time via onSnapshot — zera assim
-  // que operador abre/marca como lida.
-  //
-  // Visibilidade replicada: admin/founder vê tudo do tenant; demais veem
-  // canais 'business' + canais pessoais que são deles. Soneca ativa é
-  // sempre escondida (operador silenciou propositalmente).
-  //
-  // Query: filtra só por businessId (single-field, sem composite index).
-  // Volume típico: 50-500 conversations no tenant — cheap pra subscribe.
+  // Badge de Conversas: soma de mensagens NÃO LIDAS visíveis pro usuário.
+  // ANTES: onSnapshot full-collection sobre `conversations` (re-entregava a
+  // CADA mensagem), filtrando client-side. Custo O(conversas) por mensagem,
+  // montado em toda página. AGORA: 1 onSnapshot sobre o doc denormalizado
+  // `unreadCounters/{businessId}`. Operador = business + (byUser[uid] || 0);
+  // admin/founder = total. Mantido server-side (ver
+  // lib/contracts/domain/unreadCounter.ts e lib/services/unreadCounter.ts).
   const [myAwaitingCount, setMyAwaitingCount] = useState(0);
   const sidebarUserRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
   const sidebarIsAdmin = sidebarUserRoleValue >= ROLE_HIERARCHY['admin'];
@@ -382,45 +378,24 @@ function SidebarContent({
       setMyAwaitingCount(0);
       return;
     }
-    const q = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', business.id),
-    );
+    const uid = user.uid;
     const unsub = onSnapshot(
-      q,
+      doc(db, 'unreadCounters', business.id),
       (snap) => {
-        const now = Date.now();
-        const count = snap.docs.reduce((acc, d) => {
-          const c = d.data();
-          // Conversas soft-deletadas: somem da lista do operador (filtro em
-          // ConversasModule), então não devem inflar o badge. Sem este check
-          // o badge mostrava "3" enquanto a UI reportava 0 não lidas — o
-          // operador não conseguia clicar pra zerar (a conversa nem aparecia).
-          // Helper canonico cobre ambos formatos (legado + novo).
-          if (!isActiveRecord(c)) return acc;
-          // Sem mensagens não lidas — não conta
-          if (!c.unreadCount || c.unreadCount <= 0) return acc;
-          // Soneca ativa — operador silenciou, não deveria notificar
-          if (c.snoozedUntil) {
-            const until = new Date(c.snoozedUntil).getTime();
-            if (Number.isFinite(until) && until > now) return acc;
-          }
-          // Visibilidade — espelha a lógica de ConversasModule.
-          // Admin vê tudo; demais veem business OU canais pessoais próprios.
-          if (sidebarIsAdmin) return acc + 1;
-          if (c.channelOwnerType === 'business') return acc + 1;
-          if (c.channelOwnerId === user.uid) return acc + 1;
-          // Conversa legada (sem channelOwnerType) — fica oculta pra non-admin
-          // por segurança. Após backfill, esse caminho some.
-          return acc;
-        }, 0);
-        setMyAwaitingCount(count);
+        if (!snap.exists()) { setMyAwaitingCount(0); return; }
+        const data = snap.data() as {
+          business?: number;
+          byUser?: Record<string, number>;
+          total?: number;
+        };
+        const next = sidebarIsAdmin
+          ? (data.total || 0)
+          : (data.business || 0) + (data.byUser?.[uid] || 0);
+        setMyAwaitingCount(Math.max(0, next));
       },
       (err) => {
-        // Fail-soft: índice ausente / rules / rede — mantém último valor
-        // visível pro operador. Loga só warn pra não poluir o console em
-        // outage curta.
-        console.warn('[Sidebar] mine-awaiting snapshot error:', err);
+        // Fail-soft: rules / rede — mantém último valor visível pro operador.
+        console.warn('[Sidebar] unread counter snapshot error:', err);
       },
     );
     return () => unsub();

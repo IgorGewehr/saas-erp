@@ -122,6 +122,7 @@ Cron horário birthday ──► targetMmDdInTz + idempotência (campaign, clien
 | agentCircuits | businessId | doc por businessId | breaker state |
 | agentNonces | global | hash da signature | replay protection TTL 6min |
 | knowledgeChunks | businessId | contentHash | RAG embeddings |
+| unreadCounters | businessId (doc-id) | businessId | Contador denormalizado de não-lidas por escopo (`business`, `byUser[uid]`, `total`). Lido por 1 onSnapshot nos badges (TopBar/Sidebar) em vez de listener full-collection sobre `conversations`. **Escrita só server (Admin SDK)** via `lib/services/unreadCounter.ts`: incremento +1 nos ingestores inbound (webhooks meta/facebook, baileys), decremento `-prevUnread` no markAsRead transacional (`/api/conversations/[id]`). Rules: read se membro do tenant, write `if false`. Backfill: `scripts/backfill-unread-counters.ts`. Ver `docs/audit/PLANO_LOTE_B_custo_firebase.md` §2 e `lib/contracts/domain/unreadCounter.ts`. |
 
 ## AI Agent — detalhes que CLAUDE.md não cobre
 

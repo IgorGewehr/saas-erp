@@ -19,6 +19,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
@@ -1683,6 +1684,14 @@ async function saveInboundMessage(params: InboundMessageParams) {
       });
       conversationId = newConvRef.id;
 
+      // Contador denormalizado de não-lidas (R3 — mesmo caminho dedupe-guarded
+      // que incrementa unreadCount na conversa). Meta Cloud/FB/IG = sempre business.
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType: 'business' }, 1);
+      } catch (counterErr) {
+        console.warn('[Meta Webhook] incrementUnreadCounter (new conv) falhou:', counterErr);
+      }
+
       // Auto-link to CRM contact if one exists with matching channel identity
       try {
         const channelField = params.channel === 'whatsapp'
@@ -1845,6 +1854,13 @@ async function saveInboundMessage(params: InboundMessageParams) {
         enrichUpdate.contactAvatarUrl = params.senderAvatarUrl;
       }
       await adminDb.doc(`conversations/${conversationId}`).update(enrichUpdate);
+
+      // Contador denormalizado de não-lidas (R3 — espelha o increment(1) acima).
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType: 'business' }, 1);
+      } catch (counterErr) {
+        console.warn('[Meta Webhook] incrementUnreadCounter (existing conv) falhou:', counterErr);
+      }
 
       console.log('[Meta Webhook] Updated conversation:', conversationId);
 

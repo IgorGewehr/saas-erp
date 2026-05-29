@@ -676,6 +676,18 @@ service cloud.firestore {
                     && isAdmin();
     }
 
+    // ============================================
+    // UNREAD COUNTERS COLLECTION
+    // ============================================
+    // Contador denormalizado de não-lidas por escopo (doc-id == businessId).
+    // Lido pelos badges (TopBar/Sidebar) via 1 onSnapshot. Escrito SOMENTE pelo
+    // Admin SDK (server) na mesma operação que mexe conversations.unreadCount.
+    // Ver lib/contracts/domain/unreadCounter.ts.
+    match /unreadCounters/{businessId} {
+      allow read:  if isAuthenticated() && belongsToBusiness(businessId);
+      allow write: if false;   // só Admin SDK (server) escreve
+    }
+
     // Helper compartilhado entre subcollections de conversation (typing,
     // conversationMessages). As mensagens herdam o isolamento da parent: o
     // usuário só pode ler/escrever em conversas que ele já tem permissão de

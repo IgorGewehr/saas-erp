@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { decryptToken } from '@/lib/utils/encryption';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 
@@ -393,6 +394,13 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
         updatedAt: now,
       });
       conversationId = newConvRef.id;
+      // Contador denormalizado de não-lidas (R3 — mesmo caminho dedupe-guarded).
+      // Facebook Page = sempre business.
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType: 'business' }, 1);
+      } catch (counterErr) {
+        console.warn('[FB Webhook] incrementUnreadCounter (new conv) falhou:', counterErr);
+      }
       await tryLinkCrmContact(businessId, params.senderId, conversationId, now);
     } else {
       conversationId = convSnap.docs[0].id;
@@ -437,6 +445,12 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       }
 
       await adminDb.doc(`conversations/${conversationId}`).update(convUpdate);
+      // Contador denormalizado de não-lidas (R3 — espelha o increment(1) acima).
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType: 'business' }, 1);
+      } catch (counterErr) {
+        console.warn('[FB Webhook] incrementUnreadCounter (existing conv) falhou:', counterErr);
+      }
     }
 
     // 4. Salvar mensagem

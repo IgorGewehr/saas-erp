@@ -24,6 +24,7 @@ import { downloadAndUploadBaileysMedia } from '@/lib/services/baileys/media-stor
 import QRCode from 'qrcode';
 import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
+import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
@@ -891,6 +892,13 @@ async function handleInboundMessage(
         updatedAt: now,
       });
       conversationId = newConvRef.id;
+      // Contador denormalizado de não-lidas (R3 — mesmo caminho dedupe-guarded).
+      // Baileys pode ser canal pessoal (ownerType='user') ou business.
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType, channelOwnerId }, 1);
+      } catch (counterErr) {
+        console.warn('[Baileys] incrementUnreadCounter (new conv) falhou:', counterErr);
+      }
       await autoLinkCrmContact(businessId, conversationId, senderPhone, contactName, now);
     } else {
       // Match em conversa legacy/sem channelConnectionId. Usa transaction pra
@@ -960,6 +968,28 @@ async function handleInboundMessage(
         }
 
         tx.update(matchedDoc.ref, convUpdate);
+
+        // Contador denormalizado de não-lidas (R3 — espelha increment(1) acima),
+        // atômico na mesma tx. Escopo lido do doc da conversa (owner pode ser
+        // business ou user/canal pessoal). FieldValue.increment dentro de tx.set.
+        const convOwnerType = (data.channelOwnerType as string | undefined) ?? 'business';
+        const convOwnerId = data.channelOwnerId as string | undefined;
+        const counterField = convOwnerType === 'user'
+          ? (convOwnerId ? `byUser.${convOwnerId}` : null)
+          : 'business';
+        if (counterField) {
+          tx.set(
+            adminDb.doc(`unreadCounters/${businessId}`),
+            {
+              businessId,
+              [counterField]: FieldValue.increment(1),
+              total: FieldValue.increment(1),
+              updatedAt: now,
+            },
+            { merge: true },
+          );
+        }
+
         return {
           kind: 'updated' as const,
           appliedContactName: convUpdate.contactName as string | undefined,
@@ -1018,6 +1048,12 @@ async function handleInboundMessage(
           updatedAt: now,
         });
         conversationId = newConvRef.id;
+        // Contador denormalizado de não-lidas (R3 — espelha unreadCount:1 acima).
+        try {
+          await incrementUnreadCounter(adminDb, businessId, { channelOwnerType, channelOwnerId }, 1);
+        } catch (counterErr) {
+          console.warn('[Baileys] incrementUnreadCounter (race new conv) falhou:', counterErr);
+        }
         console.log(`[Baileys] Race em conversa legacy resolvido — criada nova conv ${conversationId.slice(-6)} pra canal ${connectionId.slice(-6)}`);
         // Auto-link CRM tambem na branch de conflict — sem isso, conversas
         // criadas via race perderiam a vinculação ao crmContact.

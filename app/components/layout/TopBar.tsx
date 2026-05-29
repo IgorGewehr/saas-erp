@@ -8,8 +8,9 @@ import { getInitials } from '@/lib/utils/format';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
-import { collection, query, where, or, and, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, query, where, or, and, orderBy, limit, onSnapshot, updateDoc, doc, writeBatch, getDocs } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
+import { markConversationRead } from '@/lib/utils/markConversationRead';
 import type { AppNotification } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import {
@@ -131,65 +132,77 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
 
   const userName = user?.name || 'Usuário';
 
-  // ── Unread conversation count (real-time badge via onSnapshot) ──
-  // ANTES: useQuery + getDocs com refetchInterval 30s. Comentário dizia
-  // "real-time badge" mas era polling — atendente recebia mensagem nova
-  // e o badge demorava até 30s pra atualizar.
-  // AGORA: onSnapshot single-field (businessId) + filter client-side.
-  // Tentei usar where('unreadCount', '>', 0) server-side mas Firestore
-  // exige composite index (businessId, unreadCount) — gera link dinâmico
-  // que exige user clicar. Volume típico < 1k conversations por tenant,
-  // filter client-side é trivial em termos de CPU e remove fricção de
-  // setup. Mesmo padrão usado em outros listeners do projeto.
+  // ── Unread conversation count (badge via 1 doc denormalizado) ──
+  // ANTES: onSnapshot full-collection sobre `conversations` (re-entregava a
+  // CADA mensagem nova porque lastMessageAt/unreadCount mudam) só pra somar
+  // unreadCount. Custo: O(conversas do tenant) reads por mensagem, montado
+  // em TODA página. AGORA: 1 onSnapshot sobre `unreadCounters/{businessId}`
+  // (1 doc, mantido server-side). Badge admin/founder = total; operador =
+  // business + (byUser[uid] || 0). Ver lib/contracts/domain/unreadCounter.ts.
   const businessId = business?.id;
   const userUid = user?.uid;
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
   const [unreadCount, setUnreadCount] = useState(0);
-  const [unreadConvIds, setUnreadConvIds] = useState<string[]>([]);
   useEffect(() => {
-    if (!businessId || !userUid) { setUnreadCount(0); setUnreadConvIds([]); return; }
-    // Mirror da query do ConversasModule pra que o badge conte só conversas
-    // que o user CONSEGUE ver na lista — sem isso, bagde mostrava unread
-    // de canais Baileys pessoais alheios (que o user nem visualiza) e de
-    // conversas com isDeleted=true. Resultado: badge "9" + lista vazia.
-    // Firestore v10+: composite OR exige and() wrapper quando combinado com
-    // outros where() — TS reclama (QueryCompositeFilterConstraint != QueryConstraint).
-    const q = isAdmin
-      ? query(
-          collection(db, 'conversations'),
-          where('businessId', '==', businessId),
-        )
-      : query(
-          collection(db, 'conversations'),
-          and(
-            where('businessId', '==', businessId),
-            or(
-              where('channelOwnerType', '==', 'business'),
-              where('channelOwnerId', '==', userUid),
-            ),
-          ),
-        );
+    if (!businessId || !userUid) { setUnreadCount(0); return; }
     const unsub = onSnapshot(
-      q,
+      doc(db, 'unreadCounters', businessId),
       (snap) => {
-        let total = 0;
-        const ids: string[] = [];
-        for (const d of snap.docs) {
-          const data = d.data() as { unreadCount?: number; isDeleted?: boolean; deletedAt?: string };
-          // Filter soft-deleted (ambos formatos: legado isDeleted + novo deletedAt)
-          if (!isActiveRecord(data)) continue;
-          const n = data.unreadCount || 0;
-          if (n > 0) {
-            total += n;
-            ids.push(d.id);
-          }
-        }
-        setUnreadCount(total);
-        setUnreadConvIds(ids);
+        if (!snap.exists()) { setUnreadCount(0); return; }
+        const data = snap.data() as {
+          business?: number;
+          byUser?: Record<string, number>;
+          total?: number;
+        };
+        const next = isAdmin
+          ? (data.total || 0)
+          : (data.business || 0) + (data.byUser?.[userUid] || 0);
+        setUnreadCount(Math.max(0, next));
       },
-      (err) => console.warn('[TopBar] unread count snapshot error:', err),
+      (err) => console.warn('[TopBar] unread counter snapshot error:', err),
     );
     return () => unsub();
+  }, [businessId, userUid, isAdmin]);
+
+  // ── Atalho "conversas não-lidas": IDs carregados SOB DEMANDA ──
+  // Decisão do dono: manter o atalho de abrir a 1ª não-lida / marcar todas,
+  // mas SEM listener contínuo. Ao abrir o dropdown, faz 1 getDocs com
+  // where('unreadCount','>',0) + limit(20) (escopo do user p/ não-admin) —
+  // one-shot, descartado ao fechar. O badge não depende disto.
+  const [unreadConvIds, setUnreadConvIds] = useState<string[]>([]);
+  const loadUnreadConvIds = useCallback(async () => {
+    if (!businessId || !userUid) { setUnreadConvIds([]); return; }
+    try {
+      const q = isAdmin
+        ? query(
+            collection(db, 'conversations'),
+            where('businessId', '==', businessId),
+            where('unreadCount', '>', 0),
+            limit(20),
+          )
+        : query(
+            collection(db, 'conversations'),
+            and(
+              where('businessId', '==', businessId),
+              or(
+                where('channelOwnerType', '==', 'business'),
+                where('channelOwnerId', '==', userUid),
+              ),
+              where('unreadCount', '>', 0),
+            ),
+            limit(20),
+          );
+      const snap = await getDocs(q);
+      const ids: string[] = [];
+      for (const d of snap.docs) {
+        if (!isActiveRecord(d.data())) continue;
+        ids.push(d.id);
+      }
+      setUnreadConvIds(ids);
+    } catch (err) {
+      console.warn('[TopBar] load unread conv ids failed:', err);
+      setUnreadConvIds([]);
+    }
   }, [businessId, userUid, isAdmin]);
 
   // ── In-app notifications (real-time) ──
@@ -277,13 +290,13 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   }, []);
 
   const handleClearUnreadConvs = useCallback(async () => {
-    if (unreadConvIds.length === 0) return;
-    const batch = writeBatch(db);
-    for (const id of unreadConvIds) {
-      batch.update(doc(db, 'conversations', id), { unreadCount: 0 });
-    }
-    await batch.commit();
-  }, [unreadConvIds]);
+    if (!businessId || unreadConvIds.length === 0) return;
+    // Decremento centralizado: cada baixa passa pela rota canônica server-side
+    // (markAsRead transacional) pra manter o contador denormalizado correto.
+    // Não escrevemos unreadCount:0 direto aqui — senão o contador fica drift.
+    await Promise.all(unreadConvIds.map(id => markConversationRead(id, businessId)));
+    setUnreadConvIds([]);
+  }, [businessId, unreadConvIds]);
 
   // Close notif dropdown on outside click
   useEffect(() => {
@@ -388,7 +401,13 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
           {/* Notification bell + dropdown */}
           <div className="relative" ref={notifRef}>
             <button
-              onClick={() => setIsNotifOpen(!isNotifOpen)}
+              onClick={() => {
+                const next = !isNotifOpen;
+                setIsNotifOpen(next);
+                // Carrega IDs não-lidos sob demanda ao ABRIR (one-shot getDocs),
+                // pra alimentar o atalho "abrir 1ª não-lida"/"marcar todas".
+                if (next) void loadUnreadConvIds();
+              }}
               className={cn(
                 'relative flex items-center justify-center w-9 h-9 rounded-xl',
                 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/[0.06]',
