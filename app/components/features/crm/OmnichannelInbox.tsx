@@ -381,19 +381,6 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
 
   // Mark conversation as read
   const handleSelectConversation = useCallback((conv: Conversation) => {
-    console.log(
-      `%c[AUDITORIA] Conversa selecionada`,
-      'color: #25D366; font-weight: bold; font-size: 13px;',
-      '\n  Canal:', conv.channel,
-      '\n  Conversa ID:', conv.id,
-      '\n  Contato Nome:', conv.contactName,
-      '\n  Contato Externo ID:', conv.contactExternalId ?? '(vazio)',
-      '\n  Telefone:', conv.contactPhone ?? '(vazio)',
-      '\n  Avatar URL:', conv.contactAvatarUrl ? '✓ presente' : '(vazio)',
-      '\n  CRM Contact ID:', (conv as unknown as Record<string, unknown>).crmContactId ?? '(não vinculado)',
-      '\n  Status:', conv.status,
-      '\n  Unread:', conv.unreadCount,
-    );
     setSelectedConv(conv);
     if (conv.unreadCount > 0) {
       updateDoc(doc(db, 'conversations', conv.id), { unreadCount: 0, updatedAt: new Date().toISOString() })

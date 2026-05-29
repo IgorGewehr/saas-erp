@@ -51,12 +51,9 @@ import {
   Blocks,
   Plug,
   Zap,
-  ToggleLeft,
-  ToggleRight,
   ExternalLink,
   Lock,
   CheckCircle2,
-  XCircle,
   AlertCircle,
   CreditCard,
   Triangle,
@@ -78,16 +75,14 @@ import {
   Smartphone,
   QrCode,
   Calendar,
-  Package,
   Kanban,
   ShoppingBag,
   Sparkles,
-  Search,
   Bell,
   Wrench,
   PlayCircle,
 } from 'lucide-react';
-import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase, BusinessSegment, WeeklySession } from '@/lib/types';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase, BusinessSegment } from '@/lib/types';
 import { BUSINESS_SEGMENTS, SEGMENT_LABELS, SEGMENT_VOCAB } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
@@ -106,7 +101,7 @@ import {
   type DeliveryZone,
   type UpsellRule,
 } from './AgentPolicyEditors';
-import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
+import { ROLE_LABELS, ROLE_HIERARCHY, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
 import { VaultTab } from '@/app/components/features/senhas/SenhasModule';
 // encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
@@ -6386,7 +6381,6 @@ function CanaisTab() {
   const [forceReconnect, setForceReconnect] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [waConnecting, setWaConnecting] = useState(false);
-  const [waStatus, setWaStatus] = useState<'idle' | 'connecting' | 'scanning' | 'connected'>('idle');
 
   // ── FB SDK loader (shared) ──
   const ensureFbSdk = async (): Promise<{ login: (cb: (r: { authResponse?: { accessToken?: string; code?: string } }) => void, opts: Record<string, unknown>) => void }> => {
@@ -7058,7 +7052,6 @@ function CanaisTab() {
                           setForceReconnect(true);
                           setShowQrModal(true);
                           setQrDataUrl(null);
-                          setWaStatus('connecting');
                           setWaConnecting(true);
                         }}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
@@ -7083,7 +7076,6 @@ function CanaisTab() {
                     onClick={() => {
                       setShowQrModal(true);
                       setQrDataUrl(null);
-                      setWaStatus('connecting');
                       setWaConnecting(true);
                     }}
                     disabled={waConnecting}
@@ -7283,7 +7275,6 @@ function CanaisTab() {
           onClose={() => {
             setShowQrModal(false);
             setWaConnecting(false);
-            setWaStatus('idle');
             setQrDataUrl(null);
             setForceReconnect(false);
           }}
@@ -7292,7 +7283,6 @@ function CanaisTab() {
             setWaPhoneNumber(phoneNumber || '');
             setShowQrModal(false);
             setWaConnecting(false);
-            setWaStatus('connected');
             setForceReconnect(false);
             refreshUser();
             toast.success(t('settings.channelsTab.connected', 'WhatsApp conectado com sucesso!'));

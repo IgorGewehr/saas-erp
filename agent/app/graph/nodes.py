@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from typing import Any
 
@@ -571,14 +572,20 @@ _ROBOTIC_TELLS: tuple[str, ...] = (
 )
 
 
+# Markdown italic pair `_word_` — a lone underscore (in IDs, times like 14_30)
+# must NOT trigger the polish pass, only an actual emphasis pair does.
+_MD_ITALIC_PAIR = re.compile(r"_[^\s_][^_]*_")
+
+
 def _draft_is_clean(draft: str) -> bool:
     """True when the planner draft is already customer-ready and the polish pass
-    can be skipped. Conservative: any markdown asterisk, robotic tell, or an
-    over-long draft sends it through the responder for humanizing."""
+    can be skipped. Conservative: any markdown asterisk, italic-underscore pair,
+    robotic tell, or an over-long draft sends it through the responder for
+    humanizing. A lone underscore (ID/time) is allowed through."""
     if not draft:
         return False
     low = draft.lower()
-    if "*" in draft or "_" in draft:
+    if "*" in draft or _MD_ITALIC_PAIR.search(draft):
         return False
     if any(tell in low for tell in _ROBOTIC_TELLS):
         return False

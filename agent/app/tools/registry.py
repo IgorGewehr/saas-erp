@@ -564,8 +564,9 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                 "Use this to present time-slot options so the client can tap to choose. "
                 "Each row id should be the time string (e.g. '09:00') so you can read "
                 "the client's selection directly from their reply.\n"
-                'Example: {"conversationId":"conv_abc","bodyText":"Qual horário fica melhor?",'
-                '"buttonText":"Ver horários","sections":[{"title":"Amanhã (25/04)","rows":['
+                'Example: {"conversation_id":"conv_abc","title":"Horários disponíveis",'
+                '"body":"Qual horário fica melhor?","button_text":"Ver horários",'
+                '"sections":[{"title":"Amanhã (25/04)","rows":['
                 '{"id":"09:00","title":"09:00","description":"<serviço> — R$ <preço>"},'
                 '{"id":"14:30","title":"14:30","description":"<serviço> — R$ <preço>"}]}]}'
             ),
@@ -594,7 +595,7 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                     },
                     "sections": {
                         "type": "array",
-                        "description": "One section per date. Max 10 rows total across all sections.",
+                        "description": "One section per date. 2-3 rows recomendado (max 10 técnico) no total entre todas as seções.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1260,7 +1261,7 @@ _READ_ONLY_PREFIXES = (
     "_list", "_get", "_search", "_summary", "_recall", "_capacity",
     "_next_available", "_availability", "_check_", "_full_history",
     "_by_client", "_find_by", "_categories", "_menu", "_recent",
-    "_segments", "_messages", "_activities", "_boards", "_cards",
+    "_segments", "_segment_query", "_messages", "_activities", "_boards", "_cards",
     "_today", "_month", "_low_stock", "_unmatched", "_match_products",
     "_context", "_services", "_professionals", "lookup_by_phone",
 )

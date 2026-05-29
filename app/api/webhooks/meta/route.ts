@@ -1380,8 +1380,7 @@ async function getDecryptedPageToken(businessId: string): Promise<string | null>
     }
 
     const token = await decryptToken(encryptedToken);
-    // Log first 12 chars so we can confirm it's a page token (starts with EAA...) vs user token
-    console.log('[Profile] Page token prefix for business', businessId, ':', token.slice(0, 12) + '...');
+    console.log('[Profile] Page token resolved for business', businessId, ':', { hasToken: !!token });
     return token;
   } catch (err) {
     console.error('[Meta Webhook] Error getting page token:', err);
