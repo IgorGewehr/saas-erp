@@ -3730,13 +3730,11 @@ function IntegrationRow({
                 {isConnected && (
                   <button
                     type="button"
-                    onClick={() => onTest(providerId)}
-                    disabled={testing === providerId}
-                    className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
+                    disabled
+                    title="Teste de conexão em breve para esta integração"
+                    className="px-4 py-2 text-xs font-medium rounded-xl text-gray-400 dark:text-gray-600 cursor-not-allowed opacity-60"
                   >
-                    {testing === providerId ? (
-                      <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
-                    ) : 'Testar conexão'}
+                    Testar conexão (em breve)
                   </button>
                 )}
               </div>
@@ -5524,22 +5522,9 @@ function EnterpriseTab() {
     }
   };
 
-  const testConnection = async (providerId: string) => {
-    setTesting(providerId);
-    try {
-      // Simulate connection test
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const apiKey = keyValues[`${providerId}_apiKey`] || '';
-      if (apiKey.length > 5) {
-        toast.success('Conexão estabelecida com sucesso!');
-      } else {
-        toast.error('Falha na conexão. Verifique a API Key.');
-      }
-    } catch {
-      toast.error(t('settings.enterprise.testFatal', 'Erro ao testar conexão'));
-    } finally {
-      setTesting(null);
-    }
+  const testConnection = (_providerId: string) => {
+    // Não há rota real de teste de conexão por integração ainda. Não fingir sucesso.
+    toast(t('settings.enterprise.testUnavailable', 'Teste de conexão ainda não disponível para esta integração.'));
   };
 
   // ── API Key handlers ──
