@@ -136,8 +136,6 @@ import {
   Calendar,
 } from 'lucide-react';
 import { getDocs, getDoc } from 'firebase/firestore';
-import type { QueryDocumentSnapshot, DocumentData, Query, QueryNonFilterConstraint } from 'firebase/firestore';
-import { markConversationRead, markConversationUnread } from '@/lib/utils/markConversationRead';
 import type {
   Conversation,
   ConversationMessage,
@@ -6548,12 +6546,10 @@ export default function ConversasModule() {
       // audit (deletedBy / deletedByName). Reader (isActiveRecord) ainda
       // aceita o legado `isDeleted: true` durante a janela de backfill.
       const ref = doc(db, 'conversations', deleteConfirmConv.id);
-      // Zerar unreadCount ANTES via rota server-side: garante que o contador
-      // denormalizado `unreadCounters/{businessId}` seja decrementado (senão
-      // deletar uma conversa não-lida deixaria o badge inflado / fantasma).
-      // Idempotente — se já estava 0, é no-op.
-      await markConversationRead(deleteConfirmConv.id, business.id);
       await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
+      // Zerar unreadCount junto: defesa em profundidade contra badge fantasma
+      // no sidebar (filtros poderiam falhar no futuro). Custo zero.
+      await updateDoc(ref, { unreadCount: 0 });
       setSelectedConversation(null);
       setShowMobileThread(false);
       setDeleteConfirmConv(null);
@@ -6586,11 +6582,14 @@ export default function ConversasModule() {
       next.add(conv.id);
       return next;
     });
-    // Sobe unreadCount via rota canônica: o server aplica o MESMO delta em
-    // conversations.unreadCount E no contador denormalizado unreadCounters/{biz}
-    // na mesma transação. O updateDoc direto (antigo) deixava o contador drift.
-    // O alvo Math.max(1, prev)+1 é calculado server-side a partir do prevUnread.
-    await markConversationUnread(conv.id, business.id);
+    try {
+      await updateDoc(doc(db, 'conversations', conv.id), {
+        unreadCount: Math.max(1, conv.unreadCount || 0) + 1,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[Conversations] Mark unread failed:', err);
+    }
   }, [business?.id]);
 
   // Estágios ativos do pipeline (visíveis e não-finais) — alimentam o submenu
@@ -7195,86 +7194,48 @@ export default function ConversasModule() {
     setShowNewConversation(true);
   }, [clientsList]);
 
-  // ── Real-time: Conversations list (limit 50 + paginação por cursor) ────────
-  // O onSnapshot fica só nas 50 PRIMEIRAS conversas (live window) — antes era
-  // full-collection, re-entregando a cada mensagem nova × N conversas. Páginas
-  // seguintes ("carregar mais") são getDocs one-shot com startAfter(lastVisible)
-  // — NÃO live (não precisam de tempo real). `conversations` é o merge das duas
-  // (live tem precedência; dedupe por id; ordenado por lastMessageAt desc).
-  const CONV_PAGE_SIZE = 50;
-
-  // Páginas extras (>50) carregadas sob demanda — ref pra não recriar o
-  // listener e pra o snapshot poder re-merge sem stale closure.
-  const extraConversationsRef = useRef<Conversation[]>([]);
-  const liveConversationsRef = useRef<Conversation[]>([]);
-  const [convCursor, setConvCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
-  const [hasMoreConversations, setHasMoreConversations] = useState(false);
-  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
-
-  // Constrói a query base (mesmo escopo admin/non-admin da live window) +
-  // constraints extras (orderBy/limit/startAfter aplicados pelo caller). O
-  // composite `and(or(...))` é passado posicional ao `query()` — spread de um
-  // union QueryCompositeFilterConstraint|QueryFieldFilterConstraint não tipa.
-  const buildConversationsQuery = useCallback(
-    (extra: QueryNonFilterConstraint[]): Query<DocumentData> | null => {
-      if (!business?.id || !user?.uid) return null;
-      const col = collection(db, 'conversations');
-      // Isolamento server-side de canais pessoais (ownerType='user'):
-      //   - Admin/Founder vê tudo. Operador/Manager: 'business' + seus 'user'.
-      // Conversas legadas sem channelOwnerType NÃO casam (dependem do backfill).
-      return isAdmin
-        ? query(col, where('businessId', '==', business.id), ...extra)
-        : query(
-            col,
-            and(
-              where('businessId', '==', business.id),
-              or(
-                where('channelOwnerType', '==', 'business'),
-                where('channelOwnerId', '==', user.uid),
-              ),
-            ),
-            ...extra,
-          );
-    },
-    [business?.id, user?.uid, isAdmin],
-  );
-
-  const mergeConversations = useCallback(() => {
-    const seen = new Set<string>();
-    const merged: Conversation[] = [];
-    for (const c of liveConversationsRef.current) {
-      if (seen.has(c.id)) continue;
-      seen.add(c.id);
-      merged.push(c);
-    }
-    for (const c of extraConversationsRef.current) {
-      if (seen.has(c.id)) continue;
-      seen.add(c.id);
-      merged.push(c);
-    }
-    merged.sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
-    setConversations(merged);
-  }, []);
+  // ── Real-time: Conversations list ──────────────────────────────────────────
 
   useEffect(() => {
     if (!business?.id) return;
     if (!user?.uid) return;
 
     setIsLoadingConversations(true);
-    // Reset de paginação ao trocar de tenant/usuário/escopo.
-    extraConversationsRef.current = [];
-    setConvCursor(null);
-    setHasMoreConversations(false);
 
+    // Timeout de segurança: se o snapshot não responder em 12s, libera o loading
+    // (evita tela branca infinita em falha de rede ou permissão)
     const loadingTimeout = setTimeout(() => {
       setIsLoadingConversations(false);
     }, 12_000);
 
-    const q = buildConversationsQuery([
-      orderBy('lastMessageAt', 'desc'),
-      limit(CONV_PAGE_SIZE),
-    ]);
-    if (!q) return;
+    // Isolamento server-side de canais pessoais (ownerType='user'):
+    //   - Admin/Founder vê tudo (rules + query irrestrita).
+    //   - Operador/Manager vê: canais 'business' + canais 'user' que ele é dono.
+    // O `or()` aqui combina (channelOwnerType=='business' || channelOwnerId==me).
+    // Conversas legadas sem channelOwnerType denormalizado NÃO casam com nenhuma
+    // das branches — por isso depende do backfill (`backfill-conversation-ownership`)
+    // ter rodado antes do deploy desta versão. Até lá, conversas legadas ficam
+    // invisíveis pra non-admin (efeito conservador, não vaza nada).
+    const q = isAdmin
+      ? query(
+          collection(db, 'conversations'),
+          where('businessId', '==', business.id),
+          orderBy('lastMessageAt', 'desc'),
+        )
+      : query(
+          collection(db, 'conversations'),
+          // Firestore v10+: composite OR exige and() wrapper quando combinado
+          // com outros where(). Senão TS reclama (QueryCompositeFilterConstraint
+          // ≠ QueryConstraint) e runtime rejeita a query.
+          and(
+            where('businessId', '==', business.id),
+            or(
+              where('channelOwnerType', '==', 'business'),
+              where('channelOwnerId', '==', user.uid),
+            ),
+          ),
+          orderBy('lastMessageAt', 'desc'),
+        );
 
     let unsub: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -7284,26 +7245,24 @@ export default function ConversasModule() {
       unsub = onSnapshot(q, (snap) => {
         clearTimeout(loadingTimeout);
         retryCount = 0; // reset on success
-        liveConversationsRef.current = snap.docs
+        const data = snap.docs
           .map((d) => ({ ...d.data(), id: d.id } as Conversation))
           .filter(isActiveRecord);
-        // Cursor = último doc da live window; só há "mais" se a página veio cheia.
-        const lastDoc = snap.docs[snap.docs.length - 1];
-        setConvCursor(lastDoc ?? null);
-        setHasMoreConversations(snap.docs.length === CONV_PAGE_SIZE);
-        mergeConversations();
+        setConversations(data);
         setIsLoadingConversations(false);
 
         setSelectedConversation((prev) => {
           if (!prev) return prev;
-          const updated = liveConversationsRef.current.find((c) => c.id === prev.id)
-            ?? extraConversationsRef.current.find((c) => c.id === prev.id);
+          const updated = data.find((c) => c.id === prev.id);
           return updated || prev;
         });
       }, (err) => {
         clearTimeout(loadingTimeout);
         console.error('[Conversations] onSnapshot error:', err);
         setIsLoadingConversations(false);
+        // Reinicia o listener automaticamente — erros transitórios (índice ainda
+        // construindo, rede instável) matam o listener; retry garante que ele
+        // volte assim que o problema resolver.
         const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
         retryCount++;
         retryTimer = setTimeout(subscribe, delay);
@@ -7317,35 +7276,7 @@ export default function ConversasModule() {
       if (retryTimer) clearTimeout(retryTimer);
       unsub?.();
     };
-  }, [business?.id, user?.uid, isAdmin, buildConversationsQuery, mergeConversations]);
-
-  // "Carregar mais": getDocs one-shot com startAfter(cursor) + limit(50).
-  // Páginas extras não são live — só a live window (50 primeiras) tem snapshot.
-  const loadMoreConversations = useCallback(async () => {
-    if (loadingMoreConversations || !hasMoreConversations || !convCursor) return;
-    const q = buildConversationsQuery([
-      orderBy('lastMessageAt', 'desc'),
-      startAfter(convCursor),
-      limit(CONV_PAGE_SIZE),
-    ]);
-    if (!q) return;
-    setLoadingMoreConversations(true);
-    try {
-      const snap = await getDocs(q);
-      const page = snap.docs
-        .map((d) => ({ ...d.data(), id: d.id } as Conversation))
-        .filter(isActiveRecord);
-      extraConversationsRef.current = [...extraConversationsRef.current, ...page];
-      const lastDoc = snap.docs[snap.docs.length - 1];
-      if (lastDoc) setConvCursor(lastDoc);
-      setHasMoreConversations(snap.docs.length === CONV_PAGE_SIZE);
-      mergeConversations();
-    } catch (err) {
-      console.error('[Conversations] loadMore error:', err);
-    } finally {
-      setLoadingMoreConversations(false);
-    }
-  }, [loadingMoreConversations, hasMoreConversations, convCursor, buildConversationsQuery, mergeConversations]);
+  }, [business?.id, user?.uid, isAdmin]);
 
   // ── Load channel connections (Phase 2: badges + filter) ───────────────────
   // Fetch via API pra usar a sanitização (sem tokens) + filtragem por role
@@ -7659,13 +7590,11 @@ export default function ConversasModule() {
 
   const handleBatchMarkRead = useCallback(async () => {
     if (!business?.id || batchSelectedIds.size === 0) return;
-    const bid = business.id;
-    // Decremento centralizado: cada baixa via rota server-side (markAsRead
-    // transacional) pra manter o contador denormalizado correto. Não usa mais
-    // writeBatch com unreadCount:0 direto — senão o contador fica drift.
-    const count = batchSelectedIds.size;
-    await Promise.all([...batchSelectedIds].map(id => markConversationRead(id, bid)));
-    toast.success(`${count} conversa(s) marcada(s) como lida(s)`);
+    const now = new Date().toISOString();
+    const batch = writeBatch(db);
+    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { unreadCount: 0, updatedAt: now });
+    await batch.commit();
+    toast.success(`${batchSelectedIds.size} conversa(s) marcada(s) como lida(s)`);
     exitBatchMode();
   }, [business?.id, batchSelectedIds, exitBatchMode]);
 
@@ -8247,14 +8176,16 @@ export default function ConversasModule() {
 
   // ── Mark as read ───────────────────────────────────────────────────────────
 
-  // markAsRead canônico: passa pela rota server-side (POST /api/conversations/:id
-  // { action:'markAsRead' }) pra que o decremento do contador denormalizado
-  // `unreadCounters/{businessId}` aconteça transacional no server. Não
-  // escrevemos unreadCount:0 direto — senão o badge (que lê o contador) drift.
   const markAsRead = useCallback(async (conversationId: string) => {
-    if (!business?.id) return;
-    await markConversationRead(conversationId, business.id);
-  }, [business?.id]);
+    try {
+      await updateDoc(doc(db, 'conversations', conversationId), {
+        unreadCount: 0,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('Error marking conversation as read:', err);
+    }
+  }, []);
 
   // ── Signal de conversa ativa (consumido por useConversationsAlerts) ────────
   // Registra/desregistra o ID da conversa atualmente aberta. Hook global
@@ -9969,15 +9900,6 @@ export default function ConversasModule() {
                 computeItemKey={(_index, conv) => conv.id}
                 overscan={{ main: 400, reverse: 400 }}
                 increaseViewportBy={{ top: 200, bottom: 200 }}
-                endReached={() => { if (hasMoreConversations) void loadMoreConversations(); }}
-                components={{
-                  Footer: () =>
-                    loadingMoreConversations ? (
-                      <div className="flex items-center justify-center py-4">
-                        <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
-                      </div>
-                    ) : null,
-                }}
                 itemContent={(_index, conv) => (
                   <ConversationItem
                     conversation={conv}

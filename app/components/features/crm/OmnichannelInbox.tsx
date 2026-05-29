@@ -13,7 +13,6 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { db, storage } from '@/lib/config/firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { collection, query, where, orderBy, addDoc, updateDoc, doc, onSnapshot } from 'firebase/firestore';
-import { markConversationRead } from '@/lib/utils/markConversationRead';
 import { relativeTime, fullTime } from './shared';
 import { WhatsAppIcon } from './SourceIcon';
 import type { CRMContact, Conversation, ConversationMessage, ConversationChannel } from '@/lib/types';
@@ -380,14 +379,14 @@ export function OmnichannelInbox({ businessId, contacts }: { businessId: string;
     ) || null;
   }, [selectedConv, contacts]);
 
-  // Mark conversation as read — via rota server-side (markAsRead transacional)
-  // pra manter o contador denormalizado `unreadCounters/{businessId}` correto.
+  // Mark conversation as read
   const handleSelectConversation = useCallback((conv: Conversation) => {
     setSelectedConv(conv);
     if (conv.unreadCount > 0) {
-      void markConversationRead(conv.id, businessId);
+      updateDoc(doc(db, 'conversations', conv.id), { unreadCount: 0, updatedAt: new Date().toISOString() })
+        .catch((err) => console.error('[OmnichannelInbox] Failed to mark as read:', err));
     }
-  }, [businessId]);
+  }, []);
 
   const handleDeleteConversation = useCallback(async () => {
     if (!selectedConv || isDeleting) return;
