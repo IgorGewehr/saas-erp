@@ -18,6 +18,11 @@
 #       tunnel --url http://agent:8080
 #   (copia o URL trycloudflare.com que aparece e coloca no AGENT_SERVICE_URL do Next.js)
 
+# Fixa o nome do projeto Compose. Sem isto, o Compose deriva o nome da pasta
+# ("agent") e colide com qualquer outro projeto cujo diretório também se chame
+# "agent" (ex: ../../locai/agent) — subir um destruía o container do outro.
+name: servicepro-agent
+
 services:
   agent:
     build:
