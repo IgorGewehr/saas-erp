@@ -1154,6 +1154,7 @@ export interface Transaction {
   projectId?: string;
   projectName?: string;
   appointmentId?: string; // Link back to the originating appointment (for commission transactions)
+  deliveryOrderId?: string; // Link back to the originating delivery order (receita de delivery)
   // ── Cancellation audit (Fase 5c — Tier 2 status-driven) ──
   /** ISO timestamp do cancelamento. Setado quando `status` vira `cancelado`.
    *  Preserva doc pra historico financeiro/auditoria. */
@@ -1765,6 +1766,10 @@ export interface DeliveryOrder {
 
   // Tracks when stock was deducted so transitions stay idempotent.
   stockDeductedAt?: string;
+
+  /** FK para a Transaction de receita gerada ao entregar/pagar. Guard de
+   *  idempotência: Transaction só é criada se este campo estiver vazio. */
+  transactionId?: string;
 
   createdAt: string;
   updatedAt: string;

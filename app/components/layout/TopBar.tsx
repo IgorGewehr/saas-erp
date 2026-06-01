@@ -12,6 +12,7 @@ import { collection, query, where, or, and, orderBy, limit, onSnapshot, updateDo
 import { db } from '@/lib/config/firebase';
 import type { AppNotification } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
+import { useUnreadCounter } from '@/lib/hooks/useUnreadCounter';
 import {
   Search,
   Bell,
@@ -144,14 +145,32 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   const businessId = business?.id;
   const userUid = user?.uid;
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
-  const [unreadCount, setUnreadCount] = useState(0);
+
+  // ── In-app notifications (real-time) ──
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  // ── Badge de não-lidas (P1.4/P2.3) ──
+  // O NÚMERO do badge vem do contador denormalizado `unreadCounters/{businessId}`
+  // (1 doc, 1 onSnapshot) em vez de full-scan da coleção `conversations`.
+  // Escopo (admin=total / demais=business+byUser[uid]) resolvido no hook.
+  const { count: unreadCount } = useUnreadCounter({
+    businessId,
+    uid: userUid,
+    role: user?.role,
+  });
+
+  // Os IDs das conversas não-lidas só são necessários para as 2 ações do
+  // dropdown ("marcar todas como lidas" + "abrir a primeira não-lida"), que
+  // exigem os doc-ids reais (o agregado não os tem). Por isso o listener da
+  // coleção `conversations` é ANEXADO SÓ ENQUANTO O DROPDOWN ESTÁ ABERTO —
+  // elimina o full-scan permanente, mantendo as ações funcionando.
   const [unreadConvIds, setUnreadConvIds] = useState<string[]>([]);
   useEffect(() => {
-    if (!businessId || !userUid) { setUnreadCount(0); setUnreadConvIds([]); return; }
-    // Mirror da query do ConversasModule pra que o badge conte só conversas
-    // que o user CONSEGUE ver na lista — sem isso, bagde mostrava unread
-    // de canais Baileys pessoais alheios (que o user nem visualiza) e de
-    // conversas com isDeleted=true. Resultado: badge "9" + lista vazia.
+    if (!isNotifOpen || !businessId || !userUid) { setUnreadConvIds([]); return; }
+    // Mirror da query do ConversasModule pra coletar só conversas que o user
+    // CONSEGUE ver na lista (canais business + pessoais próprios; admin vê tudo).
     // Firestore v10+: composite OR exige and() wrapper quando combinado com
     // outros where() — TS reclama (QueryCompositeFilterConstraint != QueryConstraint).
     const q = isAdmin
@@ -172,30 +191,19 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     const unsub = onSnapshot(
       q,
       (snap) => {
-        let total = 0;
         const ids: string[] = [];
         for (const d of snap.docs) {
           const data = d.data() as { unreadCount?: number; isDeleted?: boolean; deletedAt?: string };
           // Filter soft-deleted (ambos formatos: legado isDeleted + novo deletedAt)
           if (!isActiveRecord(data)) continue;
-          const n = data.unreadCount || 0;
-          if (n > 0) {
-            total += n;
-            ids.push(d.id);
-          }
+          if ((data.unreadCount || 0) > 0) ids.push(d.id);
         }
-        setUnreadCount(total);
         setUnreadConvIds(ids);
       },
-      (err) => console.warn('[TopBar] unread count snapshot error:', err),
+      (err) => console.warn('[TopBar] unread convs snapshot error:', err),
     );
     return () => unsub();
-  }, [businessId, userUid, isAdmin]);
-
-  // ── In-app notifications (real-time) ──
-  const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [isNotifOpen, setIsNotifOpen] = useState(false);
-  const notifRef = useRef<HTMLDivElement>(null);
+  }, [isNotifOpen, businessId, userUid, isAdmin]);
 
   // ── Alerts: sound + desktop notifications. Hook em `useNotificationAlerts`
   //    no layout consome essas prefs e dispara os alerts. Aqui é só o toggle UI.

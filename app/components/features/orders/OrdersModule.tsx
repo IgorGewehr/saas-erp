@@ -1281,6 +1281,28 @@ export default function OrdersModule() {
       }
       if (newStatus === 'entregue') {
         patch.deliveredAt = now;
+        // Receita de delivery → Transaction (idempotente via order.transactionId).
+        // Espelha o padrão do PDV (Transaction com saleId em PDVModule.tsx).
+        if (!order.transactionId) {
+          const txRef = await addDoc(collection(db, 'transactions'), {
+            businessId: business.id,
+            type: 'receita',
+            category: 'Vendas',
+            description: `Pedido #${order.number}${order.clientName ? ` - ${order.clientName}` : ''}`,
+            amount: order.total,
+            dueDate: now.split('T')[0],
+            paymentDate: now.split('T')[0],
+            status: 'pago',
+            clientId: order.clientId || null,
+            contactId: order.clientId || null,
+            clientName: order.clientName || null,
+            deliveryOrderId: order.id,
+            paymentMethod: order.paymentMethod || null,
+            createdAt: now,
+            updatedAt: now,
+          });
+          patch.transactionId = txRef.id;
+        }
       }
 
       await updateDoc(doc(db, 'deliveryOrders',order.id), patch);

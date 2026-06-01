@@ -59,7 +59,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { notifyLowStock } from '@/lib/services/notifications';
@@ -323,10 +323,14 @@ export default function PDVModule() {
   const { data: salesHistory = [], isLoading: loadingSales } = useQuery({
     queryKey: ['sales', business?.id],
     queryFn: async () => {
+      // Painel de histórico recente do PDV — limita às 50 vendas mais recentes
+      // em vez de baixar a coleção inteira (auditoria P2.2). A busca client-side
+      // filtra apenas sobre essas; relatórios completos vivem no módulo Reports.
       const q = query(
         collection(db, 'sales'),
         where('businessId', '==', business!.id),
         orderBy('createdAt', 'desc'),
+        limit(50),
       );
       const snap = await getDocs(q);
       return snap.docs.map(d => ({ ...d.data(), id: d.id } as Sale));

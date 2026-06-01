@@ -21,7 +21,6 @@ import { useTranslation } from 'react-i18next';
 import type {
   Appointment,
   CRMContact,
-  Conversation,
   DeliveryOrder,
   Transaction,
   UseCase,
@@ -46,10 +45,10 @@ import {
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { enUS as enUSLocale } from 'date-fns/locale';
-import { collection, query, where, or, and, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { cn } from '@/lib/utils';
-import { isActiveRecord } from '@/lib/utils/recordFilters';
+import { useUnreadCounter } from '@/lib/hooks/useUnreadCounter';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
 import AgentHeroInput from './AgentHeroInput';
 
@@ -157,7 +156,26 @@ export default function DashboardModule() {
   useEffect(() => {
     if (!business?.id) { setLoadingTx(false); return; }
     setLoadingTx(true);
-    const q = query(collection(db, 'transactions'), where('businessId', '==', business.id));
+    // P0.1: janela por `dueDate` em vez de full-scan. O dashboard só conta
+    // contas pendentes/atrasadas (badges), que são vencimentos recentes ou
+    // próximos. Janela: 18 meses atrás → 12 meses à frente. Índice
+    // [businessId, dueDate desc] já existe.
+    // TODO(auditoria): contas atrasadas com dueDate > 18 meses no passado
+    // ficam fora da contagem. Realisticamente despreziveis; migrar p/ contador
+    // denormalizado se necessário capturar 100%.
+    const now = new Date();
+    const lo = new Date(now); lo.setMonth(lo.getMonth() - 18);
+    const hi = new Date(now); hi.setMonth(hi.getMonth() + 12);
+    const loStr = lo.toISOString().slice(0, 10);
+    const hiStr = hi.toISOString().slice(0, 10);
+    const q = query(
+      collection(db, 'transactions'),
+      where('businessId', '==', business.id),
+      where('dueDate', '>=', loStr),
+      where('dueDate', '<=', hiStr),
+      orderBy('dueDate', 'desc'),
+      limit(2000),
+    );
     const unsub = onSnapshot(q, (snap) => {
       setTransactions(snap.docs.map((d) => ({ ...d.data(), id: d.id } as Transaction)));
       setLoadingTx(false);
@@ -165,39 +183,15 @@ export default function DashboardModule() {
     return () => unsub();
   }, [business?.id]);
 
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [loadingConvs, setLoadingConvs] = useState(true);
-  useEffect(() => {
-    if (!business?.id || !user?.uid) { setLoadingConvs(false); return; }
-    setLoadingConvs(true);
-    // Mirror do query do ConversasModule pra que o KPI de unread conte só o
-    // que o user vê na lista. Sem isso, dashboard mostra unread inflado de
-    // canais alheios e conversas deletadas.
-    const userIsAdmin = ROLE_HIERARCHY[user.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
-    // Firestore v10+: composite OR exige and() wrapper quando combinado com
-    // outros where() — TS reclama e runtime rejeita sem o wrapper.
-    const q = userIsAdmin
-      ? query(collection(db, 'conversations'), where('businessId', '==', business.id))
-      : query(
-          collection(db, 'conversations'),
-          and(
-            where('businessId', '==', business.id),
-            or(
-              where('channelOwnerType', '==', 'business'),
-              where('channelOwnerId', '==', user.uid),
-            ),
-          ),
-        );
-    const unsub = onSnapshot(q, (snap) => {
-      setConversations(
-        snap.docs
-          .map((d) => ({ ...d.data(), id: d.id } as Conversation))
-          .filter(isActiveRecord),
-      );
-      setLoadingConvs(false);
-    }, (err) => { console.warn('[Dashboard] conversations snapshot error:', err); setLoadingConvs(false); });
-    return () => unsub();
-  }, [business?.id, user?.uid, user?.role]);
+  // P1.4/P2.3: KPI de não-lidas lê o contador denormalizado
+  // `unreadCounters/{businessId}` (1 doc, 1 onSnapshot) em vez de full-scan da
+  // coleção `conversations`. Escopo (admin=total / demais=business+byUser[uid])
+  // resolvido no hook.
+  const { count: unreadConvsTotal, loading: loadingConvs } = useUnreadCounter({
+    businessId: business?.id,
+    uid: user?.uid,
+    role: user?.role,
+  });
 
   const [crmContacts, setCrmContacts] = useState<CRMContact[]>([]);
   const [loadingCrm, setLoadingCrm] = useState(true);
@@ -228,10 +222,6 @@ export default function DashboardModule() {
   const overdueTxCount = useMemo(
     () => transactions.filter((t) => t.status === 'atrasado').length,
     [transactions],
-  );
-  const unreadConvsTotal = useMemo(
-    () => conversations.reduce((sum, c) => sum + (c.unreadCount || 0), 0),
-    [conversations],
   );
   const openLeadsCount = useMemo(
     () => crmContacts.filter((c) => c.status !== 'ganho' && c.status !== 'perdido').length,

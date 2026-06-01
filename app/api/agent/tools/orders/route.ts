@@ -252,8 +252,34 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
   const data = snap.data() as DeliveryOrder;
   if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
 
-  const patch: Record<string, unknown> = { status, updatedAt: new Date().toISOString() };
-  if (status === 'entregue') patch.deliveredAt = new Date().toISOString();
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { status, updatedAt: now };
+  if (status === 'entregue') {
+    patch.deliveredAt = now;
+    // Receita de delivery → Transaction (idempotente via data.transactionId).
+    // Mantém consistência com OrdersModule.handleStatusChange + PDV (saleId).
+    if (!data.transactionId) {
+      const txRef = adminDb.collection('transactions').doc();
+      await txRef.set({
+        businessId,
+        type: 'receita',
+        category: 'Vendas',
+        description: `Pedido #${data.number}${data.clientName ? ` - ${data.clientName}` : ''}`,
+        amount: data.total,
+        dueDate: now.split('T')[0],
+        paymentDate: now.split('T')[0],
+        status: 'pago',
+        clientId: data.clientId || null,
+        contactId: data.clientId || null,
+        clientName: data.clientName || null,
+        deliveryOrderId: orderId,
+        paymentMethod: data.paymentMethod || null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      patch.transactionId = txRef.id;
+    }
+  }
   await ref.update(patch);
   return { id: orderId, status };
 }
