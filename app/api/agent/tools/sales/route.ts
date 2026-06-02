@@ -16,6 +16,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { createSaleWithSideEffects } from '@/lib/services/sales-server';
+import { assertTransitionSale } from '@/lib/contracts/fsm/sale';
 import type { Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
 type Action = 'list' | 'get' | 'list_by_client' | 'create' | 'cancel' | 'summary_today';
@@ -118,54 +120,42 @@ async function createSale(businessId: string, p: CreateParams): Promise<Sale> {
   if (!Array.isArray(p.items) || p.items.length === 0) throw new Error('items required');
   if (!Array.isArray(p.payments) || p.payments.length === 0) throw new Error('payments required');
 
-  // Compute totals if not provided
-  const subtotal = typeof p.subtotal === 'number' ? p.subtotal : p.items.reduce((s, it) => s + (it.total ?? it.quantity * it.unitPrice), 0);
-  const discount = typeof p.discount === 'number' ? p.discount : 0;
-  const tip = typeof p.tip === 'number' ? p.tip : 0;
-  const total = typeof p.total === 'number' ? p.total : subtotal - discount + tip;
-
-  // Validate payments sum ~= total (allow 1 cent tolerance for rounding)
-  const payTotal = p.payments.reduce((s, x) => s + x.amount, 0);
-  if (Math.abs(payTotal - total) > 0.01) {
-    throw new Error(`Sum of payments (${payTotal.toFixed(2)}) does not match total (${total.toFixed(2)})`);
-  }
-
-  const now = new Date().toISOString();
-  const ref = adminDb.collection('sales').doc();
-
-  const items: SaleItem[] = p.items.map((it) => ({
-    id: adminDb.collection('_').doc().id,
-    productId: it.productId,
-    serviceId: it.serviceId,
-    description: it.description,
-    quantity: it.quantity,
-    unitPrice: round(it.unitPrice),
-    discount: round(it.discount || 0),
-    total: round(it.total ?? it.quantity * it.unitPrice),
-  }));
-
-  const sale: Sale = {
-    id: ref.id,
+  // P1.2/P1.8: delega ao serviço único (Sale + Transaction de receita +
+  // StockMovements + comissão), com idempotência determinística embutida —
+  // antes este caminho só fazia `ref.set(sale)` (estoque inflado, sem receita,
+  // duplicava em retry). `discount`/`tip`/`total` são derivados pelo serviço
+  // a partir dos itens; subtotal/total enviados pelo agent são ignorados de
+  // propósito (o serviço é a fonte canônica desses números).
+  const result = await createSaleWithSideEffects({
     businessId,
     clientId: p.clientId,
     clientName: p.clientName,
-    items,
-    payments: p.payments.map((x) => ({ ...x, amount: round(x.amount) })),
-    subtotal: round(subtotal),
-    discount: round(discount),
-    tip: tip ? round(tip) : undefined,
-    total: round(total),
+    items: p.items.map((it) => ({
+      productId: it.productId,
+      serviceId: it.serviceId,
+      description: it.description,
+      quantity: it.quantity,
+      unitPrice: it.unitPrice,
+      discount: it.discount || 0,
+      total: it.total,
+    })),
+    payments: p.payments.map((x) => ({
+      method: x.method,
+      amount: x.amount,
+      installments: x.installments,
+      cardBrand: x.cardBrand,
+    })),
+    discount: typeof p.discount === 'number' ? p.discount : 0,
+    tip: typeof p.tip === 'number' ? p.tip : undefined,
     status: p.status && VALID_STATUS.includes(p.status) ? p.status : 'finalizada',
     notes: p.notes?.slice(0, 500),
-    operatorId: p.operatorId || 'agent',
-    operatorName: p.operatorName || 'Agente IA',
     channelType: p.channelType,
     conversationId: p.conversationId,
-    createdAt: now,
-    updatedAt: now,
-  };
-  await ref.set(sale);
-  return sale;
+    operatorId: p.operatorId || 'agent',
+    operatorName: p.operatorName || 'Agente IA',
+  });
+
+  return result.sale;
 }
 
 async function cancelSale(businessId: string, id: string, reason?: string): Promise<Sale> {
@@ -175,7 +165,8 @@ async function cancelSale(businessId: string, id: string, reason?: string): Prom
   if (!snap.exists) throw new Error('Sale not found');
   const sale = snap.data() as Sale;
   if (sale.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  if (sale.status === 'cancelada') throw new Error('Sale already cancelled');
+  // R4/P1.9: FSM cobre o antigo guard "já cancelada" e bloqueia origens inválidas.
+  assertTransitionSale(sale.status, 'cancelada');
 
   const now = new Date().toISOString();
   const notes = reason

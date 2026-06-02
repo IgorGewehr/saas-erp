@@ -12,6 +12,7 @@
 import {
   collection,
   doc,
+  increment,
   writeBatch,
   type Firestore,
   type WriteBatch,
@@ -139,8 +140,15 @@ export async function deductStock(
     const previousStock = product.currentStock || 0;
     const newStock = previousStock - line.quantity;
 
+    // P1.6: increment atômico evita lost-update/oversell sob concorrência.
+    // O client SDK não lê dentro do batch, então previousStock/newStock no
+    // movimento vêm do snapshot pré-carregado (best-effort) — o saldo real do
+    // produto fica sempre correto via increment. Auditoria precisa do valor
+    // exato → preferir o caminho admin (deductStockAdmin, com runTransaction).
+    // TODO(auditoria P1.6): se este path passar a exigir previousStock/newStock
+    // exatos, migrar PDV para chamar a rota server-side atômica.
     batch.update(doc(db, 'products', product.id), {
-      currentStock: newStock,
+      currentStock: increment(-line.quantity),
       updatedAt: now,
     });
 

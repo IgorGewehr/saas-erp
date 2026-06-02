@@ -29,6 +29,7 @@ import type {
   Product, Client, DeliveryOrderAddress, StockAlert,
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
+import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
 
 // Local aliases — keep JSX concise.
 type Order = DeliveryOrder;
@@ -1245,6 +1246,11 @@ export default function OrdersModule() {
     if (!business?.id || !user) return;
     const now = new Date().toISOString();
     try {
+      // R4/P1.9: valida a transição pela FSM antes de qualquer write/side-effect
+      // (estoque, transação). Bloqueia pulos de estado; no-op se status não mudou.
+      if (newStatus !== order.status) {
+        assertTransitionDeliveryOrder(order.status, newStatus);
+      }
       const patch: Record<string, unknown> = { status: newStatus, updatedAt: now };
 
       // Deduct stock when entering 'preparando' for the first time
@@ -1333,7 +1339,10 @@ export default function OrdersModule() {
       }
     } catch (err) {
       console.error('[Orders] Status change failed:', err);
-      toast.error('Erro ao alterar status');
+      const msg = err instanceof Error && err.message.startsWith('DeliveryOrder FSM:')
+        ? 'Transição de status inválida'
+        : 'Erro ao alterar status';
+      toast.error(msg);
     }
   };
 

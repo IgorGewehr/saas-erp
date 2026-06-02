@@ -69,6 +69,11 @@ export const SaleSchema = z.object({
   total: z.number().nonnegative(),
   status: SaleStatusSchema,
   fiscalDocId: z.string().optional(),
+  /** FK para a Transaction de receita gerada na venda (lado reverso de Transaction.saleId).
+   *  Guard de idempotência do side-effect financeiro. */
+  transactionId: z.string().optional(),
+  /** FK para a Transaction de comissão (despesa) gerada na venda. Idempotência da comissão. */
+  commissionTransactionId: z.string().optional(),
   notes: z.string().max(2000).optional(),
   operatorId: z.string().min(1),
   operatorName: z.string().min(1),

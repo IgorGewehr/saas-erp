@@ -7,6 +7,7 @@ import { parseToolRequest, validateToolResponse, isContractError } from '@/contr
 import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
 import { updateAppointmentSafeAdmin, AppointmentConflictError } from '@/lib/services/appointmentTxGuardAdmin';
 import { effectiveServiceCapacity, isGroupService } from '@/lib/contracts/domain/service';
+import { assertTransitionAppointment } from '@/lib/contracts/fsm/appointment';
 import { buildSessionKey } from '@/lib/utils/sessionKey';
 import { resolveSessionsForDay, countSeatsTaken, findBlockingAppointment, buildGroupSlots } from '@/lib/services/groupSession';
 
@@ -864,6 +865,13 @@ async function updateAppointment(businessId: string, id: string, patch: Partial<
     const startTime = (cleanPatch.startTime as string | undefined) || data.startTime;
     const duration = (cleanPatch.duration as number | undefined) || data.duration;
     cleanPatch.endTime = addMinutes(startTime, duration);
+  }
+
+  // R4/P1.9/P2.16: valida a transição de status pela FSM ANTES do write. Bloqueia,
+  // entre outros, agendado→concluido (que geraria comissão sem atendimento). Só
+  // checa quando o status realmente muda (no-op se o patch repete o status atual).
+  if (cleanPatch.status !== undefined && cleanPatch.status !== data.status) {
+    assertTransitionAppointment(data.status, cleanPatch.status as AppointmentStatus);
   }
 
   // Tx atomica: helper re-checa conflito DENTRO da tx (Admin SDK suporta

@@ -15,6 +15,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { assertTransitionTransaction } from '@/lib/contracts/fsm/transaction';
 import type { Transaction, TransactionStatus, TransactionType, PaymentMethod } from '@/lib/types';
 
 type Action =
@@ -201,8 +202,9 @@ async function markPaid(businessId: string, p: MarkPaidParams): Promise<Transact
   if (!snap.exists) throw new Error('Transaction not found');
   const tx = snap.data() as Transaction;
   if (tx.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  if (tx.status === 'pago') throw new Error('Transaction already paid');
-  if (tx.status === 'cancelado') throw new Error('Cannot pay a cancelled transaction');
+  // R4/P1.9: valida a transição de status pela FSM (cobre os antigos guards
+  // "já paga" / "cancelada não pode pagar" + bloqueia origens inválidas).
+  assertTransitionTransaction(tx.status, 'pago');
 
   const now = new Date().toISOString();
   const paymentDate = p.paymentDate || now.slice(0, 10);
@@ -227,7 +229,8 @@ async function cancelTx(businessId: string, id: string, reason?: string): Promis
   if (!snap.exists) throw new Error('Transaction not found');
   const tx = snap.data() as Transaction;
   if (tx.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  if (tx.status === 'cancelado') throw new Error('Transaction already cancelled');
+  // R4/P1.9: FSM cobre o antigo guard "já cancelada" (cancelado é terminal).
+  assertTransitionTransaction(tx.status, 'cancelado');
 
   const now = new Date().toISOString();
   const notes = reason

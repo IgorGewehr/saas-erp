@@ -1071,6 +1071,10 @@ export interface Sale {
   total: number;
   status: 'aberta' | 'finalizada' | 'cancelada';
   fiscalDocId?: string;
+  /** FK para a Transaction de receita gerada na venda (lado reverso de Transaction.saleId). */
+  transactionId?: string;
+  /** FK para a Transaction de comissão (despesa) gerada na venda. */
+  commissionTransactionId?: string;
   notes?: string;
   operatorId: string;
   operatorName: string;

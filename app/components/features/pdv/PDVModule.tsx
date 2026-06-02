@@ -857,6 +857,14 @@ export default function PDVModule() {
       }
 
       // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
+      // TODO(auditoria P2.12): comissão é addDoc avulso pós-commit, sem chave de
+      // idempotência nem `commissionTransactionId` na Sale. A correção canônica
+      // (comissão dentro do batch com ID determinístico de saleRef.id + link na
+      // Sale) já existe em lib/services/sales-server.ts createSaleWithSideEffects;
+      // migrar o PDV pra esse serviço é arriscado agora (PDV usa client SDK e
+      // batch único atômico; o serviço usa firebase-admin). Migração rastreada
+      // como dívida — caminho de duplicação aqui é estreito (sem retry automático,
+      // guard de UI).
       const commissionRate = user.commissionRate ?? 0;
       if (commissionRate > 0 && total > 0) {
         const commissionAmount = Math.round(total * commissionRate) / 100;

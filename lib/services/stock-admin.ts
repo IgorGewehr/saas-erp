@@ -9,6 +9,7 @@
  * can be safely imported from API routes without dragging in the client SDK.
  */
 
+import { FieldValue } from 'firebase-admin/firestore';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { Product, StockMovement, StockAlert } from '@/lib/types';
 import {
@@ -139,7 +140,14 @@ export async function loadProductIndex(
 /**
  * Atomically deduct stock for a set of sale/order lines using the Admin SDK.
  * Expands composite products; writes one product update + one stockMovement
- * row per resulting leaf SKU, all in a single batch.
+ * row per resulting leaf SKU.
+ *
+ * P1.6: roda dentro de runTransaction e lê o currentStock real de cada produto
+ * dentro da transação (em vez do snapshot pré-carregado). Assim previousStock/
+ * newStock gravados no movimento refletem a realidade e duas vendas simultâneas
+ * do mesmo SKU não causam lost-update/oversell — a transação reexecuta em caso
+ * de conflito. O productIndex (pré-carregado) ainda é usado para expandir BOM,
+ * nome do produto e minStock; só o valor numérico de estoque vem da leitura tx.
  */
 export async function deductStockAdmin(
   db: Firestore,
@@ -149,50 +157,59 @@ export async function deductStockAdmin(
   const expanded = expandComponents(lines, ctx.productIndex);
   if (expanded.length === 0) return [];
 
-  const batch = db.batch();
   const now = new Date().toISOString();
-  const adjustments: StockAdjustmentAdmin[] = [];
 
-  for (const line of expanded) {
-    const product = ctx.productIndex.get(line.productId);
-    if (!product) continue;
+  return db.runTransaction(async (tx) => {
+    const adjustments: StockAdjustmentAdmin[] = [];
 
-    const previousStock = product.currentStock || 0;
-    const newStock = previousStock - line.quantity;
+    // Fase de leitura: todas as leituras antes de qualquer escrita (exigência do
+    // Firestore). Lê o estoque atual de cada SKU dentro da transação.
+    const reads: Array<{ line: StockDeductionLine; product: Product; previousStock: number }> = [];
+    for (const line of expanded) {
+      const product = ctx.productIndex.get(line.productId);
+      if (!product) continue;
+      const snap = await tx.get(db.collection('products').doc(product.id));
+      const previousStock = (snap.exists ? (snap.data()?.currentStock as number | undefined) : undefined) ?? 0;
+      reads.push({ line, product, previousStock });
+    }
 
-    batch.update(db.collection('products').doc(product.id), {
-      currentStock: newStock,
-      updatedAt: now,
-    });
+    // Fase de escrita.
+    for (const { line, product, previousStock } of reads) {
+      const newStock = previousStock - line.quantity;
 
-    const movementRef = db.collection('stockMovements').doc();
-    const movement: Omit<StockMovement, 'id'> = {
-      businessId: ctx.businessId,
-      productId: product.id,
-      productName: product.name,
-      type: 'saida',
-      quantity: line.quantity,
-      previousStock,
-      newStock,
-      reason: ctx.reason,
-      ...(ctx.sourceId ? { saleId: ctx.sourceId } : {}),
-      operatorId: ctx.operatorId,
-      operatorName: ctx.operatorName,
-      createdAt: now,
-    };
-    batch.set(movementRef, movement);
+      tx.update(db.collection('products').doc(product.id), {
+        currentStock: FieldValue.increment(-line.quantity),
+        updatedAt: now,
+      });
 
-    const alert = detectStockCrossing(product, previousStock, newStock);
-    adjustments.push({
-      productId: product.id,
-      productName: product.name,
-      delta: -line.quantity,
-      previousStock,
-      newStock,
-      ...(alert ? { alert } : {}),
-    });
-  }
+      const movementRef = db.collection('stockMovements').doc();
+      const movement: Omit<StockMovement, 'id'> = {
+        businessId: ctx.businessId,
+        productId: product.id,
+        productName: product.name,
+        type: 'saida',
+        quantity: line.quantity,
+        previousStock,
+        newStock,
+        reason: ctx.reason,
+        ...(ctx.sourceId ? { saleId: ctx.sourceId } : {}),
+        operatorId: ctx.operatorId,
+        operatorName: ctx.operatorName,
+        createdAt: now,
+      };
+      tx.set(movementRef, movement);
 
-  await batch.commit();
-  return adjustments;
+      const alert = detectStockCrossing(product, previousStock, newStock);
+      adjustments.push({
+        productId: product.id,
+        productName: product.name,
+        delta: -line.quantity,
+        previousStock,
+        newStock,
+        ...(alert ? { alert } : {}),
+      });
+    }
+
+    return adjustments;
+  });
 }
