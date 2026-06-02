@@ -11,6 +11,7 @@
  */
 
 import { z } from 'zod';
+import { ProductComponentSchema } from './product';
 
 const TimeHmSchema = z.string().regex(/^\d{2}:\d{2}$/, 'Formato HH:MM (24h)');
 const WeekdaySchema = z.number().int().min(0).max(6); // 0=Domingo .. 6=Sábado
@@ -43,6 +44,12 @@ export const ServiceSchema = z.object({
   // ── Capacidade / turmas (feature desta fase) ──────────────────────────────
   capacity: ServiceCapacitySchema.optional(),
   sessions: z.array(WeeklySessionSchema).optional(),
+  // ── Insumos consumidos (BOM de serviço — salão/academia) ──────────────────
+  // P2.5: quando presente, a conclusão do Appointment deduz estes componentes
+  // do estoque (reusa expandBomLines + deductStock). Mesma forma de
+  // Product.components: lista de { productId, productName, quantity }.
+  // AUSENTE = serviço não consome estoque (comportamento atual, BIT-A-BIT).
+  consumedComponents: z.array(ProductComponentSchema).optional(),
   // ── Demais campos existentes ──────────────────────────────────────────────
   commissionRate: z.number().min(0).max(100).optional(),
   formTemplateId: z.string().optional(),

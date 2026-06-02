@@ -42,6 +42,15 @@ export const SessionKeySchema = z
   .string()
   .regex(/^[^_]+_[^_]+_[^_]+_[^_]+$/, 'sessionKey deve ter 4 partes: serviceId_date_startTime_professionalId|any');
 
+/**
+ * Resultado de uma aula experimental (trial) — funil de aquisição (P2.8).
+ * `pendente` enquanto o trial não foi concluído/decidido; ao concluir vira
+ * `converteu` (cliente fechou plano) ou `nao_converteu`.
+ */
+export const TRIAL_OUTCOMES = ['converteu', 'nao_converteu', 'pendente'] as const;
+export const TrialOutcomeSchema = z.enum(TRIAL_OUTCOMES);
+export type TrialOutcome = z.infer<typeof TrialOutcomeSchema>;
+
 export const AppointmentSchema = z.object({
   id: z.string().min(1),
   businessId: z.string().min(1, 'businessId obrigatório (multi-tenant)'),
@@ -70,6 +79,9 @@ export const AppointmentSchema = z.object({
   sessionKey: SessionKeySchema.optional(),
   isGroupSession: z.boolean().optional(),
   capacitySnapshot: z.number().int().min(1).optional(),
+  // ── Aula experimental / funil de aquisição (P2.8) ─────────────────────────
+  isTrial: z.boolean().optional(),
+  trialOutcome: TrialOutcomeSchema.optional(),
   // ── Automação / comissão / sync ───────────────────────────────────────────
   reminderSentAt: z.string().optional(),
   confirmationRequestedAt: z.string().optional(),

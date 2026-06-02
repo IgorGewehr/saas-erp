@@ -53,6 +53,53 @@ class SessionFullError extends Error {
   }
 }
 
+// P2.9: limite de aulas do ciclo de uma mensalidade estourado. Captura fora da
+// tx pra responder status='conflict' (acionável) em vez de 500.
+class MembershipLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MembershipLimitError';
+  }
+}
+
+/**
+ * P2.9: assinatura ativa do cliente que cobre este serviço E tem teto de usos
+ * por ciclo. Retorna o doc (com ref) pra checar limite antes de reservar e
+ * incrementar usesThisCycle dentro da tx. null = sem plano com teto aplicável
+ * (booking segue normal, sem enforcement). R1: filtra businessId.
+ */
+async function loadActiveMembershipForBooking(
+  businessId: string,
+  clientId: string,
+  serviceId: string,
+): Promise<{ id: string; usesThisCycle: number; maxUsesPerCycle: number; membershipName: string } | null> {
+  const cmSnap = await adminDb.collection('clientMemberships')
+    .where('businessId', '==', businessId)
+    .where('clientId', '==', clientId)
+    .where('status', '==', 'active')
+    .get();
+  if (cmSnap.empty) return null;
+
+  for (const doc of cmSnap.docs) {
+    const cm = doc.data() as { membershipId?: string; membershipName?: string; usesThisCycle?: number };
+    if (!cm.membershipId) continue;
+    const planSnap = await adminDb.collection('memberships').doc(cm.membershipId).get();
+    if (!planSnap.exists) continue;
+    const plan = planSnap.data() as { businessId?: string; serviceIds?: string[]; maxUsesPerCycle?: number | null };
+    if (plan.businessId !== businessId) continue;
+    if (!plan.serviceIds?.includes(serviceId)) continue;
+    // Só aplica enforcement quando há teto definido (>0). Ilimitado → ignora.
+    if (plan.maxUsesPerCycle == null || plan.maxUsesPerCycle <= 0) continue;
+    return {
+      id: doc.id,
+      usesThisCycle: cm.usesThisCycle ?? 0,
+      maxUsesPerCycle: plan.maxUsesPerCycle,
+      membershipName: cm.membershipName ?? 'plano',
+    };
+  }
+  return null;
+}
+
 /**
  * Carrega um Service por id, validando tenant. Retorna null se ausente/cross-tenant.
  */
@@ -644,6 +691,13 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
     professionalId: effectiveProfessionalId,
   });
 
+  // P2.9: se o cliente tem mensalidade ativa com teto de usos por ciclo que
+  // cobre este serviço, recusa quando o limite já foi atingido. Carregado fora
+  // da tx (read-only); o incremento de usesThisCycle acontece dentro da tx.
+  const membership = p.clientId
+    ? await loadActiveMembershipForBooking(businessId, p.clientId, c.serviceId)
+    : null;
+
   const newRef = adminDb.collection('appointments').doc();
 
   const result = await adminDb.runTransaction(async (tx) => {
@@ -651,6 +705,20 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
       .where('businessId', '==', businessId)
       .where('date', '==', p.date);
     const daySnap = await tx.get(txQuery);
+
+    // P2.9: re-lê a assinatura DENTRO da tx pra contagem consistente sob
+    // concorrência (usesThisCycle pode ter mudado entre o pre-check e aqui).
+    let membershipUses = 0;
+    if (membership) {
+      const cmRef = adminDb.collection('clientMemberships').doc(membership.id);
+      const cmSnap = await tx.get(cmRef);
+      membershipUses = (cmSnap.data()?.usesThisCycle as number | undefined) ?? membership.usesThisCycle;
+      if (membershipUses >= membership.maxUsesPerCycle) {
+        throw new MembershipLimitError(
+          `Limite do plano ${membership.membershipName} atingido: ${membershipUses}/${membership.maxUsesPerCycle} aulas neste ciclo.`,
+        );
+      }
+    }
 
     const dayAppts = daySnap.docs.map(d => ({ ...(d.data() as Appointment), id: d.id }));
 
@@ -711,6 +779,15 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
 
     tx.create(newRef, docData);
 
+    // P2.9: consome 1 uso do ciclo da mensalidade (atômico com a criação do
+    // appointment — só conta se a reserva foi efetivada).
+    if (membership) {
+      tx.update(adminDb.collection('clientMemberships').doc(membership.id), {
+        usesThisCycle: membershipUses + 1,
+        updatedAt: c.now,
+      });
+    }
+
     const seatsRemaining = capacity - (taken + 1);
     return {
       id: newRef.id,
@@ -751,6 +828,19 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
         professionalName: p.professionalName,
         conflictReason: err.message,
         alternatives,
+      };
+    }
+    // P2.9: limite do plano atingido → 'conflict' acionável (sem alternativas
+    // de horário: o bloqueio é de cota, não de slot).
+    if (err instanceof MembershipLimitError) {
+      return {
+        status: 'conflict' as const,
+        date: p.date,
+        startTime: p.startTime,
+        endTime: c.endTime,
+        serviceName: c.serviceName,
+        professionalName: p.professionalName,
+        conflictReason: err.message,
       };
     }
     throw err;

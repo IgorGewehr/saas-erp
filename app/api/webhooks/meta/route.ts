@@ -524,10 +524,17 @@ function verifySignatureFromBuffer(rawBuffer: Buffer, signature: string): boolea
 
 export async function POST(req: NextRequest) {
   try {
+    // P2.18 — Meta entrega de um conjunto pequeno de IPs fixos, então um
+    // rate-limit por IP agrega TODOS os tenants. O limite antigo (200/min) era
+    // baixo o bastante para ser estourado por um tenant movimentado, e retornar
+    // 200 ao estourar fazia a Meta NÃO reentregar → perda silenciosa de eventos
+    // de todos os tenants. Correção: limite muito mais alto (só guarda
+    // anti-abuso grosseiro) e, ao estourar, retorna 429 para a Meta reentregar.
+    // A dedup por wamid (markWebhookSeen) já protege contra processar duplicado.
     const clientIp = getClientIp(req);
-    const { allowed } = checkRateLimit(`webhook:${clientIp}`, 200, 60_000);
+    const { allowed } = checkRateLimit(`webhook:${clientIp}`, 5000, 60_000);
     if (!allowed) {
-      return NextResponse.json({ status: 'ok' }, { status: 200 });
+      return NextResponse.json({ error: 'Rate limited — retry' }, { status: 429 });
     }
 
     // Read raw bytes — arrayBuffer preserves exact bytes Meta signed

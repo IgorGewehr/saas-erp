@@ -932,6 +932,14 @@ export interface Appointment {
   followUpSentAt?: string;
   // Commission tracking — set when appointment is marked concluido
   commissionTransactionId?: string; // Firestore ID of the linked Transaction (category: 'Comissoes')
+  /** true quando este agendamento é uma aula/sessão experimental (trial) de
+   *  aquisição — academia, salão demo, etc. (P2.8). Marca o funil pro CRM/agent. */
+  isTrial?: boolean;
+  /** Resultado do trial após conclusão (P2.8). `pendente` enquanto não decidido;
+   *  setado pra `converteu`/`nao_converteu` ao concluir o appointment trial.
+   *  `converteu` dispara avanço de lifecycleStage do cliente (ver evento
+   *  appointment.trialCompleted em lib/contracts/events). */
+  trialOutcome?: 'converteu' | 'nao_converteu' | 'pendente';
   /** FK opcional para o CRMDeal que originou este agendamento (ROI por deal — P2.10). */
   dealId?: string;
   /** FK opcional para a Sale que cobrou este atendimento (reconciliação agenda↔caixa — P2.10). */
@@ -995,6 +1003,12 @@ export interface Service {
    * disponibilidade contínua derivada do expediente permanece INTACTA.
    */
   sessions?: WeeklySession[];
+  /**
+   * Insumos consumidos ao concluir um atendimento (BOM de serviço — salão/academia).
+   * Mesma forma de Product.components. Quando presente, a conclusão do Appointment
+   * deduz estes componentes do estoque. AUSENTE = serviço não consome estoque.
+   */
+  consumedComponents?: ProductComponent[];
   commissionRate?: number; // Commission % override for this service (0–100). Takes precedence over professional's commissionRate
   formTemplateId?: string; // Intake form auto-requested when this service is booked
   operatorIds?: string[];  // UIDs autorizados a executar o serviço (vazio = todos profissionais ativos)
@@ -1556,6 +1570,10 @@ export interface ProductModifierOption {
   maxQuantity?: number;         // for 'quantity' type; default 1
   available: boolean;
   sortOrder: number;
+  // P2.6: link de estoque. Se setado, escolher esta opção debita consumeQty
+  // (default 1) do produto/insumo linkedProductId × qty da opção × qty do item.
+  linkedProductId?: string;     // SKU/insumo consumido (ex: "queijo extra")
+  consumeQty?: number;          // unidades por seleção; default 1
 }
 
 export interface ProductModifierGroup {

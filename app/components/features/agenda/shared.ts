@@ -110,4 +110,9 @@ export interface AppointmentFormData {
   color: string;
   recurrenceFrequency?: RecurrenceFrequency;
   recurrenceOccurrences?: number;
+  /** Aula experimental / sessão de aquisição (P2.8). */
+  isTrial?: boolean;
+  /** Resultado do trial (P2.8) — emitido como evento appointment.trialCompleted
+   *  ao concluir. Sem valor → tratado como 'pendente'. */
+  trialOutcome?: 'converteu' | 'nao_converteu' | 'pendente';
 }

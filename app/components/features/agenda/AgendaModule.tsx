@@ -78,6 +78,7 @@ import { notifyUsers } from '@/lib/services/notifications';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User, WeeklySession } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
+import { consumeServiceComponents } from '@/lib/services/serviceConsumption';
 import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
@@ -123,6 +124,36 @@ async function emitAppointmentCompletedEvent(args: {
   } catch (err) {
     // Fire-and-forget: log mas não derruba o save
     console.warn('[Agenda] emit appointment.completed falhou:', err);
+  }
+}
+
+// P2.8: dispatch de domain event quando uma AULA EXPERIMENTAL (isTrial) é
+// concluída. Sinaliza o funil de aquisição pro CRM/agent (outcome converteu →
+// avançar lifecycleStage). Fire-and-forget; auditoria em domainEvents/{id}.
+async function emitAppointmentTrialCompletedEvent(args: {
+  appointmentId: string;
+  clientId?: string;
+  serviceId?: string;
+  outcome: 'converteu' | 'nao_converteu' | 'pendente';
+}): Promise<void> {
+  try {
+    const { getAuth } = await import('firebase/auth');
+    const token = await getAuth().currentUser?.getIdToken();
+    if (!token) return;
+    await fetch('/api/events/dispatch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        type: 'appointment.trialCompleted',
+        occurredAt: new Date().toISOString(),
+        appointmentId: args.appointmentId,
+        clientId: args.clientId,
+        serviceId: args.serviceId,
+        outcome: args.outcome,
+      }),
+    });
+  } catch (err) {
+    console.warn('[Agenda] emit appointment.trialCompleted falhou:', err);
   }
 }
 
@@ -2215,6 +2246,11 @@ export default function AgendaModule() {
         payload.professionalNames = data.professionalNames;
       }
       if (data.notes) payload.notes = data.notes;
+      // P2.8: aula experimental — flag + outcome (funil de aquisição).
+      if (data.isTrial) {
+        payload.isTrial = true;
+        payload.trialOutcome = data.trialOutcome ?? 'pendente';
+      }
 
       if (editingAppointment) {
         // Re-check atomico via tx — fecha race window de ~100-200ms onde
@@ -2297,6 +2333,18 @@ export default function AgendaModule() {
             .catch(err => console.warn('[Agenda] commission cancel on edit failed:', err));
         }
 
+        // ── P2.5: deduz insumos do serviço na 1ª conclusão (edit) ───────────
+        if (!wasDone && isDone && user) {
+          const svc = services.find(s => s.id === data.serviceId);
+          void consumeServiceComponents({
+            service: svc,
+            businessId: business.id,
+            operatorId: user.uid,
+            operatorName: user.name || user.uid,
+            appointmentId: editingAppointment.id,
+          }).catch(err => console.warn('[Agenda] service stock consumption on edit failed:', err));
+        }
+
         // SDD Fase 4: emit domain event quando vira concluido (auditoria)
         if (!wasDone && isDone) {
           void emitAppointmentCompletedEvent({
@@ -2305,6 +2353,17 @@ export default function AgendaModule() {
             professionalId: data.professionalId,
             serviceId: data.serviceId,
             amount: data.price || 0,
+          });
+        }
+
+        // P2.8: aula experimental concluída → sinaliza conversão pro CRM/agent.
+        // Sem outcome explícito ainda → 'pendente' (operador decide depois).
+        if (!wasDone && isDone && data.isTrial) {
+          void emitAppointmentTrialCompletedEvent({
+            appointmentId: editingAppointment.id,
+            clientId: data.clientId,
+            serviceId: data.serviceId,
+            outcome: data.trialOutcome ?? 'pendente',
           });
         }
 
@@ -2347,6 +2406,10 @@ export default function AgendaModule() {
             batch.set(ref, { ...payload, date: d, recurrenceId });
           }
           await batch.commit();
+          // TODO(auditoria P2.5): série recorrente criada já 'concluido' não
+          // deduz insumos (consumedComponents) por ocorrência. Caso raro
+          // (criar série inteira como concluída); evitar dedução N× sem doc IDs
+          // individuais aqui. O caminho normal (conclusão individual) já cobre.
           if (data.status === 'concluido' && data.clientId) {
             // Backfill metrics for every occurrence created as 'concluído'.
             await syncClientMetrics({
@@ -2388,6 +2451,26 @@ export default function AgendaModule() {
               serviceId: data.serviceId,
               amount: data.price || 0,
             });
+            // P2.5: deduz insumos do serviço quando criado já concluído.
+            if (user) {
+              const svc = services.find(s => s.id === data.serviceId);
+              void consumeServiceComponents({
+                service: svc,
+                businessId: business.id,
+                operatorId: user.uid,
+                operatorName: user.name || user.uid,
+                appointmentId: newDocRef.id,
+              }).catch(err => console.warn('[Agenda] service stock consumption on create failed:', err));
+            }
+            // P2.8: aula experimental criada já concluída → sinaliza conversão.
+            if (data.isTrial) {
+              void emitAppointmentTrialCompletedEvent({
+                appointmentId: newDocRef.id,
+                clientId: data.clientId,
+                serviceId: data.serviceId,
+                outcome: data.trialOutcome ?? 'pendente',
+              });
+            }
           }
           if (data.status === 'concluido' && data.clientId) {
             await syncClientMetrics({
@@ -2720,6 +2803,20 @@ export default function AgendaModule() {
         }
       }
 
+      // ── P2.5: deduz insumos do serviço (BOM de serviço) ───────────────────
+      // Mesma transição que comissão/loyalty (!wasDone && isDone) garante
+      // idempotência (não re-deduz em re-conclusão). Fire-and-forget.
+      if (!wasDone && isDone && user) {
+        const svc = services.find(s => s.id === selectedAppointment.serviceId);
+        void consumeServiceComponents({
+          service: svc,
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name || user.uid,
+          appointmentId: selectedAppointment.id,
+        }).catch(err => console.warn('[Agenda] service stock consumption failed:', err));
+      }
+
       // ── Automatic commission handling ────────────────────────────────────
       if (!wasDone && isDone && selectedAppointment.professionalId) {
         const professional = members.find(m => m.id === selectedAppointment.professionalId);
@@ -2745,6 +2842,17 @@ export default function AgendaModule() {
         setSelectedAppointment(prev => prev ? { ...prev, status } : null);
       }
 
+      // P2.8: aula experimental concluída via mudança de status → sinaliza
+      // conversão pro CRM/agent (mesma transição idempotente !wasDone && isDone).
+      if (!wasDone && isDone && selectedAppointment.isTrial) {
+        void emitAppointmentTrialCompletedEvent({
+          appointmentId: selectedAppointment.id,
+          clientId: selectedAppointment.clientId,
+          serviceId: selectedAppointment.serviceId,
+          outcome: selectedAppointment.trialOutcome ?? 'pendente',
+        });
+      }
+
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setSnackbar({
@@ -2758,7 +2866,7 @@ export default function AgendaModule() {
     } finally {
       setStatusChanging(false);
     }
-  }, [selectedAppointment, business?.id, queryClient, t, members, services]);
+  }, [selectedAppointment, business?.id, queryClient, t, members, services, user]);
 
   // ---- Computed values ----
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);
