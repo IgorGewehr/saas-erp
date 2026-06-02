@@ -96,6 +96,36 @@ def build_run_config(
     }
 
 
+def build_enricher_config(state: dict[str, Any]) -> dict[str, Any]:
+    """Trace config para o enricher pós-grafo.
+
+    O enricher roda fire-and-forget DEPOIS de `graph.ainvoke` (loop.create_task),
+    fora da árvore do run principal. Sem config, suas chamadas LLM viram runs
+    raiz sem metadata — impossíveis de filtrar/atribuir por tenant no LangSmith.
+    Passamos run_name + tags + metadata para que apareçam taggeados.
+    """
+    s = get_settings()
+    env = (s.app_env or "development").lower()
+    business_id = state.get("business_id") or ""
+    conversation_id = state.get("conversation_id") or ""
+    use_case = state.get("use_case") or ""
+
+    tags = [f"business:{business_id}", f"env:{env}", "subsystem:enricher"]
+    if use_case:
+        tags.append(f"use_case:{use_case}")
+
+    metadata: dict[str, Any] = {
+        "business_id": business_id,
+        "env": env,
+        "agent_version": _AGENT_VERSION,
+        "subsystem": "enricher",
+    }
+    if conversation_id:
+        metadata["conversation_id"] = conversation_id
+
+    return {"run_name": "agent.enricher", "tags": tags, "metadata": metadata}
+
+
 # ─── PII redaction (applied to LangSmith trace payloads) ─────────────────────
 
 # Brazilian doc patterns (with or without punctuation). Order matters — CNPJ
@@ -183,6 +213,46 @@ def redact_if_enabled(data: Any, settings: Settings | None = None) -> Any:
 
 # ─── LangSmith init ──────────────────────────────────────────────────────────
 
+def _redact_trace_payload(payload: Any) -> Any:
+    """Hook hide_inputs/hide_outputs do Client LangSmith — scrub PII de inputs/
+    outputs de TODO run antes do upload. max_depth alto porque mensagens LC
+    serializadas são aninhadas. Nunca propaga exceção (não pode quebrar trace)."""
+    try:
+        return redact_pii(payload, max_depth=12)
+    except Exception:
+        return {"_redaction_error": True}
+
+
+def _install_trace_redaction(settings: Settings) -> None:
+    """Faz o tracer global do LangChain redigir PII no upload.
+
+    O auto-tracer resolve o client via langsmith.run_trees.get_cached_client()
+    (singleton first-call-wins). Semeamos esse singleton com hide_inputs/
+    hide_outputs. Sem isto, LANGCHAIN_HIDE_INPUTS=false faz os inputs/outputs
+    crus (CPF/telefone/endereço reais) subirem ao LangSmith. Só age quando
+    REDACT_PII_IN_TRACES está ligado. Best-effort: falha não quebra o boot.
+    """
+    if not settings.redact_pii_in_traces:
+        return
+    try:
+        from langsmith import run_trees as _rt
+
+        # Zera o cache para que nossos kwargs vençam mesmo se algo já tiver
+        # criado o singleton antes deste ponto do startup.
+        _rt._CLIENT = None
+        _rt.get_cached_client(
+            hide_inputs=_redact_trace_payload,
+            hide_outputs=_redact_trace_payload,
+        )
+    except Exception:
+        import logging
+
+        logging.getLogger("observability").warning(
+            "langsmith.redaction_wire_failed — traces podem subir sem redaction",
+            exc_info=True,
+        )
+
+
 def enable_langsmith_if_configured(settings: Settings | None = None) -> bool:
     """Enable LangSmith globally when an API key is present.
 
@@ -203,7 +273,9 @@ def enable_langsmith_if_configured(settings: Settings | None = None) -> bool:
     if s.langchain_api_key:
         os.environ["LANGCHAIN_API_KEY"] = s.langchain_api_key
     os.environ["LANGCHAIN_PROJECT"] = langsmith_project_name(s)
-    # Reduce payload size — we only upload what we need, PII-scrubbed when enabled.
+    # Mantemos os inputs/outputs visíveis (não escondidos), mas redigidos: a
+    # redaction real é instalada no client de upload abaixo, não via HIDE_*.
     os.environ.setdefault("LANGCHAIN_HIDE_INPUTS", "false")
     os.environ.setdefault("LANGCHAIN_HIDE_OUTPUTS", "false")
+    _install_trace_redaction(s)
     return True

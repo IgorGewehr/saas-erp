@@ -29,6 +29,7 @@ from langchain_openai import ChatOpenAI
 
 from ..config import get_settings
 from ..logging_config import get_logger
+from ..observability import build_enricher_config
 from ..tools.client import ToolError, call_tool
 from . import prompts
 from .state import AgentState
@@ -140,8 +141,14 @@ async def _resolve_client_id(business_id: str, phone: str | None) -> str | None:
     return str(result["id"])
 
 
-async def _generate_patch(transcript: str) -> dict[str, Any] | None:
-    """Single LLM call. Returns {tags, aiSummary} or None on failure."""
+async def _generate_patch(
+    transcript: str, trace_config: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Single LLM call. Returns {tags, aiSummary} or None on failure.
+
+    `trace_config` taggeia esta chamada no LangSmith com metadata do tenant
+    (o enricher roda fora da árvore do run principal).
+    """
     if not transcript.strip():
         return None
     settings = get_settings()
@@ -156,7 +163,7 @@ async def _generate_patch(transcript: str) -> dict[str, Any] | None:
         response = await llm.ainvoke([
             ("system", prompts.ENRICHER_SYSTEM),
             ("user", f"<conversa>\n{transcript}\n</conversa>\n\nProduza o JSON conforme as regras."),
-        ])
+        ], config=trace_config)
     except Exception as e:
         log.warning("enricher.llm_failed", error=str(e))
         return None
@@ -215,7 +222,7 @@ async def run_enricher(state: AgentState) -> None:
         if not transcript:
             return
 
-        patch = await _generate_patch(transcript)
+        patch = await _generate_patch(transcript, build_enricher_config(state))
         if not patch:
             return
 
