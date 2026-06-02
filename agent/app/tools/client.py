@@ -202,6 +202,17 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "purchase-notes_match_products":      "/api/agent/tools/purchase-notes",
     "purchase-notes_apply_to_stock":      "/api/agent/tools/purchase-notes",
     "purchase-notes_list_unmatched":      "/api/agent/tools/purchase-notes",
+    # fiscal (NF-e / NFC-e / NFSe) — read-first + cancel (manager+)
+    "fiscal_list":          "/api/agent/tools/fiscal",
+    "fiscal_get":           "/api/agent/tools/fiscal",
+    "fiscal_query_status":  "/api/agent/tools/fiscal",
+    "fiscal_emit":          "/api/agent/tools/fiscal",
+    "fiscal_cancel":        "/api/agent/tools/fiscal",
+    # reports (BI / read-only) — agregação cross-coleção do ReportsModule
+    "reports_revenue_by_period":             "/api/agent/tools/reports",
+    "reports_sales_by_product":              "/api/agent/tools/reports",
+    "reports_appointments_by_professional":  "/api/agent/tools/reports",
+    "reports_top_clients":                   "/api/agent/tools/reports",
     # ─── Wave 3: RAG + Memory ────────────────────────────────────────────
     "knowledge_search":                   "/api/agent/tools/knowledge",
     "memory_recall":                      "/api/agent/tools/memory",

@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createHash } from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody, resolveClientId } from '@/lib/agent/auth';
 import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
@@ -394,6 +394,9 @@ async function checkAvailability(
 
 interface BookParams {
   clientId?: string;
+  // Aliases aceitos no boundary (P2.10) — normalizados pra clientId via resolveClientId.
+  contactId?: string;
+  crmContactId?: string;
   clientName: string;
   clientPhone?: string;
   serviceId?: string;
@@ -407,10 +410,15 @@ interface BookParams {
   notes?: string;
   channelType?: Appointment['channelType'];
   conversationId?: string;
+  // FK de resultado (P2.10) — CRMDeal que originou este agendamento.
+  dealId?: string;
 }
 
 async function bookAppointment(businessId: string, p: BookParams) {
   if (!p.clientName || !p.date || !p.startTime) throw new Error('clientName, date, startTime required');
+
+  // P2.10: normaliza a FK do cliente (clientId/contactId/crmContactId → clientId).
+  p.clientId = resolveClientId(p) ?? p.clientId;
 
   // ── Input sanitization ────────────────────────────────────────────────────
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) {
@@ -553,6 +561,7 @@ async function bookAppointment(businessId: string, p: BookParams) {
     if (p.notes !== undefined) docData.notes = p.notes;
     if (p.channelType !== undefined) docData.channelType = p.channelType;
     if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
+    if (p.dealId !== undefined) docData.dealId = p.dealId;
 
     tx.create(newRef, docData);
     return { id: newRef.id, status: 'created' as const, date: p.date, startTime: p.startTime, endTime, serviceName };
@@ -698,6 +707,7 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
     if (p.notes !== undefined) docData.notes = p.notes;
     if (p.channelType !== undefined) docData.channelType = p.channelType;
     if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
+    if (p.dealId !== undefined) docData.dealId = p.dealId;
 
     tx.create(newRef, docData);
 

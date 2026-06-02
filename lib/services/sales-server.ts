@@ -154,6 +154,9 @@ async function runCreate(
     ...(input.channelType ? { channelType: input.channelType } : {}),
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
     ...(input.sectorId ? { sectorId: input.sectorId } : {}),
+    // FKs de resultado (P2.10) — gravadas quando a origem é conhecida.
+    ...(input.dealId ? { dealId: input.dealId } : {}),
+    ...(input.appointmentId ? { appointmentId: input.appointmentId } : {}),
   };
 
   // ── Estoque (atômico, próprio runTransaction) ────────────────────────────

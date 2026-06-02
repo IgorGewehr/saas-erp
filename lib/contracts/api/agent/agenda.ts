@@ -139,6 +139,9 @@ export const BookParamsSchema = z.object({
   clientName: z.string().min(1).max(200),
   clientPhone: PhoneSchema.optional(),
   clientId: DocIdSchema.optional(),
+  // Aliases aceitos no boundary (P2.10) — normalizados pra clientId via resolveClientId.
+  contactId: DocIdSchema.optional(),
+  crmContactId: DocIdSchema.optional(),
   serviceId: DocIdSchema.optional(),
   serviceName: z.string().optional(),
   professionalId: DocIdSchema.optional(),
@@ -150,9 +153,11 @@ export const BookParamsSchema = z.object({
   notes: z.string().max(2000).optional(),
   channelType: ChannelTypeSchema.optional(),
   conversationId: DocIdSchema.optional(),
+  // FK de resultado (P2.10) — CRMDeal que originou este agendamento.
+  dealId: DocIdSchema.optional(),
 }).strict().superRefine((data, ctx) => {
-  // Precisa de pelo menos uma forma de identificar o cliente
-  if (!data.clientId && !data.clientPhone) {
+  // Precisa de pelo menos uma forma de identificar o cliente (qualquer alias).
+  if (!data.clientId && !data.contactId && !data.crmContactId && !data.clientPhone) {
     ctx.addIssue({
       code: 'custom',
       message: 'clientId ou clientPhone obrigatório',

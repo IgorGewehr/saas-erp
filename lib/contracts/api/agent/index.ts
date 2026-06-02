@@ -25,12 +25,14 @@ import * as Notes from './notes';
 import * as PurchaseNotes from './purchase-notes';
 import * as Suppliers from './suppliers';
 import * as Kanban from './kanban';
+import * as Fiscal from './fiscal';
+import * as Reports from './reports';
 
 export const AGENT_TOOL_DOMAINS = [
   'agenda', 'orders', 'catalog', 'clients', 'financial', 'crm',
   'inventory', 'sales', 'memory', 'business', 'services', 'team',
   'knowledge', 'conversations', 'notes', 'purchase-notes', 'suppliers',
-  'kanban',
+  'kanban', 'fiscal', 'reports',
 ] as const;
 export type AgentToolDomain = (typeof AGENT_TOOL_DOMAINS)[number];
 
@@ -54,6 +56,8 @@ export const AGENT_TOOLS_REGISTRY = {
   'purchase-notes': { request: PurchaseNotes.PurchaseNotesToolRequestSchema, data: PurchaseNotes.PURCHASE_NOTES_DATA_SCHEMAS },
   suppliers:        { request: Suppliers.SuppliersToolRequestSchema,       data: Suppliers.SUPPLIERS_DATA_SCHEMAS },
   kanban:           { request: Kanban.KanbanToolRequestSchema,             data: Kanban.KANBAN_DATA_SCHEMAS },
+  fiscal:           { request: Fiscal.FiscalToolRequestSchema,             data: Fiscal.FISCAL_DATA_SCHEMAS },
+  reports:          { request: Reports.ReportsToolRequestSchema,           data: Reports.REPORTS_DATA_SCHEMAS },
 } as const satisfies Record<AgentToolDomain, { request: z.ZodTypeAny; data: Record<string, z.ZodTypeAny> }>;
 
 /** Helper para obter o schema de response.data por (domain, action). Útil no executor Python via codegen. */
@@ -82,3 +86,5 @@ export * as notes from './notes';
 export * as purchaseNotes from './purchase-notes';
 export * as suppliers from './suppliers';
 export * as kanban from './kanban';
+export * as fiscal from './fiscal';
+export * as reports from './reports';

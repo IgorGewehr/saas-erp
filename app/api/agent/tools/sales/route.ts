@@ -15,7 +15,7 @@
 
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody, resolveClientId } from '@/lib/agent/auth';
 import { createSaleWithSideEffects } from '@/lib/services/sales-server';
 import { assertTransitionSale } from '@/lib/contracts/fsm/sale';
 import type { Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
@@ -25,6 +25,9 @@ type SaleStatus = 'aberta' | 'finalizada' | 'cancelada';
 
 interface CreateParams {
   clientId?: string;
+  // Aliases aceitos no boundary (P2.10) — normalizados pra clientId via resolveClientId.
+  contactId?: string;
+  crmContactId?: string;
   clientName?: string;
   items: Array<Omit<SaleItem, 'id'>>;
   payments: Payment[];
@@ -38,6 +41,9 @@ interface CreateParams {
   operatorName?: string;
   channelType?: 'whatsapp' | 'facebook' | 'instagram';
   conversationId?: string;
+  // FKs de resultado (P2.10) — origem conhecida que esta venda concretizou.
+  dealId?: string;
+  appointmentId?: string;
 }
 
 const VALID_STATUS: SaleStatus[] = ['aberta', 'finalizada', 'cancelada'];
@@ -128,7 +134,7 @@ async function createSale(businessId: string, p: CreateParams): Promise<Sale> {
   // propósito (o serviço é a fonte canônica desses números).
   const result = await createSaleWithSideEffects({
     businessId,
-    clientId: p.clientId,
+    clientId: resolveClientId(p),
     clientName: p.clientName,
     items: p.items.map((it) => ({
       productId: it.productId,
@@ -153,6 +159,8 @@ async function createSale(businessId: string, p: CreateParams): Promise<Sale> {
     conversationId: p.conversationId,
     operatorId: p.operatorId || 'agent',
     operatorName: p.operatorName || 'Agente IA',
+    ...(p.dealId ? { dealId: p.dealId } : {}),
+    ...(p.appointmentId ? { appointmentId: p.appointmentId } : {}),
   });
 
   return result.sale;

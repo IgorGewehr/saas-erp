@@ -153,3 +153,28 @@ export function parseAgentBody<T = unknown>(rawBody: string): T {
     throw new AgentAuthError('Invalid JSON body', 400);
   }
 }
+
+/**
+ * Normaliza a FK do cliente no BOUNDARY do agent (P2.10).
+ *
+ * Historicamente a mesma entidade Client é referenciada por 3 nomes
+ * (`clientId` / `contactId` / `crmContactId`). O LLM pode mandar qualquer um
+ * deles. Esta função resolve os três para um único `clientId` canônico, sem
+ * renomear os campos persistidos em massa (migração ampla = arriscada).
+ *
+ * Precedência: `clientId` > `contactId` > `crmContactId`. Retorna `undefined`
+ * quando nenhum está presente (mantém comportamento opcional do chamador).
+ *
+ * TODO(auditoria P2.10): migração ampla — padronizar `clientId` em todas as
+ * coleções/escritas (Transaction grava clientId+contactId hoje) e remover os
+ * aliases. Por ora só normalizamos a ENTRADA do agent.
+ */
+export function resolveClientId(params: {
+  clientId?: unknown;
+  contactId?: unknown;
+  crmContactId?: unknown;
+}): string | undefined {
+  const pick = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  return pick(params.clientId) ?? pick(params.contactId) ?? pick(params.crmContactId);
+}

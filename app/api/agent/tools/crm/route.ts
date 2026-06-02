@@ -67,7 +67,10 @@ export async function POST(req: NextRequest) {
       case 'update_deal_stage':
         return NextResponse.json({ ok: true, data: await updateDealStage(businessId, body.params.id as string, body.params.stage as string, body.params.probability as number | undefined) });
       case 'close_deal':
-        return NextResponse.json({ ok: true, data: await closeDeal(businessId, body.params.id as string, body.params.won as boolean, body.params.reason as string | undefined) });
+        return NextResponse.json({ ok: true, data: await closeDeal(businessId, body.params as {
+          id: string; won: boolean; reason?: string;
+          saleId?: string; appointmentId?: string; deliveryOrderId?: string;
+        }) });
       case 'list_activities':
         return NextResponse.json({ ok: true, data: await listActivities(businessId, body.params as { contactId?: string; dealId?: string; type?: CRMActivityType; limit?: number }) });
       case 'log_activity':
@@ -249,7 +252,11 @@ async function updateDealStage(businessId: string, id: string, stage: string, pr
   return { ...deal, ...patch, id: snap.id };
 }
 
-async function closeDeal(businessId: string, id: string, won: boolean, reason?: string): Promise<CRMDeal> {
+async function closeDeal(
+  businessId: string,
+  p: { id: string; won: boolean; reason?: string; saleId?: string; appointmentId?: string; deliveryOrderId?: string },
+): Promise<CRMDeal> {
+  const { id, won, reason } = p;
   if (!id) throw new Error('id required');
   const ref = adminDb.collection('crmDeals').doc(id);
   const snap = await ref.get();
@@ -265,6 +272,14 @@ async function closeDeal(businessId: string, id: string, won: boolean, reason?: 
     updatedAt: now,
   };
   if (!won && reason) patch.lostReason = reason.slice(0, 500);
+
+  // FKs de resultado (P2.10): grava a entidade de receita que concretizou o
+  // deal ganho, quando o chamador conhece a origem. Aditivo/opcional.
+  if (won) {
+    if (p.saleId) patch.saleId = p.saleId;
+    if (p.appointmentId) patch.appointmentId = p.appointmentId;
+    if (p.deliveryOrderId) patch.deliveryOrderId = p.deliveryOrderId;
+  }
 
   await ref.update(patch);
   return { ...deal, ...patch, id: snap.id };

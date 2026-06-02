@@ -700,6 +700,83 @@ FINANCIAL_TOOLS: list[dict[str, Any]] = [
     _simple_tool("financial_summary_month", "Summary for a month. Month format YYYY-MM (default: current).", month={"type": "string"}),
 ]
 
+# ─── Fiscal (NF-e / NFC-e / NFSe) ────────────────────────────────────────────
+# READ-FIRST: list/get/query_status leem documentos fiscais já persistidos
+# (sem tocar SEFAZ). cancel aciona a SEFAZ e é manager+ (TOOL_MIN_ROLE). emit
+# ainda não suportado pelo agent (ver route.ts) — exposto pra mensagem limpa.
+FISCAL_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "fiscal_list",
+        "List fiscal documents (NF-e/NFC-e/NFSe) already issued. Filters by type/status. Read-only.",
+        type={"type": "string", "enum": ["nfe", "nfce", "nfse"]},
+        status={"type": "string", "description": "ex: autorizada, processando, pendente, cancelada, rejeitada"},
+        limit={"type": "integer", "default": 20},
+    ),
+    _simple_tool("fiscal_get", "Fetch a single fiscal document by id. Read-only.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "fiscal_query_status",
+        "Check the status of a fiscal document by id OR access key (chave de acesso). Read-only.",
+        id={"type": "string"},
+        accessKey={"type": "string", "description": "Chave de acesso (44 dígitos NF-e/NFC-e ou chave NFSe)"},
+    ),
+    _simple_tool(
+        "fiscal_cancel",
+        "Cancel an authorized NF-e/NFC-e at SEFAZ (manager+). Requires the 44-digit access key and a justification (15-255 chars).",
+        required=["type", "chaveAcesso", "justificativa"],
+        type={"type": "string", "enum": ["nfe", "nfce"]},
+        chaveAcesso={"type": "string", "description": "44-digit access key"},
+        justificativa={"type": "string", "description": "15-255 chars"},
+        protocolo={"type": "string"},
+    ),
+    _simple_tool(
+        "fiscal_emit",
+        "Emit a fiscal document (NF-e/NFC-e/NFSe). NOTE: not yet supported via agent — returns a clear error directing to the Fiscal panel. Manager+.",
+        required=["type"],
+        type={"type": "string", "enum": ["nfe", "nfce", "nfse"]},
+    ),
+]
+
+# ── Reports (BI / read-only) ─────────────────────────────────────────────────
+# P2.11 — agregação cross-coleção do ReportsModule exposta ao agent. TODAS read-only
+# (seguras pro modo analyst). `period` aceita preset (7d/30d/90d/mes/mes_anterior/ano)
+# OU intervalo explícito fromDate+toDate (YYYY-MM-DD). Default 30d.
+_PERIOD_PROP = {
+    "type": "string",
+    "enum": ["7d", "30d", "90d", "mes", "mes_anterior", "ano"],
+    "description": "Período preset (default 30d). Ou use fromDate+toDate para intervalo exato.",
+}
+REPORTS_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "reports_revenue_by_period",
+        "Faturamento do período: receita, despesa, lucro, margem e quebra por categoria (só transações PAGAS). Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+    ),
+    _simple_tool(
+        "reports_sales_by_product",
+        "Ranking de produtos e serviços vendidos no período (PDV + pedidos + agendamentos concluídos), com qtd e receita. Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+    ),
+    _simple_tool(
+        "reports_appointments_by_professional",
+        "Agendamentos por profissional no período: total, concluídos, no-show, taxa de conclusão e receita. Cruza faturamento × profissional. Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+    ),
+    _simple_tool(
+        "reports_top_clients",
+        "Top clientes por gasto acumulado (CLV) + nº de visitas no período. Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+        limit={"type": "integer", "default": 10},
+    ),
+]
+
 INVENTORY_TOOLS: list[dict[str, Any]] = [
     _simple_tool(
         "inventory_list",
@@ -1200,6 +1277,8 @@ _DASHBOARD_GROUPS: dict[str, list[dict[str, Any]]] = {
     "team": TEAM_TOOLS,
     "suppliers": SUPPLIERS_TOOLS,
     "purchase-notes": PURCHASE_NOTES_TOOLS,
+    "fiscal": FISCAL_TOOLS,
+    "reports": REPORTS_TOOLS,
 }
 
 # Keyword → group. Matched (accent-insensitive, substring) against the message.
@@ -1217,6 +1296,8 @@ _GROUP_KEYWORDS: dict[str, tuple[str, ...]] = {
     "team": ("equipe", "membro", "setor", "colaborador", "funcionario", "capacidade", "profissional"),
     "suppliers": ("fornecedor", "cnpj", "razao social"),
     "purchase-notes": ("nota de compra", "nf-e", "nfe", "nota fiscal", "importar nota", "compra"),
+    "fiscal": ("fiscal", "nfce", "nfse", "nota fiscal", "sefaz", "emitir nota", "cancelar nota", "danfe", "chave de acesso", "documento fiscal"),
+    "reports": ("relatorio", "report", "faturamento", "receita do periodo", "bi", "dashboard", "indicador", "kpi", "ranking", "top clientes", "por profissional", "por produto", "desempenho", "analise", "comparativo"),
 }
 
 
@@ -1257,6 +1338,47 @@ def dashboard_tools_for_groups(groups: list[str], *, read_only: bool = False) ->
     return pool
 
 
+# P3.4 — Fonte da verdade EXPLÍCITA do que escreve/muta estado (x_mutates).
+# O gating read-only do modo analyst consulta este conjunto PRIMEIRO; a
+# heurística de substring (_READ_ONLY_PREFIXES) só decide para nomes que não
+# constam aqui (fallback conservador). Ao adicionar uma tool de escrita nova,
+# registre o nome aqui — não confie na heurística para mantê-la fora do analyst.
+_MUTATING_TOOLS: frozenset[str] = frozenset({
+    # orders
+    "orders_create", "orders_cancel", "orders_update_items",
+    # agenda
+    "agenda_book", "agenda_update", "agenda_cancel",
+    # clients
+    "clients_create", "clients_update", "clients_update_address",
+    # conversations (interactive + state)
+    "conversation_send_interactive",
+    "conversations_set_label", "conversations_set_priority", "conversations_set_status",
+    # financial
+    "financial_create_receivable", "financial_create_payable",
+    "financial_mark_paid", "financial_cancel",
+    # fiscal (acionam SEFAZ / criam documento)
+    "fiscal_cancel", "fiscal_emit",
+    # inventory
+    "inventory_create", "inventory_update", "inventory_adjust_stock",
+    "inventory_set_active", "inventory_set_out_of_stock",
+    # kanban
+    "kanban_create_card", "kanban_move_card", "kanban_update_card",
+    "kanban_assign", "kanban_add_comment", "kanban_archive_card",
+    # notes
+    "notes_create", "notes_update", "notes_delete",
+    # crm
+    "crm_create_deal", "crm_update_deal_stage", "crm_close_deal", "crm_log_activity",
+    # services
+    "services_create", "services_update", "services_set_active",
+    # sales
+    "sales_create", "sales_cancel",
+    # suppliers
+    "suppliers_create", "suppliers_update",
+    # memory
+    "memory_remember", "memory_forget",
+})
+
+
 _READ_ONLY_PREFIXES = (
     "_list", "_get", "_search", "_summary", "_recall", "_capacity",
     "_next_available", "_availability", "_check_", "_full_history",
@@ -1264,10 +1386,17 @@ _READ_ONLY_PREFIXES = (
     "_segments", "_segment_query", "_messages", "_activities", "_boards", "_cards",
     "_today", "_month", "_low_stock", "_unmatched", "_match_products",
     "_context", "_services", "_professionals", "lookup_by_phone",
+    "_query_status", "reports_",
 )
 
 
 def _is_read_only_tool(name: str) -> bool:
+    # P3.4: flag explícita tem precedência. Tool registrada como mutante nunca
+    # é tratada como read-only, mesmo que o nome bata um prefixo read.
+    if name in _MUTATING_TOOLS:
+        return False
+    # Fallback conservador: nomes não-registrados caem na heurística de substring
+    # (mantida para não regredir tools ainda não migradas para a flag explícita).
     return any(name.endswith(suf) or suf in name for suf in _READ_ONLY_PREFIXES)
 
 
@@ -1287,7 +1416,8 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
             + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
             + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
             + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
-            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS + FISCAL_TOOLS
+            + REPORTS_TOOLS
         )
     if use_case == "analyst":
         # Analyst chat — READ-ONLY tools only (list/get/search/summary).
@@ -1299,7 +1429,8 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
             + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
             + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
             + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
-            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS + FISCAL_TOOLS
+            + REPORTS_TOOLS
         )
         read_only = [t for t in all_operator if _is_read_only_tool(t["function"]["name"])]
         return base + read_only
@@ -1312,7 +1443,7 @@ ALL_TOOLS: list[dict[str, Any]] = (
     ORDERS_TOOLS + AGENDA_TOOLS + CATALOG_TOOLS + CLIENT_TOOLS + CONVERSATION_TOOLS
     + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS + NOTES_TOOLS + CRM_TOOLS
     + CONVERSATIONS_ADMIN_TOOLS + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
-    + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+    + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS + FISCAL_TOOLS
     + KNOWLEDGE_TOOLS + MEMORY_TOOLS
 )
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {

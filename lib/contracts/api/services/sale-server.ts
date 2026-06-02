@@ -45,6 +45,10 @@ export const CreateSaleWithSideEffectsInputSchema = z.object({
   channelType: z.enum(['whatsapp', 'facebook', 'instagram']).optional(),
   conversationId: z.string().optional(),
   sectorId: z.string().optional(),
+  /** FKs de resultado (P2.10) — origem conhecida que esta venda concretizou.
+   *  Aditivas/opcionais: o deal/appointment que a venda fechou ou cobrou. */
+  dealId: z.string().optional(),
+  appointmentId: z.string().optional(),
   /** Quem origina a venda — preenchido por cada caller (API/agent/PDV). */
   operatorId: z.string().min(1),
   operatorName: z.string().min(1),

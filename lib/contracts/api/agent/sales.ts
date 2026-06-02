@@ -58,6 +58,9 @@ export const SalesListByClientDataSchema = z.array(SaleShape);
 
 export const SalesCreateParamsSchema = z.object({
   clientId: DocIdSchema.optional(),
+  // Aliases aceitos no boundary (P2.10) — normalizados pra clientId via resolveClientId.
+  contactId: DocIdSchema.optional(),
+  crmContactId: DocIdSchema.optional(),
   clientName: z.string().max(200).optional(),
   items: z.array(SaleItemInputSchema).min(1),
   payments: z.array(PaymentSchema).min(1),
@@ -71,6 +74,9 @@ export const SalesCreateParamsSchema = z.object({
   operatorName: z.string().default('Agente IA'),
   channelType: ChannelTypeSchema.optional(),
   conversationId: DocIdSchema.optional(),
+  // FKs de resultado (P2.10) — origem conhecida que esta venda concretizou.
+  dealId: DocIdSchema.optional(),
+  appointmentId: DocIdSchema.optional(),
 });
 export const SalesCreateDataSchema = SaleShape;
 

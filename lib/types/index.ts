@@ -932,6 +932,10 @@ export interface Appointment {
   followUpSentAt?: string;
   // Commission tracking — set when appointment is marked concluido
   commissionTransactionId?: string; // Firestore ID of the linked Transaction (category: 'Comissoes')
+  /** FK opcional para o CRMDeal que originou este agendamento (ROI por deal — P2.10). */
+  dealId?: string;
+  /** FK opcional para a Sale que cobrou este atendimento (reconciliação agenda↔caixa — P2.10). */
+  saleId?: string;
   googleCalendarEventId?: string;   // Google Calendar event ID for sync
   createdAt: string;
   updatedAt: string;
@@ -1075,6 +1079,10 @@ export interface Sale {
   transactionId?: string;
   /** FK para a Transaction de comissão (despesa) gerada na venda. */
   commissionTransactionId?: string;
+  /** FK opcional para o CRMDeal que esta venda concretizou (ROI por deal — P2.10). */
+  dealId?: string;
+  /** FK opcional para o Appointment que esta venda cobrou (reconciliação agenda↔caixa — P2.10). */
+  appointmentId?: string;
   notes?: string;
   operatorId: string;
   operatorName: string;
@@ -1775,6 +1783,9 @@ export interface DeliveryOrder {
    *  idempotência: Transaction só é criada se este campo estiver vazio. */
   transactionId?: string;
 
+  /** FK opcional para o CRMDeal que originou este pedido (ROI por deal — P2.10). */
+  dealId?: string;
+
   createdAt: string;
   updatedAt: string;
   sectorId?: string;
@@ -2301,6 +2312,11 @@ export interface CRMDeal {
   lostReason?: string;
   notes?: string;
   tags?: string[];
+  /** FKs de resultado: a entidade de receita que concretizou o deal ganho
+   *  (ROI por deal navegável — P2.10). Preenchidas quando a origem é conhecida. */
+  saleId?: string;
+  appointmentId?: string;
+  deliveryOrderId?: string;
   createdAt: string;
   updatedAt: string;
 }
