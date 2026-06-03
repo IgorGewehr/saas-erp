@@ -182,7 +182,6 @@ export async function POST(req: NextRequest) {
     seasonal_label: activeSeason?.label || null,
     delivery_zones: business.settings?.aiAgent?.deliveryZones || null,
     accepted_payment_methods: business.settings?.aiAgent?.acceptedPaymentMethods || null,
-    team_capacity: business.settings?.aiAgent?.teamCapacity || null,
     upsell_rules: (business.settings?.aiAgent?.upsellRules || []).filter((r) => r.isActive),
   };
 

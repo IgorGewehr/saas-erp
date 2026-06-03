@@ -210,7 +210,6 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
             "seasonal_label": req.seasonal_label,
             "delivery_zones": req.delivery_zones or [],
             "accepted_payment_methods": req.accepted_payment_methods or [],
-            "team_capacity": req.team_capacity or {},
             "upsell_rules": req.upsell_rules or [],
         },
         "contact": {

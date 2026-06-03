@@ -3950,6 +3950,7 @@ function AgenteTab() {
   const [notifyOnStatusChange, setNotifyOnStatusChange] = useState<boolean>(current?.pedidos?.notifyOnStatusChange ?? true);
   const [acceptOrdersOffHours, setAcceptOrdersOffHours] = useState<boolean>(current?.pedidos?.acceptOrdersOffHours ?? false);
   const [deliveryFee, setDeliveryFee] = useState<number>(current?.pedidos?.deliveryFee ?? 0);
+  const [maxWaitMinutes, setMaxWaitMinutes] = useState<number>(current?.pedidos?.maxWaitMinutes ?? 0);
 
   // Agenda-specific
   const [sendReminder, setSendReminder] = useState<boolean>(current?.agenda?.sendReminder ?? true);
@@ -3969,12 +3970,15 @@ function AgenteTab() {
 
   // Operator-specific (dashboard chat)
   const [autonomousMode, setAutonomousMode] = useState<boolean>(current?.operator?.autonomousMode ?? false);
+  const [dailyBudgetUsd, setDailyBudgetUsd] = useState<number>(current?.operator?.dailyBudgetUsd ?? 0);
 
   // Wave 7 — policies + SLAs + calendar + upsell
   const [policyCancellation, setPolicyCancellation] = useState<string>(current?.policies?.cancellation || '');
   const [policyRefund, setPolicyRefund] = useState<string>(current?.policies?.refund || '');
+  const [policyPrivacy, setPolicyPrivacy] = useState<string>(current?.policies?.privacy || '');
   const [slaPrepMin, setSlaPrepMin] = useState<number>(current?.sla?.prepMaxMinutes || 0);
   const [slaDeliveryMin, setSlaDeliveryMin] = useState<number>(current?.sla?.deliveryMaxMinutes || 0);
+  const [slaFirstResponseMin, setSlaFirstResponseMin] = useState<number>(current?.sla?.firstResponseMinutes || 0);
   const [holidaysStr, setHolidaysStr] = useState<string>((current?.calendar?.holidays || []).join(', '));
   const [acceptedPaymentsStr, setAcceptedPaymentsStr] = useState<string>((current?.acceptedPaymentMethods || []).join(','));
 
@@ -3994,6 +3998,7 @@ function AgenteTab() {
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
     setDeliveryFee(current?.pedidos?.deliveryFee ?? 0);
+    setMaxWaitMinutes(current?.pedidos?.maxWaitMinutes ?? 0);
     setSendReminder(current?.agenda?.sendReminder ?? true);
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
@@ -4002,10 +4007,13 @@ function AgenteTab() {
     setConfirmationTemplate(current?.agenda?.confirmationTemplate ?? null);
     setFollowUpTemplate(current?.agenda?.followUpTemplate ?? null);
     setAutonomousMode(current?.operator?.autonomousMode ?? false);
+    setDailyBudgetUsd(current?.operator?.dailyBudgetUsd ?? 0);
     setPolicyCancellation(current?.policies?.cancellation || '');
     setPolicyRefund(current?.policies?.refund || '');
+    setPolicyPrivacy(current?.policies?.privacy || '');
     setSlaPrepMin(current?.sla?.prepMaxMinutes || 0);
     setSlaDeliveryMin(current?.sla?.deliveryMaxMinutes || 0);
+    setSlaFirstResponseMin(current?.sla?.firstResponseMinutes || 0);
     setHolidaysStr((current?.calendar?.holidays || []).join(', '));
     setAcceptedPaymentsStr((current?.acceptedPaymentMethods || []).join(','));
     setDeliveryZones(current?.deliveryZones || []);
@@ -4053,11 +4061,21 @@ function AgenteTab() {
     try {
       // Build nested settings — keeps Firestore doc clean and lets server-side
       // prompt builder know exactly what user opted into.
+      // Cada objeto aninhado faz merge com o que já existe (`...current?.X`) pra
+      // preservar subcampos não geridos por esta UI (M3 — antes o save escrevia
+      // o objeto inteiro e apagava silenciosamente qualquer subcampo extra).
       const pedidos = useCase === 'pedidos'
-        ? { notifyOnStatusChange, acceptOrdersOffHours, deliveryFee: deliveryFee > 0 ? deliveryFee : null }
-        : undefined;
+        ? {
+            ...current?.pedidos,
+            notifyOnStatusChange,
+            acceptOrdersOffHours,
+            deliveryFee: deliveryFee > 0 ? deliveryFee : null,
+            maxWaitMinutes: maxWaitMinutes > 0 ? maxWaitMinutes : null,
+          }
+        : (current?.pedidos ?? null);
       const agenda = useCase === 'servicos'
         ? {
+            ...current?.agenda,
             sendReminder,
             reminderHoursBefore,
             confirmationBeforeAppointment,
@@ -4066,7 +4084,7 @@ function AgenteTab() {
             confirmationTemplate: confirmationTemplate ?? null,
             followUpTemplate: followUpTemplate ?? null,
           }
-        : undefined;
+        : (current?.agenda ?? null);
 
       // Wave 7 — parse dynamic fields
       const holidays = holidaysStr.split(',').map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
@@ -4076,30 +4094,47 @@ function AgenteTab() {
         .map((s) => s.trim().toLowerCase())
         .filter((s) => validPayments.includes(s));
 
-      const policies = (policyCancellation.trim() || policyRefund.trim())
-        ? { cancellation: policyCancellation.trim() || null, refund: policyRefund.trim() || null }
-        : null;
-
-      const sla = (slaPrepMin > 0 || slaDeliveryMin > 0)
+      const policies = (policyCancellation.trim() || policyRefund.trim() || policyPrivacy.trim() || current?.policies)
         ? {
-            prepMaxMinutes: slaPrepMin > 0 ? slaPrepMin : null,
-            deliveryMaxMinutes: slaDeliveryMin > 0 ? slaDeliveryMin : null,
+            ...current?.policies,
+            cancellation: policyCancellation.trim() || null,
+            refund: policyRefund.trim() || null,
+            privacy: policyPrivacy.trim() || null,
           }
         : null;
 
-      const calendar = holidays.length > 0
+      const sla = (slaPrepMin > 0 || slaDeliveryMin > 0 || slaFirstResponseMin > 0 || current?.sla)
+        ? {
+            ...current?.sla,
+            prepMaxMinutes: slaPrepMin > 0 ? slaPrepMin : null,
+            deliveryMaxMinutes: slaDeliveryMin > 0 ? slaDeliveryMin : null,
+            firstResponseMinutes: slaFirstResponseMin > 0 ? slaFirstResponseMin : null,
+          }
+        : null;
+
+      // Preserva seasonalHours mesmo quando não há feriados (antes calendar
+      // virava null e descartava a grade sazonal junto — edge confirmado).
+      const calendar = (holidays.length > 0 || (current?.calendar?.seasonalHours?.length ?? 0) > 0)
         ? { holidays, seasonalHours: current?.calendar?.seasonalHours || [] }
         : null;
 
       const payload: Record<string, unknown> = {
+        // M3: espalha o aiAgent atual primeiro pra preservar campos que esta UI
+        // não toca (ex: lastReindexAt, enabledAt, e qualquer subcampo gravado por
+        // API/migração). Os campos abaixo sobrescrevem só o que o operador editou.
         'settings.aiAgent': {
+          ...(current ?? {}),
           enabled,
           tone,
           segment,
           businessDescription: businessDescription.trim() || null,
-          pedidos: pedidos || null,
-          agenda: agenda || null,
-          operator: { autonomousMode },
+          pedidos,
+          agenda,
+          operator: {
+            ...current?.operator,
+            autonomousMode,
+            dailyBudgetUsd: dailyBudgetUsd > 0 ? dailyBudgetUsd : null,
+          },
           policies,
           sla,
           calendar,
@@ -4489,6 +4524,21 @@ function AgenteTab() {
                     />
                   </div>
                 </div>
+                <div className="pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Tempo máximo de espera (min)</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    Acima disso o agente sugere alternativas ao cliente em vez de só confirmar o pedido. 0 desliga.
+                  </p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={240}
+                    value={maxWaitMinutes}
+                    onChange={(e) => setMaxWaitMinutes(Math.max(0, Math.min(240, Number(e.target.value) || 0)))}
+                    placeholder="Ex: 45"
+                    className="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                  />
+                </div>
               </div>
             </SectionCard>
           )}
@@ -4567,6 +4617,24 @@ function AgenteTab() {
                 </div>
                 <AgenteToggleSwitch checked={autonomousMode} onChange={setAutonomousMode} />
               </div>
+              <div className="pt-1">
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Teto de gasto diário do chat do operador (US$)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={0.5}
+                  value={dailyBudgetUsd}
+                  onChange={(e) => setDailyBudgetUsd(Math.max(0, Math.min(1000, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 5"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                />
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                  Limite de custo (USD) por dia no chat do dashboard. 0 = usa o padrão do sistema.
+                </p>
+              </div>
             </div>
           </SectionCard>
 
@@ -4600,6 +4668,20 @@ function AgenteTab() {
                   className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
                 <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyRefund.length}/1000</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Privacidade / LGPD
+                </label>
+                <textarea
+                  value={policyPrivacy}
+                  onChange={(e) => setPolicyPrivacy(e.target.value)}
+                  maxLength={1000}
+                  rows={2}
+                  placeholder="Ex: Seus dados são usados só para atendimento e nunca compartilhados. Pode pedir exclusão a qualquer momento."
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyPrivacy.length}/1000</p>
               </div>
               <p className="text-[11px] text-gray-500 dark:text-gray-400">
                 O agente cita estas políticas literalmente ao responder perguntas relacionadas.
@@ -4636,6 +4718,20 @@ function AgenteTab() {
                   value={slaDeliveryMin}
                   onChange={(e) => setSlaDeliveryMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
                   placeholder="Ex: 60"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Primeira resposta (min)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={slaFirstResponseMin}
+                  onChange={(e) => setSlaFirstResponseMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 5"
                   className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
               </div>

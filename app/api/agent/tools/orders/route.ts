@@ -4,8 +4,9 @@ import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/li
 import type {
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderStatus,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
-  Product, DeliveryOrderAddress,
+  Product, DeliveryOrderAddress, Business,
 } from '@/lib/types';
+import { isBusinessOpenNow } from '@/lib/utils/businessHours';
 import { Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { deductStockAdmin } from '@/lib/services/stock-admin';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
@@ -93,6 +94,20 @@ export async function POST(req: NextRequest) {
 async function createOrder(businessId: string, params: CreateParams) {
   if (!params.clientName) throw new Error('clientName required');
   if (!params.items?.length) throw new Error('items required');
+
+  // Guardrail off-hours (M13): se o business NÃO aceita pedidos fora do horário
+  // e está fechado agora, recusa no servidor. Antes o flag só "torcia" pro LLM
+  // recusar (prompt) — a tool criava o pedido a qualquer hora. `open===null`
+  // (sem grade de 7 dias) = indeterminado → não bloqueia.
+  const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
+  const biz = bizSnap.exists ? (bizSnap.data() as Business) : null;
+  const acceptOffHours = biz?.settings?.aiAgent?.pedidos?.acceptOrdersOffHours ?? false;
+  if (!acceptOffHours) {
+    const open = isBusinessOpenNow(biz?.settings?.openingHours, biz?.settings?.timezone);
+    if (open === false) {
+      throw new Error('Estabelecimento fechado no momento e não aceita pedidos fora do horário de funcionamento.');
+    }
+  }
 
   // Validate products exist & are deliverable, compute prices, pre-check stock (incl BOM)
   const productRefs = await Promise.all(

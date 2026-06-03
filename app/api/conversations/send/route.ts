@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
   // Contexto pré-declarado pra que o catch consiga registrar a falha em
   // webhookFailures mesmo após body.parse / auth / dispatch falhar. Sem isso,
   // `channel/businessId/recipientId` ficariam fora do escopo do catch.
-  let failureContext: { businessId?: string; conversationId?: string; recipientId?: string; channel?: string } = {};
+  let failureContext: { businessId?: string; conversationId?: string; recipientId?: string; channel?: string; transport?: 'cloud' | 'baileys' } = {};
 
   try {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
@@ -498,6 +498,10 @@ export async function POST(req: NextRequest) {
         }
 
         resolvedConnectedVia = isBaileys ? 'baileys' : 'embedded_signup';
+        // Propaga o transporte real pro log de falha (catch lá embaixo). Sem
+        // isso, falha de envio Baileys era registrada como 'cloud' (diagnóstico
+        // enganoso no painel de Logs). embedded_signup → 'cloud' (mesma stack).
+        failureContext.transport = isBaileys ? 'baileys' : 'cloud';
 
         if (isBaileys) {
           // resolvedConnectionId vem do bloco anterior que carregou a connection
@@ -619,7 +623,7 @@ export async function POST(req: NextRequest) {
       businessId: failureContext.businessId,
       conversationId: failureContext.conversationId,
       recipientId: failureContext.recipientId,
-      transport: 'cloud',
+      transport: failureContext.transport ?? 'cloud',
       error: message,
       errorBody: Object.keys(errorDetails).length ? JSON.stringify(errorDetails).slice(0, 2000) : undefined,
       metaErrorCode: (errorDetails as { code?: number }).code,

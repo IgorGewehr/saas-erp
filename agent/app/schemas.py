@@ -54,7 +54,6 @@ class ProcessRequest(BaseModel):
     seasonal_label: str | None = None               # e.g., "Carnaval 2026"
     delivery_zones: list[dict[str, Any]] | None = None
     accepted_payment_methods: list[str] | None = None
-    team_capacity: dict[str, Any] | None = None     # {maxConcurrentOrders, maxDailyAppointments}
     upsell_rules: list[dict[str, Any]] | None = None
 
 

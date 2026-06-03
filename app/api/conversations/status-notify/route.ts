@@ -6,7 +6,8 @@
  * using the same dispatch pipeline as /api/conversations/send.
  *
  * Gating:
- *  1. business.settings.aiAgent.notifyOnStatus must be true
+ *  1. business.settings.aiAgent.pedidos.notifyOnStatusChange must be true
+ *     (orders); appointments gate only on aiAgent.enabled
  *  2. the entity must have an associated conversationId
  *  3. caller must be authenticated for the target business
  */
