@@ -24,6 +24,7 @@ import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateL
 import { sendFinancialNotifications } from '@/app/api/financial/notify/service';
 import { isOutsideMetaWindow } from '@/lib/utils/metaWindow';
 import { logPipelineFailure } from '@/lib/services/pipelineFailures';
+import { sendBaileysBroadcastMessage, getConnectedSession } from '@/app/api/whatsapp/baileys-manager';
 import type { Appointment, Business, Conversation } from '@/lib/types';
 
 type ReminderKind = 'reminder' | 'confirmation' | 'followup';
@@ -255,7 +256,15 @@ async function checkKanbanDueDates(): Promise<number> {
 // ─── Per-business sweep ──────────────────────────────────────────────────────
 
 async function processBusiness(business: Business & { id: string }, stats: RunStats): Promise<void> {
-  const agenda = business.settings?.aiAgent?.agenda;
+  const ai = business.settings?.aiAgent;
+  // M5: negócio de SERVIÇOS com o agente ligado mas que ainda não salvou a aba
+  // Agenda usa os MESMOS defaults que a UI já exibe (lembrete ON, 24h antes),
+  // em vez de ficar mudo até o primeiro Save. Pedidos/outros useCases nunca
+  // recebem lembrete de agendamento por default.
+  const agenda = ai?.agenda
+    ?? (ai?.enabled && business.settings?.useCase === 'servicos'
+      ? { sendReminder: true, reminderHoursBefore: 24, confirmationBeforeAppointment: true, followUpAfter: false }
+      : undefined);
   if (!agenda) return;
 
   const now = new Date();
@@ -382,7 +391,29 @@ async function sendToContact(
     .limit(1)
     .get();
 
-  if (convSnap.empty) throw new Error('no conversation found for phone');
+  // Cliente de primeiro contato: agendou via site/manual e nunca abriu thread
+  // de WhatsApp. Se o business tem WhatsApp Web (Baileys) conectado, envia
+  // direto pela sessão — Baileys não precisa de conversa prévia nem janela 24h.
+  // Cloud API exige template + thread, então fica fora deste fallback (skip).
+  if (convSnap.empty) {
+    const baileysReady = business.channels?.whatsappBaileys?.isConnected
+      || !!getConnectedSession(business.id);
+    if (!baileysReady) {
+      await logPipelineFailure({
+        source: 'whatsapp-send',
+        channel: 'whatsapp',
+        businessId: business.id,
+        recipientId: phoneDigits,
+        transport: 'baileys',
+        error: `Lembrete ${kind} pulado: sem conversa WhatsApp prévia e sem sessão Baileys conectada.`,
+        severity: 'warning',
+        httpStatus: 0,
+      });
+      return { sent: false, reason: 'no_conversation_and_no_baileys' };
+    }
+    await sendBaileysBroadcastMessage(business.id, phoneDigits, content);
+    return { sent: true };
+  }
   const conv = { ...(convSnap.docs[0].data() as Conversation), id: convSnap.docs[0].id };
 
   const secret = process.env.AGENT_SHARED_SECRET;
