@@ -6,6 +6,7 @@ import {
   countSeatsTaken,
   resolveSessionsForDay,
   buildGroupSlots,
+  resolveGroupBooking,
 } from '@/lib/services/groupSession';
 import { buildSessionKey } from '@/lib/utils/sessionKey';
 import type { Appointment, Service } from '@/lib/types';
@@ -167,5 +168,52 @@ describe('resolveSessionsForDay / buildGroupSlots', () => {
     });
     const slots = buildGroupSlots(svc, MONDAY, 1, 'profA', []);
     expect(slots.map(s => s.professionalId)).toEqual(['profA']);
+  });
+});
+
+// FONTE ÚNICA manual↔agente — garante que os dois caminhos resolvem a MESMA
+// turma (sessionKey/capacity/profissional idênticos). Cobre M1 e M2 da auditoria.
+describe('resolveGroupBooking — paridade manual/agente', () => {
+  it('M1: sessao ABERTA normaliza pra _any MESMO com profissional pedido', () => {
+    const svc = groupService({
+      capacity: 5,
+      sessions: [{ weekday: 1, startTime: '19:00' }], // sem professionalId = aberta
+    });
+    // Pedido traz profX, mas a sessao e aberta → key deve ser _any (igual ao
+    // slot que buildGroupSlots exibe), nao _profX.
+    const r = resolveGroupBooking(svc, MONDAY, '19:00', 'profX');
+    expect(r.professionalId).toBeUndefined();
+    expect(r.sessionKey).toBe(monKey()); // _any
+    // E bate com o slot exibido:
+    const [slot] = buildGroupSlots(svc, MONDAY, 1, undefined, []);
+    expect(r.sessionKey).toBe(slot.sessionKey);
+  });
+
+  it('M1: sessao com profissional FIXO usa o prof da sessao (nao o pedido)', () => {
+    const svc = groupService({
+      capacity: 5,
+      sessions: [{ weekday: 1, startTime: '19:00', professionalId: 'profFixo', professionalName: 'Fixo' }],
+    });
+    const r = resolveGroupBooking(svc, MONDAY, '19:00', 'profOutro');
+    expect(r.professionalId).toBe('profFixo');
+    expect(r.professionalName).toBe('Fixo');
+    expect(r.sessionKey).toBe(monKey('profFixo'));
+  });
+
+  it('M2: capacity da SESSAO tem precedencia sobre a do servico', () => {
+    const svc = groupService({
+      capacity: 10, // capacity do servico
+      sessions: [{ weekday: 1, startTime: '19:00', capacity: 4 }], // override da sessao
+    });
+    const r = resolveGroupBooking(svc, MONDAY, '19:00', undefined);
+    expect(r.capacity).toBe(4); // nao 10
+  });
+
+  it('turma ad-hoc (capacity>1 sem grade): usa capacity do servico e prof pedido', () => {
+    const svc = groupService({ capacity: 8, sessions: undefined });
+    const r = resolveGroupBooking(svc, MONDAY, '15:30', 'profY');
+    expect(r.capacity).toBe(8);
+    expect(r.professionalId).toBe('profY');
+    expect(r.sessionKey).toBe(buildSessionKey({ serviceId: 'svc1', date: MONDAY, startTime: '15:30', professionalId: 'profY' }));
   });
 });

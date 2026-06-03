@@ -50,6 +50,7 @@ import {
   type Firestore,
 } from 'firebase/firestore';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
+import { countSeatsTaken } from '@/lib/services/groupSession';
 import type { Appointment, User } from '@/lib/types';
 
 /** Erro tipado pra que o caller diferencie conflito vs falha generica. */
@@ -58,6 +59,21 @@ export class AppointmentConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AppointmentConflictError';
+  }
+}
+
+/**
+ * Turma (capacity>1) cheia: todas as vagas da sessão já estão ocupadas por
+ * appointments não-cancelados com o mesmo sessionKey. Tipado pra que o caller
+ * (UI/agent) diferencie "cheia" de "conflito de horário" e mostre msg própria.
+ */
+export class SessionFullError extends Error {
+  readonly code = 'SESSION_FULL' as const;
+  readonly capacity: number;
+  constructor(message: string, capacity: number) {
+    super(message);
+    this.name = 'SessionFullError';
+    this.capacity = capacity;
   }
 }
 
@@ -70,12 +86,23 @@ export interface AppointmentTxPayload {
   /**
    * Turma (capacity>1): chave canônica da sessão. Quando presente, appointments
    * com o MESMO sessionKey são ignorados no check de conflito (colegas de turma).
-   * Ausente = exclusivo, comportamento BIT-A-BIT atual. A contagem de vagas
-   * (capacity) é responsabilidade do caller, não deste guard.
+   * Ausente = exclusivo, comportamento BIT-A-BIT atual.
    */
   sessionKey?: string;
+  /**
+   * Capacidade efetiva da turma. Quando presente JUNTO de `sessionKey`, o guard
+   * conta vagas DENTRO da tx (count não-cancelados com mesmo sessionKey) e lança
+   * SessionFullError se já estiver cheia — fechando a race do "última vaga".
+   * Ausente/≤1 = exclusivo, sem contagem.
+   */
+  capacity?: number;
   /** Restante do payload — passado direto pro tx.set/tx.update. */
   [key: string]: unknown;
+}
+
+/** true quando o payload descreve uma reserva de turma com contagem de vagas. */
+function isGroupPayload(payload: AppointmentTxPayload): boolean {
+  return !!payload.sessionKey && typeof payload.capacity === 'number' && payload.capacity > 1;
 }
 
 /**
@@ -91,6 +118,39 @@ function excludeSameSession(appointments: Appointment[], sessionKey?: string): A
 function dayLockRef(db: Firestore, businessId: string, professionalId: string, date: string) {
   const compactDate = date.replace(/-/g, '');
   return doc(db, 'appointmentDayLocks', `${businessId}_${professionalId}_${compactDate}`);
+}
+
+/**
+ * Lock por SESSÃO (turma) — usado pra turmas SEM profissional fixo ('any'),
+ * onde o dayLock (chaveado por prof) não existe. Serializa as reservas da MESMA
+ * sessão pra que a contagem de vagas seja consistente sob concorrência (2
+ * recepcionistas preenchendo a última vaga: um sucede, o outro reexecuta a tx,
+ * relê o doc novo, conta cheia → SessionFullError). sessionKey já é único por
+ * serviço+data+horário, então identifica a turma globalmente.
+ */
+function sessionLockRef(db: Firestore, businessId: string, sessionKey: string) {
+  return doc(db, 'appointmentSessionLocks', `${businessId}_${sessionKey}`);
+}
+
+/**
+ * Conta vagas de uma turma DENTRO da tx e lança SessionFullError se cheia.
+ * `excludeId` ignora o próprio doc (edição que não muda de sessão). Só conta
+ * quando o payload é de turma (isGroupPayload) — exclusivo é no-op.
+ */
+function assertSeatsAvailable(
+  payload: AppointmentTxPayload,
+  dayAppointments: Appointment[],
+  excludeId?: string,
+): void {
+  if (!isGroupPayload(payload)) return;
+  const others = excludeId ? dayAppointments.filter((a) => a.id !== excludeId) : dayAppointments;
+  const taken = countSeatsTaken(others, payload.sessionKey!);
+  if (taken >= payload.capacity!) {
+    throw new SessionFullError(
+      `Turma cheia (${payload.capacity}/${payload.capacity} vagas ocupadas).`,
+      payload.capacity!,
+    );
+  }
 }
 
 /**
@@ -111,9 +171,40 @@ export async function createAppointmentSafe(
 
   const newDocRef = doc(collection(db, 'appointments'));
 
-  // Sem profissional escolhido: pula tx, faz write simples. Caso raro,
-  // n bloqueia ningem em slot pq n ha "dono" do horario.
+  // Sem profissional escolhido (slot "da casa" / turma aberta 'any').
   if (!professionalId) {
+    // Turma aberta: ainda precisa de contagem de vagas atômica. Serializa via
+    // session-lock (chaveado por sessionKey, já que não há prof). Sem isso, 2
+    // operadores estouravam a capacidade da última vaga.
+    if (isGroupPayload(payload)) {
+      const lockRef = sessionLockRef(db, businessId, payload.sessionKey!);
+      await runTransaction(db, async (tx) => {
+        const lockSnap = await tx.get(lockRef);
+        const currentVersion = (lockSnap.data()?.version as number | undefined) ?? 0;
+
+        // Query por dia (índice businessId+date existente); a contagem filtra
+        // por sessionKey em memória via countSeatsTaken.
+        const q = query(
+          collection(db, 'appointments'),
+          where('businessId', '==', businessId),
+          where('date', '==', date),
+        );
+        const snap = await getDocs(q);
+        const dayAppts = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+        assertSeatsAvailable(payload, dayAppts);
+
+        tx.set(lockRef, {
+          businessId,
+          sessionKey: payload.sessionKey,
+          version: currentVersion + 1,
+          updatedAt: new Date().toISOString(),
+        });
+        tx.set(newDocRef, payload);
+      });
+      return newDocRef.id;
+    }
+    // Exclusivo sem prof: write simples (comportamento BIT-A-BIT atual). Caso
+    // raro; n bloqueia ningem em slot pq n ha "dono" do horario.
     const { setDoc } = await import('firebase/firestore');
     await setDoc(newDocRef, payload);
     return newDocRef.id;
@@ -137,12 +228,10 @@ export async function createAppointmentSafe(
       where('date', '==', date),
     );
     const snap = await getDocs(q);
-    const appointments = excludeSameSession(
-      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
-      payload.sessionKey,
-    );
+    const dayAppts = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
-    // 3. Check overlap puro.
+    // 3. Check overlap puro (colegas da mesma turma já foram excluídos acima).
     const result = checkAppointmentConflict({
       appointments,
       members,
@@ -155,6 +244,10 @@ export async function createAppointmentSafe(
     if (result.hasConflict) {
       throw new AppointmentConflictError(result.message);
     }
+
+    // 3b. Turma: conta vagas sobre a lista COMPLETA do dia (colegas incluídos).
+    //     Como o dayLock serializa prof+data, a contagem é consistente.
+    assertSeatsAvailable(payload, dayAppts);
 
     // 4. Bump lock — invalida txs concorrentes que ja leram version antiga.
     tx.set(lockRef, {
@@ -196,6 +289,32 @@ export async function updateAppointmentSafe(
 
   // Sem profissional novo: pula tx (raro em edits, mas defensivo).
   if (!professionalId) {
+    // Turma aberta ('any'): valida vagas no destino via session-lock, excluindo
+    // o próprio doc. Espelha o caminho de create pra mover de turma com
+    // segurança de capacidade.
+    if (isGroupPayload(payload)) {
+      const lockRef = sessionLockRef(db, businessId, payload.sessionKey!);
+      await runTransaction(db, async (tx) => {
+        const lockSnap = await tx.get(lockRef);
+        const currentVersion = (lockSnap.data()?.version as number | undefined) ?? 0;
+        const q = query(
+          collection(db, 'appointments'),
+          where('businessId', '==', businessId),
+          where('date', '==', date),
+        );
+        const snap = await getDocs(q);
+        const dayAppts = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+        assertSeatsAvailable(payload, dayAppts, appointmentId);
+        tx.set(lockRef, {
+          businessId,
+          sessionKey: payload.sessionKey,
+          version: currentVersion + 1,
+          updatedAt: new Date().toISOString(),
+        });
+        tx.update(targetRef, payload);
+      });
+      return;
+    }
     const { updateDoc } = await import('firebase/firestore');
     await updateDoc(targetRef, payload);
     return;
@@ -229,10 +348,8 @@ export async function updateAppointmentSafe(
       where('date', '==', date),
     );
     const snap = await getDocs(q);
-    const appointments = excludeSameSession(
-      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
-      payload.sessionKey,
-    );
+    const dayAppts = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
     // 3. Check overlap, ignorando o proprio doc.
     const result = checkAppointmentConflict({
@@ -248,6 +365,10 @@ export async function updateAppointmentSafe(
     if (result.hasConflict) {
       throw new AppointmentConflictError(result.message);
     }
+
+    // 3b. Turma: re-valida vagas no destino, excluindo o próprio doc (mover um
+    //     aluno pra outra sessão não pode estourar a capacidade da nova turma).
+    assertSeatsAvailable(payload, dayAppts, appointmentId);
 
     // 4. Bump destino sempre.
     tx.set(destLockRef, {

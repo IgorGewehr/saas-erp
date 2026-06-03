@@ -6,10 +6,9 @@ import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
 import { updateAppointmentSafeAdmin, AppointmentConflictError } from '@/lib/services/appointmentTxGuardAdmin';
-import { effectiveServiceCapacity, isGroupService } from '@/lib/contracts/domain/service';
+import { isGroupService } from '@/lib/contracts/domain/service';
 import { assertTransitionAppointment } from '@/lib/contracts/fsm/appointment';
-import { buildSessionKey } from '@/lib/utils/sessionKey';
-import { resolveSessionsForDay, countSeatsTaken, findBlockingAppointment, buildGroupSlots } from '@/lib/services/groupSession';
+import { countSeatsTaken, findBlockingAppointment, buildGroupSlots, resolveGroupBooking } from '@/lib/services/groupSession';
 
 type Action = AgendaToolAction;
 
@@ -668,28 +667,11 @@ interface GroupBookContext {
  *  - Turma cheia → SessionFullError → status='full' + alternativas.
  */
 async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupBookContext) {
-  const dayOfWeek = new Date(p.date + 'T12:00:00').getDay();
-
-  // Capacidade efetiva: se o serviço tem sessions[], usa a capacity da sessão
-  // que bate startTime/professional; senão usa a capacity do serviço.
-  const resolved = resolveSessionsForDay(c.service, dayOfWeek);
-  const matched = resolved.find(s =>
-    s.startTime === p.startTime &&
-    (s.professionalId ?? undefined) === (p.professionalId ?? undefined),
-  ) ?? resolved.find(s => s.startTime === p.startTime);
-
-  const capacity = matched ? matched.capacity : effectiveServiceCapacity(c.service.capacity);
-
-  // professionalId da sessão fixa (se houver) tem precedência sobre o pedido —
-  // a turma é "dona" do horário. Quando a sessão fixa não define professor,
-  // usa o pedido (que pode ser undefined → 'any').
-  const effectiveProfessionalId = matched?.professionalId ?? p.professionalId;
-  const sessionKey = buildSessionKey({
-    serviceId: c.serviceId,
-    date: p.date,
-    startTime: p.startTime,
-    professionalId: effectiveProfessionalId,
-  });
+  // FONTE ÚNICA (compartilhada com a reserva manual em AgendaModule): resolve
+  // sessionKey + capacity + profissional efetivo da turma. Garante que os dois
+  // caminhos contem a MESMA turma (mesmo key) e respeitem a capacity por-sessão.
+  const { sessionKey, capacity, professionalId: effectiveProfessionalId, professionalName: matchedProfName } =
+    resolveGroupBooking(c.service, p.date, p.startTime, p.professionalId);
 
   // P2.9: se o cliente tem mensalidade ativa com teto de usos por ciclo que
   // cobre este serviço, recusa quando o limite já foi atingido. Carregado fora
@@ -769,7 +751,7 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
       updatedAt: c.now,
     };
     if (effectiveProfessionalId !== undefined) docData.professionalId = effectiveProfessionalId;
-    const profName = matched?.professionalName ?? p.professionalName;
+    const profName = matchedProfName ?? p.professionalName;
     if (profName !== undefined) docData.professionalName = profName;
     if (p.clientPhone !== undefined) docData.clientPhone = p.clientPhone;
     if (p.notes !== undefined) docData.notes = p.notes;
