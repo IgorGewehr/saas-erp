@@ -90,6 +90,23 @@ const HEADER_MEDIA_ICON: Record<HeaderMediaFormat, React.ReactNode> = {
   DOCUMENT: <FileText className="w-4 h-4" />,
 };
 
+/** Badge visual no dropdown — sinaliza tipo de header sem operador precisar
+ *  clicar pra descobrir. Cores distintas por categoria pra scan rápido em
+ *  lista longa de templates. Tamanho compacto pra não dominar o MenuItem. */
+function HeaderFormatBadge({ format }: { format: HeaderMediaFormat }) {
+  const config = {
+    VIDEO:    { icon: <FileVideo className="w-2.5 h-2.5" />,  label: 'Vídeo',     cls: 'text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/20' },
+    IMAGE:    { icon: <FileImage className="w-2.5 h-2.5" />,  label: 'Imagem',    cls: 'text-sky-700 dark:text-sky-400 bg-sky-50 dark:bg-sky-500/10 border-sky-200 dark:border-sky-500/20' },
+    DOCUMENT: { icon: <FileText className="w-2.5 h-2.5" />,   label: 'Documento', cls: 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20' },
+  }[format];
+  return (
+    <span className={cn('inline-flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide px-1 py-0.5 rounded border', config.cls)}>
+      {config.icon}
+      {config.label}
+    </span>
+  );
+}
+
 interface Props {
   businessId: string;
   value: TemplateSelection | null;
@@ -455,8 +472,11 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
                 if (!sel) return <span className="text-gray-400">Selecione um template…</span>;
                 const tpl = templates.find(t => `${t.name}__${t.language}` === sel);
                 if (!tpl) return sel as string;
+                const fmt = tpl.header?.format;
+                const isMediaFmt = fmt === 'IMAGE' || fmt === 'VIDEO' || fmt === 'DOCUMENT';
                 return (
                   <span className="inline-flex items-center gap-2">
+                    {isMediaFmt && <HeaderFormatBadge format={fmt} />}
                     <span className="font-medium">{tpl.name}</span>
                     <span className="text-xs text-gray-400">— {tpl.category} ({tpl.language})</span>
                   </span>
@@ -464,14 +484,21 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
               }}
             >
               <MenuItem value="" disabled>Selecione um template…</MenuItem>
-              {templates.map(t => (
-                <MenuItem key={`${t.name}__${t.language}`} value={`${t.name}__${t.language}`}>
-                  <Box className="flex items-center justify-between w-full gap-3 min-w-0">
-                    <span className="font-medium text-sm truncate">{t.name}</span>
-                    <span className="text-xs text-gray-400 flex-shrink-0">{t.category} • {t.language}</span>
-                  </Box>
-                </MenuItem>
-              ))}
+              {templates.map(t => {
+                const fmt = t.header?.format;
+                const isMediaFmt = fmt === 'IMAGE' || fmt === 'VIDEO' || fmt === 'DOCUMENT';
+                return (
+                  <MenuItem key={`${t.name}__${t.language}`} value={`${t.name}__${t.language}`}>
+                    <Box className="flex items-center justify-between w-full gap-3 min-w-0">
+                      <span className="inline-flex items-center gap-1.5 min-w-0">
+                        {isMediaFmt && <HeaderFormatBadge format={fmt} />}
+                        <span className="font-medium text-sm truncate">{t.name}</span>
+                      </span>
+                      <span className="text-xs text-gray-400 flex-shrink-0">{t.category} • {t.language}</span>
+                    </Box>
+                  </MenuItem>
+                );
+              })}
             </Select>
           </FormControl>
         )}
