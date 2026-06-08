@@ -93,6 +93,9 @@ async function processBroadcast(b: Broadcast): Promise<{ ok: boolean; error?: st
   if (b.templateLanguage) body.templateLanguage = b.templateLanguage;
   if (b.templateParams) body.templateParams = b.templateParams;
   if (b.templateBody) body.templateBody = b.templateBody;
+  // Header de mídia (IMAGE/VIDEO/DOCUMENT) — encaminha pro /broadcasts/send montar
+  // components[0] com {type:'header', parameters:[{video|image|document}]}.
+  if (b.headerMedia) body.headerMedia = b.headerMedia;
   if (b.messageContent) body.messageContent = b.messageContent;
   if (b.emailSubject) body.emailSubject = b.emailSubject;
   if (b.viaBaileys) body.viaBaileys = true;

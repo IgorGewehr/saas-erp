@@ -130,11 +130,25 @@ export default function BirthdayCampaignDialog({
     setConnectionId(editing.channelConnectionId ?? '');
     setMessageContent(editing.messageContent ?? DEFAULT_MESSAGE);
     if (editing.templateName) {
+      // Hidrata headerMedia se a campanha foi criada com template IMAGE/VIDEO/DOCUMENT.
+      // headerFormat é derivado do mimeType — operador re-edita o mesmo vídeo
+      // sem precisar re-uplodar. Quando ausente (template TEXT ou legado), os
+      // dois campos ficam undefined.
+      const hm = editing.headerMedia;
+      const inferredFormat: 'IMAGE' | 'VIDEO' | 'DOCUMENT' | undefined = hm
+        ? hm.mimeType.startsWith('image/')
+          ? 'IMAGE'
+          : hm.mimeType.startsWith('video/')
+            ? 'VIDEO'
+            : 'DOCUMENT'
+        : undefined;
       setTemplate({
         name: editing.templateName,
         language: editing.templateLanguage ?? 'pt_BR',
         params: editing.templateParams ?? [],
         preview: editing.templateBody ?? '',
+        ...(inferredFormat ? { headerFormat: inferredFormat } : {}),
+        ...(hm ? { headerMedia: hm } : {}),
       });
     } else {
       setTemplate(null);
@@ -390,6 +404,16 @@ export default function BirthdayCampaignDialog({
         payload.templateLanguage = template?.language;
         payload.templateParams = template?.params;
         payload.templateBody = template?.preview;
+        // Header de mídia (IMAGE/VIDEO/DOCUMENT). mediaId vem do upload; o
+        // runner birthdayCampaignRunner usa pra montar components Meta.
+        // No update: usa deleteField() pra limpar quando operador trocou pra
+        // template TEXT (não deixa mediaId fantasma). No create: omite o campo
+        // — o stripper do create-path remove o sentinel se vier.
+        if (template?.headerMedia) {
+          payload.headerMedia = template.headerMedia;
+        } else if (editing) {
+          payload.headerMedia = deleteField();
+        }
       }
 
       payload.filters = filtersClean;

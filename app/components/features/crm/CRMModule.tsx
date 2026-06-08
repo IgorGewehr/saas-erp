@@ -2140,6 +2140,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         // quando der upsert da conversa. Sem isso a aba Conversas mostrava só
         // "[Template: nome]" em vez do conteúdo enviado.
         templateBody: effectiveMsgType === 'template' && formTemplate ? formTemplate.preview : undefined,
+        // Mídia do header (IMAGE/VIDEO/DOCUMENT). mediaId vem do upload
+        // /api/channels/whatsapp-media/upload e é reusado por todos os recipients
+        // da campanha. process-scheduled e a runner de broadcast pegam daqui.
+        headerMedia: effectiveMsgType === 'template' && formTemplate?.headerMedia
+          ? formTemplate.headerMedia
+          : undefined,
         messageContent: effectiveMsgType === 'text' ? formContent.trim() : undefined,
         emailSubject: formChannel === 'email' ? formEmailSubject.trim() : undefined,
         viaBaileys: isBaileysSend,
