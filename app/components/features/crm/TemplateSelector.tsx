@@ -316,6 +316,14 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
       );
       return;
     }
+    // Snapshot do template no início do upload — se mudar durante o async
+    // (parent overrides programaticamente o value, ou bug do disabled), descartamos
+    // o resultado em vez de gravar mediaId num template diferente.
+    // O Select está disabled durante upload (defense primária); este check é
+    // defesa em profundidade caso o disable seja burlado.
+    const startSnapshot = { name: value.name, language: value.language };
+    const matchesSnapshot = (current: typeof value) =>
+      !!current && current.name === startSnapshot.name && current.language === startSnapshot.language;
     setHeaderUploading(true);
     setHeaderUploadError(null);
     try {
@@ -347,6 +355,11 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
             };
             if (lookupData.cached && lookupData.mediaId && lookupData.mimeType) {
               // Cache hit — devolvemos sem upload, ~zero bytes na rede.
+              // Guard: só atualiza se template ainda é o mesmo (defense em profundidade).
+              if (!matchesSnapshot(value)) {
+                console.warn('[TemplateSelector] Template trocado durante cache-lookup, descartando');
+                return;
+              }
               onChange({
                 ...value,
                 headerMedia: {
@@ -386,6 +399,12 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
         sizeBytes: number;
         category: string;
       };
+      // Mesmo guard de snapshot — se o template foi trocado durante o upload
+      // de 100MB, não escreve o mediaId num value stale.
+      if (!matchesSnapshot(value)) {
+        console.warn('[TemplateSelector] Template trocado durante upload, descartando mediaId');
+        return;
+      }
       onChange({
         ...value,
         headerMedia: {
@@ -460,7 +479,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
             </div>
           </div>
         ) : (
-          <FormControl fullWidth size="small">
+          <FormControl fullWidth size="small" disabled={headerUploading}>
             <InputLabel id="broadcast-template-select-label" shrink>Template aprovado</InputLabel>
             <Select
               labelId="broadcast-template-select-label"
@@ -468,6 +487,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
               value={value ? `${value.name}__${value.language}` : ''}
               onChange={(e) => handleSelectTemplateValue(e.target.value as string)}
               displayEmpty
+              disabled={headerUploading}
               renderValue={(sel) => {
                 if (!sel) return <span className="text-gray-400">Selecione um template…</span>;
                 const tpl = templates.find(t => `${t.name}__${t.language}` === sel);

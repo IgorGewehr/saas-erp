@@ -196,6 +196,27 @@ export async function POST(req: NextRequest) {
     const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, templateBodyParams, headerMedia, mediaUrl, mediaType, fileName, voice, replyToMessageId, replyToMessageContent, replyToMessageFromMe, clientMessageId } = body;
     failureContext = { businessId, conversationId, recipientId, channel };
 
+    // Cap defensivo em templateBodyParams — Meta aceita no máximo ~10 variáveis
+    // por template, então 20 é folga sobrada. Sem isso, caller autenticado
+    // poderia mandar Array(50000).fill('x'.repeat(1024)) = ~50MB e estressar
+    // o heap antes da Meta rejeitar. Reportado em auditoria pré-prod.
+    if (templateBodyParams !== undefined) {
+      if (!Array.isArray(templateBodyParams) || templateBodyParams.length > 20) {
+        return NextResponse.json(
+          { error: 'templateBodyParams deve ser array de até 20 elementos' },
+          { status: 400 },
+        );
+      }
+      for (const p of templateBodyParams) {
+        if (typeof p !== 'string' || p.length > 1024) {
+          return NextResponse.json(
+            { error: 'Cada templateBodyParam deve ser string de até 1024 chars' },
+            { status: 400 },
+          );
+        }
+      }
+    }
+
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
     const agentSignature = req.headers.get('x-agent-signature');
     if (agentSignature) {

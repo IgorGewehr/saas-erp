@@ -113,6 +113,11 @@ async function loadCloudConfig(businessId: string): Promise<CloudConfig | null> 
   }
 }
 
+// Hard cap absoluto de body — protege contra request maliciosa antes do
+// formData() bufferizar a memória do processo. 110MB = 100MB doc + folga
+// pra overhead do multipart envelope.
+const HARD_BODY_BYTES_CAP = 110 * 1024 * 1024;
+
 export async function POST(req: NextRequest) {
   // Rate limit: 10 uploads/min por IP. Mais alto que photo upload (5/min) porque
   // operadores podem mandar várias mídias em sequência num atendimento ativo.
@@ -123,6 +128,32 @@ export async function POST(req: NextRequest) {
       { error: 'Aguarde antes de fazer upload novamente.' },
       { status: 429 },
     );
+  }
+
+  // ── Defesas ANTES de bufferizar o body ────────────────────────────────────
+  // formData() consome até 100MB em memória. Atacante anônimo sem token
+  // sustentando 10 req/min/IP x 100MB = 1GB/min de pressão. Travamos cedo:
+
+  // 1. Auth presence: rejeita request sem Authorization header sem ler nada.
+  //    verifyAuth completo precisa do businessId (que tá no body), mas a
+  //    ausência do header já basta pra rejeitar 401 sem custo de banda.
+  const authHeader = req.headers.get('authorization');
+  if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) {
+    return NextResponse.json({ error: 'Authorization Bearer obrigatório' }, { status: 401 });
+  }
+
+  // 2. Content-Length: rejeita bodies maiores que o teto absoluto antes de
+  //    bufferizar. Atacante pode mentir no header, mas então o parse falha
+  //    cedo quando passa do declarado. Defense em profundidade.
+  const contentLength = req.headers.get('content-length');
+  if (contentLength) {
+    const cl = Number(contentLength);
+    if (Number.isFinite(cl) && cl > HARD_BODY_BYTES_CAP) {
+      return NextResponse.json(
+        { error: `Body excede limite absoluto (${HARD_BODY_BYTES_CAP / 1024 / 1024}MB)` },
+        { status: 413 },
+      );
+    }
   }
 
   let formData: FormData;

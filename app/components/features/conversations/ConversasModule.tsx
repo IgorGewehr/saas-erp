@@ -4325,7 +4325,15 @@ function NewConversationDialog({
       if (sendType === 'template') {
         sendBody.templateName = templateName;
         sendBody.templateLanguage = templateLanguage;
-        sendBody.templateParams = templateParams;
+        // Caminho NOVO (estruturado): templateBodyParams como string[] resolvido —
+        // backend monta components Meta via buildTemplateComponents. Antes mandava
+        // `templateParams` cru, que o passthrough legacy do /conversations/send
+        // injetava como `components` no payload Meta — strings cruas em components
+        // sao rejeitadas pela Meta (codigo 132000) e a bolha ficava em 'sending'
+        // eterno. Bug pre-existente identificado na auditoria pre-prod.
+        if (templateParams.length > 0) {
+          sendBody.templateBodyParams = templateParams;
+        }
       }
 
       const res = await fetch('/api/conversations/send', {

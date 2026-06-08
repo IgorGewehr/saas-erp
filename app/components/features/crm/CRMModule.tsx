@@ -2098,6 +2098,20 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           toast.error('Data/hora de agendamento deve estar no futuro.');
           return;
         }
+        // Cap de 25 dias quando o template tem mídia de header: o mediaId
+        // da Meta expira em ~30d e o backend NÃO revalida no cron. Margem
+        // de 5d garante que o envio cabe na janela. Sem mídia (templates
+        // TEXT ou só texto livre), agendamento longo continua liberado.
+        if (effectiveMsgType === 'template' && formTemplate?.headerMedia) {
+          const maxScheduledMs = Date.now() + 25 * 24 * 60 * 60 * 1000;
+          if (dt.getTime() > maxScheduledMs) {
+            toast.error(
+              'Template com mídia (vídeo/imagem/documento) só pode ser agendado em até 25 dias. ' +
+              'A mídia carregada expira na Meta após ~30 dias.',
+            );
+            return;
+          }
+        }
         scheduledAtIso = dt.toISOString();
       }
       const initialStatus: BroadcastStatus = scheduledAtIso ? 'scheduled' : 'draft';
