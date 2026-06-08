@@ -266,9 +266,29 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
     });
   };
 
-  /** Faz upload do arquivo de header pra Meta via /api/channels/whatsapp-media/upload.
-   *  Validação client-side rápida (tamanho) antes do round-trip — o backend
-   *  re-valida porém a UX é melhor falhar antes de gastar bytes. */
+  /** Calcula SHA-256 hex do conteúdo do arquivo via SubtleCrypto (disponível
+   *  em todos browsers modernos). Roda em ~500ms até pra arquivos de 100MB.
+   *  Usado pra consultar cache de mediaId antes do upload — evita re-mandar
+   *  bytes quando o mesmo arquivo já foi enviado nos últimos 25 dias. */
+  const computeFileSha256 = async (file: File): Promise<string | null> => {
+    try {
+      if (!crypto?.subtle?.digest) return null;
+      const buf = await file.arrayBuffer();
+      const hash = await crypto.subtle.digest('SHA-256', buf);
+      return Array.from(new Uint8Array(hash))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    } catch (err) {
+      // Browser muito antigo ou erro de memória — segue sem cache, upload normal.
+      console.warn('[TemplateSelector] sha256 failed (continuing without cache):', err);
+      return null;
+    }
+  };
+
+  /** Faz upload do arquivo de header pra Meta via /api/channels/whatsapp-media/upload,
+   *  consultando primeiro a cache via /cache-lookup. Cache hit = zero bytes na rede;
+   *  miss = upload completo + cache write. Validação client-side (tamanho) antes
+   *  pra não desperdiçar tempo computando hash de arquivo gigante. */
   const handleHeaderUpload = async (file: File) => {
     if (!value || !value.headerFormat) return;
     const maxBytes = HEADER_MEDIA_MAX_BYTES[value.headerFormat];
@@ -287,9 +307,52 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
         setHeaderUploadError('Sessão expirada. Faça login novamente.');
         return;
       }
+
+      // ── 1. Hash + cache lookup ────────────────────────────────────────
+      // Calcula sha256 (best-effort — falha cai silenciosamente pro upload).
+      const sha256 = await computeFileSha256(file);
+      if (sha256) {
+        try {
+          const lookupRes = await fetch('/api/channels/whatsapp-media/cache-lookup', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ businessId, sha256 }),
+          });
+          if (lookupRes.ok) {
+            const lookupData = (await lookupRes.json()) as {
+              cached: boolean;
+              mediaId?: string;
+              mimeType?: string;
+              sizeBytes?: number;
+            };
+            if (lookupData.cached && lookupData.mediaId && lookupData.mimeType) {
+              // Cache hit — devolvemos sem upload, ~zero bytes na rede.
+              onChange({
+                ...value,
+                headerMedia: {
+                  mediaId: lookupData.mediaId,
+                  mimeType: lookupData.mimeType,
+                  fileName: file.name,
+                  sizeBytes: lookupData.sizeBytes ?? file.size,
+                },
+              });
+              return;
+            }
+          }
+        } catch (err) {
+          // Lookup falhou — não bloqueia, segue pro upload normal.
+          console.warn('[TemplateSelector] Cache lookup failed:', err);
+        }
+      }
+
+      // ── 2. Upload completo (cache miss ou sha256 indisponível) ────────
       const form = new FormData();
       form.append('businessId', businessId);
       form.append('file', file);
+      if (sha256) form.append('sha256', sha256); // permite o backend gravar na cache
       const res = await fetch('/api/channels/whatsapp-media/upload', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },

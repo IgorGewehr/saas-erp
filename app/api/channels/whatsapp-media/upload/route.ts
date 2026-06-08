@@ -40,6 +40,10 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import {
+  lookupAndBumpCache,
+  upsertCachedMedia,
+} from '@/lib/services/channels/whatsappMediaCache';
 
 const META_GRAPH = 'https://graph.facebook.com/v21.0';
 
@@ -130,6 +134,11 @@ export async function POST(req: NextRequest) {
 
   const businessId = String(formData.get('businessId') || '');
   const file = formData.get('file');
+  // sha256 opcional — quando presente, ativamos cache (lookup antes do upload
+  // pra evitar round-trip Meta, write após upload pra próximos envios pegarem
+  // cache). Quando ausente, comportamento legado (upload sempre).
+  const sha256Raw = String(formData.get('sha256') || '').toLowerCase();
+  const sha256 = /^[a-f0-9]{64}$/.test(sha256Raw) ? sha256Raw : null;
   if (!businessId) {
     return NextResponse.json({ error: 'businessId é obrigatório' }, { status: 400 });
   }
@@ -175,6 +184,29 @@ export async function POST(req: NextRequest) {
       { error: 'WhatsApp Cloud não está conectado. Configure em Configurações → Canais.' },
       { status: 400 },
     );
+  }
+
+  // Cache lookup quando sha256 foi fornecido — economiza o round-trip pra Meta
+  // se o mesmo arquivo já foi upado neste phoneNumberId nos últimos 25 dias.
+  // Cliente também pode (e deve) consultar via /cache-lookup ANTES de mandar
+  // os bytes; este lookup aqui é seguro extra caso o cliente legado/agente
+  // não tenha feito o pre-check.
+  if (sha256) {
+    try {
+      const cached = await lookupAndBumpCache(businessId, config.phoneNumberId, sha256);
+      if (cached) {
+        return NextResponse.json({
+          mediaId: cached.mediaId,
+          mimeType: cached.mimeType,
+          sizeBytes: cached.sizeBytes,
+          category: cached.category,
+          fromCache: true,
+        });
+      }
+    } catch (err) {
+      // Cache miss/falha não bloqueia upload — só log e segue pro fluxo Meta.
+      console.warn('[WA Media] Cache lookup failed (continuing with upload):', err);
+    }
   }
 
   try {
@@ -239,11 +271,31 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Meta não retornou media_id' }, { status: 502 });
     }
 
+    // Grava na cache quando sha256 fornecido. Best-effort: falha aqui não
+    // bloqueia o response — operador recebe o mediaId e pode usar; só perdemos
+    // o ganho de cache no próximo envio do mesmo arquivo.
+    if (sha256) {
+      try {
+        await upsertCachedMedia(businessId, {
+          phoneNumberId: config.phoneNumberId,
+          sha256,
+          mimeType: normalizedMime,
+          fileName: file.name || `upload.${limit.category}`,
+          sizeBytes: file.size,
+          category: limit.category,
+          mediaId,
+        });
+      } catch (err) {
+        console.warn('[WA Media] Cache upsert failed (non-blocking):', err);
+      }
+    }
+
     return NextResponse.json({
       mediaId,
       mimeType: normalizedMime,
       sizeBytes: file.size,
       category: limit.category,
+      fromCache: false,
     });
   } catch (err) {
     console.error('[WA Media] Error:', err);
