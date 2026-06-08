@@ -225,26 +225,78 @@ export async function GET(req: NextRequest) {
     }
 
     const templatesData = await templatesRes.json();
+    // Estrutura crua dos componentes que a Meta devolve em /message_templates.
+    // Antes só consumíamos type/text/format (suficiente pra header TEXT + body de variáveis).
+    // Agora preservamos também `example` (precisamos do header_handle pra mídia futura),
+    // `buttons` (QUICK_REPLY/URL/PHONE_NUMBER/COPY_CODE/OTP) e devolvemos os components
+    // crus pro consumer (broadcast/send) poder montar o payload Meta correto com header
+    // de mídia (IMAGE/VIDEO/DOCUMENT) — UI ainda não usa, mas precisa estar disponível.
+    type MetaTemplateButton = {
+      type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE' | 'OTP';
+      text: string;
+      url?: string;
+      phone_number?: string;
+    };
+    type MetaTemplateComponent = {
+      type: 'HEADER' | 'BODY' | 'FOOTER' | 'BUTTONS';
+      format?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION';
+      text?: string;
+      example?: {
+        header_text?: string[];
+        header_handle?: string[];
+        body_text?: string[][];
+      };
+      buttons?: MetaTemplateButton[];
+    };
     const rawTemplates: Array<{
       id: string;
       name: string;
       language: string;
       status: string;
       category: string;
-      components?: Array<{ type: string; text?: string; format?: string }>;
+      components?: MetaTemplateComponent[];
     }> = templatesData?.data || [];
 
-    // Shape the response — extract preview text from BODY component
+    // Normaliza pro shape que UI/broadcast precisam. Mantém os campos antigos
+    // (name/language/category/preview/hasVariables) por back-compat com
+    // ConversasModule.tsx (linhas 8080,10229,10233) + SettingsModule + TemplateSelector.
     const templates = rawTemplates.map((tpl) => {
-      const bodyComponent = tpl.components?.find((c) => c.type === 'BODY');
-      const headerComponent = tpl.components?.find((c) => c.type === 'HEADER');
+      const components = tpl.components ?? [];
+      const headerComp = components.find((c) => c.type === 'HEADER');
+      const bodyComp = components.find((c) => c.type === 'BODY');
+      const footerComp = components.find((c) => c.type === 'FOOTER');
+      const buttonsComp = components.find((c) => c.type === 'BUTTONS');
+
+      // Header normalizado. `format` é a chave que destrava IMAGE/VIDEO/DOCUMENT
+      // no UI — VIDEO em particular é o gatilho pro novo fluxo de mídia.
+      const header = headerComp
+        ? {
+            format: (headerComp.format ?? 'TEXT') as 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION',
+            text: headerComp.text,
+            // example.header_handle vem do template criado com Resumable Upload.
+            // Não usamos pra enviar (precisamos URL/id em runtime), só pra UI exibir
+            // referência do sample que foi submetido à Meta.
+            example: headerComp.example,
+          }
+        : null;
+
       return {
         name: tpl.name,
         language: tpl.language,
         category: tpl.category,
-        // Preview text for the UI
-        preview: bodyComponent?.text || headerComponent?.text || tpl.name,
-        hasVariables: (bodyComponent?.text || '').includes('{{'),
+        // Back-compat: preview = body text ou fallback (UI já mostra direto).
+        preview: bodyComp?.text || headerComp?.text || tpl.name,
+        hasVariables: (bodyComp?.text || '').includes('{{'),
+        // Novos campos estruturados — opcionais no consumer, ignorados pelos antigos.
+        header,
+        body: bodyComp
+          ? { text: bodyComp.text || '', example: bodyComp.example }
+          : null,
+        footer: footerComp?.text ? { text: footerComp.text } : null,
+        buttons: buttonsComp?.buttons ?? null,
+        // Components crus pra quem vai montar o payload de envio (broadcast builder).
+        // Sem isso, builder não tem como saber a ordem dos parameters por componente.
+        components,
       };
     });
 

@@ -10,6 +10,10 @@ import { getAlternativeBrazilianPhone, canonicalizeBr } from '@/lib/utils/phoneA
 import type { BroadcastTemplateParam, OptOutChannel } from '@/lib/types';
 import { cleanContactName } from '@/lib/utils/contactName';
 import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
+import {
+  buildTemplateComponents,
+  type HeaderMediaPayload,
+} from '@/lib/services/channels/whatsappTemplateComponents';
 
 /** Compara strings em tempo constante — evita timing attack na CRON_SECRET. */
 function safeEqual(a: string, b: string): boolean {
@@ -116,37 +120,45 @@ function renderTemplateBody(body: string, values: string[]): string {
 function resolveTemplateComponents(
   params: unknown,
   recipient: { name?: string; recipientId: string; email?: string; customColumns?: Record<string, string> },
+  headerMedia?: HeaderMediaPayload | null,
 ): unknown[] {
-  if (!Array.isArray(params) || params.length === 0) return [];
-
-  // Detecta formato legado: array de componentes Meta (cada item tem 'type' e 'parameters'
-  // E NÃO tem 'kind' — campo discriminante do BroadcastTemplateParam novo)
-  const looksLikeLegacy = params.every(p =>
-    typeof p === 'object' && p !== null && 'type' in p && 'parameters' in p && !('kind' in p)
-  );
-  if (looksLikeLegacy) return params;
+  // Compat: array de componentes Meta pré-montado (cada item tem 'type' e
+  // 'parameters' E NÃO tem 'kind'). Quando o caller já mandou pronto,
+  // respeita — só anexa header se vier headerMedia (header não conflita com
+  // body, e legado nunca incluía header de mídia).
+  if (Array.isArray(params) && params.length > 0) {
+    const looksLikeLegacy = params.every(p =>
+      typeof p === 'object' && p !== null && 'type' in p && 'parameters' in p && !('kind' in p)
+    );
+    if (looksLikeLegacy) {
+      if (!headerMedia?.mediaId) return params;
+      // Prepende header montado pelo helper, preservando o body legado.
+      const headerOnly = buildTemplateComponents({ headerMedia, bodyParams: [] });
+      return [...headerOnly, ...params];
+    }
+  }
 
   // Formato novo: array de BroadcastTemplateParam — resolve por recipiente
-  const resolved = (params as BroadcastTemplateParam[]).map(p => {
-    if (p.kind === 'literal') return p.value;
-    if (p.kind === 'field') {
-      if (p.field === 'name') return recipient.name || '';
-      if (p.field === 'phoneNumber') return recipient.recipientId;
-      if (p.field === 'email') return recipient.email || '';
-    }
-    if (p.kind === 'csvColumn') {
-      // 5.8: lê coluna extra do recipient. Vai vazio se ausente — template
-      // será renderizado com placeholder, mas Meta API não vai falhar.
-      return recipient.customColumns?.[p.column] || '';
-    }
-    return '';
-  });
+  // pra strings na ordem {{1}}..{{N}}, depois delega ao helper compartilhado
+  // que monta o shape Meta correto (header opcional + body).
+  const bodyParams: string[] = Array.isArray(params)
+    ? (params as BroadcastTemplateParam[]).map(p => {
+        if (p.kind === 'literal') return p.value;
+        if (p.kind === 'field') {
+          if (p.field === 'name') return recipient.name || '';
+          if (p.field === 'phoneNumber') return recipient.recipientId;
+          if (p.field === 'email') return recipient.email || '';
+        }
+        if (p.kind === 'csvColumn') {
+          // 5.8: lê coluna extra do recipient. Vai vazio se ausente — template
+          // será renderizado com placeholder, mas Meta API não vai falhar.
+          return recipient.customColumns?.[p.column] || '';
+        }
+        return '';
+      })
+    : [];
 
-  // Converte para o shape Meta: components: [{ type: 'body', parameters: [{ type: 'text', text: '...' }, ...] }]
-  return [{
-    type: 'body',
-    parameters: resolved.map(text => ({ type: 'text', text })),
-  }];
+  return buildTemplateComponents({ headerMedia, bodyParams });
 }
 
 /** Aceita ambos os shapes de recipiente, retorna formato normalizado. */
@@ -470,6 +482,15 @@ export async function POST(req: NextRequest) {
       // body cru do template (com {{N}} placeholders) — frontend persiste do
       // TemplateSelector. Usado pra renderizar conteúdo da conversa.
       templateBody,
+      /**
+       * Mídia do header — só presente em templates com format IMAGE/VIDEO/DOCUMENT.
+       * mediaId vem do POST /api/channels/whatsapp-media/upload (scoped pelo
+       * phone_number_id) e é reusado em TODOS os recipients da campanha — sem
+       * isso a Meta cacheia URL idêntica só por 10min e re-fetcha do Storage
+       * em cada send. Frontend persiste no broadcast doc; aqui chega via body
+       * ou é lido do doc no caminho de retry.
+       */
+      headerMedia,
       messageContent,
       emailSubject,
       recipients: rawRecipients,
@@ -1064,7 +1085,7 @@ export async function POST(req: NextRequest) {
                 template: {
                   name: templateName,
                   language: { code: templateLanguage || 'pt_BR' },
-                  components: resolveTemplateComponents(templateParams, recipient),
+                  components: resolveTemplateComponents(templateParams, recipient, headerMedia),
                 },
               }),
             });

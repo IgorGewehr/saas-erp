@@ -3208,6 +3208,18 @@ export interface Broadcast {
    * "[Template: nome]" no lugar do texto enviado.
    */
   templateBody?: string;
+  /**
+   * Mídia do header (templates com format IMAGE/VIDEO/DOCUMENT). mediaId vem
+   * do POST /api/channels/whatsapp-media/upload, é scoped pelo phone_number_id
+   * do business e tem TTL ~30 dias na Meta. /api/broadcasts/send usa esse
+   * payload para montar `components[0]` do template via buildTemplateComponents.
+   * Ausente em templates com header TEXT/LOCATION ou só body.
+   */
+  headerMedia?: {
+    mediaId: string;
+    mimeType: string;
+    fileName?: string;
+  };
   messageContent?: string;
   /** Assunto para canal email (broadcasts via notification-server). */
   emailSubject?: string;
@@ -3335,6 +3347,13 @@ export interface BirthdayCampaign {
   templateParams?: BroadcastTemplateParam[];
   /** Body cru do template — usado pra renderizar preview na conversa. */
   templateBody?: string;
+  /** Mídia do header — quando o template tem format IMAGE/VIDEO/DOCUMENT.
+   *  Reaproveitado em todos os recipients da campanha (Meta scope: phone_number_id). */
+  headerMedia?: {
+    mediaId: string;
+    mimeType: string;
+    fileName?: string;
+  };
 
   // ── Filtro de quem entra ───────────────────────
   filters?: {
