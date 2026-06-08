@@ -58,6 +58,7 @@ import {
   AlertTriangle,
   Bell,
   MessageCircle,
+  Copy,
 } from 'lucide-react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -74,9 +75,10 @@ import { isActiveClient } from '@/lib/utils/clientFilters';
 import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import { getAppointmentProfessionalIds, getAppointmentProfessionalNames, isAppointmentAssignedTo } from '@/lib/utils/appointment';
 import { notifyUsers } from '@/lib/services/notifications';
-import type { Appointment, AppointmentStatus, Service, CRMContact, User } from '@/lib/types';
+import type { Appointment, AppointmentStatus, Service, CRMContact, User, WeeklySession } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
+import { consumeServiceComponents } from '@/lib/services/serviceConsumption';
 import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
@@ -122,6 +124,36 @@ async function emitAppointmentCompletedEvent(args: {
   } catch (err) {
     // Fire-and-forget: log mas não derruba o save
     console.warn('[Agenda] emit appointment.completed falhou:', err);
+  }
+}
+
+// P2.8: dispatch de domain event quando uma AULA EXPERIMENTAL (isTrial) é
+// concluída. Sinaliza o funil de aquisição pro CRM/agent (outcome converteu →
+// avançar lifecycleStage). Fire-and-forget; auditoria em domainEvents/{id}.
+async function emitAppointmentTrialCompletedEvent(args: {
+  appointmentId: string;
+  clientId?: string;
+  serviceId?: string;
+  outcome: 'converteu' | 'nao_converteu' | 'pendente';
+}): Promise<void> {
+  try {
+    const { getAuth } = await import('firebase/auth');
+    const token = await getAuth().currentUser?.getIdToken();
+    if (!token) return;
+    await fetch('/api/events/dispatch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        type: 'appointment.trialCompleted',
+        occurredAt: new Date().toISOString(),
+        appointmentId: args.appointmentId,
+        clientId: args.clientId,
+        serviceId: args.serviceId,
+        outcome: args.outcome,
+      }),
+    });
+  } catch (err) {
+    console.warn('[Agenda] emit appointment.trialCompleted falhou:', err);
   }
 }
 
@@ -491,12 +523,17 @@ interface ServiceFormData {
   color: string;
   isActive: boolean;
   commissionRate?: number;
+  // Turma/aula em grupo — opcionais (ausentes = agendamento exclusivo BIT-A-BIT).
+  capacity?: number;
+  sessions?: WeeklySession[];
   // Campos fiscais (NFSe) — opcionais, vão pro doc do Service
   lc116Code?: string;
   codigoMunicipal?: string;
   nbs?: string;
   aliquotaISS?: number;
 }
+
+const WEEKDAY_SHORT: readonly string[] = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 
 interface ServiceManagementDialogProps {
   open: boolean;
@@ -537,6 +574,8 @@ function ServiceManagementDialog({
     color: '#3B82F6',
     isActive: true,
     commissionRate: undefined,
+    capacity: undefined,
+    sessions: undefined,
     lc116Code: '',
     codigoMunicipal: '',
     nbs: '',
@@ -565,6 +604,8 @@ function ServiceManagementDialog({
       color: '#3B82F6',
       isActive: true,
       commissionRate: undefined,
+      capacity: undefined,
+      sessions: undefined,
       lc116Code: '',
       codigoMunicipal: '',
       nbs: '',
@@ -584,6 +625,8 @@ function ServiceManagementDialog({
       color: service.color,
       isActive: service.isActive,
       commissionRate: service.commissionRate,
+      capacity: service.capacity,
+      sessions: service.sessions ? service.sessions.map((s) => ({ ...s })) : undefined,
       lc116Code: service.lc116Code || '',
       codigoMunicipal: service.codigoMunicipal || '',
       nbs: service.nbs || '',
@@ -612,6 +655,65 @@ function ServiceManagementDialog({
       setSaving(false);
     }
   }, [formData, editingService, onCreateService, onUpdateService, resetForm]);
+
+  // ── Turma/aula em grupo — estado local do editor de grade ──
+  const isGroup = typeof formData.capacity === 'number' && formData.capacity > 1;
+  const [draftWeekdays, setDraftWeekdays] = useState<number[]>([]);
+  const [draftTime, setDraftTime] = useState<string>('19:00');
+  const sessions = formData.sessions ?? [];
+
+  const setBookingType = useCallback((group: boolean) => {
+    setFormData((p) => group
+      ? { ...p, capacity: p.capacity && p.capacity > 1 ? p.capacity : 10 }
+      : { ...p, capacity: undefined, sessions: undefined });
+    if (!group) setDraftWeekdays([]);
+  }, []);
+
+  const toggleDraftWeekday = useCallback((wd: number) => {
+    setDraftWeekdays((prev) => prev.includes(wd) ? prev.filter((d) => d !== wd) : [...prev, wd].sort((a, b) => a - b));
+  }, []);
+
+  const addSessionsForDraft = useCallback(() => {
+    if (draftWeekdays.length === 0 || !/^\d{2}:\d{2}$/.test(draftTime)) return;
+    setFormData((p) => {
+      const existing = p.sessions ?? [];
+      const toAdd: WeeklySession[] = draftWeekdays
+        .filter((wd) => !existing.some((s) => s.weekday === wd && s.startTime === draftTime))
+        .map((wd) => ({ weekday: wd, startTime: draftTime }));
+      if (toAdd.length === 0) return p;
+      const next = [...existing, ...toAdd].sort((a, b) => a.weekday - b.weekday || a.startTime.localeCompare(b.startTime));
+      return { ...p, sessions: next };
+    });
+  }, [draftWeekdays, draftTime]);
+
+  const copyTimeToDraftDays = useCallback((sourceTime: string) => {
+    if (draftWeekdays.length === 0 || !/^\d{2}:\d{2}$/.test(sourceTime)) return;
+    setFormData((p) => {
+      const existing = p.sessions ?? [];
+      const toAdd: WeeklySession[] = draftWeekdays
+        .filter((wd) => !existing.some((s) => s.weekday === wd && s.startTime === sourceTime))
+        .map((wd) => ({ weekday: wd, startTime: sourceTime }));
+      if (toAdd.length === 0) return p;
+      const next = [...existing, ...toAdd].sort((a, b) => a.weekday - b.weekday || a.startTime.localeCompare(b.startTime));
+      return { ...p, sessions: next };
+    });
+  }, [draftWeekdays]);
+
+  const removeSession = useCallback((index: number) => {
+    setFormData((p) => {
+      const existing = p.sessions ?? [];
+      const next = existing.filter((_, i) => i !== index);
+      return { ...p, sessions: next.length > 0 ? next : undefined };
+    });
+  }, []);
+
+  const updateSession = useCallback((index: number, patch: Partial<WeeklySession>) => {
+    setFormData((p) => {
+      const existing = p.sessions ?? [];
+      const next = existing.map((s, i) => i === index ? { ...s, ...patch } : s);
+      return { ...p, sessions: next };
+    });
+  }, []);
 
   const handleDelete = useCallback(async (id: string) => {
     setDeleting(id);
@@ -944,6 +1046,216 @@ function ServiceManagementDialog({
                   </p>
                 </div>
               </div>
+
+              {/* Tipo de agendamento — exclusivo x turma/grupo */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  <UsersIcon className="w-3.5 h-3.5 inline mr-1" />
+                  {t('agenda.bookingType', 'Tipo de agendamento')}
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setBookingType(false)}
+                    className={cn(
+                      'flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-xl border-2 text-left transition-all duration-200',
+                      !isGroup
+                        ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600',
+                    )}
+                  >
+                    <span className={cn('text-xs font-semibold', !isGroup ? 'text-red-700 dark:text-red-400' : 'text-gray-800 dark:text-gray-200')}>
+                      {t('agenda.bookingExclusive', 'Exclusivo')}
+                    </span>
+                    <span className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight">
+                      {t('agenda.bookingExclusiveDesc', '1 cliente por horário')}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBookingType(true)}
+                    className={cn(
+                      'flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-xl border-2 text-left transition-all duration-200',
+                      isGroup
+                        ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600',
+                    )}
+                  >
+                    <span className={cn('text-xs font-semibold', isGroup ? 'text-red-700 dark:text-red-400' : 'text-gray-800 dark:text-gray-200')}>
+                      {t('agenda.bookingGroup', 'Turma / aula em grupo')}
+                    </span>
+                    <span className="text-[10px] text-gray-500 dark:text-gray-400 leading-tight">
+                      {t('agenda.bookingGroupDesc', 'Vários alunos por horário')}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <AnimatePresence initial={false}>
+                {isGroup && (
+                  <motion.div
+                    key="group-config"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="space-y-4 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-800/30 p-4">
+                      {/* Capacidade */}
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                          {t('agenda.capacity', 'Capacidade (vagas por horário)')} *
+                        </label>
+                        <input
+                          type="number"
+                          min={2}
+                          step={1}
+                          value={formData.capacity ?? ''}
+                          onChange={(e) => {
+                            const n = Math.max(2, Math.floor(Number(e.target.value) || 0));
+                            setFormData((p) => ({ ...p, capacity: Number.isFinite(n) && n >= 2 ? n : 2 }));
+                          }}
+                          placeholder="10"
+                          className={cn(
+                            'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                            'text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500',
+                            'bg-white dark:bg-gray-800',
+                            'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                            'transition-all duration-200',
+                          )}
+                        />
+                      </div>
+
+                      {/* Grade semanal */}
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                          <CalendarDays className="w-3.5 h-3.5 inline mr-1" />
+                          {t('agenda.weeklySchedule', 'Grade semanal')}
+                        </label>
+                        <p className="text-[10px] text-gray-400 dark:text-gray-500 mb-2">
+                          {t('agenda.weeklyScheduleHint', 'Selecione os dias, escolha o horário e adicione. Sem grade, a turma usa o horário de funcionamento.')}
+                        </p>
+
+                        {/* Chips de dias */}
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {WEEKDAY_SHORT.map((label, wd) => {
+                            const sel = draftWeekdays.includes(wd);
+                            return (
+                              <button
+                                key={wd}
+                                type="button"
+                                onClick={() => toggleDraftWeekday(wd)}
+                                className={cn(
+                                  'px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200',
+                                  sel
+                                    ? 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 text-red-600 dark:text-red-400'
+                                    : 'bg-white dark:bg-gray-800 border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-400 hover:border-slate-300 dark:hover:border-gray-600',
+                                )}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Horário + adicionar */}
+                        <div className="flex items-end gap-2">
+                          <div className="flex-1">
+                            <label className="block text-[10px] font-medium text-gray-400 dark:text-gray-500 mb-1">
+                              {t('agenda.startTime', 'Horário')}
+                            </label>
+                            <input
+                              type="time"
+                              value={draftTime}
+                              onChange={(e) => setDraftTime(e.target.value)}
+                              className={cn(
+                                'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                                'text-sm text-gray-900 dark:text-gray-100',
+                                'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                              )}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={addSessionsForDraft}
+                            disabled={draftWeekdays.length === 0}
+                            className={cn(
+                              'flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold',
+                              'bg-red-600 text-white hover:bg-red-700 transition-all duration-200',
+                              'disabled:opacity-40 disabled:cursor-not-allowed',
+                            )}
+                          >
+                            <Plus className="w-4 h-4" />
+                            {t('agenda.addSessions', 'Adicionar')}
+                          </button>
+                        </div>
+
+                        {/* Lista de sessões */}
+                        {sessions.length > 0 && (
+                          <div className="mt-3 space-y-1.5">
+                            {sessions.map((s, idx) => (
+                              <motion.div
+                                key={`${s.weekday}-${s.startTime}-${idx}`}
+                                initial={{ opacity: 0, y: 4 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className="flex flex-wrap items-center gap-2 p-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800"
+                              >
+                                <span className="text-xs font-semibold text-gray-700 dark:text-gray-200 w-9">
+                                  {WEEKDAY_SHORT[s.weekday] ?? '?'}
+                                </span>
+                                <span className="inline-flex items-center gap-1 text-xs text-gray-600 dark:text-gray-300">
+                                  <Clock className="w-3.5 h-3.5 text-gray-400" />
+                                  {s.startTime}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyTimeToDraftDays(s.startTime)}
+                                  disabled={draftWeekdays.length === 0}
+                                  title={t('agenda.copyTimeToDays', 'Copiar este horário para os dias marcados')}
+                                  className={cn(
+                                    'inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium',
+                                    'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] transition-colors',
+                                    'disabled:opacity-40 disabled:cursor-not-allowed',
+                                  )}
+                                >
+                                  <Copy className="w-3 h-3" />
+                                  {t('agenda.copy', 'Copiar')}
+                                </button>
+                                <select
+                                  value={s.professionalId ?? ''}
+                                  onChange={(e) => {
+                                    const pid = e.target.value;
+                                    const member = members.find((m) => m.id === pid);
+                                    updateSession(idx, { professionalId: pid || undefined, professionalName: member?.name || undefined });
+                                  }}
+                                  className={cn(
+                                    'ml-auto px-2 py-1 rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                                    'text-[11px] text-gray-700 dark:text-gray-200 max-w-[140px]',
+                                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                                  )}
+                                >
+                                  <option value="">{t('agenda.anyProfessional', 'Qualquer profissional')}</option>
+                                  {members.map((m) => (
+                                    <option key={m.id} value={m.id}>{(m.name || '?').split(' ')[0]}</option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => removeSession(idx)}
+                                  className="p-1 rounded-md hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5 text-gray-400 hover:text-red-500" />
+                                </button>
+                              </motion.div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Color */}
               <div>
@@ -1789,6 +2101,30 @@ export default function AgendaModule() {
     aliquotaISS: typeof data.aliquotaISS === 'number' && data.aliquotaISS >= 0 ? data.aliquotaISS : null,
   }), []);
 
+  // Turma: só persiste capacity/sessions quando o serviço é de grupo
+  // (capacity>1). Caso contrário escreve null/[] — preserva agendamento
+  // exclusivo BIT-A-BIT (effectiveServiceCapacity trata ausente/1 como exclusivo).
+  const buildGroupFields = useCallback((data: ServiceFormData) => {
+    const isGroup = typeof data.capacity === 'number' && data.capacity > 1;
+    if (!isGroup) {
+      return { capacity: null, sessions: null };
+    }
+    const sessions = (data.sessions ?? [])
+      .filter((s) => typeof s.weekday === 'number' && /^\d{2}:\d{2}$/.test(s.startTime))
+      .map((s) => ({
+        weekday: s.weekday,
+        startTime: s.startTime,
+        duration: typeof s.duration === 'number' && s.duration > 0 ? s.duration : null,
+        capacity: typeof s.capacity === 'number' && s.capacity > 0 ? s.capacity : null,
+        professionalId: s.professionalId || null,
+        professionalName: s.professionalId ? (s.professionalName || null) : null,
+      }));
+    return {
+      capacity: data.capacity,
+      sessions: sessions.length > 0 ? sessions : null,
+    };
+  }, []);
+
   const handleCreateService = useCallback(async (data: ServiceFormData) => {
     if (!business?.id || !user) return;
     await addDoc(collection(db, 'services'), {
@@ -1803,13 +2139,14 @@ export default function AgendaModule() {
       color: data.color,
       isActive: data.isActive,
       commissionRate: data.commissionRate ?? null,
+      ...buildGroupFields(data),
       ...buildFiscalFields(data),
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
     setSnackbar({ open: true, message: t('agenda.serviceCreated', 'Serviço criado com sucesso!'), severity: 'success' });
-  }, [business?.id, user, queryClient, t, buildFiscalFields]);
+  }, [business?.id, user, queryClient, t, buildFiscalFields, buildGroupFields]);
 
   const handleUpdateService = useCallback(async (id: string, data: ServiceFormData) => {
     if (!business?.id) return;
@@ -1822,12 +2159,13 @@ export default function AgendaModule() {
       color: data.color,
       isActive: data.isActive,
       commissionRate: data.commissionRate ?? null,
+      ...buildGroupFields(data),
       ...buildFiscalFields(data),
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
     setSnackbar({ open: true, message: t('agenda.serviceUpdated', 'Serviço atualizado com sucesso!'), severity: 'success' });
-  }, [business?.id, queryClient, t, buildFiscalFields]);
+  }, [business?.id, queryClient, t, buildFiscalFields, buildGroupFields]);
 
   const handleDeleteService = useCallback(async (id: string) => {
     if (!business?.id || !user?.uid) return;
@@ -1908,6 +2246,11 @@ export default function AgendaModule() {
         payload.professionalNames = data.professionalNames;
       }
       if (data.notes) payload.notes = data.notes;
+      // P2.8: aula experimental — flag + outcome (funil de aquisição).
+      if (data.isTrial) {
+        payload.isTrial = true;
+        payload.trialOutcome = data.trialOutcome ?? 'pendente';
+      }
 
       if (editingAppointment) {
         // Re-check atomico via tx — fecha race window de ~100-200ms onde
@@ -1990,6 +2333,18 @@ export default function AgendaModule() {
             .catch(err => console.warn('[Agenda] commission cancel on edit failed:', err));
         }
 
+        // ── P2.5: deduz insumos do serviço na 1ª conclusão (edit) ───────────
+        if (!wasDone && isDone && user) {
+          const svc = services.find(s => s.id === data.serviceId);
+          void consumeServiceComponents({
+            service: svc,
+            businessId: business.id,
+            operatorId: user.uid,
+            operatorName: user.name || user.uid,
+            appointmentId: editingAppointment.id,
+          }).catch(err => console.warn('[Agenda] service stock consumption on edit failed:', err));
+        }
+
         // SDD Fase 4: emit domain event quando vira concluido (auditoria)
         if (!wasDone && isDone) {
           void emitAppointmentCompletedEvent({
@@ -1998,6 +2353,17 @@ export default function AgendaModule() {
             professionalId: data.professionalId,
             serviceId: data.serviceId,
             amount: data.price || 0,
+          });
+        }
+
+        // P2.8: aula experimental concluída → sinaliza conversão pro CRM/agent.
+        // Sem outcome explícito ainda → 'pendente' (operador decide depois).
+        if (!wasDone && isDone && data.isTrial) {
+          void emitAppointmentTrialCompletedEvent({
+            appointmentId: editingAppointment.id,
+            clientId: data.clientId,
+            serviceId: data.serviceId,
+            outcome: data.trialOutcome ?? 'pendente',
           });
         }
 
@@ -2040,6 +2406,10 @@ export default function AgendaModule() {
             batch.set(ref, { ...payload, date: d, recurrenceId });
           }
           await batch.commit();
+          // TODO(auditoria P2.5): série recorrente criada já 'concluido' não
+          // deduz insumos (consumedComponents) por ocorrência. Caso raro
+          // (criar série inteira como concluída); evitar dedução N× sem doc IDs
+          // individuais aqui. O caminho normal (conclusão individual) já cobre.
           if (data.status === 'concluido' && data.clientId) {
             // Backfill metrics for every occurrence created as 'concluído'.
             await syncClientMetrics({
@@ -2081,6 +2451,26 @@ export default function AgendaModule() {
               serviceId: data.serviceId,
               amount: data.price || 0,
             });
+            // P2.5: deduz insumos do serviço quando criado já concluído.
+            if (user) {
+              const svc = services.find(s => s.id === data.serviceId);
+              void consumeServiceComponents({
+                service: svc,
+                businessId: business.id,
+                operatorId: user.uid,
+                operatorName: user.name || user.uid,
+                appointmentId: newDocRef.id,
+              }).catch(err => console.warn('[Agenda] service stock consumption on create failed:', err));
+            }
+            // P2.8: aula experimental criada já concluída → sinaliza conversão.
+            if (data.isTrial) {
+              void emitAppointmentTrialCompletedEvent({
+                appointmentId: newDocRef.id,
+                clientId: data.clientId,
+                serviceId: data.serviceId,
+                outcome: data.trialOutcome ?? 'pendente',
+              });
+            }
           }
           if (data.status === 'concluido' && data.clientId) {
             await syncClientMetrics({
@@ -2413,6 +2803,20 @@ export default function AgendaModule() {
         }
       }
 
+      // ── P2.5: deduz insumos do serviço (BOM de serviço) ───────────────────
+      // Mesma transição que comissão/loyalty (!wasDone && isDone) garante
+      // idempotência (não re-deduz em re-conclusão). Fire-and-forget.
+      if (!wasDone && isDone && user) {
+        const svc = services.find(s => s.id === selectedAppointment.serviceId);
+        void consumeServiceComponents({
+          service: svc,
+          businessId: business.id,
+          operatorId: user.uid,
+          operatorName: user.name || user.uid,
+          appointmentId: selectedAppointment.id,
+        }).catch(err => console.warn('[Agenda] service stock consumption failed:', err));
+      }
+
       // ── Automatic commission handling ────────────────────────────────────
       if (!wasDone && isDone && selectedAppointment.professionalId) {
         const professional = members.find(m => m.id === selectedAppointment.professionalId);
@@ -2438,6 +2842,17 @@ export default function AgendaModule() {
         setSelectedAppointment(prev => prev ? { ...prev, status } : null);
       }
 
+      // P2.8: aula experimental concluída via mudança de status → sinaliza
+      // conversão pro CRM/agent (mesma transição idempotente !wasDone && isDone).
+      if (!wasDone && isDone && selectedAppointment.isTrial) {
+        void emitAppointmentTrialCompletedEvent({
+          appointmentId: selectedAppointment.id,
+          clientId: selectedAppointment.clientId,
+          serviceId: selectedAppointment.serviceId,
+          outcome: selectedAppointment.trialOutcome ?? 'pendente',
+        });
+      }
+
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       queryClient.invalidateQueries({ queryKey: ['clients', business.id] });
       setSnackbar({
@@ -2451,7 +2866,7 @@ export default function AgendaModule() {
     } finally {
       setStatusChanging(false);
     }
-  }, [selectedAppointment, business?.id, queryClient, t, members, services]);
+  }, [selectedAppointment, business?.id, queryClient, t, members, services, user]);
 
   // ---- Computed values ----
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);

@@ -201,7 +201,11 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
                 "Return free time slots for a given date. Always call before booking. "
                 "If the user mentions a relative date, resolve it to YYYY-MM-DD first. "
                 "Pass serviceId to filter professionals that actually offer the service, "
-                "and the correct durationMinutes from the service catalog."
+                "and the correct durationMinutes from the service catalog. "
+                "GROUP SERVICES: when the service has capacity>1 or a weekly grid (sessions), "
+                "slots are FIXED grid sessions and each carries `capacity` + `seatsAvailable`. "
+                "Offer those fixed sessions and talk in terms of open seats; seatsAvailable=0 "
+                "means the class is full (a business rule, NOT a technical error)."
             ),
             "parameters": {
                 "type": "object",
@@ -244,7 +248,12 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
                 "the client picked an exact time via interactive list or typed confirmation.\n"
                 'Example: {"clientName":"Ana","clientPhone":"5547999998888",'
                 '"serviceId":"svc_corte","professionalId":"usr_lucas",'
-                '"date":"2026-04-25","startTime":"14:30","duration":45,"price":60}'
+                '"date":"2026-04-25","startTime":"14:30","duration":45,"price":60}\n'
+                "GROUP SERVICES: pass the SAME serviceId/date/startTime/professionalId of the "
+                "chosen grid session — the server derives the class key and seats the client. "
+                "Possible status values: 'created' (booked / 1:1), 'joined' (added to a class with "
+                "room), 'full' (class is full → offer another grid session, NOT a technical error), "
+                "'conflict' (slot taken between check and book → use returned alternatives)."
             ),
             "parameters": {
                 "type": "object",
@@ -262,7 +271,7 @@ AGENDA_TOOLS: list[dict[str, Any]] = [
                     "price": {"type": "number"},
                     "notes": {"type": "string"},
                 },
-                "required": ["clientName", "date", "startTime", "durationMinutes"],
+                "required": ["clientName", "serviceId", "date", "startTime", "durationMinutes"],
             },
         },
     },
@@ -555,10 +564,11 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                 "Use this to present time-slot options so the client can tap to choose. "
                 "Each row id should be the time string (e.g. '09:00') so you can read "
                 "the client's selection directly from their reply.\n"
-                'Example: {"conversationId":"conv_abc","bodyText":"Qual horário fica melhor?",'
-                '"buttonText":"Ver horários","sections":[{"title":"Amanhã (25/04)","rows":['
-                '{"id":"09:00","title":"09:00","description":"Corte — R$ 50"},'
-                '{"id":"14:30","title":"14:30","description":"Corte — R$ 50"}]}]}'
+                'Example: {"conversation_id":"conv_abc","title":"Horários disponíveis",'
+                '"body":"Qual horário fica melhor?","button_text":"Ver horários",'
+                '"sections":[{"title":"Amanhã (25/04)","rows":['
+                '{"id":"09:00","title":"09:00","description":"<serviço> — R$ <preço>"},'
+                '{"id":"14:30","title":"14:30","description":"<serviço> — R$ <preço>"}]}]}'
             ),
             "parameters": {
                 "type": "object",
@@ -585,7 +595,7 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                     },
                     "sections": {
                         "type": "array",
-                        "description": "One section per date. Max 10 rows total across all sections.",
+                        "description": "One section per date. 2-3 rows recomendado (max 10 técnico) no total entre todas as seções.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -597,7 +607,7 @@ CONVERSATION_TOOLS: list[dict[str, Any]] = [
                                         "properties": {
                                             "id": {"type": "string", "description": "Time string used as selection value, e.g. '09:00'"},
                                             "title": {"type": "string", "description": "Display title, e.g. '09:00'"},
-                                            "description": {"type": "string", "description": "Subtitle, e.g. 'Corte de Cabelo — R$ 50,00'"},
+                                            "description": {"type": "string", "description": "Subtitle, e.g. '<serviço> — R$ <preço>'"},
                                         },
                                         "required": ["id", "title"],
                                     },
@@ -688,6 +698,83 @@ FINANCIAL_TOOLS: list[dict[str, Any]] = [
     _simple_tool("financial_cancel", "Cancel a transaction.", required=["id"], id={"type": "string"}, reason={"type": "string"}),
     _simple_tool("financial_summary_today", "Snapshot of today's in/out, pending, overdue."),
     _simple_tool("financial_summary_month", "Summary for a month. Month format YYYY-MM (default: current).", month={"type": "string"}),
+]
+
+# ─── Fiscal (NF-e / NFC-e / NFSe) ────────────────────────────────────────────
+# READ-FIRST: list/get/query_status leem documentos fiscais já persistidos
+# (sem tocar SEFAZ). cancel aciona a SEFAZ e é manager+ (TOOL_MIN_ROLE). emit
+# ainda não suportado pelo agent (ver route.ts) — exposto pra mensagem limpa.
+FISCAL_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "fiscal_list",
+        "List fiscal documents (NF-e/NFC-e/NFSe) already issued. Filters by type/status. Read-only.",
+        type={"type": "string", "enum": ["nfe", "nfce", "nfse"]},
+        status={"type": "string", "description": "ex: autorizada, processando, pendente, cancelada, rejeitada"},
+        limit={"type": "integer", "default": 20},
+    ),
+    _simple_tool("fiscal_get", "Fetch a single fiscal document by id. Read-only.", required=["id"], id={"type": "string"}),
+    _simple_tool(
+        "fiscal_query_status",
+        "Check the status of a fiscal document by id OR access key (chave de acesso). Read-only.",
+        id={"type": "string"},
+        accessKey={"type": "string", "description": "Chave de acesso (44 dígitos NF-e/NFC-e ou chave NFSe)"},
+    ),
+    _simple_tool(
+        "fiscal_cancel",
+        "Cancel an authorized NF-e/NFC-e at SEFAZ (manager+). Requires the 44-digit access key and a justification (15-255 chars).",
+        required=["type", "chaveAcesso", "justificativa"],
+        type={"type": "string", "enum": ["nfe", "nfce"]},
+        chaveAcesso={"type": "string", "description": "44-digit access key"},
+        justificativa={"type": "string", "description": "15-255 chars"},
+        protocolo={"type": "string"},
+    ),
+    _simple_tool(
+        "fiscal_emit",
+        "Emit a fiscal document (NF-e/NFC-e/NFSe). NOTE: not yet supported via agent — returns a clear error directing to the Fiscal panel. Manager+.",
+        required=["type"],
+        type={"type": "string", "enum": ["nfe", "nfce", "nfse"]},
+    ),
+]
+
+# ── Reports (BI / read-only) ─────────────────────────────────────────────────
+# P2.11 — agregação cross-coleção do ReportsModule exposta ao agent. TODAS read-only
+# (seguras pro modo analyst). `period` aceita preset (7d/30d/90d/mes/mes_anterior/ano)
+# OU intervalo explícito fromDate+toDate (YYYY-MM-DD). Default 30d.
+_PERIOD_PROP = {
+    "type": "string",
+    "enum": ["7d", "30d", "90d", "mes", "mes_anterior", "ano"],
+    "description": "Período preset (default 30d). Ou use fromDate+toDate para intervalo exato.",
+}
+REPORTS_TOOLS: list[dict[str, Any]] = [
+    _simple_tool(
+        "reports_revenue_by_period",
+        "Faturamento do período: receita, despesa, lucro, margem e quebra por categoria (só transações PAGAS). Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+    ),
+    _simple_tool(
+        "reports_sales_by_product",
+        "Ranking de produtos e serviços vendidos no período (PDV + pedidos + agendamentos concluídos), com qtd e receita. Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+    ),
+    _simple_tool(
+        "reports_appointments_by_professional",
+        "Agendamentos por profissional no período: total, concluídos, no-show, taxa de conclusão e receita. Cruza faturamento × profissional. Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+    ),
+    _simple_tool(
+        "reports_top_clients",
+        "Top clientes por gasto acumulado (CLV) + nº de visitas no período. Read-only.",
+        period=_PERIOD_PROP,
+        fromDate={"type": "string", "description": "YYYY-MM-DD"},
+        toDate={"type": "string", "description": "YYYY-MM-DD"},
+        limit={"type": "integer", "default": 10},
+    ),
 ]
 
 INVENTORY_TOOLS: list[dict[str, Any]] = [
@@ -1167,6 +1254,152 @@ PURCHASE_NOTES_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# ─── Dashboard tool groups — for intent-based pre-selection (operator/analyst) ─
+#
+# The operator use_case exposes ~109 tools (~12.9k tokens of JSON-schema) and the
+# planner re-sends them on every iteration. Most are irrelevant to a given command
+# ("fluxo de caixa" doesn't need kanban/suppliers/notes schemas). We group tools by
+# module and pre-select 1-3 groups from the operator's message via cheap keyword
+# matching, cutting the per-iteration tool payload from ~12.9k to ~2-4k tokens.
+# `clients`/`knowledge`/`memory` are always-on base context.
+
+_DASHBOARD_GROUPS: dict[str, list[dict[str, Any]]] = {
+    "financial": FINANCIAL_TOOLS,
+    "inventory": INVENTORY_TOOLS,
+    "sales": SALES_TOOLS,
+    "agenda": AGENDA_TOOLS,
+    "services": SERVICES_MGMT_TOOLS,
+    "orders": CATALOG_TOOLS + ORDERS_TOOLS,
+    "kanban": KANBAN_TOOLS,
+    "notes": NOTES_TOOLS,
+    "crm": CRM_TOOLS,
+    "conversations": CONVERSATIONS_ADMIN_TOOLS + CONVERSATION_TOOLS,
+    "team": TEAM_TOOLS,
+    "suppliers": SUPPLIERS_TOOLS,
+    "purchase-notes": PURCHASE_NOTES_TOOLS,
+    "fiscal": FISCAL_TOOLS,
+    "reports": REPORTS_TOOLS,
+}
+
+# Keyword → group. Matched (accent-insensitive, substring) against the message.
+_GROUP_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "financial": ("financ", "caixa", "receb", "pagar", "pagamento", "despesa", "receita", "fatur", "boleto", "pix", "conta", "saldo", "lucro", "atrasad", "vencim"),
+    "inventory": ("estoque", "produto", "inventario", "sku", "low stock", "reposi", "mercadoria", "preco de custo"),
+    "sales": ("venda", "pdv", "ticket", "vendido", "vendeu", "caixa do dia"),
+    "agenda": ("agenda", "agendamento", "horario", "marcar", "consulta", "appointment", "remarcar", "no-show", "no show", "compareceu"),
+    "services": ("servico", "serviços", "catalogo de servico", "comissao"),
+    "orders": ("pedido", "delivery", "entrega", "cardapio", "menu", "retirada"),
+    "kanban": ("kanban", "board", "cartao", "card", "tarefa", "coluna", "quadro"),
+    "notes": ("nota pessoal", "nota da equipe", "anota", "lembrete", "post-it", "postit"),
+    "crm": ("crm", "lead", "deal", "contato", "pipeline", "negociac", "segmento", "oportunidade", "cliente novo"),
+    "conversations": ("conversa", "chat", "mensagem", "atendimento", "label", "snippet", "prioridade", "whatsapp", "interativ"),
+    "team": ("equipe", "membro", "setor", "colaborador", "funcionario", "capacidade", "profissional"),
+    "suppliers": ("fornecedor", "cnpj", "razao social"),
+    "purchase-notes": ("nota de compra", "nf-e", "nfe", "nota fiscal", "importar nota", "compra"),
+    "fiscal": ("fiscal", "nfce", "nfse", "nota fiscal", "sefaz", "emitir nota", "cancelar nota", "danfe", "chave de acesso", "documento fiscal"),
+    "reports": ("relatorio", "report", "faturamento", "receita do periodo", "bi", "dashboard", "indicador", "kpi", "ranking", "top clientes", "por profissional", "por produto", "desempenho", "analise", "comparativo"),
+}
+
+
+def _normalize(text: str) -> str:
+    import unicodedata
+    nfkd = unicodedata.normalize("NFKD", text.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+def select_dashboard_groups(message: str, *, max_groups: int = 3) -> list[str]:
+    """Pick the most relevant dashboard tool groups for an operator/analyst message
+    via keyword scoring. Returns up to `max_groups` group names (best first). Empty
+    list means 'no confident match' → caller should fall back to the full tool set."""
+    if not message:
+        return []
+    norm = _normalize(message)
+    scores: list[tuple[int, str]] = []
+    for group, kws in _GROUP_KEYWORDS.items():
+        hits = sum(1 for kw in kws if _normalize(kw) in norm)
+        if hits:
+            scores.append((hits, group))
+    scores.sort(key=lambda x: (-x[0], x[1]))
+    return [g for _, g in scores[:max_groups]]
+
+
+def dashboard_tools_for_groups(groups: list[str], *, read_only: bool = False) -> list[dict[str, Any]]:
+    """Assemble the operator/analyst tool list for the selected groups, always on
+    top of the base (clients + knowledge + memory). When `read_only`, the write
+    tools are filtered out (analyst mode)."""
+    base = CLIENT_TOOLS[:] + KNOWLEDGE_TOOLS + MEMORY_TOOLS
+    selected: list[dict[str, Any]] = []
+    for g in groups:
+        selected += _DASHBOARD_GROUPS.get(g, [])
+    pool = base + selected
+    if read_only:
+        pool = [t for t in pool if _is_read_only_tool(t["function"]["name"])]
+        # memory_recall is read; clients_lookup is read — base already mostly read.
+    return pool
+
+
+# P3.4 — Fonte da verdade EXPLÍCITA do que escreve/muta estado (x_mutates).
+# O gating read-only do modo analyst consulta este conjunto PRIMEIRO; a
+# heurística de substring (_READ_ONLY_PREFIXES) só decide para nomes que não
+# constam aqui (fallback conservador). Ao adicionar uma tool de escrita nova,
+# registre o nome aqui — não confie na heurística para mantê-la fora do analyst.
+_MUTATING_TOOLS: frozenset[str] = frozenset({
+    # orders
+    "orders_create", "orders_cancel", "orders_update_items",
+    # agenda
+    "agenda_book", "agenda_update", "agenda_cancel",
+    # clients
+    "clients_create", "clients_update", "clients_update_address",
+    # conversations (interactive + state)
+    "conversation_send_interactive",
+    "conversations_set_label", "conversations_set_priority", "conversations_set_status",
+    # financial
+    "financial_create_receivable", "financial_create_payable",
+    "financial_mark_paid", "financial_cancel",
+    # fiscal (acionam SEFAZ / criam documento)
+    "fiscal_cancel", "fiscal_emit",
+    # inventory
+    "inventory_create", "inventory_update", "inventory_adjust_stock",
+    "inventory_set_active", "inventory_set_out_of_stock",
+    # kanban
+    "kanban_create_card", "kanban_move_card", "kanban_update_card",
+    "kanban_assign", "kanban_add_comment", "kanban_archive_card",
+    # notes
+    "notes_create", "notes_update", "notes_delete",
+    # crm
+    "crm_create_deal", "crm_update_deal_stage", "crm_close_deal", "crm_log_activity",
+    # services
+    "services_create", "services_update", "services_set_active",
+    # sales
+    "sales_create", "sales_cancel",
+    # suppliers
+    "suppliers_create", "suppliers_update",
+    # memory
+    "memory_remember", "memory_forget",
+})
+
+
+_READ_ONLY_PREFIXES = (
+    "_list", "_get", "_search", "_summary", "_recall", "_capacity",
+    "_next_available", "_availability", "_check_", "_full_history",
+    "_by_client", "_find_by", "_categories", "_menu", "_recent",
+    "_segments", "_segment_query", "_messages", "_activities", "_boards", "_cards",
+    "_today", "_month", "_low_stock", "_unmatched", "_match_products",
+    "_context", "_services", "_professionals", "lookup_by_phone",
+    "_query_status", "reports_",
+)
+
+
+def _is_read_only_tool(name: str) -> bool:
+    # P3.4: flag explícita tem precedência. Tool registrada como mutante nunca
+    # é tratada como read-only, mesmo que o nome bata um prefixo read.
+    if name in _MUTATING_TOOLS:
+        return False
+    # Fallback conservador: nomes não-registrados caem na heurística de substring
+    # (mantida para não regredir tools ainda não migradas para a flag explícita).
+    return any(name.endswith(suf) or suf in name for suf in _READ_ONLY_PREFIXES)
+
+
 def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
     """Return the subset of tools the LLM should see, given the business mode."""
     base = CLIENT_TOOLS[:] + KNOWLEDGE_TOOLS + MEMORY_TOOLS
@@ -1183,7 +1416,8 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
             + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
             + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
             + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
-            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS + FISCAL_TOOLS
+            + REPORTS_TOOLS
         )
     if use_case == "analyst":
         # Analyst chat — READ-ONLY tools only (list/get/search/summary).
@@ -1195,21 +1429,10 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
             + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
             + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
             + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
-            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+            + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS + FISCAL_TOOLS
+            + REPORTS_TOOLS
         )
-        read_only_prefixes = (
-            "_list", "_get", "_search", "_summary", "_recall", "_capacity",
-            "_next_available", "_availability", "_check_", "_full_history",
-            "_by_client", "_find_by", "_categories", "_menu", "_recent",
-            "_segments", "_messages", "_activities", "_boards", "_cards",
-            "_today", "_month", "_low_stock", "_unmatched", "_match_products",
-            "_context", "_services", "_professionals",
-        )
-        read_only = [
-            t for t in all_operator
-            if any(t["function"]["name"].endswith(suf) or suf in t["function"]["name"]
-                   for suf in read_only_prefixes)
-        ]
+        read_only = [t for t in all_operator if _is_read_only_tool(t["function"]["name"])]
         return base + read_only
     # simples / times — generic CRM only
     return base
@@ -1220,7 +1443,7 @@ ALL_TOOLS: list[dict[str, Any]] = (
     ORDERS_TOOLS + AGENDA_TOOLS + CATALOG_TOOLS + CLIENT_TOOLS + CONVERSATION_TOOLS
     + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS + NOTES_TOOLS + CRM_TOOLS
     + CONVERSATIONS_ADMIN_TOOLS + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
-    + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS
+    + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS + FISCAL_TOOLS
     + KNOWLEDGE_TOOLS + MEMORY_TOOLS
 )
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {

@@ -1537,6 +1537,14 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "recurrence.nextDueDate", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "transactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "dueDate", "order": "DESCENDING" }
       ]
@@ -1589,6 +1597,57 @@
       "fields": [
         { "fieldPath": "businessId", "order": "ASCENDING" },
         { "fieldPath": "razaoSocial", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "loyaltyTransactions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "projects",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "reconciliationRules",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "unreadCount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "channelOwnerType", "order": "ASCENDING" },
+        { "fieldPath": "unreadCount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "conversations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "channelOwnerId", "order": "ASCENDING" },
+        { "fieldPath": "unreadCount", "order": "ASCENDING" }
       ]
     }
   ],

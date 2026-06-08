@@ -24,6 +24,7 @@ import { downloadAndUploadBaileysMedia } from '@/lib/services/baileys/media-stor
 import QRCode from 'qrcode';
 import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
+import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
@@ -46,6 +47,11 @@ const PERMANENT_DISCONNECT_CODES = new Set([
 ]);
 
 const MAX_AUTO_RESTARTS = 8;
+
+// Logs verbosos (telefone, sessionKey, payloads, traços de fluxo por mensagem)
+// só em dev. Em produção poluem o log e podem vazar PII parcial / inflar custo.
+// console.error/warn de falhas reais NÃO são gateados.
+const DEBUG_VERBOSE = process.env.NODE_ENV !== 'production';
 
 // Logger silencioso compartilhado — usado por downloadMediaMessage de Baileys.
 // Singleton pra evitar criar nova instância de pino a cada mensagem inbound
@@ -468,26 +474,28 @@ export async function ensureBaileysSessionConnected(
   logTag = 'Baileys',
 ): Promise<BaileysSession> {
   let session = sessions.get(sessionKey);
-  console.log(`[${logTag}] Initial session check:`, {
-    businessId,
-    sessionKey,
-    hasSession: !!session,
-    hasSock: !!session?.sock,
-    isConnected: session?.isConnected,
-    mapSize: sessions.size,
-  });
+  if (DEBUG_VERBOSE) {
+    console.log(`[${logTag}] Initial session check:`, {
+      businessId,
+      sessionKey,
+      hasSession: !!session,
+      hasSock: !!session?.sock,
+      isConnected: session?.isConnected,
+      mapSize: sessions.size,
+    });
+  }
 
   if (session?.sock && session.isConnected) return session;
 
   // Lazy restore: tenta restaurar do Firestore antes de falhar.
   const hasAuthState = await hasFirestoreAuthState(sessionKey);
-  console.log(`[${logTag}] Auth state in Firestore:`, { sessionKey, hasAuthState });
+  if (DEBUG_VERBOSE) console.log(`[${logTag}] Auth state in Firestore:`, { sessionKey, hasAuthState });
 
   if (hasAuthState) {
     // Se já há session no map (restore em andamento), só aguarda — não
     // chama createBaileysSession de novo pra evitar loop concorrente.
     if (!session) {
-      console.log(`[${logTag}] Lazy-restoring session for connectionId: ${sessionKey}`);
+      if (DEBUG_VERBOSE) console.log(`[${logTag}] Lazy-restoring session for connectionId: ${sessionKey}`);
       try {
         await createBaileysSession(businessId, 'restore', sessionKey);
       } catch (err) {
@@ -501,12 +509,12 @@ export async function ensureBaileysSessionConnected(
     while (Date.now() - startedAt < TIMEOUT_MS) {
       const s = sessions.get(sessionKey);
       if (s?.isConnected) {
-        console.log(`[${logTag}] Session connected after ${Date.now() - startedAt}ms`);
+        if (DEBUG_VERBOSE) console.log(`[${logTag}] Session connected after ${Date.now() - startedAt}ms`);
         return s;
       }
       if (Date.now() >= nextLogAt) {
         const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-        console.log(`[${logTag}] Aguardando reconexão... ${elapsed}s elapsed (hasSocket=${!!s?.sock}, isConnected=${s?.isConnected ?? false})`);
+        if (DEBUG_VERBOSE) console.log(`[${logTag}] Aguardando reconexão... ${elapsed}s elapsed (hasSocket=${!!s?.sock}, isConnected=${s?.isConnected ?? false})`);
         nextLogAt = Date.now() + 5_000;
       }
       await new Promise(r => setTimeout(r, 250));
@@ -891,6 +899,13 @@ async function handleInboundMessage(
         updatedAt: now,
       });
       conversationId = newConvRef.id;
+      // Contador denormalizado de não-lidas (R3 — mesmo caminho dedupe-guarded).
+      // Baileys pode ser canal pessoal (ownerType='user') ou business.
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType, channelOwnerId }, 1);
+      } catch (counterErr) {
+        console.warn('[Baileys] incrementUnreadCounter (new conv) falhou:', counterErr);
+      }
       await autoLinkCrmContact(businessId, conversationId, senderPhone, contactName, now);
     } else {
       // Match em conversa legacy/sem channelConnectionId. Usa transaction pra
@@ -960,6 +975,28 @@ async function handleInboundMessage(
         }
 
         tx.update(matchedDoc.ref, convUpdate);
+
+        // Contador denormalizado de não-lidas (R3 — espelha increment(1) acima),
+        // atômico na mesma tx. Escopo lido do doc da conversa (owner pode ser
+        // business ou user/canal pessoal). FieldValue.increment dentro de tx.set.
+        const convOwnerType = (data.channelOwnerType as string | undefined) ?? 'business';
+        const convOwnerId = data.channelOwnerId as string | undefined;
+        const counterField = convOwnerType === 'user'
+          ? (convOwnerId ? `byUser.${convOwnerId}` : null)
+          : 'business';
+        if (counterField) {
+          tx.set(
+            adminDb.doc(`unreadCounters/${businessId}`),
+            {
+              businessId,
+              [counterField]: FieldValue.increment(1),
+              total: FieldValue.increment(1),
+              updatedAt: now,
+            },
+            { merge: true },
+          );
+        }
+
         return {
           kind: 'updated' as const,
           appliedContactName: convUpdate.contactName as string | undefined,
@@ -1018,7 +1055,13 @@ async function handleInboundMessage(
           updatedAt: now,
         });
         conversationId = newConvRef.id;
-        console.log(`[Baileys] Race em conversa legacy resolvido — criada nova conv ${conversationId.slice(-6)} pra canal ${connectionId.slice(-6)}`);
+        // Contador denormalizado de não-lidas (R3 — espelha unreadCount:1 acima).
+        try {
+          await incrementUnreadCounter(adminDb, businessId, { channelOwnerType, channelOwnerId }, 1);
+        } catch (counterErr) {
+          console.warn('[Baileys] incrementUnreadCounter (race new conv) falhou:', counterErr);
+        }
+        if (DEBUG_VERBOSE) console.log(`[Baileys] Race em conversa legacy resolvido — criada nova conv ${conversationId.slice(-6)} pra canal ${connectionId.slice(-6)}`);
         // Auto-link CRM tambem na branch de conflict — sem isso, conversas
         // criadas via race perderiam a vinculação ao crmContact.
         await autoLinkCrmContact(businessId, conversationId, senderPhone, contactName, now);
@@ -1073,7 +1116,7 @@ async function handleInboundMessage(
     });
 
     // Dispatch to AI agent — true fire-and-forget (debounce runs inside, do NOT await)
-    const _baileysDlog = (m: string) => { const l = `${new Date().toISOString()} ${m}\n`; process.stdout.write(l); try { fs.appendFileSync('/tmp/dispatch.log', l); } catch {} };
+    const _baileysDlog = (m: string) => { if (!DEBUG_VERBOSE) return; const l = `${new Date().toISOString()} ${m}\n`; process.stdout.write(l); try { fs.appendFileSync('/tmp/dispatch.log', l); } catch {} };
     _baileysDlog(`[Baileys] handleInboundMessage reached dispatch — conv=${conversationId.slice(-6)} biz=${businessId.slice(-6)} msg="${displayText.slice(0,50)}"`);
     try {
       const { dispatchInboundToAgent } = await import('@/lib/agent/dispatch');
@@ -1449,7 +1492,11 @@ async function doCreateBaileysSession(
           // Conta LID — tenta resolver via mapa (populado por contacts.upsert)
           phoneNumber = session.lidToPhone.get(me.id) || session.lidToPhone.get(me.lid || '') || null;
         }
-        console.log('[Baileys] Conectado! Tel:', phoneNumber, '| userId:', me?.id, '| business:', businessId);
+        if (DEBUG_VERBOSE) {
+          console.log('[Baileys] Conectado! Tel:', phoneNumber, '| userId:', me?.id, '| business:', businessId);
+        } else {
+          console.log('[Baileys] Conectado! business:', businessId, '| hasPhone:', !!phoneNumber);
+        }
 
         // Persist first — then notify the UI. This way `onSnapshot` listeners on
         // `businesses/{id}.channels.whatsapp` already see the updated state when the

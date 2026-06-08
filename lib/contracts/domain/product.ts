@@ -37,6 +37,12 @@ export const ProductModifierOptionSchema = z.object({
   maxQuantity: z.number().int().positive().optional(),
   available: z.boolean(),
   sortOrder: z.number().int().nonnegative(),
+  // P2.6: link de estoque do modificador. Quando setado, escolher esta opção
+  // debita `consumeQty` (default 1) unidades do produto/insumo `linkedProductId`,
+  // multiplicado pela quantidade da opção e pela quantidade do item no carrinho.
+  // Ausente = opção sem impacto em estoque (ex: "sem cebola", "ponto da carne").
+  linkedProductId: z.string().min(1).optional(),
+  consumeQty: z.number().positive().optional(),
 });
 
 export const ProductModifierGroupSchema = z.object({

@@ -1,11 +1,15 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createHash } from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody, resolveClientId } from '@/lib/agent/auth';
 import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
 import { updateAppointmentSafeAdmin, AppointmentConflictError } from '@/lib/services/appointmentTxGuardAdmin';
+import { effectiveServiceCapacity, isGroupService } from '@/lib/contracts/domain/service';
+import { assertTransitionAppointment } from '@/lib/contracts/fsm/appointment';
+import { buildSessionKey } from '@/lib/utils/sessionKey';
+import { resolveSessionsForDay, countSeatsTaken, findBlockingAppointment, buildGroupSlots } from '@/lib/services/groupSession';
 
 type Action = AgendaToolAction;
 
@@ -34,6 +38,79 @@ class ConflictError extends Error {
     this.name = 'ConflictError';
   }
 }
+
+// Turma cheia: distinto de ConflictError (slot existe, mas sem vaga). Captura
+// fora da tx pra responder status='full' + alternativas (outras sessões da
+// grade com vaga) em vez de 500.
+class SessionFullError extends Error {
+  readonly capacity: number;
+  readonly sessionKey: string;
+  constructor(message: string, capacity: number, sessionKey: string) {
+    super(message);
+    this.name = 'SessionFullError';
+    this.capacity = capacity;
+    this.sessionKey = sessionKey;
+  }
+}
+
+// P2.9: limite de aulas do ciclo de uma mensalidade estourado. Captura fora da
+// tx pra responder status='conflict' (acionável) em vez de 500.
+class MembershipLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MembershipLimitError';
+  }
+}
+
+/**
+ * P2.9: assinatura ativa do cliente que cobre este serviço E tem teto de usos
+ * por ciclo. Retorna o doc (com ref) pra checar limite antes de reservar e
+ * incrementar usesThisCycle dentro da tx. null = sem plano com teto aplicável
+ * (booking segue normal, sem enforcement). R1: filtra businessId.
+ */
+async function loadActiveMembershipForBooking(
+  businessId: string,
+  clientId: string,
+  serviceId: string,
+): Promise<{ id: string; usesThisCycle: number; maxUsesPerCycle: number; membershipName: string } | null> {
+  const cmSnap = await adminDb.collection('clientMemberships')
+    .where('businessId', '==', businessId)
+    .where('clientId', '==', clientId)
+    .where('status', '==', 'active')
+    .get();
+  if (cmSnap.empty) return null;
+
+  for (const doc of cmSnap.docs) {
+    const cm = doc.data() as { membershipId?: string; membershipName?: string; usesThisCycle?: number };
+    if (!cm.membershipId) continue;
+    const planSnap = await adminDb.collection('memberships').doc(cm.membershipId).get();
+    if (!planSnap.exists) continue;
+    const plan = planSnap.data() as { businessId?: string; serviceIds?: string[]; maxUsesPerCycle?: number | null };
+    if (plan.businessId !== businessId) continue;
+    if (!plan.serviceIds?.includes(serviceId)) continue;
+    // Só aplica enforcement quando há teto definido (>0). Ilimitado → ignora.
+    if (plan.maxUsesPerCycle == null || plan.maxUsesPerCycle <= 0) continue;
+    return {
+      id: doc.id,
+      usesThisCycle: cm.usesThisCycle ?? 0,
+      maxUsesPerCycle: plan.maxUsesPerCycle,
+      membershipName: cm.membershipName ?? 'plano',
+    };
+  }
+  return null;
+}
+
+/**
+ * Carrega um Service por id, validando tenant. Retorna null se ausente/cross-tenant.
+ */
+async function loadService(businessId: string, serviceId: string): Promise<Service | null> {
+  const snap = await adminDb.collection('services').doc(serviceId).get();
+  if (!snap.exists) return null;
+  const s = { ...(snap.data() as Service), id: snap.id };
+  if (s.businessId !== businessId) return null;
+  return s;
+}
+
 
 export async function POST(req: NextRequest) {
   let ctx;
@@ -216,11 +293,16 @@ async function getNextAvailable(
   return { date: null, slots: [], searchedDays: cap };
 }
 
-interface AvailabilitySlot {
+export interface AvailabilitySlot {
   startTime: string;
   endTime: string;
   professionalId?: string;
   professionalName?: string;
+  // ── Turmas (sessões fixas) — presentes só quando o slot vem de um serviço
+  //    com sessions[]. Ausentes = slot exclusivo (comportamento atual). ──
+  capacity?: number;
+  seatsAvailable?: number;
+  sessionKey?: string;
 }
 
 async function checkAvailability(
@@ -249,6 +331,21 @@ async function checkAvailability(
   const appts = apptsSnap.docs
     .map(d => d.data() as Appointment)
     .filter(a => a.status !== 'cancelado');
+
+  // ── Turmas: serviço com sessions[] enumera SÓ as sessões fixas da grade ──
+  // Caminho contínuo (abaixo) permanece INTACTO para serviços sem sessions[].
+  if (serviceId) {
+    const service = await loadService(businessId, serviceId);
+    if (service && service.sessions && service.sessions.length > 0) {
+      const groupSlots = buildGroupSlots(service, date, dayOfWeek, professionalId, appts);
+      console.info('[agent/tools/agenda] check_availability (group)', JSON.stringify({
+        businessId, date, serviceId, professionalId: professionalId ?? null,
+        sessionsOnDay: groupSlots.length,
+        slots: groupSlots.map(s => ({ startTime: s.startTime, seatsAvailable: s.seatsAvailable, capacity: s.capacity })),
+      }));
+      return { date, slots: groupSlots };
+    }
+  }
 
   // Load professionals (optionally filter by one)
   const usersSnap = professionalId
@@ -344,6 +441,9 @@ async function checkAvailability(
 
 interface BookParams {
   clientId?: string;
+  // Aliases aceitos no boundary (P2.10) — normalizados pra clientId via resolveClientId.
+  contactId?: string;
+  crmContactId?: string;
   clientName: string;
   clientPhone?: string;
   serviceId?: string;
@@ -357,10 +457,15 @@ interface BookParams {
   notes?: string;
   channelType?: Appointment['channelType'];
   conversationId?: string;
+  // FK de resultado (P2.10) — CRMDeal que originou este agendamento.
+  dealId?: string;
 }
 
 async function bookAppointment(businessId: string, p: BookParams) {
   if (!p.clientName || !p.date || !p.startTime) throw new Error('clientName, date, startTime required');
+
+  // P2.10: normaliza a FK do cliente (clientId/contactId/crmContactId → clientId).
+  p.clientId = resolveClientId(p) ?? p.clientId;
 
   // ── Input sanitization ────────────────────────────────────────────────────
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.date)) {
@@ -424,18 +529,33 @@ async function bookAppointment(businessId: string, p: BookParams) {
   let price = p.price || 0;
   let color = '#3B82F6';
   let serviceName = p.serviceName || '';
+  let service: Service | null = null;
   if (p.serviceId) {
-    const svc = await adminDb.collection('services').doc(p.serviceId).get();
-    if (svc.exists && (svc.data() as Service).businessId === businessId) {
-      const s = svc.data() as Service;
-      price = price || s.price;
-      color = s.color;
-      serviceName = serviceName || s.name;
+    service = await loadService(businessId, p.serviceId);
+    if (service) {
+      price = price || service.price;
+      color = service.color;
+      serviceName = serviceName || service.name;
     }
   }
 
   const endTime = addMinutes(p.startTime, p.durationMinutes);
   const now = new Date().toISOString();
+
+  // ── Turma (capacity>1): caminho de vagas compartilhadas ───────────────────
+  // Serviço exclusivo (capacity ausente/1) NÃO entra aqui — segue bit-a-bit.
+  if (service && p.serviceId && isGroupService(service.capacity)) {
+    return bookGroupAppointment(businessId, p, {
+      service,
+      serviceId: p.serviceId,
+      serviceName,
+      price,
+      color,
+      endTime,
+      idempotencyKey,
+      now,
+    });
+  }
 
   // ── Atomic transaction: conflict check + write ────────────────────────────
   // ALL reads must happen before writes inside Firestore transactions.
@@ -488,6 +608,7 @@ async function bookAppointment(businessId: string, p: BookParams) {
     if (p.notes !== undefined) docData.notes = p.notes;
     if (p.channelType !== undefined) docData.channelType = p.channelType;
     if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
+    if (p.dealId !== undefined) docData.dealId = p.dealId;
 
     tx.create(newRef, docData);
     return { id: newRef.id, status: 'created' as const, date: p.date, startTime: p.startTime, endTime, serviceName };
@@ -522,6 +643,233 @@ async function bookAppointment(businessId: string, p: BookParams) {
   });
 
   return result;
+}
+
+interface GroupBookContext {
+  service: Service;
+  serviceId: string;
+  serviceName: string;
+  price: number;
+  color: string;
+  endTime: string;
+  idempotencyKey: string;
+  now: string;
+}
+
+/**
+ * Reserva numa turma (Service.capacity>1). Cada aluno = UM Appointment próprio
+ * compartilhando o sessionKey canônico. Regra (design item 3):
+ *
+ *  - Vagas = capacity - count(appts não-cancelados com o mesmo sessionKey).
+ *  - Sobreposição com appointment de OUTRO sessionKey (1:1 ou outra turma) do
+ *    mesmo profissional/não-atribuído → BLOQUEIA (ConflictError).
+ *  - Turma com vaga → cria Appointment do aluno (status='joined' se já havia
+ *    alunos; 'created' se é o primeiro).
+ *  - Turma cheia → SessionFullError → status='full' + alternativas.
+ */
+async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupBookContext) {
+  const dayOfWeek = new Date(p.date + 'T12:00:00').getDay();
+
+  // Capacidade efetiva: se o serviço tem sessions[], usa a capacity da sessão
+  // que bate startTime/professional; senão usa a capacity do serviço.
+  const resolved = resolveSessionsForDay(c.service, dayOfWeek);
+  const matched = resolved.find(s =>
+    s.startTime === p.startTime &&
+    (s.professionalId ?? undefined) === (p.professionalId ?? undefined),
+  ) ?? resolved.find(s => s.startTime === p.startTime);
+
+  const capacity = matched ? matched.capacity : effectiveServiceCapacity(c.service.capacity);
+
+  // professionalId da sessão fixa (se houver) tem precedência sobre o pedido —
+  // a turma é "dona" do horário. Quando a sessão fixa não define professor,
+  // usa o pedido (que pode ser undefined → 'any').
+  const effectiveProfessionalId = matched?.professionalId ?? p.professionalId;
+  const sessionKey = buildSessionKey({
+    serviceId: c.serviceId,
+    date: p.date,
+    startTime: p.startTime,
+    professionalId: effectiveProfessionalId,
+  });
+
+  // P2.9: se o cliente tem mensalidade ativa com teto de usos por ciclo que
+  // cobre este serviço, recusa quando o limite já foi atingido. Carregado fora
+  // da tx (read-only); o incremento de usesThisCycle acontece dentro da tx.
+  const membership = p.clientId
+    ? await loadActiveMembershipForBooking(businessId, p.clientId, c.serviceId)
+    : null;
+
+  const newRef = adminDb.collection('appointments').doc();
+
+  const result = await adminDb.runTransaction(async (tx) => {
+    const txQuery: FirebaseFirestore.Query = adminDb.collection('appointments')
+      .where('businessId', '==', businessId)
+      .where('date', '==', p.date);
+    const daySnap = await tx.get(txQuery);
+
+    // P2.9: re-lê a assinatura DENTRO da tx pra contagem consistente sob
+    // concorrência (usesThisCycle pode ter mudado entre o pre-check e aqui).
+    let membershipUses = 0;
+    if (membership) {
+      const cmRef = adminDb.collection('clientMemberships').doc(membership.id);
+      const cmSnap = await tx.get(cmRef);
+      membershipUses = (cmSnap.data()?.usesThisCycle as number | undefined) ?? membership.usesThisCycle;
+      if (membershipUses >= membership.maxUsesPerCycle) {
+        throw new MembershipLimitError(
+          `Limite do plano ${membership.membershipName} atingido: ${membershipUses}/${membership.maxUsesPerCycle} aulas neste ciclo.`,
+        );
+      }
+    }
+
+    const dayAppts = daySnap.docs.map(d => ({ ...(d.data() as Appointment), id: d.id }));
+
+    // Appointments do MESMO profissional efetivo (ou não-atribuídos, que
+    // bloqueiam todos) candidatos a conflito/contagem.
+    const relevant = dayAppts.filter(a =>
+      !a.professionalId || !effectiveProfessionalId || a.professionalId === effectiveProfessionalId,
+    );
+
+    // Conflito: qualquer appointment de OUTRO sessionKey que sobreponha →
+    // bloqueia (1:1 sobre a turma, ou turma diferente no mesmo horário).
+    const blocking = findBlockingAppointment(relevant, p.startTime, c.endTime, sessionKey);
+    if (blocking) {
+      throw new ConflictError(
+        `Horário ${p.startTime} em ${p.date} indisponível: o profissional já tem outro compromisso (${blocking.startTime}-${blocking.endTime}).`,
+      );
+    }
+
+    // Vagas: conta alunos não-cancelados já nesta turma (mesmo sessionKey).
+    const taken = countSeatsTaken(dayAppts, sessionKey);
+    if (taken >= capacity) {
+      throw new SessionFullError(
+        `Turma de ${c.serviceName} às ${p.startTime} (${p.date}) está cheia (${capacity}/${capacity}).`,
+        capacity,
+        sessionKey,
+      );
+    }
+
+    const isFirst = taken === 0;
+    const docData: Record<string, unknown> = {
+      businessId,
+      clientId: p.clientId || '',
+      clientName: p.clientName,
+      serviceId: c.serviceId,
+      serviceName: c.serviceName,
+      date: p.date,
+      startTime: p.startTime,
+      endTime: c.endTime,
+      duration: p.durationMinutes,
+      status: 'agendado',
+      price: c.price,
+      color: c.color,
+      idempotencyKey: c.idempotencyKey,
+      sessionKey,
+      isGroupSession: true,
+      capacitySnapshot: capacity,
+      createdAt: c.now,
+      updatedAt: c.now,
+    };
+    if (effectiveProfessionalId !== undefined) docData.professionalId = effectiveProfessionalId;
+    const profName = matched?.professionalName ?? p.professionalName;
+    if (profName !== undefined) docData.professionalName = profName;
+    if (p.clientPhone !== undefined) docData.clientPhone = p.clientPhone;
+    if (p.notes !== undefined) docData.notes = p.notes;
+    if (p.channelType !== undefined) docData.channelType = p.channelType;
+    if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
+    if (p.dealId !== undefined) docData.dealId = p.dealId;
+
+    tx.create(newRef, docData);
+
+    // P2.9: consome 1 uso do ciclo da mensalidade (atômico com a criação do
+    // appointment — só conta se a reserva foi efetivada).
+    if (membership) {
+      tx.update(adminDb.collection('clientMemberships').doc(membership.id), {
+        usesThisCycle: membershipUses + 1,
+        updatedAt: c.now,
+      });
+    }
+
+    const seatsRemaining = capacity - (taken + 1);
+    return {
+      id: newRef.id,
+      status: (isFirst ? 'created' : 'joined') as 'created' | 'joined',
+      date: p.date,
+      startTime: p.startTime,
+      endTime: c.endTime,
+      serviceName: c.serviceName,
+      professionalName: profName,
+      sessionKey,
+      seatsRemaining,
+      capacity,
+    };
+  }).catch(async (err: unknown) => {
+    if (err instanceof SessionFullError) {
+      const alternatives = await loadGroupAlternatives(businessId, p, c.serviceId, sessionKey);
+      return {
+        status: 'full' as const,
+        date: p.date,
+        startTime: p.startTime,
+        endTime: c.endTime,
+        serviceName: c.serviceName,
+        professionalName: p.professionalName,
+        conflictReason: err.message,
+        alternatives,
+        sessionKey: err.sessionKey,
+        capacity: err.capacity,
+      };
+    }
+    if (err instanceof ConflictError) {
+      const alternatives = await loadGroupAlternatives(businessId, p, c.serviceId, sessionKey);
+      return {
+        status: 'conflict' as const,
+        date: p.date,
+        startTime: p.startTime,
+        endTime: c.endTime,
+        serviceName: c.serviceName,
+        professionalName: p.professionalName,
+        conflictReason: err.message,
+        alternatives,
+      };
+    }
+    // P2.9: limite do plano atingido → 'conflict' acionável (sem alternativas
+    // de horário: o bloqueio é de cota, não de slot).
+    if (err instanceof MembershipLimitError) {
+      return {
+        status: 'conflict' as const,
+        date: p.date,
+        startTime: p.startTime,
+        endTime: c.endTime,
+        serviceName: c.serviceName,
+        professionalName: p.professionalName,
+        conflictReason: err.message,
+      };
+    }
+    throw err;
+  });
+
+  return result;
+}
+
+/**
+ * Outras sessões da grade (mesmo dia) com vaga, ranqueadas pela proximidade
+ * do horário pedido. Exclui a sessão pedida (sessionKey igual).
+ */
+async function loadGroupAlternatives(
+  businessId: string,
+  p: BookParams,
+  serviceId: string,
+  requestedSessionKey: string,
+): Promise<AvailabilitySlot[]> {
+  try {
+    const avail = await checkAvailability(businessId, p.date, p.professionalId, p.durationMinutes, serviceId);
+    const requestedMin = timeToMinutes(p.startTime);
+    return avail.slots
+      .filter(s => s.sessionKey !== requestedSessionKey)
+      .sort((a, b) => Math.abs(timeToMinutes(a.startTime) - requestedMin) - Math.abs(timeToMinutes(b.startTime) - requestedMin))
+      .slice(0, 3);
+  } catch (err) {
+    console.warn('[agent/tools/agenda] book(group): failed to load alternatives', err);
+    return [];
+  }
 }
 
 async function listByClient(businessId: string, lookupKey: string, limit: number) {
@@ -617,6 +965,13 @@ async function updateAppointment(businessId: string, id: string, patch: Partial<
     const startTime = (cleanPatch.startTime as string | undefined) || data.startTime;
     const duration = (cleanPatch.duration as number | undefined) || data.duration;
     cleanPatch.endTime = addMinutes(startTime, duration);
+  }
+
+  // R4/P1.9/P2.16: valida a transição de status pela FSM ANTES do write. Bloqueia,
+  // entre outros, agendado→concluido (que geraria comissão sem atendimento). Só
+  // checa quando o status realmente muda (no-op se o patch repete o status atual).
+  if (cleanPatch.status !== undefined && cleanPatch.status !== data.status) {
+    assertTransitionAppointment(data.status, cleanPatch.status as AppointmentStatus);
   }
 
   // Tx atomica: helper re-checa conflito DENTRO da tx (Admin SDK suporta

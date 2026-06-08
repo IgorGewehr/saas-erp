@@ -15,6 +15,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { assertTransitionTransaction } from '@/lib/contracts/fsm/transaction';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Transaction, TransactionStatus, TransactionType, PaymentMethod } from '@/lib/types';
 
 type Action =
@@ -68,31 +70,64 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha a route de agenda).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list':
-        return NextResponse.json({ ok: true, data: await listTransactions(businessId, body.params as unknown as ListParams) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getTransaction(businessId, body.params.id as string) });
-      case 'create_receivable':
-        return NextResponse.json({ ok: true, data: await createTx(businessId, 'receita', body.params as unknown as CreateParams) });
-      case 'create_payable':
-        return NextResponse.json({ ok: true, data: await createTx(businessId, 'despesa', body.params as unknown as CreateParams) });
-      case 'mark_paid':
-        return NextResponse.json({ ok: true, data: await markPaid(businessId, body.params as unknown as MarkPaidParams) });
-      case 'cancel':
-        return NextResponse.json({ ok: true, data: await cancelTx(businessId, body.params.id as string, body.params.reason as string | undefined) });
-      case 'summary_today':
-        return NextResponse.json({ ok: true, data: await summaryToday(businessId) });
-      case 'summary_month':
-        return NextResponse.json({ ok: true, data: await summaryMonth(businessId, body.params.month as string | undefined) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('financial', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list':
+        data = await listTransactions(businessId, params as unknown as ListParams);
+        break;
+      case 'get':
+        data = await getTransaction(businessId, params.id as string);
+        break;
+      case 'create_receivable':
+        data = await createTx(businessId, 'receita', params as unknown as CreateParams);
+        break;
+      case 'create_payable':
+        data = await createTx(businessId, 'despesa', params as unknown as CreateParams);
+        break;
+      case 'mark_paid':
+        data = await markPaid(businessId, params as unknown as MarkPaidParams);
+        break;
+      case 'cancel':
+        data = await cancelTx(businessId, params.id as string, params.reason as string | undefined);
+        break;
+      case 'summary_today':
+        data = await summaryToday(businessId);
+        break;
+      case 'summary_month':
+        data = await summaryMonth(businessId, params.month as string | undefined);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('financial', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[agent.financial] error', err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
@@ -201,8 +236,9 @@ async function markPaid(businessId: string, p: MarkPaidParams): Promise<Transact
   if (!snap.exists) throw new Error('Transaction not found');
   const tx = snap.data() as Transaction;
   if (tx.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  if (tx.status === 'pago') throw new Error('Transaction already paid');
-  if (tx.status === 'cancelado') throw new Error('Cannot pay a cancelled transaction');
+  // R4/P1.9: valida a transição de status pela FSM (cobre os antigos guards
+  // "já paga" / "cancelada não pode pagar" + bloqueia origens inválidas).
+  assertTransitionTransaction(tx.status, 'pago');
 
   const now = new Date().toISOString();
   const paymentDate = p.paymentDate || now.slice(0, 10);
@@ -227,7 +263,8 @@ async function cancelTx(businessId: string, id: string, reason?: string): Promis
   if (!snap.exists) throw new Error('Transaction not found');
   const tx = snap.data() as Transaction;
   if (tx.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  if (tx.status === 'cancelado') throw new Error('Transaction already cancelled');
+  // R4/P1.9: FSM cobre o antigo guard "já cancelada" (cancelado é terminal).
+  assertTransitionTransaction(tx.status, 'cancelado');
 
   const now = new Date().toISOString();
   const notes = reason

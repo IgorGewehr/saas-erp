@@ -51,17 +51,15 @@ import {
   Blocks,
   Plug,
   Zap,
-  ToggleLeft,
-  ToggleRight,
   ExternalLink,
   Lock,
   CheckCircle2,
-  XCircle,
   AlertCircle,
   CreditCard,
   Triangle,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Bug,
   Cloud,
   Database,
@@ -77,16 +75,15 @@ import {
   Smartphone,
   QrCode,
   Calendar,
-  Package,
   Kanban,
   ShoppingBag,
   Sparkles,
-  Search,
   Bell,
   Wrench,
   PlayCircle,
 } from 'lucide-react';
-import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase } from '@/lib/types';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase, BusinessSegment } from '@/lib/types';
+import { BUSINESS_SEGMENTS, SEGMENT_LABELS, SEGMENT_VOCAB } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
 import NotificationServerSection from './NotificationServerConfig';
@@ -104,7 +101,7 @@ import {
   type DeliveryZone,
   type UpsellRule,
 } from './AgentPolicyEditors';
-import { ROLE_LABELS, ROLE_HIERARCHY, USER_STATUS_LABELS, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
+import { ROLE_LABELS, ROLE_HIERARCHY, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
 import { VaultTab } from '@/app/components/features/senhas/SenhasModule';
 // encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
@@ -3733,13 +3730,11 @@ function IntegrationRow({
                 {isConnected && (
                   <button
                     type="button"
-                    onClick={() => onTest(providerId)}
-                    disabled={testing === providerId}
-                    className="px-4 py-2 text-xs font-medium rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
+                    disabled
+                    title="Teste de conexão em breve para esta integração"
+                    className="px-4 py-2 text-xs font-medium rounded-xl text-gray-400 dark:text-gray-600 cursor-not-allowed opacity-60"
                   >
-                    {testing === providerId ? (
-                      <span className="flex items-center gap-1.5"><RefreshCw className="w-3 h-3 animate-spin" /> Testando</span>
-                    ) : 'Testar conexão'}
+                    Testar conexão (em breve)
                   </button>
                 )}
               </div>
@@ -3816,7 +3811,7 @@ function KnowledgeReindexPanel() {
         <button
           onClick={run}
           disabled={isRunning}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold"
         >
           {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
           {isRunning ? 'Indexando...' : 'Reindexar base agora'}
@@ -3847,7 +3842,7 @@ function AgenteToggleSwitch({ checked, onChange }: { checked: boolean; onChange:
       onClick={() => onChange(!checked)}
       className={cn(
         'relative inline-flex h-7 w-12 items-center rounded-full transition-colors',
-        checked ? 'bg-violet-600' : 'bg-gray-300 dark:bg-gray-700',
+        checked ? 'bg-red-600' : 'bg-gray-300 dark:bg-gray-700',
       )}
     >
       <span
@@ -3896,7 +3891,7 @@ function ReminderTemplateField({
             const [name, language] = v.split('__');
             onChange({ name, language });
           }}
-          className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-violet-400"
+          className="w-full text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-1 focus:ring-red-400"
         >
           <option value="">— Nenhum (pula contatos fora da janela) —</option>
           {templates.map(t => (
@@ -3913,6 +3908,34 @@ function ReminderTemplateField({
   );
 }
 
+// Recomendações por ramo — aplicadas apenas em campos ainda no valor default
+// (não-destrutivo). Cada chave opcional só sugere se o usuário não mexeu.
+interface SegmentPreset {
+  tone?: 'formal' | 'casual' | 'friendly';
+  sendReminder?: boolean;
+  reminderHoursBefore?: number;
+  confirmationBeforeAppointment?: boolean;
+  followUpAfter?: boolean;
+}
+
+const AGENT_PRESETS: Record<BusinessSegment, SegmentPreset> = {
+  academia: { tone: 'friendly', sendReminder: true, reminderHoursBefore: 24, confirmationBeforeAppointment: true },
+  clinica: { tone: 'formal', sendReminder: true, reminderHoursBefore: 24, confirmationBeforeAppointment: true },
+  salao: { tone: 'friendly', sendReminder: true, reminderHoursBefore: 3, followUpAfter: true },
+  consultoria: { tone: 'formal', confirmationBeforeAppointment: true },
+  generico: { tone: 'friendly' },
+};
+
+// Modo do sistema que cada ramo costuma usar — só vira um nudge suave quando
+// diverge do useCase atual. generico não sugere nada (pode ser qualquer modo).
+const SEGMENT_SUGGESTED_USECASE: Record<BusinessSegment, UseCase | null> = {
+  academia: 'servicos',
+  clinica: 'servicos',
+  salao: 'servicos',
+  consultoria: 'servicos',
+  generico: null,
+};
+
 function AgenteTab() {
   const { business, refreshUser } = useAuth();
   const current = business?.settings?.aiAgent;
@@ -3920,6 +3943,7 @@ function AgenteTab() {
 
   const [enabled, setEnabled] = useState<boolean>(current?.enabled ?? false);
   const [tone, setTone] = useState<'formal' | 'casual' | 'friendly'>(current?.tone || 'friendly');
+  const [segment, setSegment] = useState<BusinessSegment>(current?.segment || 'generico');
   const [businessDescription, setBusinessDescription] = useState<string>(current?.businessDescription || '');
 
   // Pedidos-specific
@@ -3960,9 +3984,12 @@ function AgenteTab() {
 
   const [saving, setSaving] = useState(false);
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   useEffect(() => {
     setEnabled(current?.enabled ?? false);
     setTone(current?.tone || 'friendly');
+    setSegment(current?.segment || 'generico');
     setBusinessDescription(current?.businessDescription || '');
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
@@ -4068,6 +4095,7 @@ function AgenteTab() {
         'settings.aiAgent': {
           enabled,
           tone,
+          segment,
           businessDescription: businessDescription.trim() || null,
           pedidos: pedidos || null,
           agenda: agenda || null,
@@ -4108,6 +4136,65 @@ function AgenteTab() {
     }
   };
 
+  // Sugere config do ramo só em campos ainda no default — nunca sobrescreve
+  // o que o usuário já ajustou. Mostra no toast exatamente o que aplicou.
+  const applyPreset = () => {
+    const preset = AGENT_PRESETS[segment];
+    const applied: string[] = [];
+
+    if (preset.tone !== undefined && tone === 'friendly' && preset.tone !== tone) {
+      setTone(preset.tone);
+      const toneLabel = preset.tone === 'formal' ? 'Formal' : preset.tone === 'casual' ? 'Casual' : 'Amigável';
+      applied.push(`tom ${toneLabel}`);
+    }
+    if (preset.sendReminder !== undefined && sendReminder === true && preset.sendReminder !== sendReminder) {
+      setSendReminder(preset.sendReminder);
+      applied.push('lembrete de agendamento');
+    }
+    if (preset.reminderHoursBefore !== undefined && reminderHoursBefore === 24 && preset.reminderHoursBefore !== reminderHoursBefore) {
+      setReminderHoursBefore(preset.reminderHoursBefore);
+      applied.push(`lembrete ${preset.reminderHoursBefore}h antes`);
+    }
+    if (preset.confirmationBeforeAppointment !== undefined && confirmationBeforeAppointment === true && preset.confirmationBeforeAppointment !== confirmationBeforeAppointment) {
+      setConfirmationBeforeAppointment(preset.confirmationBeforeAppointment);
+      applied.push('confirmação antes do horário');
+    }
+    if (preset.followUpAfter !== undefined && followUpAfter === false && preset.followUpAfter !== followUpAfter) {
+      setFollowUpAfter(preset.followUpAfter);
+      applied.push('follow-up pós-atendimento');
+    }
+
+    if (applied.length === 0) {
+      toast.info('Suas configurações já seguem (ou superam) a recomendação do ramo.');
+      return;
+    }
+    toast.success(`Aplicado: ${applied.join(', ')}. Revise e clique em Salvar.`);
+  };
+
+  // Nudge ramo→modo: troca settings.useCase só quando o usuário clica. Nunca
+  // muda automaticamente. Mesmo update da aba Modo do Sistema (R1: businessId).
+  const suggestedUseCase = SEGMENT_SUGGESTED_USECASE[segment];
+  const showUseCaseNudge = suggestedUseCase !== null && suggestedUseCase !== useCase;
+  const [switchingUseCase, setSwitchingUseCase] = useState(false);
+
+  const applySuggestedUseCase = async () => {
+    if (!business?.id || !suggestedUseCase) return;
+    setSwitchingUseCase(true);
+    try {
+      await updateDoc(doc(db, 'businesses', business.id), {
+        'settings.useCase': suggestedUseCase,
+        updatedAt: new Date().toISOString(),
+      });
+      await refreshUser();
+      toast.success(`Modo alterado para ${USE_CASE_LABELS[suggestedUseCase]}`);
+    } catch (err) {
+      console.error('[AI Agent Settings] useCase switch failed:', err);
+      toast.error('Erro ao alterar modo do sistema');
+    } finally {
+      setSwitchingUseCase(false);
+    }
+  };
+
   const tones = [
     { id: 'friendly', label: 'Amigável', emoji: '😊' },
     { id: 'casual', label: 'Casual', emoji: '👋' },
@@ -4125,11 +4212,11 @@ function AgenteTab() {
       className="space-y-6"
     >
       {/* Enable card */}
-      <div className="bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-500/10 dark:to-purple-500/5 border border-violet-200/60 dark:border-violet-500/20 rounded-2xl p-5">
+      <div className="bg-gradient-to-br from-red-50 to-orange-50 dark:from-red-500/10 dark:to-orange-500/5 border border-red-200/60 dark:border-red-500/20 rounded-2xl p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-start gap-3 flex-1">
             <div className="w-10 h-10 rounded-xl bg-white dark:bg-gray-900 flex items-center justify-center shadow-sm flex-shrink-0">
-              <Sparkles className="w-5 h-5 text-violet-500" />
+              <Sparkles className="w-5 h-5 text-red-500" />
             </div>
             <div>
               <h3 className="font-semibold text-gray-900 dark:text-gray-100 mb-0.5">Agente Autônomo de Atendimento</h3>
@@ -4260,7 +4347,7 @@ function AgenteTab() {
                   className={cn(
                     'inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border-2 text-sm font-medium transition-all',
                     tone === t.id
-                      ? 'border-violet-500 bg-violet-50 dark:bg-violet-500/10 text-violet-700 dark:text-violet-400'
+                      ? 'border-red-500 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400'
                       : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
                   )}
                 >
@@ -4269,6 +4356,66 @@ function AgenteTab() {
                 </button>
               ))}
             </div>
+          </SectionCard>
+
+          {/* Ramo do negócio — ajusta vocabulário/exemplos/persona do agente */}
+          <SectionCard title="Ramo do negócio" icon={Briefcase}>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Define o vocabulário e os exemplos do agente. O assistente fala como o seu ramo (ex.: aluno, paciente, cliente).
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {BUSINESS_SEGMENTS.map((seg) => {
+                const vocab = SEGMENT_VOCAB[seg];
+                const active = segment === seg;
+                return (
+                  <button
+                    key={seg}
+                    type="button"
+                    onClick={() => setSegment(seg)}
+                    className={cn(
+                      'flex flex-col items-start gap-1 px-4 py-3 rounded-xl border-2 text-left transition-all',
+                      active
+                        ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
+                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600',
+                    )}
+                  >
+                    <span className={cn(
+                      'text-sm font-semibold',
+                      active ? 'text-red-700 dark:text-red-400' : 'text-gray-800 dark:text-gray-200',
+                    )}>
+                      {SEGMENT_LABELS[seg]}
+                    </span>
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400 leading-tight">
+                      {vocab.cliente} · {vocab.servico} · {vocab.profissional}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={applyPreset}
+              className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 transition-colors"
+            >
+              <Sparkles className="w-4 h-4" />
+              Sugerir configuração para {SEGMENT_LABELS[segment]}
+            </button>
+            {showUseCaseNudge && suggestedUseCase && (
+              <div className="mt-3 flex flex-col sm:flex-row sm:items-center gap-2 rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-3 py-2.5">
+                <Info className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+                <p className="text-xs text-amber-800 dark:text-amber-300 flex-1 leading-snug">
+                  Esse ramo costuma usar o modo <strong>{USE_CASE_LABELS[suggestedUseCase]}</strong>. Trocar?
+                </p>
+                <button
+                  type="button"
+                  onClick={applySuggestedUseCase}
+                  disabled={switchingUseCase}
+                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-amber-600 hover:bg-amber-700 text-white transition-colors disabled:opacity-60"
+                >
+                  {switchingUseCase ? 'Trocando…' : `Trocar para ${USE_CASE_LABELS[suggestedUseCase]}`}
+                </button>
+              </div>
+            )}
           </SectionCard>
 
           {/* Contexto */}
@@ -4284,10 +4431,16 @@ function AgenteTab() {
                 useCase === 'pedidos'
                   ? 'Ex.: Pizzaria familiar, aberta ter–dom 18h–23h. Pizzas artesanais. Entrega em até 3km por R$ 8. PIX / cartão / dinheiro.'
                   : useCase === 'servicos'
-                    ? 'Ex.: Clínica odontológica na Zona Sul, atendimento seg–sex 8h–18h, especialidade em ortodontia. Chegada 15min antes.'
+                    ? ({
+                        academia: 'Ex.: Academia de jiu-jitsu, treinos seg/qua/sex 19h e sáb 10h. Aula experimental gratuita. Foco em iniciantes e defesa pessoal.',
+                        salao: 'Ex.: Salão de beleza no Centro, ter–sáb 9h–19h. Corte, coloração e manicure com hora marcada. Chegada 10min antes.',
+                        clinica: 'Ex.: Clínica odontológica na Zona Sul, seg–sex 8h–18h, especialidade em ortodontia. Chegada 15min antes.',
+                        consultoria: 'Ex.: Consultoria financeira, sessões online ou presenciais. Primeira conversa de diagnóstico gratuita.',
+                        generico: 'Ex.: Descreva horário, especialidades, políticas e diferenciais do seu negócio.',
+                      } as Record<BusinessSegment, string>)[segment]
                     : 'Descreva seu negócio em poucas linhas.'
               }
-              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
             />
             <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/2000</p>
           </SectionCard>
@@ -4332,7 +4485,7 @@ function AgenteTab() {
                       step={0.5}
                       value={deliveryFee}
                       onChange={(e) => setDeliveryFee(Math.max(0, Number(e.target.value) || 0))}
-                      className="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                      className="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30"
                     />
                   </div>
                 </div>
@@ -4353,6 +4506,45 @@ function AgenteTab() {
               </div>
             </div>
           )}
+
+          {/* ── Configurações avançadas — recolhível por padrão ── */}
+          <div className="rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setAdvancedOpen((v) => !v)}
+              aria-expanded={advancedOpen}
+              className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center flex-shrink-0">
+                  <Sparkles className="w-4 h-4 text-red-500" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Configurações avançadas</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Operador autônomo, políticas, SLAs, feriados, zonas de entrega, upsell, sandbox e base de conhecimento.
+                  </p>
+                </div>
+              </div>
+              <ChevronDown
+                className={cn(
+                  'w-5 h-5 text-gray-400 flex-shrink-0 transition-transform',
+                  advancedOpen && 'rotate-180',
+                )}
+              />
+            </button>
+
+            <AnimatePresence initial={false}>
+              {advancedOpen && (
+                <motion.div
+                  key="agent-advanced"
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.25 }}
+                  className="overflow-hidden"
+                >
+                  <div className="px-5 pb-5 pt-1 space-y-6 border-t border-gray-100 dark:border-gray-800">
 
           {/* Operator chat — autonomy toggle */}
           <SectionCard title="Operador no Dashboard (chat)" icon={Sparkles}>
@@ -4391,7 +4583,7 @@ function AgenteTab() {
                   maxLength={1000}
                   rows={2}
                   placeholder="Ex: Cancelamento sem multa até 2h antes. Após esse prazo, cobramos 30%."
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
                 <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyCancellation.length}/1000</p>
               </div>
@@ -4405,7 +4597,7 @@ function AgenteTab() {
                   maxLength={1000}
                   rows={2}
                   placeholder="Ex: Estornos em 5 dias úteis via PIX. Cartão pode levar até 2 faturas."
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
                 <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyRefund.length}/1000</p>
               </div>
@@ -4430,7 +4622,7 @@ function AgenteTab() {
                   value={slaPrepMin}
                   onChange={(e) => setSlaPrepMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
                   placeholder="Ex: 30"
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
               </div>
               <div>
@@ -4444,7 +4636,7 @@ function AgenteTab() {
                   value={slaDeliveryMin}
                   onChange={(e) => setSlaDeliveryMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
                   placeholder="Ex: 60"
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
               </div>
             </div>
@@ -4466,7 +4658,7 @@ function AgenteTab() {
                   value={holidaysStr}
                   onChange={(e) => setHolidaysStr(e.target.value)}
                   placeholder="2026-12-25, 2026-01-01, 2026-04-21"
-                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
                 <p className="text-[10px] text-gray-400 mt-0.5">
                   ISO YYYY-MM-DD separados por vírgula. Nessas datas o agente informa que está fechado.
@@ -4493,7 +4685,7 @@ function AgenteTab() {
                         className={cn(
                           'px-3 py-1 rounded-lg text-xs font-medium transition-colors',
                           selected
-                            ? 'bg-violet-600 text-white'
+                            ? 'bg-red-600 text-white'
                             : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700',
                         )}
                       >
@@ -4530,6 +4722,11 @@ function AgenteTab() {
           <SectionCard title="Base de conhecimento (RAG)" icon={Info}>
             <KnowledgeReindexPanel />
           </SectionCard>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </motion.div>
       )}
 
@@ -4538,7 +4735,7 @@ function AgenteTab() {
         <button
           onClick={handleSave}
           disabled={saving}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-violet-500/20 transition-colors"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-bold shadow-md shadow-red-500/20 transition-colors"
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
           {saving ? 'Salvando...' : 'Salvar configurações'}
@@ -5325,22 +5522,9 @@ function EnterpriseTab() {
     }
   };
 
-  const testConnection = async (providerId: string) => {
-    setTesting(providerId);
-    try {
-      // Simulate connection test
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const apiKey = keyValues[`${providerId}_apiKey`] || '';
-      if (apiKey.length > 5) {
-        toast.success('Conexão estabelecida com sucesso!');
-      } else {
-        toast.error('Falha na conexão. Verifique a API Key.');
-      }
-    } catch {
-      toast.error(t('settings.enterprise.testFatal', 'Erro ao testar conexão'));
-    } finally {
-      setTesting(null);
-    }
+  const testConnection = (_providerId: string) => {
+    // Não há rota real de teste de conexão por integração ainda. Não fingir sucesso.
+    toast(t('settings.enterprise.testUnavailable', 'Teste de conexão ainda não disponível para esta integração.'));
   };
 
   // ── API Key handlers ──
@@ -6182,7 +6366,6 @@ function CanaisTab() {
   const [forceReconnect, setForceReconnect] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [waConnecting, setWaConnecting] = useState(false);
-  const [waStatus, setWaStatus] = useState<'idle' | 'connecting' | 'scanning' | 'connected'>('idle');
 
   // ── FB SDK loader (shared) ──
   const ensureFbSdk = async (): Promise<{ login: (cb: (r: { authResponse?: { accessToken?: string; code?: string } }) => void, opts: Record<string, unknown>) => void }> => {
@@ -6854,7 +7037,6 @@ function CanaisTab() {
                           setForceReconnect(true);
                           setShowQrModal(true);
                           setQrDataUrl(null);
-                          setWaStatus('connecting');
                           setWaConnecting(true);
                         }}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#25D366] hover:bg-[#25D366]/10 transition-colors"
@@ -6879,7 +7061,6 @@ function CanaisTab() {
                     onClick={() => {
                       setShowQrModal(true);
                       setQrDataUrl(null);
-                      setWaStatus('connecting');
                       setWaConnecting(true);
                     }}
                     disabled={waConnecting}
@@ -7079,7 +7260,6 @@ function CanaisTab() {
           onClose={() => {
             setShowQrModal(false);
             setWaConnecting(false);
-            setWaStatus('idle');
             setQrDataUrl(null);
             setForceReconnect(false);
           }}
@@ -7088,7 +7268,6 @@ function CanaisTab() {
             setWaPhoneNumber(phoneNumber || '');
             setShowQrModal(false);
             setWaConnecting(false);
-            setWaStatus('connected');
             setForceReconnect(false);
             refreshUser();
             toast.success(t('settings.channelsTab.connected', 'WhatsApp conectado com sucesso!'));

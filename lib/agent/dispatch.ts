@@ -10,7 +10,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { Firestore } from 'firebase-admin/firestore';
-import type { Business, Conversation, ConversationChannel } from '@/lib/types';
+import type { Business, Conversation, ConversationChannel, BusinessSegment, WeeklySession } from '@/lib/types';
+import { SEGMENT_VOCAB } from '@/lib/types';
 import { sendTypingIndicator } from '@/lib/channels/typing';
 import { checkRateLimit } from '@/lib/agent/rate-limit';
 import { isCircuitAllowed, recordSuccess, recordFailure } from '@/lib/agent/circuit-breaker';
@@ -216,8 +217,18 @@ export async function dispatchInboundToAgent(
 
     const useCase = business.settings?.useCase || 'servicos';
 
+    // Ramo/vertical — humaniza o agente sem viés salão. Ausente → 'generico'.
+    const segment: BusinessSegment = business.settings?.aiAgent?.segment || 'generico';
+    const segmentVocab = SEGMENT_VOCAB[segment];
+
     // Pre-load services for agenda mode — avoids an extra tool call for "what services do you have?"
-    type ServiceSnapshot = { id: string; name: string; price: number; duration: number; category?: string; description?: string };
+    // capacity/sessions são aditivos: presentes só quando o serviço é turma (capacity>1),
+    // permitindo ao agente contar vagas sem nova tool call. Serviços exclusivos não os enviam.
+    type ServiceSnapshot = {
+      id: string; name: string; price: number; duration: number;
+      category?: string; description?: string;
+      capacity?: number; sessions?: WeeklySession[];
+    };
     let servicesList: ServiceSnapshot[] = [];
     if (useCase === 'servicos') {
       try {
@@ -227,6 +238,8 @@ export async function dispatchInboundToAgent(
           .get();
         servicesList = servicesSnap.docs.map(d => {
           const s = d.data();
+          const capacity = typeof s.capacity === 'number' ? (s.capacity as number) : undefined;
+          const sessions = Array.isArray(s.sessions) ? (s.sessions as WeeklySession[]) : undefined;
           return {
             id: d.id,
             name: s.name as string,
@@ -234,6 +247,8 @@ export async function dispatchInboundToAgent(
             duration: (s.duration as number) || 60,
             ...(s.category ? { category: s.category as string } : {}),
             ...(s.description ? { description: s.description as string } : {}),
+            ...(capacity !== undefined ? { capacity } : {}),
+            ...(sessions && sessions.length > 0 ? { sessions } : {}),
           };
         });
       } catch { /* non-fatal — agent falls back to agenda_list_services tool */ }
@@ -257,6 +272,9 @@ export async function dispatchInboundToAgent(
       recipient_id: input.recipientId,
       history,
       use_case: useCase,
+      // Ramo/vertical (snake_case no fio) — ajusta vocabulário/persona do /agent.
+      segment,
+      segment_vocab: segmentVocab,
       business_name: business.nomeFantasia || business.razaoSocial,
       business_description: business.settings?.aiAgent?.businessDescription,
       tone: business.settings?.aiAgent?.tone || 'friendly',

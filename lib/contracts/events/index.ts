@@ -65,6 +65,25 @@ export const AppointmentCanceledSchema = EventEnvelopeBase.extend({
 });
 
 /**
+ * Aula experimental (trial) concluída — funil de aquisição (P2.8).
+ *
+ * Emitido quando um Appointment com `isTrial === true` transiciona para
+ * `concluido` e o operador/agente marca `trialOutcome`.
+ *
+ * Subscribers conhecidos:
+ *   - CRM: se outcome === 'converteu' → avançar Client.lifecycleStage
+ *     (qualified → customer) e, se aplicável, criar ClientMembership.
+ *   - Reports: alimentar taxa de conversão de trials (aquisição).
+ */
+export const AppointmentTrialCompletedSchema = EventEnvelopeBase.extend({
+  type: z.literal('appointment.trialCompleted'),
+  appointmentId: z.string().min(1),
+  clientId: z.string().optional(),
+  serviceId: z.string().optional(),
+  outcome: z.enum(['converteu', 'nao_converteu', 'pendente']),
+});
+
+/**
  * Booking IA criou agendamento via /api/booking/chat.
  *
  * Subscribers conhecidos (GAP G5 — não implementado ainda):
@@ -174,6 +193,7 @@ export const ConversationReopenedSchema = EventEnvelopeBase.extend({
 export const DomainEventSchema = z.discriminatedUnion('type', [
   AppointmentCompletedSchema,
   AppointmentCanceledSchema,
+  AppointmentTrialCompletedSchema,
   BookingCreatedSchema,
   FormSubmittedSchema,
   BroadcastRepliedSchema,
@@ -190,6 +210,7 @@ export type DomainEventType = DomainEvent['type'];
 export const DOMAIN_EVENT_TYPES = [
   'appointment.completed',
   'appointment.canceled',
+  'appointment.trialCompleted',
   'booking.created',
   'form.submitted',
   'broadcast.replied',

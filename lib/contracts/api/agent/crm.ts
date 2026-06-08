@@ -18,6 +18,10 @@ const DealShape = z.object({
   expectedCloseDate: z.string().optional(),
   closedDate: z.string().optional(),
   lostReason: z.string().optional(),
+  // FKs de resultado (P2.10) — entidade de receita que concretizou o deal ganho.
+  saleId: DocIdSchema.optional(),
+  appointmentId: DocIdSchema.optional(),
+  deliveryOrderId: DocIdSchema.optional(),
 }).passthrough();
 const ActivityShape = z.object({
   id: DocIdSchema, businessId: z.string(),
@@ -92,6 +96,10 @@ export const CRMCloseDealParamsSchema = z.object({
   id: DocIdSchema,
   won: z.boolean(),
   reason: z.string().max(500).optional(),
+  // FKs de resultado (P2.10) — gravadas só quando won=true e a origem é conhecida.
+  saleId: DocIdSchema.optional(),
+  appointmentId: DocIdSchema.optional(),
+  deliveryOrderId: DocIdSchema.optional(),
 });
 export const CRMCloseDealDataSchema = DealShape;
 

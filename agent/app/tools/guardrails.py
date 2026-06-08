@@ -49,6 +49,9 @@ TOOL_MIN_ROLE: dict[str, str] = {
     "sales_cancel": "manager",
     # Purchase-notes apply — admin+ (moves real money → stock)
     "purchase-notes_apply_to_stock": "admin",
+    # Fiscal writes — manager+ (regulatory; emit/cancel hit SEFAZ)
+    "fiscal_emit": "manager",
+    "fiscal_cancel": "manager",
     # Memory wipe — admin only
     "memory_forget": "admin",
 }

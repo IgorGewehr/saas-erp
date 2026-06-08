@@ -42,11 +42,13 @@ export const DELIVERY_ORDER_TRANSITION_EFFECTS: Partial<Record<`${DeliveryOrderS
   'pronto->saiu_entrega': ['Atualizar deliveryPersonId, deliveryPersonName'],
   'saiu_entrega->entregue': [
     'set deliveredAt',
-    'Emit event order.delivered → criar Transaction receita',
+    'Cria Transaction receita idempotente (guard order.transactionId) → set transactionId',
+    // TODO(auditoria P1.1/R5): promover a dispatchDomainEvent("deliveryOrder.delivered")
+    // quando houver 2+ subscribers (atual: criação inline em OrdersModule + agent tools).
   ],
   'pronto->entregue': [
     'set deliveredAt (retirada no balcão)',
-    'Emit event order.delivered',
+    'Cria Transaction receita idempotente (guard order.transactionId) → set transactionId',
   ],
   'recebido->cancelado': ['Nenhum side-effect (stock não foi tocado)'],
   'preparando->cancelado': [

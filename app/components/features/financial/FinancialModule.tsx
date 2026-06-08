@@ -96,7 +96,7 @@ import {
   Pie,
   Cell,
 } from 'recharts';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc, arrayUnion, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, getDoc, arrayUnion, onSnapshot, limit } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
@@ -489,10 +489,29 @@ function FinancialModuleBody() {
   useEffect(() => {
     if (!business?.id) { setIsLoadingTransactions(false); return; }
     setIsLoadingTransactions(true);
+    // P0.1: janela por `dueDate` em vez de full-scan da coleção mais volumosa.
+    // Range largo o suficiente p/ cobrir TODOS os consumidores deste array:
+    //  - periodTx/prevTx: até 12m corrente + 12m anterior (= 24m atrás)
+    //  - weeklyProjection: +91 dias + recorrências futuras
+    //  - summaryMetrics.aReceber/aPagar: pendentes/atrasados de qualquer idade
+    // Por isso: 24 meses atrás → 18 meses à frente. Índice [businessId,
+    // dueDate desc] já existe. limit alto como teto de segurança.
+    // TODO(auditoria): aReceber/aPagar e a lista de transações passam a ser
+    // limitados a esta janela; contas pendentes/atrasadas com dueDate fora dela
+    // (>24m no passado) não entram nos totais. Caso real raro; se preciso 100%,
+    // ler um contador denormalizado de saldo a receber/pagar.
+    const now = new Date();
+    const lo = new Date(now); lo.setMonth(lo.getMonth() - 24);
+    const hi = new Date(now); hi.setMonth(hi.getMonth() + 18);
+    const loStr = lo.toISOString().slice(0, 10);
+    const hiStr = hi.toISOString().slice(0, 10);
     const q = query(
       collection(db, 'transactions'),
       where('businessId', '==', business.id),
+      where('dueDate', '>=', loStr),
+      where('dueDate', '<=', hiStr),
       orderBy('dueDate', 'desc'),
+      limit(5000),
     );
     const unsub = onSnapshot(
       q,

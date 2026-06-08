@@ -33,6 +33,15 @@ export const AvailabilitySlotSchema = z.object({
   endTime: TimeHmSchema,
   professionalId: DocIdSchema.optional(),
   professionalName: z.string().optional(),
+  // ── Turmas (sessões fixas) — todos opcionais p/ retrocompat ──────────────
+  // Presentes só quando o slot vem de um serviço com capacity>1 / sessions[].
+  // Ausentes = slot exclusivo (comportamento atual, BIT-A-BIT).
+  /** Vagas totais da sessão (capacity efetiva). */
+  capacity: z.number().int().min(1).optional(),
+  /** Vagas ainda livres = capacity - count(appts não-cancelados c/ sessionKey). */
+  seatsAvailable: z.number().int().min(0).optional(),
+  /** Chave canônica da turma (serviceId_date_startTime_professionalId|any). */
+  sessionKey: z.string().optional(),
 });
 
 export const AgendaServiceShortSchema = z.object({
@@ -43,6 +52,16 @@ export const AgendaServiceShortSchema = z.object({
   price: z.number().nonnegative().optional(),
   category: z.string().optional(),
   commissionRate: z.number().min(0).max(100).optional(),
+  // Turmas: capacity>1 = turma; sessions[] = grade fixa. Ausentes = exclusivo.
+  capacity: z.number().int().min(1).optional(),
+  sessions: z.array(z.object({
+    weekday: z.number().int().min(0).max(6),
+    startTime: TimeHmSchema,
+    duration: z.number().int().positive().optional(),
+    capacity: z.number().int().min(1).optional(),
+    professionalId: DocIdSchema.optional(),
+    professionalName: z.string().optional(),
+  })).optional(),
 });
 
 export const AgendaProfessionalSchema = z.object({
@@ -120,6 +139,9 @@ export const BookParamsSchema = z.object({
   clientName: z.string().min(1).max(200),
   clientPhone: PhoneSchema.optional(),
   clientId: DocIdSchema.optional(),
+  // Aliases aceitos no boundary (P2.10) — normalizados pra clientId via resolveClientId.
+  contactId: DocIdSchema.optional(),
+  crmContactId: DocIdSchema.optional(),
   serviceId: DocIdSchema.optional(),
   serviceName: z.string().optional(),
   professionalId: DocIdSchema.optional(),
@@ -131,9 +153,11 @@ export const BookParamsSchema = z.object({
   notes: z.string().max(2000).optional(),
   channelType: ChannelTypeSchema.optional(),
   conversationId: DocIdSchema.optional(),
+  // FK de resultado (P2.10) — CRMDeal que originou este agendamento.
+  dealId: DocIdSchema.optional(),
 }).strict().superRefine((data, ctx) => {
-  // Precisa de pelo menos uma forma de identificar o cliente
-  if (!data.clientId && !data.clientPhone) {
+  // Precisa de pelo menos uma forma de identificar o cliente (qualquer alias).
+  if (!data.clientId && !data.contactId && !data.crmContactId && !data.clientPhone) {
     ctx.addIssue({
       code: 'custom',
       message: 'clientId ou clientPhone obrigatório',
@@ -143,18 +167,28 @@ export const BookParamsSchema = z.object({
 });
 
 export const BookDataSchema = z.object({
-  // id ausente quando status='conflict' — nada foi criado nesse caso.
+  // id ausente quando status='conflict'/'full' — nada foi criado nesse caso.
   id: DocIdSchema.optional(),
-  status: z.enum(['created', 'exists', 'conflict']),
+  // 'created'/'exists'/'conflict' = comportamento atual (exclusivo).
+  // 'joined' = aluno anexado a turma existente (vaga restava).
+  // 'full' = turma cheia → use `alternatives` p/ propor outro horário.
+  status: z.enum(['created', 'exists', 'conflict', 'joined', 'full']),
   date: DateYmdSchema,
   startTime: TimeHmSchema,
   endTime: TimeHmSchema,
   serviceName: z.string(),
   professionalName: z.string().optional(),
-  // Quando status='conflict': resposta acionável para o agente —
-  // motivo do conflito + 1-3 slots livres próximos do horário pedido.
+  // Quando status='conflict'/'full': resposta acionável para o agente —
+  // motivo + 1-3 slots livres próximos do horário pedido.
   conflictReason: z.string().optional(),
   alternatives: z.array(AvailabilitySlotSchema).optional(),
+  // ── Turmas — presentes quando o booking tocou uma turma ──────────────────
+  /** Chave canônica da turma (serviceId_date_startTime_professionalId|any). */
+  sessionKey: z.string().optional(),
+  /** Vagas restantes APÓS este booking (status='created'/'joined'). */
+  seatsRemaining: z.number().int().min(0).optional(),
+  /** Capacidade efetiva da turma no momento do booking. */
+  capacity: z.number().int().min(1).optional(),
 });
 
 // ---------- list_by_client ----------

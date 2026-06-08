@@ -7207,7 +7207,22 @@ export default function ConversasModule() {
   }, [clientsList]);
 
   // ── Real-time: Conversations list ──────────────────────────────────────────
-
+  //
+  // TODO(auditoria P1.4): adicionar limit(50) + paginação por lastMessageAt
+  // AQUI é arriscado e já foi revertido uma vez (commit 6fb79c2). O array
+  // `conversations` carregado por este listener NÃO alimenta só a lista — ele é
+  // o universo de:
+  //   • filtro/view "não lidas" e `unreadByChannel`/`countsByView` (badges das
+  //     abas) — uma conversa não-lida fora da janela das 50 mais recentes some
+  //     do filtro e zera o contador da aba (regressão do 6fb79c2);
+  //   • automações de SLA + routing rules (loops sobre `conversations` que
+  //     escrevem priority/assignedTo) — limitar pararia silenciosamente a
+  //     automação de conversas antigas;
+  //   • analytics panel, merge-candidates e batch CSAT.
+  // Fazer com segurança exige listener(s) separado(s) (ex.: unread-only +
+  // open-only para SLA) alimentando esses consumidores, mantendo o limit/
+  // paginação SÓ na visualização da lista. O badge global já saiu daqui
+  // (Sidebar/TopBar/Dashboard agora leem unreadCounters/{businessId}).
   useEffect(() => {
     if (!business?.id) return;
     if (!user?.uid) return;

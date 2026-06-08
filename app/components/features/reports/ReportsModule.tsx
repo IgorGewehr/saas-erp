@@ -100,6 +100,55 @@ function inPeriod(dateStr: string | undefined | null, start: Date, end: Date): b
 
 function pct(n: number, dec = 1): string { return `${n.toFixed(dec)}%`; }
 
+// ─── Server-side window bounds ────────────────────────────────────────────────
+//
+// As queries do Firestore filtram por `createdAt`/`date` (string ISO / YYYY-MM-DD,
+// confirmado em lib/types) com `where >=`/`<=`, cortando o download de O(histórico)
+// para O(período). O `inPeriod()` client-side (recorte fino por paymentDate/date)
+// permanece como rede: os números exibidos não mudam — a janela server-side é
+// sempre um SUPERCONJUNTO do que `inPeriod` aceita.
+//
+// Margens de segurança (alargam a janela, nunca a estreitam):
+//  - SAFETY_DAYS: 1 dia em cada borda para absorver o offset de timezone entre
+//    o `createdAt` gravado em UTC e o recorte local de `inPeriod`. Sem isso, um
+//    doc na borda do período (ex: 00:30 local em GMT-3 = 03:30Z) poderia ficar
+//    de fora do `>=` lexicográfico contra `start.toISOString()`.
+//  - TX_BACKDATE_DAYS: transactions recorta por `paymentDate || createdAt`
+//    (Opção B). Uma conta lançada há meses e PAGA dentro do período tem
+//    `createdAt` antigo. Alargamos a borda inferior de `createdAt` em 90 dias
+//    para capturá-la; o `inPeriod(paymentDate||createdAt)` filtra de volta ao
+//    período real. Sem regressão financeira (pagamento em atraso não some).
+const SAFETY_DAYS = 1;
+const TX_BACKDATE_DAYS = 90;
+
+function shiftDays(d: Date, days: number): Date {
+  const r = new Date(d);
+  r.setDate(r.getDate() + days);
+  return r;
+}
+
+/** Limites para campos `createdAt` (string ISO datetime). */
+function createdAtBounds(range: { start: Date; end: Date }, backdateDays = 0): { lo: string; hi: string } {
+  return {
+    lo: shiftDays(range.start, -(SAFETY_DAYS + backdateDays)).toISOString(),
+    hi: shiftDays(range.end, SAFETY_DAYS).toISOString(),
+  };
+}
+
+/** Limites para `appointments.date` (string YYYY-MM-DD), local. */
+function dateStrBounds(range: { start: Date; end: Date }): { lo: string; hi: string } {
+  const fmt = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+  return {
+    lo: fmt(shiftDays(range.start, -SAFETY_DAYS)),
+    hi: fmt(shiftDays(range.end, SAFETY_DAYS)),
+  };
+}
+
 // ─── Shared sub-components ────────────────────────────────────────────────────
 
 type KpiColor = 'blue' | 'green' | 'red' | 'amber' | 'violet' | 'rose';
@@ -888,22 +937,41 @@ export default function ReportsModule() {
   const periodRange = useMemo(() => getPeriodRange(period), [period]);
   const periodLabel = PERIOD_OPTIONS.find(p => p.value === period)?.label ?? '';
 
+  // transactions — Opção B: janela em `createdAt` ALARGADA em 90 dias (TX_BACKDATE_DAYS)
+  // para capturar contas pagas em atraso (recorte real por paymentDate||createdAt fica
+  // no inPeriod client-side). Índice [businessId, createdAt desc] já existe.
   const { data: transactions = [], isLoading: loadingTx } = useQuery({
-    queryKey: ['transactions', businessId],
+    queryKey: ['transactions', businessId, period],
     queryFn: async () => {
       if (!businessId) return [];
-      const q = query(collection(db, 'transactions'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const { lo, hi } = createdAtBounds(periodRange, TX_BACKDATE_DAYS);
+      const q = query(
+        collection(db, 'transactions'),
+        where('businessId', '==', businessId),
+        where('createdAt', '>=', lo),
+        where('createdAt', '<=', hi),
+        orderBy('createdAt', 'desc'),
+      );
       return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Transaction));
     },
     enabled: !!businessId,
     staleTime: 5 * 60 * 1000,
   });
 
+  // appointments — recorta por `date` (YYYY-MM-DD). Filtra server-side por date.
+  // Índice novo [businessId, date desc] adicionado em firestore.indexes.json.
   const { data: appointments = [], isLoading: loadingAppt } = useQuery({
-    queryKey: ['appointments', businessId],
+    queryKey: ['appointments', businessId, period],
     queryFn: async () => {
       if (!businessId) return [];
-      const q = query(collection(db, 'appointments'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const { lo, hi } = dateStrBounds(periodRange);
+      const q = query(
+        collection(db, 'appointments'),
+        where('businessId', '==', businessId),
+        where('date', '>=', lo),
+        where('date', '<=', hi),
+        orderBy('date', 'asc'),
+      );
       return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Appointment));
     },
     enabled: !!businessId,
@@ -911,10 +979,17 @@ export default function ReportsModule() {
   });
 
   const { data: clients = [], isLoading: loadingClients } = useQuery({
-    queryKey: ['clients', businessId],
+    queryKey: ['clients', businessId, period],
     queryFn: async () => {
       if (!businessId) return [];
-      const q = query(collection(db, 'clients'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const { lo, hi } = createdAtBounds(periodRange);
+      const q = query(
+        collection(db, 'clients'),
+        where('businessId', '==', businessId),
+        where('createdAt', '>=', lo),
+        where('createdAt', '<=', hi),
+        orderBy('createdAt', 'desc'),
+      );
       return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Client)).filter(isActiveClient);
     },
     enabled: !!businessId,
@@ -922,10 +997,17 @@ export default function ReportsModule() {
   });
 
   const { data: reviews = [] } = useQuery({
-    queryKey: ['reviews', businessId],
+    queryKey: ['reviews', businessId, period],
     queryFn: async () => {
       if (!businessId) return [];
-      const q = query(collection(db, 'reviews'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const { lo, hi } = createdAtBounds(periodRange);
+      const q = query(
+        collection(db, 'reviews'),
+        where('businessId', '==', businessId),
+        where('createdAt', '>=', lo),
+        where('createdAt', '<=', hi),
+        orderBy('createdAt', 'desc'),
+      );
       return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Review));
     },
     enabled: !!businessId,
@@ -934,10 +1016,17 @@ export default function ReportsModule() {
 
   // Sales (PDV) — usado pra ranking de produtos/serviços vendidos.
   const { data: sales = [] } = useQuery({
-    queryKey: ['reports-sales', businessId],
+    queryKey: ['reports-sales', businessId, period],
     queryFn: async () => {
       if (!businessId) return [];
-      const q = query(collection(db, 'sales'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const { lo, hi } = createdAtBounds(periodRange);
+      const q = query(
+        collection(db, 'sales'),
+        where('businessId', '==', businessId),
+        where('createdAt', '>=', lo),
+        where('createdAt', '<=', hi),
+        orderBy('createdAt', 'desc'),
+      );
       return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Sale));
     },
     enabled: !!businessId,
@@ -946,10 +1035,17 @@ export default function ReportsModule() {
 
   // Orders (delivery / orçamentos) — também tem items[] pra agregação.
   const { data: orders = [] } = useQuery({
-    queryKey: ['reports-orders', businessId],
+    queryKey: ['reports-orders', businessId, period],
     queryFn: async () => {
       if (!businessId) return [];
-      const q = query(collection(db, 'orders'), where('businessId', '==', businessId), orderBy('createdAt', 'desc'));
+      const { lo, hi } = createdAtBounds(periodRange);
+      const q = query(
+        collection(db, 'orders'),
+        where('businessId', '==', businessId),
+        where('createdAt', '>=', lo),
+        where('createdAt', '<=', hi),
+        orderBy('createdAt', 'desc'),
+      );
       return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Order));
     },
     enabled: !!businessId,

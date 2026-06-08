@@ -19,6 +19,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
@@ -28,6 +29,11 @@ import { markWebhookSeen } from '@/contracts/_runtime/webhookIdempotency';
 // Storage uploads são feitos via uploadServerMedia (admin SDK) — antes
 // inicializávamos o client SDK aqui mas server-side não tem auth do Firebase,
 // então as Storage Rules retornavam `storage/unauthorized` em todo upload.
+
+// Logs verbosos (telefone/externalId, conteúdo de mensagem, payload bruto da
+// Graph API, traço de fluxo por mensagem) só em dev. Em produção poluem o log
+// e vazam PII parcial. console.error/warn de falhas reais NÃO são gateados.
+const DEBUG_VERBOSE = process.env.NODE_ENV !== 'production';
 
 /**
  * Persiste falha do pipeline de mídia em `webhookFailures` para diagnóstico
@@ -518,10 +524,17 @@ function verifySignatureFromBuffer(rawBuffer: Buffer, signature: string): boolea
 
 export async function POST(req: NextRequest) {
   try {
+    // P2.18 — Meta entrega de um conjunto pequeno de IPs fixos, então um
+    // rate-limit por IP agrega TODOS os tenants. O limite antigo (200/min) era
+    // baixo o bastante para ser estourado por um tenant movimentado, e retornar
+    // 200 ao estourar fazia a Meta NÃO reentregar → perda silenciosa de eventos
+    // de todos os tenants. Correção: limite muito mais alto (só guarda
+    // anti-abuso grosseiro) e, ao estourar, retorna 429 para a Meta reentregar.
+    // A dedup por wamid (markWebhookSeen) já protege contra processar duplicado.
     const clientIp = getClientIp(req);
-    const { allowed } = checkRateLimit(`webhook:${clientIp}`, 200, 60_000);
+    const { allowed } = checkRateLimit(`webhook:${clientIp}`, 5000, 60_000);
     if (!allowed) {
-      return NextResponse.json({ status: 'ok' }, { status: 200 });
+      return NextResponse.json({ error: 'Rate limited — retry' }, { status: 429 });
     }
 
     // Read raw bytes — arrayBuffer preserves exact bytes Meta signed
@@ -684,7 +697,9 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
                 optedOutAt: new Date().toISOString(),
                 reasonText: extracted.content?.slice(0, 100),
               });
-              console.log(`[Meta Webhook] Recorded WhatsApp opt-out for ${identifier} (keyword: "${extracted.content}")`);
+              if (DEBUG_VERBOSE) {
+                console.log(`[Meta Webhook] Recorded WhatsApp opt-out for ${identifier} (keyword: "${extracted.content}")`);
+              }
             }
           } catch (optOutErr) {
             console.error('[Meta Webhook] Failed to record opt-out:', optOutErr);
@@ -1202,7 +1217,7 @@ async function resolveBusinessId(
         .limit(1)
         .get();
       if (!snapFb.empty) {
-        console.log('[Meta Webhook] Instagram resolved via Facebook pageId fallback:', channelIdentifier);
+        if (DEBUG_VERBOSE) console.log('[Meta Webhook] Instagram resolved via Facebook pageId fallback:', channelIdentifier);
         return snapFb.docs[0].id;
       }
 
@@ -1255,7 +1270,7 @@ async function persistProfilePic(
       buffer,
       contentType,
     });
-    console.log(`[Profile Pic] Persisted avatar for ${senderId} → Firebase Storage`);
+    if (DEBUG_VERBOSE) console.log(`[Profile Pic] Persisted avatar for ${senderId} → Firebase Storage`);
     return permanentUrl;
   } catch (err) {
     console.warn('[Profile Pic] Failed to persist to storage — using temp URL as fallback:', err);
@@ -1306,7 +1321,7 @@ async function fetchSenderProfile(
     }
 
     const data = await res.json();
-    console.log(`[Profile] Raw response (${channel}) sender=${senderId}:`, JSON.stringify(data));
+    if (DEBUG_VERBOSE) console.log(`[Profile] Raw response (${channel}) sender=${senderId}:`, JSON.stringify(data));
 
     // Build name with best available data
     let name: string;
@@ -1353,7 +1368,7 @@ async function fetchSenderProfile(
       : undefined;
 
     if (!rawPic) {
-      console.log(`[Profile] No profile picture for ${channel} sender=${senderId} (private account or silhouette)`);
+      if (DEBUG_VERBOSE) console.log(`[Profile] No profile picture for ${channel} sender=${senderId} (private account or silhouette)`);
     }
 
     return { name, profilePic };
@@ -1380,8 +1395,7 @@ async function getDecryptedPageToken(businessId: string): Promise<string | null>
     }
 
     const token = await decryptToken(encryptedToken);
-    // Log first 12 chars so we can confirm it's a page token (starts with EAA...) vs user token
-    console.log('[Profile] Page token prefix for business', businessId, ':', token.slice(0, 12) + '...');
+    if (DEBUG_VERBOSE) console.log('[Profile] Page token resolved for business', businessId, ':', { hasToken: !!token });
     return token;
   } catch (err) {
     console.error('[Meta Webhook] Error getting page token:', err);
@@ -1418,12 +1432,14 @@ function formatBrPhoneForDisplay(phone: string): string {
  * 4. Adds a ConversationMessage document
  */
 async function saveInboundMessage(params: InboundMessageParams) {
-  console.log('[Meta Webhook] Inbound message received:', {
-    channel: params.channel,
-    from: params.externalId,
-    content: params.content.slice(0, 50),
-    timestamp: params.timestamp,
-  });
+  if (DEBUG_VERBOSE) {
+    console.log('[Meta Webhook] Inbound message received:', {
+      channel: params.channel,
+      from: params.externalId,
+      content: params.content.slice(0, 50),
+      timestamp: params.timestamp,
+    });
+  }
 
   // 1. Resolve businessId + channelConnectionId from channel identifier
   // For Instagram DMs arriving via page subscription (object:'page'), the channelIdentifier
@@ -1435,7 +1451,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
   if (!resolved && params.channel === 'instagram' && params.fallbackPageId) {
     resolved = await resolveChannelContext('facebook', params.fallbackPageId);
     if (resolved) {
-      console.log('[Meta Webhook] Instagram resolved via fallbackPageId:', params.fallbackPageId);
+      if (DEBUG_VERBOSE) console.log('[Meta Webhook] Instagram resolved via fallbackPageId:', params.fallbackPageId);
     }
   }
 
@@ -1471,7 +1487,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
       source: 'meta_webhook',
     });
     if (seen) {
-      console.log('[Meta Webhook] Duplicate message skipped (markWebhookSeen):', params.messageId);
+      if (DEBUG_VERBOSE) console.log('[Meta Webhook] Duplicate message skipped (markWebhookSeen):', params.messageId);
       return;
     }
   } catch (dupErr) {
@@ -1612,7 +1628,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
         });
         if (candidateDocs.length > 0) {
           last8Used = `last8=${last8} ddd=${ddd}`;
-          console.log(`[Meta Webhook] Found ${candidateDocs.length} match(es) via last-8-digits fallback for ${params.externalId}`);
+          if (DEBUG_VERBOSE) console.log(`[Meta Webhook] Found ${candidateDocs.length} match(es) via last-8-digits fallback for ${params.externalId}`);
         }
       }
     }
@@ -1684,6 +1700,14 @@ async function saveInboundMessage(params: InboundMessageParams) {
       });
       conversationId = newConvRef.id;
 
+      // Contador denormalizado de não-lidas (R3 — mesmo caminho dedupe-guarded
+      // que incrementa unreadCount na conversa). Meta Cloud/FB/IG = sempre business.
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType: 'business' }, 1);
+      } catch (counterErr) {
+        console.warn('[Meta Webhook] incrementUnreadCounter (new conv) falhou:', counterErr);
+      }
+
       // Auto-link to CRM contact if one exists with matching channel identity
       try {
         const channelField = params.channel === 'whatsapp'
@@ -1737,14 +1761,14 @@ async function saveInboundMessage(params: InboundMessageParams) {
             ...(params.channel === 'whatsapp' ? { 'channelIdentities.whatsapp': params.externalId } : {}),
             updatedAt: now,
           });
-          console.log('[Meta Webhook] Linked conversation to CRM contact:', matchedContact.id);
+          if (DEBUG_VERBOSE) console.log('[Meta Webhook] Linked conversation to CRM contact:', matchedContact.id);
         }
       } catch (linkErr) {
         // Non-fatal — don't break message processing if CRM link fails
         console.warn('[Meta Webhook] Failed to auto-link CRM contact:', linkErr);
       }
 
-      console.log('[Meta Webhook] Created new conversation:', conversationId);
+      if (DEBUG_VERBOSE) console.log('[Meta Webhook] Created new conversation:', conversationId);
     } else {
       // Update existing conversation
       conversationId = matchedDoc.id;
@@ -1762,7 +1786,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
           return;
         }
         // New message after delete — resurrect the conversation
-        console.log('[Meta Webhook] Resurrecting soft-deleted conversation:', conversationId);
+        if (DEBUG_VERBOSE) console.log('[Meta Webhook] Resurrecting soft-deleted conversation:', conversationId);
       }
 
       // Detecção de bot: só roda na PRIMEIRA inbound do contato e se há um
@@ -1847,7 +1871,14 @@ async function saveInboundMessage(params: InboundMessageParams) {
       }
       await adminDb.doc(`conversations/${conversationId}`).update(enrichUpdate);
 
-      console.log('[Meta Webhook] Updated conversation:', conversationId);
+      // Contador denormalizado de não-lidas (R3 — espelha o increment(1) acima).
+      try {
+        await incrementUnreadCounter(adminDb, businessId, { channelOwnerType: 'business' }, 1);
+      } catch (counterErr) {
+        console.warn('[Meta Webhook] incrementUnreadCounter (existing conv) falhou:', counterErr);
+      }
+
+      if (DEBUG_VERBOSE) console.log('[Meta Webhook] Updated conversation:', conversationId);
 
       // Auto-link to CRM if not already linked.
       // Antes este branch só tentava match exato, enquanto o branch "nova
@@ -1931,7 +1962,7 @@ async function saveInboundMessage(params: InboundMessageParams) {
     if (params.senderAvatarUrl) msgDoc.senderAvatarUrl = params.senderAvatarUrl;
     const msgRef = await adminDb.collection('conversationMessages').add(msgDoc);
 
-    console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);
+    if (DEBUG_VERBOSE) console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);
 
     // Dispatch to AI agent (true fire-and-forget — do NOT await, debounce runs inside).
     // Meta webhooks only deliver messages FROM the contact (never operator notes or
@@ -1974,7 +2005,7 @@ async function updateMessageStatus(params: {
   timestamp: string;
   errors?: Array<{ code: number; title: string }>;
 }) {
-  console.log('[Meta Webhook] Status update:', params);
+  if (DEBUG_VERBOSE) console.log('[Meta Webhook] Status update:', params);
 
   // ── 1. Update conversationMessage (best-effort) ─────────────────────────
   // Antes esse bloco tinha `return` em 2 caminhos (msgSnap empty + status
@@ -1997,7 +2028,7 @@ async function updateMessageStatus(params: {
       // Not an error — could be a status update for a message we didn't send
       // through our system, OR mensagem só de broadcastMessages sem conversa
       // (race com upsertConversationFromBroadcast).
-      console.log('[Meta Webhook] No conversationMessage found for externalMessageId:', params.messageId);
+      if (DEBUG_VERBOSE) console.log('[Meta Webhook] No conversationMessage found for externalMessageId:', params.messageId);
     } else {
       const msgDoc = msgSnap.docs[0];
       const currentData = msgDoc.data();
@@ -2032,7 +2063,7 @@ async function updateMessageStatus(params: {
         }
 
         await adminDb.doc(`conversationMessages/${msgDoc.id}`).update(updateData);
-        console.log('[Meta Webhook] Updated conversationMessage status:', msgDoc.id, '->', params.status);
+        if (DEBUG_VERBOSE) console.log('[Meta Webhook] Updated conversationMessage status:', msgDoc.id, '->', params.status);
 
         // If read, also bump conversation timestamp
         if (params.status === 'read' && currentData.conversationId) {

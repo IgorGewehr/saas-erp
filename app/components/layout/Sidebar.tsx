@@ -3,10 +3,10 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
-import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useUnreadCounter } from '@/lib/hooks/useUnreadCounter';
 import { useTranslation } from 'react-i18next';
-import { collection, query, where, doc, updateDoc, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, doc, updateDoc, onSnapshot, orderBy, limit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import type { SidebarPrefs, SidebarSectionPref } from '@/lib/types';
 import {
@@ -330,33 +330,29 @@ function SidebarContent({
   // Urgent recurring transactions count for Financial badge — onSnapshot.
   // ANTES: useQuery + getDocs com refetchInterval 10min. Recurrence vencendo
   // hoje só aparecia no badge até 10min depois do operador adicioná-la.
-  // AGORA: real-time via single-field filter + client-side range/active
-  // checks. Tentei usar where('recurrence.nextDueDate', '>=' / '<=') no
-  // server, mas Firestore exige composite index pra (businessId,
-  // recurrence.nextDueDate) — link do console é gerado dinamicamente e
-  // exige user clicar pra criar. Filtrar client-side é simples (volume
-  // típico < 5k transactions por tenant) e robusto sem dependência de
-  // setup manual de índice.
+  // AGORA (P0.1): range server-side em `recurrence.nextDueDate` [hoje, +3d] +
+  // limit, em vez de scan full-collection. Índice composto [businessId,
+  // recurrence.nextDueDate asc] declarado em firestore.indexes.json. O range
+  // já elimina quase tudo; o `isActive === true` continua client-side (campo
+  // aninhado, não dá pra combinar igualdade + range no mesmo índice sem
+  // explodir combinações). Real-time preservado.
   const [urgentRecurringCount, setUrgentRecurringCount] = useState(0);
   useEffect(() => {
     if (!business?.id) { setUrgentRecurringCount(0); return; }
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
     const q = query(
       collection(db, 'transactions'),
       where('businessId', '==', business.id),
+      where('recurrence.nextDueDate', '>=', todayStr),
+      where('recurrence.nextDueDate', '<=', in3d),
+      orderBy('recurrence.nextDueDate', 'asc'),
+      limit(200),
     );
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const in3d = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
-        const count = snap.docs.filter(d => {
-          const data = d.data();
-          const rec = data.recurrence;
-          if (!rec || rec.isActive !== true) return false;
-          const next = rec.nextDueDate;
-          if (typeof next !== 'string') return false;
-          return next >= todayStr && next <= in3d;
-        }).length;
+        const count = snap.docs.filter(d => d.data().recurrence?.isActive === true).length;
         setUrgentRecurringCount(count);
       },
       (err) => console.error('[Sidebar] urgent recurring snapshot error:', err),
@@ -364,67 +360,18 @@ function SidebarContent({
     return () => unsub();
   }, [business?.id]);
 
-  // Badge de Conversas: conta quantas conversas têm mensagens NÃO LIDAS
-  // visíveis pro usuário atual. Real-time via onSnapshot — zera assim
-  // que operador abre/marca como lida.
-  //
-  // Visibilidade replicada: admin/founder vê tudo do tenant; demais veem
-  // canais 'business' + canais pessoais que são deles. Soneca ativa é
-  // sempre escondida (operador silenciou propositalmente).
-  //
-  // Query: filtra só por businessId (single-field, sem composite index).
-  // Volume típico: 50-500 conversations no tenant — cheap pra subscribe.
-  const [myAwaitingCount, setMyAwaitingCount] = useState(0);
-  const sidebarUserRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
-  const sidebarIsAdmin = sidebarUserRoleValue >= ROLE_HIERARCHY['admin'];
-  useEffect(() => {
-    if (!business?.id || !user?.uid) {
-      setMyAwaitingCount(0);
-      return;
-    }
-    const q = query(
-      collection(db, 'conversations'),
-      where('businessId', '==', business.id),
-    );
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const now = Date.now();
-        const count = snap.docs.reduce((acc, d) => {
-          const c = d.data();
-          // Conversas soft-deletadas: somem da lista do operador (filtro em
-          // ConversasModule), então não devem inflar o badge. Sem este check
-          // o badge mostrava "3" enquanto a UI reportava 0 não lidas — o
-          // operador não conseguia clicar pra zerar (a conversa nem aparecia).
-          // Helper canonico cobre ambos formatos (legado + novo).
-          if (!isActiveRecord(c)) return acc;
-          // Sem mensagens não lidas — não conta
-          if (!c.unreadCount || c.unreadCount <= 0) return acc;
-          // Soneca ativa — operador silenciou, não deveria notificar
-          if (c.snoozedUntil) {
-            const until = new Date(c.snoozedUntil).getTime();
-            if (Number.isFinite(until) && until > now) return acc;
-          }
-          // Visibilidade — espelha a lógica de ConversasModule.
-          // Admin vê tudo; demais veem business OU canais pessoais próprios.
-          if (sidebarIsAdmin) return acc + 1;
-          if (c.channelOwnerType === 'business') return acc + 1;
-          if (c.channelOwnerId === user.uid) return acc + 1;
-          // Conversa legada (sem channelOwnerType) — fica oculta pra non-admin
-          // por segurança. Após backfill, esse caminho some.
-          return acc;
-        }, 0);
-        setMyAwaitingCount(count);
-      },
-      (err) => {
-        // Fail-soft: índice ausente / rules / rede — mantém último valor
-        // visível pro operador. Loga só warn pra não poluir o console em
-        // outage curta.
-        console.warn('[Sidebar] mine-awaiting snapshot error:', err);
-      },
-    );
-    return () => unsub();
-  }, [business?.id, user?.uid, sidebarIsAdmin]);
+  // Badge de Conversas: total de mensagens NÃO LIDAS visíveis pro usuário
+  // atual. P1.4/P2.3: lê o contador denormalizado `unreadCounters/{businessId}`
+  // (1 doc, 1 onSnapshot) em vez de full-scan da coleção `conversations`.
+  // Escopo (admin=total / demais=business+byUser[uid]) resolvido no hook.
+  // TODO(auditoria): o agregado não desconta conversas em SONECA ativa nem
+  // soft-deletadas — o full-scan anterior descontava. Diferença marginal no
+  // badge; o contador server-side já zera no markAsRead/soft-delete.
+  const { count: myAwaitingCount } = useUnreadCounter({
+    businessId: business?.id,
+    uid: user?.uid,
+    role: user?.role,
+  });
 
   const filterItems = useCallback((items: MenuItemConfig[]) =>
     items.filter((item) => {

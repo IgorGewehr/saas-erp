@@ -7,6 +7,8 @@ import type {
   Product, DeliveryOrderAddress,
 } from '@/lib/types';
 import { Timestamp, FieldValue } from 'firebase-admin/firestore';
+import { deductStockAdmin } from '@/lib/services/stock-admin';
+import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -171,6 +173,22 @@ async function createOrder(businessId: string, params: CreateParams) {
   const now = new Date().toISOString();
   const estimatedDeliveryAt = new Date(Date.now() + (params.estimatedMinutes || 45) * 60000).toISOString();
 
+  // P1.7: dedução atômica de estoque ANTES de persistir o pedido. deductStockAdmin
+  // roda em runTransaction única (lê o estoque real dentro da tx → sem oversell por
+  // concorrência) e grava um doc em stockMovements por SKU folha (trilha de auditoria).
+  // Se a dedução falhar, a exceção propaga e o pedido NÃO é criado (abort) — em vez do
+  // comportamento antigo de salvar o pedido e só logar a falha. O productIndex já tem
+  // os produtos top-level + folhas de BOM; passamos as linhas top-level e o serviço
+  // expande o BOM internamente (mesma expansão usada na pré-checagem acima).
+  const stockLines = params.items.map((line) => ({ productId: line.productId, quantity: line.quantity }));
+  await deductStockAdmin(adminDb, stockLines, {
+    businessId,
+    operatorId: 'agent',
+    operatorName: 'Agente IA',
+    reason: `Pedido #${number}`,
+    productIndex,
+  });
+
   const doc: Omit<DeliveryOrder, 'id'> = {
     businessId,
     number,
@@ -193,26 +211,12 @@ async function createOrder(businessId: string, params: CreateParams) {
     changeFor: params.changeFor,
     customerNotes: params.customerNotes,
     estimatedDeliveryAt,
+    stockDeductedAt: now,
     createdAt: now,
     updatedAt: now,
   };
   const cleaned = Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== undefined));
   const ref = await adminDb.collection('deliveryOrders').add(cleaned);
-
-  // Deduct stock atomically — batch write so all decrements commit together
-  try {
-    const batch = adminDb.batch();
-    for (const [pid, qty] of stockBucket.entries()) {
-      batch.update(adminDb.collection('products').doc(pid), {
-        currentStock: FieldValue.increment(-qty),
-        updatedAt: now,
-      });
-    }
-    batch.update(adminDb.collection('deliveryOrders').doc(ref.id), { stockDeductedAt: now });
-    await batch.commit();
-  } catch (stockErr) {
-    console.error('[orders/create] stock deduction failed (order saved):', stockErr);
-  }
 
   return { id: ref.id, number, total, subtotal, estimatedDeliveryAt };
 }
@@ -251,9 +255,37 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
   if (!snap.exists) throw new Error('Order not found');
   const data = snap.data() as DeliveryOrder;
   if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
+  // R4/P1.9: bloqueia pulos de estado (ex: recebido→entregue) antes do write.
+  assertTransitionDeliveryOrder(data.status, status);
 
-  const patch: Record<string, unknown> = { status, updatedAt: new Date().toISOString() };
-  if (status === 'entregue') patch.deliveredAt = new Date().toISOString();
+  const now = new Date().toISOString();
+  const patch: Record<string, unknown> = { status, updatedAt: now };
+  if (status === 'entregue') {
+    patch.deliveredAt = now;
+    // Receita de delivery → Transaction (idempotente via data.transactionId).
+    // Mantém consistência com OrdersModule.handleStatusChange + PDV (saleId).
+    if (!data.transactionId) {
+      const txRef = adminDb.collection('transactions').doc();
+      await txRef.set({
+        businessId,
+        type: 'receita',
+        category: 'Vendas',
+        description: `Pedido #${data.number}${data.clientName ? ` - ${data.clientName}` : ''}`,
+        amount: data.total,
+        dueDate: now.split('T')[0],
+        paymentDate: now.split('T')[0],
+        status: 'pago',
+        clientId: data.clientId || null,
+        contactId: data.clientId || null,
+        clientName: data.clientName || null,
+        deliveryOrderId: orderId,
+        paymentMethod: data.paymentMethod || null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      patch.transactionId = txRef.id;
+    }
+  }
   await ref.update(patch);
   return { id: orderId, status };
 }
@@ -320,6 +352,8 @@ async function cancelOrder(businessId: string, orderId: string, reason?: string)
   if (!snap.exists) throw new Error('Order not found');
   const data = snap.data() as DeliveryOrder;
   if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
+  // R4/P1.9: cancelar só a partir de estado não-terminal (entregue/cancelado bloqueiam).
+  assertTransitionDeliveryOrder(data.status, 'cancelado');
 
   const now = new Date().toISOString();
   await ref.update({

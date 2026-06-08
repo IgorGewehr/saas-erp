@@ -101,6 +101,7 @@ export const DeliveryOrderSchema = z.object({
   internalNotes: z.string().max(2000).optional(),
   stockDeductedAt: z.string().optional(),
   stockMovementIds: z.array(z.string()).optional(),
+  transactionId: z.string().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 }).superRefine((o, ctx) => {

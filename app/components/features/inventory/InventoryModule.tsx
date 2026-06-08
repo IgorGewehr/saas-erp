@@ -61,6 +61,7 @@ import {
   query,
   where,
   orderBy,
+  limit,
   getDocs,
   addDoc,
   updateDoc,
@@ -2048,6 +2049,9 @@ export default function InventoryModule() {
   const [movementDialogOpen, setMovementDialogOpen] = useState(false);
   const [movementProduct, setMovementProduct] = useState<Product | null>(null);
   const [movementType, setMovementType] = useState<MovementType>('entrada');
+  // stockMovements é coleção de alto throughput — pagina por janela crescente
+  // em vez de baixar tudo (auditoria P1.5). Índice [businessId, createdAt desc] já existe.
+  const [movementLimit, setMovementLimit] = useState(150);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -2118,13 +2122,14 @@ export default function InventoryModule() {
   }, [business?.id]);
 
   const { data: movements = [], isLoading: movementsLoading } = useQuery({
-    queryKey: ['stockMovements', business?.id],
+    queryKey: ['stockMovements', business?.id, movementLimit],
     queryFn: async () => {
       if (!business?.id) return [];
       const q = query(
         collection(db, 'stockMovements'),
         where('businessId', '==', business.id),
         orderBy('createdAt', 'desc'),
+        limit(movementLimit),
       );
       const snap = await getDocs(q);
       return snap.docs.map((d) => ({ ...d.data(), id: d.id } as StockMovement));
@@ -2132,6 +2137,8 @@ export default function InventoryModule() {
     enabled: !!business?.id,
     staleTime: 2 * 60 * 1000,
   });
+
+  const hasMoreMovements = movements.length >= movementLimit;
 
   // ==========================================
   // IMAGE UPLOAD
@@ -2806,6 +2813,16 @@ export default function InventoryModule() {
           </button>
         </div>
         <MovementHistory movements={movements} isLoading={movementsLoading} />
+        {hasMoreMovements && !movementsLoading && (
+          <div className="flex justify-center py-4 border-t border-border/40">
+            <button
+              onClick={() => setMovementLimit((n) => n + 150)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors border border-border/60"
+            >
+              {t('inventory.history.loadMore', 'Ver mais movimentações')}
+            </button>
+          </div>
+        )}
       </motion.div>
 
       {/* ============ DIALOGS ============ */}

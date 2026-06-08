@@ -2,6 +2,11 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
+import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
+import {
+  deductStockAdmin, loadProductIndex,
+  type StockDeductionLine,
+} from '@/lib/services/stock-admin';
 import type {
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
   DeliveryOrderPaymentMethod, DeliveryType, Client, SelectedModifier,
@@ -34,6 +39,20 @@ interface PublicOrderPayload {
 const PRICE_TOLERANCE = 0.01;
 const RATE_LIMIT = 10;        // 10 requests
 const RATE_WINDOW_MS = 60_000; // per minute
+
+/**
+ * Erro de regra de negócio com status HTTP. Usado dentro do handler envolvido
+ * por `withIdempotency` (que só pode retornar o payload de sucesso) para
+ * sinalizar falhas de validação 4xx — convertidas em NextResponse no catch.
+ * `withIdempotency` deleta a chave ao lançar, então um retry corrigido pode
+ * reusar a mesma chave.
+ */
+class PublicOrderError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = 'PublicOrderError';
+  }
+}
 
 export async function POST(req: NextRequest) {
   // ── Rate limit by IP ────────────────────────────────────────────────────────
@@ -73,20 +92,32 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ── Idempotência (R3/P2.17) ─────────────────────────────────────────────────
+  // Retry/double-tap em rede móvel reentregaria o mesmo carrinho → pedido
+  // duplicado, cozinha 2x, dupla dedução de estoque. O front envia um uuid por
+  // carrinho no header X-Idempotency-Key; replays devolvem o pedido já criado
+  // (mesmo orderId/orderNumber) sem reexecutar criação de cliente, número
+  // sequencial nem dedução de estoque. Sem header, comporta-se como antes.
+  const idempotencyKey = req.headers.get('x-idempotency-key');
+
   try {
+    const { result } = await withIdempotency(
+      adminDb,
+      { businessId, key: idempotencyKey, endpoint: 'POST /api/orders/public' },
+      async (): Promise<{ orderId: string; orderNumber: number }> => {
     const now = new Date().toISOString();
 
     // ── 1. Validate business exists ──────────────────────────────────────────
     const bizRef = adminDb.collection('businesses').doc(businessId);
     const bizSnap = await bizRef.get();
     if (!bizSnap.exists) {
-      return NextResponse.json({ error: 'Negócio não encontrado' }, { status: 404 });
+      throw new PublicOrderError(404, 'Negócio não encontrado');
     }
 
     // ── 2. Validate items + recompute prices server-side ─────────────────────
     const productIds = [...new Set(items.map(i => i.productId))];
     if (productIds.length === 0) {
-      return NextResponse.json({ error: 'Itens inválidos' }, { status: 400 });
+      throw new PublicOrderError(400, 'Itens inválidos');
     }
     const productRefs = productIds.map(id => adminDb.collection('products').doc(id));
     const productSnaps = await adminDb.getAll(...productRefs);
@@ -99,28 +130,26 @@ export async function POST(req: NextRequest) {
     }
 
     const validatedItems: DeliveryOrderItem[] = [];
+    // P2.6: linhas de estoque a debitar. Itens base entram como linhas top-level
+    // (deductStockAdmin expande BOM 1 nível internamente); modificadores com
+    // linkedProductId entram como linhas próprias já multiplicadas pela qty do item.
+    const stockLines: StockDeductionLine[] = [];
     for (const raw of items) {
       if (!raw.productId || typeof raw.quantity !== 'number' || raw.quantity <= 0) {
-        return NextResponse.json({ error: 'Item inválido' }, { status: 400 });
+        throw new PublicOrderError(400, 'Item inválido');
       }
       const product = productMap.get(raw.productId);
       if (!product) {
-        return NextResponse.json(
-          { error: `Produto indisponível: ${raw.productName || raw.productId}` },
-          { status: 400 },
-        );
+        throw new PublicOrderError(400, `Produto indisponível: ${raw.productName || raw.productId}`);
       }
       if (product.isActive === false || product.isDeliverable === false) {
-        return NextResponse.json(
-          { error: `Produto indisponível: ${product.name}` },
-          { status: 400 },
-        );
+        throw new PublicOrderError(400, `Produto indisponível: ${product.name}`);
       }
 
       // Validate + recompute modifier pricing
       const mods = validateAndCleanModifiers(product, raw.selectedModifiers);
       if ('error' in mods) {
-        return NextResponse.json({ error: mods.error }, { status: 400 });
+        throw new PublicOrderError(400, mods.error);
       }
 
       const basePrice = product.salePrice;
@@ -130,10 +159,7 @@ export async function POST(req: NextRequest) {
 
       // Reject if client-sent total diverges beyond tolerance (front-end bug or tampering)
       if (Math.abs(raw.total - total) > PRICE_TOLERANCE * raw.quantity) {
-        return NextResponse.json(
-          { error: `Preço inválido para ${product.name}` },
-          { status: 400 },
-        );
+        throw new PublicOrderError(400, `Preço inválido para ${product.name}`);
       }
 
       const item: DeliveryOrderItem = {
@@ -148,6 +174,12 @@ export async function POST(req: NextRequest) {
       if (modifierDelta > 0 || mods.clean.length === 0) item.basePrice = basePrice;
       if (mods.clean.length) item.selectedModifiers = mods.clean;
       validatedItems.push(item);
+
+      // Estoque: linha base do produto (BOM expandido pelo serviço) + modifiers.
+      stockLines.push({ productId: product.id, quantity: raw.quantity });
+      for (const ml of mods.modifierStockLines) {
+        stockLines.push({ productId: ml.productId, quantity: ml.quantity * raw.quantity });
+      }
     }
 
     // ── 3. Upsert client by phone ────────────────────────────────────────────
@@ -155,7 +187,7 @@ export async function POST(req: NextRequest) {
     if (clientPhone) {
       const phone = clientPhone.replace(/\D/g, '');
       if (phone.length < 8) {
-        return NextResponse.json({ error: 'Telefone inválido' }, { status: 400 });
+        throw new PublicOrderError(400, 'Telefone inválido');
       }
       const clientSnap = await adminDb
         .collection('clients')
@@ -206,6 +238,36 @@ export async function POST(req: NextRequest) {
       return next;
     });
 
+    // ── 5b. Dedução atômica de estoque (P2.6) ────────────────────────────────
+    // Antes este caminho público não debitava estoque algum. Agora reusa o
+    // serviço admin: linhas base (BOM expandido 1 nível internamente) + linhas
+    // de modificadores com linkedProductId. Roda em runTransaction única (lê o
+    // estoque real dentro da tx → sem oversell por concorrência, P1.6/P1.7) e
+    // grava um stockMovements por SKU. Se falhar, a exceção propaga e o pedido
+    // NÃO é persistido. P2.7 (BOM recursivo p/ combos) fica fora do escopo.
+    let stockDeductedAt: string | undefined;
+    if (stockLines.length > 0) {
+      // Index precisa cobrir produtos base, insumos de modifier e folhas de BOM
+      // (para nome/minStock e expansão), todos filtrados por businessId.
+      const baseIds = stockLines.map(l => l.productId);
+      const componentIds = baseIds.flatMap(id =>
+        (productMap.get(id)?.components || []).map(c => c.productId),
+      );
+      const stockIndex = await loadProductIndex(
+        adminDb,
+        [...baseIds, ...componentIds],
+        businessId,
+      );
+      await deductStockAdmin(adminDb, stockLines, {
+        businessId,
+        operatorId: 'public',
+        operatorName: 'Cardápio online',
+        reason: `Pedido #${orderNumber}`,
+        productIndex: stockIndex,
+      });
+      stockDeductedAt = now;
+    }
+
     // ── 6. Create order ──────────────────────────────────────────────────────
     const order: Omit<DeliveryOrder, 'id'> = {
       businessId,
@@ -225,6 +287,7 @@ export async function POST(req: NextRequest) {
       paymentStatus: 'pendente',
       changeFor: changeFor && changeFor > total ? changeFor : undefined,
       customerNotes: customerNotes?.slice(0, 1000) || undefined,
+      ...(stockDeductedAt ? { stockDeductedAt } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -234,12 +297,26 @@ export async function POST(req: NextRequest) {
     // ── 7. WhatsApp notification to business (best-effort) ───────────────────
     notifyBusiness(businessId, orderNumber, clientName.trim(), total, deliveryType, validatedItems).catch(() => {});
 
+        return { orderId: orderRef.id, orderNumber };
+      },
+    );
+
     return NextResponse.json(
-      { orderId: orderRef.id, orderNumber },
+      result,
       { status: 201, headers: rateLimitHeaders(rl, RATE_LIMIT) },
     );
 
   } catch (err) {
+    if (err instanceof PublicOrderError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    if (err instanceof IdempotencyConflictError) {
+      // Mesmo carrinho ainda sendo processado (double-tap quase simultâneo).
+      return NextResponse.json(
+        { error: 'Pedido em processamento. Aguarde um instante.' },
+        { status: 409 },
+      );
+    }
     console.error('[PublicOrder] Error:', err);
     return NextResponse.json({ error: 'Erro interno ao processar pedido' }, { status: 500 });
   }
@@ -270,12 +347,18 @@ function applyStrategy(strategy: ModifierPriceStrategy, prices: number[]): numbe
   return prices.reduce((s, p) => s + p, 0); // sum (default)
 }
 
-type ModifierValidation = { clean: SelectedModifier[] } | { error: string };
+type ModifierValidation =
+  | { clean: SelectedModifier[]; modifierStockLines: StockDeductionLine[] }
+  | { error: string };
 
 /**
  * Validates client-provided modifier selections against the product's
  * modifierGroups definition, rebuilding each SelectedModifier from the
  * server-side source of truth (group name, strategy, option prices).
+ *
+ * P2.6: também coleta as linhas de estoque dos modificadores que têm
+ * `linkedProductId` — quantidade = consumeQty × quantidade da opção (a
+ * multiplicação pela quantidade do item fica a cargo do caller).
  */
 function validateAndCleanModifiers(
   product: Product,
@@ -297,6 +380,7 @@ function validateAndCleanModifiers(
   }
 
   const clean: SelectedModifier[] = [];
+  const modifierStockLines: StockDeductionLine[] = [];
   for (const chosen of sel) {
     const group = groups.find(g => g.id === chosen.groupId);
     if (!group) continue; // silently drop unknown groups
@@ -311,6 +395,12 @@ function validateAndCleanModifiers(
         additionalPrice: srcOpt.additionalPrice,
         quantity: qty,
       });
+      if (srcOpt.linkedProductId) {
+        modifierStockLines.push({
+          productId: srcOpt.linkedProductId,
+          quantity: (srcOpt.consumeQty ?? 1) * qty,
+        });
+      }
     }
     if (cleanedOptions.length === 0) continue;
     clean.push({
@@ -321,7 +411,7 @@ function validateAndCleanModifiers(
     });
   }
 
-  return { clean };
+  return { clean, modifierStockLines };
 }
 
 async function notifyBusiness(
