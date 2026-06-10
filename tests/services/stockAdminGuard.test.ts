@@ -105,11 +105,12 @@ describe('deductStockAdmin — guard de oversell (failOnInsufficientFor)', () =>
   });
 
   it('serializa corrida: a 2ª dedução da última unidade aborta lendo o saldo já debitado', async () => {
-    // Estoque inicial = 1. A 1ª "venda" leva a última unidade; a 2ª relê o saldo
-    // já debitado (0) DENTRO da tx e aborta — sem oversell. Exercita o caminho de
-    // concorrência (perdedora reexecuta e vê estoque depletado), não só a decisão
-    // estática. O productIndex passa currentStock=1 (usado só p/ BOM/nome); o guard
-    // decide pelo previousStock lido na tx (estoque mutável do fake).
+    // Estoque inicial = 1. A 1ª "venda" leva a última unidade (commit zera o
+    // estoque mutável); a 2ª, executada DEPOIS, relê o saldo já debitado (0)
+    // dentro da tx e aborta — sem oversell. Modela execução SERIALIZADA (não o
+    // retry/contenção real do Firestore): prova a propriedade que importa — o
+    // guard decide sobre o saldo depletado lido na tx, não sobre o productIndex
+    // (que passa currentStock=1, usado só p/ BOM/nome).
     const { db } = makeFakeDb({ p1: 1 });
     const index = new Map([['p1', product('p1', 1)]]);
     const ctx = {

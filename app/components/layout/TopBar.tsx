@@ -285,13 +285,37 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   }, []);
 
   const handleClearUnreadConvs = useCallback(async () => {
-    if (unreadConvIds.length === 0) return;
-    const batch = writeBatch(db);
-    for (const id of unreadConvIds) {
-      batch.update(doc(db, 'conversations', id), { unreadCount: 0 });
+    if (!businessId) return;
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) return;
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+      // 1. Marca as não-lidas VISÍVEIS como lidas via servidor (transacional:
+      //    zera a conversa E decrementa o contador denormalizado em lockstep).
+      //    Antes isto fazia updateDoc client-side direto na conversa, que NÃO
+      //    baixava o agregado → o badge não somava certo.
+      await Promise.all(
+        unreadConvIds.map((id) =>
+          fetch(`/api/conversations/${id}`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ businessId, action: 'markAsRead' }),
+          }).catch(() => {}),
+        ),
+      );
+      // 2. Reconcilia o agregado a partir da verdade — limpa drift fantasma (ex:
+      //    conversas com não-lidas que foram soft-deletadas e inflaram o contador).
+      //    O onSnapshot de unreadCounters atualiza o badge sozinho.
+      await fetch('/api/conversations/recount', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ businessId }),
+      });
+    } catch (err) {
+      console.warn('[TopBar] limpar não-lidas falhou:', err);
     }
-    await batch.commit();
-  }, [unreadConvIds]);
+  }, [businessId, unreadConvIds]);
 
   // Close notif dropdown on outside click
   useEffect(() => {
