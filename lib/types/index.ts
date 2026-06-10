@@ -1139,6 +1139,11 @@ export interface TransactionRecurrence {
   interestPctMonth?: number; // FIN-R18: monthly interest % pro-rata (e.g. 1 = 1%/month)
   label?: string;            // user-friendly name (e.g. "Aluguel")
   history?: TransactionRecurrenceEntry[]; // log of past paid occurrences
+  /** Lembrete "a vencer" (sino/badge) dispensado manualmente para esta ocorrência.
+   *  Guarda o nextDueDate dispensado; quando === nextDueDate, o lembrete some do
+   *  sino e do badge do Financeiro. Volta sozinho no próximo ciclo (nextDueDate muda).
+   *  NÃO marca a transação como paga. */
+  reminderDismissedFor?: string;
 }
 
 export interface TransactionAttachment {
