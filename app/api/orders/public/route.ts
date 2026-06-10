@@ -4,7 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 import {
-  deductStockAdmin, loadProductIndex, InsufficientStockError,
+  deductStockAdmin, loadProductIndex, checkStockAvailability, InsufficientStockError,
   type StockDeductionLine,
 } from '@/lib/services/stock-admin';
 import type {
@@ -236,6 +236,20 @@ export async function POST(req: NextRequest) {
     const subtotal = round2(validatedItems.reduce((s, i) => s + i.total, 0));
     const fee = deliveryType === 'entrega' ? round2(Math.max(0, deliveryFee ?? 0)) : 0;
     const total = round2(subtotal + fee);
+
+    // ── 4b. Pré-check de estoque (evita queimar número sequencial) ───────────
+    // Checa os itens guardados (simples + estoque definido) contra o productMap
+    // já carregado, ANTES de consumir o número do pedido. Fecha o caso comum
+    // (página velha / item esgotado) sem buraco na numeração. O guard ATÔMICO no
+    // deductStockAdmin continua sendo a autoridade contra corrida concorrente.
+    if (guardedStockIds.size > 0) {
+      const guardedLines = stockLines.filter(l => guardedStockIds.has(l.productId));
+      const shortages = checkStockAvailability(guardedLines, productMap);
+      if (shortages.length > 0) {
+        const names = [...new Set(shortages.map(s => s.productName))].join(', ');
+        throw new PublicOrderError(409, `Sem estoque para: ${names}. Atualize o carrinho e tente novamente.`);
+      }
+    }
 
     // ── 5. Sequential order number (transaction-safe) ────────────────────────
     const orderNumber = await adminDb.runTransaction(async (tx) => {

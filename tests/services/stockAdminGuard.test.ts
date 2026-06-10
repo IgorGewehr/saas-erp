@@ -45,7 +45,15 @@ function makeFakeDb(stock: Record<string, number>) {
           const has = ref._coll === 'products' && ref.id in stock;
           return { exists: has, data: () => (has ? { currentStock: stock[ref.id] } : undefined) };
         },
-        update() { /* increment aplicado no fake é irrelevante pro teste */ },
+        update(ref: { id: string; _coll: string }, patch: Record<string, unknown>) {
+          // Aplica o FieldValue.increment stubado ao estoque mutável — assim uma
+          // 2ª dedução relê dentro da "tx" o saldo já debitado pela 1ª (modela a
+          // corrida serializada que o guard precisa fechar).
+          const inc = patch.currentStock as { __increment?: number } | undefined;
+          if (ref._coll === 'products' && inc && typeof inc.__increment === 'number') {
+            stock[ref.id] = (stock[ref.id] ?? 0) + inc.__increment;
+          }
+        },
         set(ref: { id: string; _coll: string }, data: Record<string, unknown>) {
           writes.push({ coll: ref._coll, id: ref.id, data });
         },
@@ -94,6 +102,30 @@ describe('deductStockAdmin — guard de oversell (failOnInsufficientFor)', () =>
     expect(adj).toHaveLength(1);
     expect(adj[0]).toMatchObject({ productId: 'p1', previousStock: 5, newStock: 2 });
     expect(writes).toHaveLength(1); // 1 stockMovement gravado
+  });
+
+  it('serializa corrida: a 2ª dedução da última unidade aborta lendo o saldo já debitado', async () => {
+    // Estoque inicial = 1. A 1ª "venda" leva a última unidade; a 2ª relê o saldo
+    // já debitado (0) DENTRO da tx e aborta — sem oversell. Exercita o caminho de
+    // concorrência (perdedora reexecuta e vê estoque depletado), não só a decisão
+    // estática. O productIndex passa currentStock=1 (usado só p/ BOM/nome); o guard
+    // decide pelo previousStock lido na tx (estoque mutável do fake).
+    const { db } = makeFakeDb({ p1: 1 });
+    const index = new Map([['p1', product('p1', 1)]]);
+    const ctx = {
+      businessId: 'biz1',
+      operatorId: 'public',
+      operatorName: 'Cardápio online',
+      productIndex: index,
+      failOnInsufficientFor: new Set(['p1']),
+    };
+
+    const first = await deductStockAdmin(db, lines([{ productId: 'p1', quantity: 1 }]), { ...ctx, reason: 'Pedido #A' });
+    expect(first[0]).toMatchObject({ previousStock: 1, newStock: 0 });
+
+    await expect(
+      deductStockAdmin(db, lines([{ productId: 'p1', quantity: 1 }]), { ...ctx, reason: 'Pedido #B' }),
+    ).rejects.toBeInstanceOf(InsufficientStockError);
   });
 
   it('NÃO bloqueia produto fora do conjunto guardado (combos/insumos seguem legado, podem ir negativo)', async () => {
