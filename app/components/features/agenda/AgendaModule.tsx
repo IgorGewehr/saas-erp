@@ -83,6 +83,7 @@ import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty'
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 import { createAppointmentSafe, updateAppointmentSafe, AppointmentConflictError } from '@/lib/services/appointmentTxGuard';
+import { canTransitionAppointment } from '@/lib/contracts/fsm/appointment';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -2757,6 +2758,25 @@ export default function AgendaModule() {
 
   const handleStatusChange = useCallback(async (status: AppointmentStatus) => {
     if (!selectedAppointment || !business?.id) return;
+
+    // R4 / FSM: valida a transição ANTES de gravar. Sem isto o operador pulava
+    // 'agendado' → 'concluido' direto, gerando comissão/loyalty/baixa de insumo
+    // sem o atendimento ter passado por confirmado/em_andamento (P2.16). Mesma
+    // regra que a rota do agente IA já aplica — fecha a assimetria.
+    const fromStatus = selectedAppointment.status;
+    if (fromStatus === status) return; // no-op
+    if (!canTransitionAppointment(fromStatus, status)) {
+      setSnackbar({
+        open: true,
+        message: t(
+          'agenda.invalidTransition',
+          `Não é possível ir de "${getStatusLabel(fromStatus)}" para "${getStatusLabel(status)}". Confirme ou inicie o atendimento antes de concluir.`,
+        ),
+        severity: 'warning',
+      });
+      return;
+    }
+
     setStatusChanging(true);
     try {
       await updateDoc(doc(db, 'appointments', selectedAppointment.id), {

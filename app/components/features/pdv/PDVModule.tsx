@@ -59,7 +59,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { notifyLowStock } from '@/lib/services/notifications';
@@ -857,19 +857,16 @@ export default function PDVModule() {
       }
 
       // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
-      // TODO(auditoria P2.12): comissão é addDoc avulso pós-commit, sem chave de
-      // idempotência nem `commissionTransactionId` na Sale. A correção canônica
-      // (comissão dentro do batch com ID determinístico de saleRef.id + link na
-      // Sale) já existe em lib/services/sales-server.ts createSaleWithSideEffects;
-      // migrar o PDV pra esse serviço é arriscado agora (PDV usa client SDK e
-      // batch único atômico; o serviço usa firebase-admin). Migração rastreada
-      // como dívida — caminho de duplicação aqui é estreito (sem retry automático,
-      // guard de UI).
+      // P2.12: comissão gravada com ID DETERMINÍSTICO (`comm_sale_<saleId>`) via
+      // setDoc em vez de addDoc. Como o saleRef.id é único por venda, um re-clique
+      // ou retry pós-commit sobrescreve o mesmo doc em vez de criar uma 2ª comissão
+      // — fecha a janela de duplicação. A migração completa pro motor server-side
+      // (sales-server) segue como dívida; este guard idempotente cobre o risco real.
       const commissionRate = user.commissionRate ?? 0;
       if (commissionRate > 0 && total > 0) {
         const commissionAmount = Math.round(total * commissionRate) / 100;
         try {
-          await addDoc(collection(db, 'transactions'), {
+          await setDoc(doc(db, 'transactions', `comm_sale_${saleRef.id}`), {
             businessId: business.id,
             type: 'despesa',
             category: 'Comissoes',

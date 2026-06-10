@@ -10,11 +10,14 @@ export default defineConfig({
     setupFiles: ['./tests/setup.ts'],
     include: ['tests/**/*.test.{ts,tsx}'],
     alias: {
+      // Específico antes do genérico — espelha tsconfig paths (@/contracts/* → lib/contracts/*).
+      '@/contracts': path.resolve(__dirname, 'lib/contracts'),
       '@': path.resolve(__dirname, '.'),
     },
   },
   resolve: {
     alias: {
+      '@/contracts': path.resolve(__dirname, 'lib/contracts'),
       '@': path.resolve(__dirname, '.'),
     },
   },

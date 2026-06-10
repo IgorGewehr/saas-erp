@@ -4,7 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 import {
-  deductStockAdmin, loadProductIndex,
+  deductStockAdmin, loadProductIndex, InsufficientStockError,
   type StockDeductionLine,
 } from '@/lib/services/stock-admin';
 import type {
@@ -134,6 +134,11 @@ export async function POST(req: NextRequest) {
     // (deductStockAdmin expande BOM 1 nível internamente); modificadores com
     // linkedProductId entram como linhas próprias já multiplicadas pela qty do item.
     const stockLines: StockDeductionLine[] = [];
+    // P2.7: IDs que NÃO podem ficar negativos. Espelha a regra "Esgotado" da UI
+    // (CatalogClient): só item simples (sem BOM, sem modificadores) com estoque
+    // definido é bloqueado. Combos/insumos seguem o comportamento legado (debitam
+    // mesmo indo negativo) — operador acompanha por stockMovements/alertas.
+    const guardedStockIds = new Set<string>();
     for (const raw of items) {
       if (!raw.productId || typeof raw.quantity !== 'number' || raw.quantity <= 0) {
         throw new PublicOrderError(400, 'Item inválido');
@@ -177,6 +182,9 @@ export async function POST(req: NextRequest) {
 
       // Estoque: linha base do produto (BOM expandido pelo serviço) + modifiers.
       stockLines.push({ productId: product.id, quantity: raw.quantity });
+      if (!product.components?.length && !product.hasModifiers && product.currentStock !== undefined) {
+        guardedStockIds.add(product.id);
+      }
       for (const ml of mods.modifierStockLines) {
         stockLines.push({ productId: ml.productId, quantity: ml.quantity * raw.quantity });
       }
@@ -258,13 +266,26 @@ export async function POST(req: NextRequest) {
         [...baseIds, ...componentIds],
         businessId,
       );
-      await deductStockAdmin(adminDb, stockLines, {
-        businessId,
-        operatorId: 'public',
-        operatorName: 'Cardápio online',
-        reason: `Pedido #${orderNumber}`,
-        productIndex: stockIndex,
-      });
+      try {
+        await deductStockAdmin(adminDb, stockLines, {
+          businessId,
+          operatorId: 'public',
+          operatorName: 'Cardápio online',
+          reason: `Pedido #${orderNumber}`,
+          productIndex: stockIndex,
+          failOnInsufficientFor: guardedStockIds,
+        });
+      } catch (e) {
+        if (e instanceof InsufficientStockError) {
+          // Detalhe (qtd disponível por SKU) só no log server-side. A resposta
+          // pública lista apenas os nomes — espelha o "Esgotado" boolean da UI e
+          // evita sondagem de inventário exato por visitante anônimo.
+          console.warn('[PublicOrder] estoque insuficiente:', e.message);
+          const names = [...new Set(e.shortages.map((s) => s.productName))].join(', ');
+          throw new PublicOrderError(409, `Sem estoque para: ${names}. Atualize o carrinho e tente novamente.`);
+        }
+        throw e;
+      }
       stockDeductedAt = now;
     }
 

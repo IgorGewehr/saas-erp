@@ -34,6 +34,43 @@ export interface StockDeductionContextAdmin {
   reason: string;
   /** Pre-fetched product map keyed by productId */
   productIndex: Map<string, Product>;
+  /**
+   * IDs de produtos (já expandidos por BOM) que NÃO podem ficar negativos.
+   * Quando uma linha desses produtos não tem estoque suficiente (lido DENTRO
+   * da tx), a dedução inteira aborta com `InsufficientStockError` antes de
+   * qualquer escrita — fecha oversell por concorrência (P2.7).
+   *
+   * Vazio/ausente = comportamento legado (debita mesmo indo negativo). O caller
+   * decide o que guardar; o cardápio público guarda só itens simples com estoque
+   * definido, espelhando a regra de "Esgotado" da UI (CatalogClient).
+   */
+  failOnInsufficientFor?: ReadonlySet<string>;
+}
+
+/** Linha que não pôde ser atendida por falta de estoque. */
+export interface StockShortage {
+  productId: string;
+  productName: string;
+  requested: number;
+  available: number;
+}
+
+/**
+ * Lançado por `deductStockAdmin` quando `failOnInsufficientFor` está setado e
+ * algum produto guardado ficaria negativo. Nenhuma escrita ocorre (lançado na
+ * fase de leitura da tx). Caller deve mapear para 4xx amigável.
+ */
+export class InsufficientStockError extends Error {
+  readonly code = 'INSUFFICIENT_STOCK' as const;
+  constructor(public readonly shortages: StockShortage[]) {
+    super(
+      'Estoque insuficiente: ' +
+        shortages
+          .map((s) => `${s.productName} (disponível: ${s.available}, pedido: ${s.requested})`)
+          .join(', '),
+    );
+    this.name = 'InsufficientStockError';
+  }
 }
 
 export interface StockAdjustmentAdmin {
@@ -171,6 +208,26 @@ export async function deductStockAdmin(
       const snap = await tx.get(db.collection('products').doc(product.id));
       const previousStock = (snap.exists ? (snap.data()?.currentStock as number | undefined) : undefined) ?? 0;
       reads.push({ line, product, previousStock });
+    }
+
+    // Guard de oversell (P2.7): antes de escrever, valida que os produtos
+    // marcados em `failOnInsufficientFor` não ficam negativos. Como o estoque
+    // foi lido DENTRO da tx, duas vendas simultâneas do mesmo SKU não passam
+    // ambas — a perdedora reexecuta, relê o saldo já debitado e aborta aqui.
+    if (ctx.failOnInsufficientFor && ctx.failOnInsufficientFor.size > 0) {
+      const shortages = reads
+        .filter(
+          (r) =>
+            ctx.failOnInsufficientFor!.has(r.product.id) &&
+            r.previousStock - r.line.quantity < 0,
+        )
+        .map((r) => ({
+          productId: r.product.id,
+          productName: r.product.name,
+          requested: r.line.quantity,
+          available: r.previousStock,
+        }));
+      if (shortages.length > 0) throw new InsufficientStockError(shortages);
     }
 
     // Fase de escrita.

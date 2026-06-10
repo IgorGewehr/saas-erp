@@ -16,28 +16,11 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, getDoc } from 'firebase/firestore';
+import { adminDb } from '@/lib/config/firebaseAdmin';
 import type { ConversationChannel, ChannelCredentials } from '@/lib/types';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
-
-// ─── Firebase init (server-side, client SDK) ─────────────────────────────────
-
-const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
-};
-
-function getDb() {
-  const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
-  return getFirestore(app);
-}
 
 const META_API_VERSION = 'v21.0';
 const META_BASE_URL = `https://graph.facebook.com/${META_API_VERSION}`;
@@ -75,11 +58,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Fetch business credentials
-    const db = getDb();
-    const businessRef = doc(db, 'businesses', businessId);
-    const businessSnap = await getDoc(businessRef);
+    const businessSnap = await adminDb.collection('businesses').doc(businessId).get();
 
-    if (!businessSnap.exists()) {
+    if (!businessSnap.exists) {
       return NextResponse.json({ error: 'Empresa nao encontrada' }, { status: 404 });
     }
 
