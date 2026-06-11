@@ -53,9 +53,11 @@ function stripEmpty<T>(obj: T): T {
 
 /**
  * Persiste documento fiscal como 'pendente' (SEFAZ indisponível) e responde
- * 200 ao cliente. Salva o payload original menos o certificado pra permitir
- * retry pela rota /api/fiscal/retry — operador clica "Reenviar para SEFAZ"
- * quando o serviço voltar. NUNCA persistir certificado no Firestore (sensível).
+ * 200 ao cliente. Salva o PAYLOAD DO GATEWAY já montado (não o request da
+ * UI!) menos certificado e CSC, pra permitir replay direto pela rota
+ * /api/fiscal/retry — operador clica "Reenviar para SEFAZ" quando o serviço
+ * voltar. NUNCA persistir certificado nem CSC token no Firestore (sensíveis;
+ * o retry os re-resolve do business).
  */
 async function persistPendingAndRespond(params: {
   businessId: string;
@@ -65,12 +67,17 @@ async function persistPendingAndRespond(params: {
   clientName: string | null;
   clientCpfCnpj: string | null;
   totalValue: number;
+  /** Payload do gateway (nfePayload/nfcePayload/nfsePayload) pronto pra replay. */
   originalRequest: Record<string, unknown>;
+  ufEmitente?: string | null;
+  ambiente?: string | null;
   error: Error;
   now: string;
 }): Promise<NextResponse> {
-  const { certificado: _certCleanup, ...payloadForRetry } = params.originalRequest as Record<string, unknown>;
+  const { certificado: _certCleanup, csc: _cscCleanup, ...payloadForRetry } =
+    params.originalRequest as Record<string, unknown>;
   void _certCleanup;
+  void _cscCleanup;
   const docRef = await adminDb.collection('fiscalDocuments').add(
     stripEmpty({
       businessId: params.businessId,
@@ -83,6 +90,8 @@ async function persistPendingAndRespond(params: {
       clientCpfCnpj: params.clientCpfCnpj,
       totalValue: params.totalValue,
       originalRequest: payloadForRetry,
+      ufEmitente: params.ufEmitente || null,
+      ambiente: params.ambiente || null,
       issueDate: params.now,
       createdAt: params.now,
       updatedAt: params.now,
@@ -132,11 +141,17 @@ export async function POST(request: NextRequest) {
     // handler for quebrado em sub-handlers (1 por type).
     const data = parsed.data as Record<string, any>;
 
-    // Auth: admin+ only
+    // Auth: NFC-e (cupom de caixa) pode ser emitida por operator+ — é o fluxo
+    // pós-venda do PDV, operado por caixas. NF-e/NFSe seguem admin+ (dados
+    // cadastrais/tributários sensíveis, sem urgência de balcão).
     const auth = await verifyAuth(request, businessId);
     if (isAuthError(auth)) return auth;
-    if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
-      return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
+    const minRole: UserRole = type === 'nfce' ? 'operator' : 'admin';
+    if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY[minRole]) {
+      return NextResponse.json(
+        { error: type === 'nfce' ? 'Operator role required' : 'Admin role required' },
+        { status: 403 },
+      );
     }
 
     // 2. Fetch business + fiscal config -----------------------------------------
@@ -683,7 +698,8 @@ export async function POST(request: NextRequest) {
             clientName: data.tomador?.nome ?? null,
             clientCpfCnpj: (data.tomador?.cnpj || data.tomador?.cpf || '').replace(/\D/g, '') || null,
             totalValue: baseCalculo,
-            originalRequest: data,
+            originalRequest: nfsePayload as Record<string, unknown>,
+            ambiente,
             error: sefazErr,
             now,
           });
@@ -869,7 +885,9 @@ export async function POST(request: NextRequest) {
             clientName: data.nomeConsumidor ?? null,
             clientCpfCnpj: data.cpfConsumidor?.replace(/\D/g, '') || null,
             totalValue: totalNF,
-            originalRequest: data,
+            originalRequest: nfcePayload as Record<string, unknown>,
+            ufEmitente,
+            ambiente,
             error: sefazErr,
             now,
           });
@@ -877,13 +895,18 @@ export async function POST(request: NextRequest) {
         throw sefazErr;
       }
 
-      // Commit number only after SEFAZ accepts
-      if (result.status === 'autorizado') {
+      // Commit number when SEFAZ accepted OU ficou processando — em ambos os
+      // casos o nNF está consumido na SEFAZ; não commitar em 'processando'
+      // faria a próxima emissão reusar o número de uma nota possivelmente
+      // autorizada (rejeição 539 permanente).
+      if (result.status === 'autorizado' || result.status === 'processando') {
         await commitInvoiceNumber(businessId, 'nfce', number);
       }
 
       // Persist fiscal document — sempre (autorizada, rejeitada ou processando)
       // pra que o usuário consulte o histórico mesmo em caso de falha.
+      // ufEmitente/ambiente são obrigatórios pro cron consultar-processando
+      // conseguir consultar a nota depois (consultaStatusRunner exige ambos).
       await adminDb.collection('fiscalDocuments').add(
         stripEmpty({
           businessId,
@@ -900,6 +923,8 @@ export async function POST(request: NextRequest) {
           xml: result.xml || null,
           sefazResponse: result,
           totalValue: totalNF,
+          ufEmitente,
+          ambiente,
           issueDate: now,
           createdAt: now,
           updatedAt: now,
@@ -1038,7 +1063,9 @@ export async function POST(request: NextRequest) {
           clientName: data.recipient?.name ?? null,
           clientCpfCnpj: data.recipient?.document?.replace(/\D/g, '') || null,
           totalValue: totalNF,
-          originalRequest: data,
+          originalRequest: nfePayload as Record<string, unknown>,
+          ufEmitente,
+          ambiente,
           error: sefazErr,
           now,
         });
@@ -1052,6 +1079,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Persist fiscal document — sempre (autorizada, rejeitada ou processando).
+    // ufEmitente/ambiente são obrigatórios pro cron consultar-processando.
     await adminDb.collection('fiscalDocuments').add(
       stripEmpty({
         businessId,
@@ -1072,6 +1100,8 @@ export async function POST(request: NextRequest) {
         xml: result.xml || null,
         sefazResponse: result,
         totalValue: totalNF,
+        ufEmitente,
+        ambiente,
         issueDate: now,
         createdAt: now,
         updatedAt: now,

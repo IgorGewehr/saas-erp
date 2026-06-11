@@ -25,9 +25,6 @@ import {
   Lock,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
@@ -123,7 +120,7 @@ function calculateDaysUntilExpiry(expiresAt: string): number {
 // ==============================================
 
 export default function CertificateManager({ open, onClose }: CertificateManagerProps) {
-  const { business, refreshUser } = useAuth();
+  const { business, refreshUser, firebaseUser } = useAuth();
   const { isDark } = useTheme();
   const { t } = useTranslation();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -166,8 +163,9 @@ export default function CertificateManager({ open, onClose }: CertificateManager
         toast.error(t('fiscal.cert.errorInvalidFormat', 'Selecione um arquivo .pfx ou .p12 válido.'));
         return;
       }
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error(t('fiscal.cert.errorFileSize', 'O arquivo deve ter no máximo 10MB.'));
+      // Mesmo limite da rota server-side (certificados A1 têm ~3-6KB)
+      if (file.size > 256 * 1024) {
+        toast.error(t('fiscal.cert.errorFileSize', 'O arquivo deve ter no máximo 256KB.'));
         return;
       }
       setSelectedFile(file);
@@ -187,30 +185,25 @@ export default function CertificateManager({ open, onClose }: CertificateManager
     setIsUploading(true);
 
     try {
-      // Upload file to Firebase Storage
-      const storagePath = `businesses/${business.id}/certificates/cert.pfx`;
-      const storageRef = ref(storage, storagePath);
-      await uploadBytes(storageRef, selectedFile);
+      // Upload via rota server-side: o backend valida o PFX (senha conferida
+      // no parse), extrai metadados reais (serial/validade) e criptografa a
+      // senha com AES-256-GCM. NUNCA gravar senha/Storage direto do browser.
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('password', password);
+      formData.append('businessId', business.id);
 
-      // For now we store basic metadata - in production, the backend would parse
-      // the PFX to extract serial number, subject, validity dates
-      const now = new Date();
-      const oneYearLater = new Date(now);
-      oneYearLater.setFullYear(oneYearLater.getFullYear() + 1);
-
-      // Update business fiscal config with certificate info
-      await updateDoc(doc(db, 'businesses', business.id), {
-        'fiscal.certificate': {
-          serialNumber: 'PENDING_VALIDATION',
-          subject: `${business.razaoSocial}:${business.cnpj}`,
-          validFrom: now.toISOString(),
-          expiresAt: oneYearLater.toISOString(),
-          storagePath: storagePath,
-          uploadedAt: now.toISOString(),
-        },
-        'fiscal.certPasswordEncrypted': btoa(password), // Base64 for now - production should use proper encryption
-        updatedAt: now.toISOString(),
+      const res = await fetch('/api/fiscal/certificate/upload', {
+        method: 'POST',
+        headers: firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {},
+        body: formData,
       });
+
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(json?.error || t('fiscal.cert.errorUpload', 'Erro ao processar o certificado. Verifique o arquivo e a senha.'));
+        return;
+      }
 
       await refreshUser();
 
@@ -230,11 +223,20 @@ export default function CertificateManager({ open, onClose }: CertificateManager
     if (!business) return;
 
     try {
-      await updateDoc(doc(db, 'businesses', business.id), {
-        'fiscal.certificate': null,
-        'fiscal.certPasswordEncrypted': null,
-        updatedAt: new Date().toISOString(),
+      const res = await fetch('/api/fiscal/certificate/delete', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}),
+        },
+        body: JSON.stringify({ businessId: business.id }),
       });
+
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(json?.error || t('fiscal.cert.errorRemove', 'Erro ao remover certificado.'));
+        return;
+      }
 
       await refreshUser();
       setShowUploadForm(true);

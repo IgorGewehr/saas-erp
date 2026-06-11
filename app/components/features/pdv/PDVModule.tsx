@@ -136,7 +136,7 @@ interface CartItem extends SaleItem {
 export default function PDVModule() {
   const { t } = useTranslation();
   const { isDark } = useTheme();
-  const { user, business } = useAuth();
+  const { user, business, firebaseUser } = useAuth();
   const queryClient = useQueryClient();
 
   const loyaltyConfig = business?.settings?.loyalty;
@@ -677,7 +677,10 @@ export default function PDVModule() {
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}),
+        },
         body: JSON.stringify(nfcePayload),
       });
 
@@ -703,7 +706,7 @@ export default function PDVModule() {
       setNfceModalState('error');
       return { success: false };
     }
-  }, [business, products, queryClient]);
+  }, [business, products, firebaseUser]);
 
   const confirmSale = useCallback(async () => {
     if (!user || !business) return;

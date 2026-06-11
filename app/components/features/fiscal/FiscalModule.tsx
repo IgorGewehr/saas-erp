@@ -46,8 +46,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 import { collection, query, where, orderBy, getDocs, doc as firestoreDoc, updateDoc, onSnapshot } from 'firebase/firestore';
-import { ref as storageRef, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '@/lib/config/firebase';
+import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocument, FiscalDocType, FiscalDocStatus, FiscalItem } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -1354,24 +1353,6 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
     } finally {
       setIsAccountingSending(false);
     }
-  };
-
-  // ── Get Certificate ──
-  const getCertificate = async (): Promise<{ pfxBase64: string; password: string }> => {
-    const cert = business?.fiscal?.certificate;
-    const pwdEncoded = business?.fiscal?.certPasswordEncrypted;
-    if (!cert?.storagePath || !pwdEncoded) throw new Error(t('fiscal.cert.selectFile', 'Certificado digital não configurado.'));
-    const fileRef = storageRef(storage, cert.storagePath);
-    const downloadUrl = await getDownloadURL(fileRef);
-    const response = await fetch(downloadUrl);
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-    // Tolerate older data with plain-text or invalid base64 password
-    let password: string;
-    try { password = atob(pwdEncoded); } catch { password = pwdEncoded; }
-    return { pfxBase64: btoa(binary), password };
   };
 
   // Certificate warning
