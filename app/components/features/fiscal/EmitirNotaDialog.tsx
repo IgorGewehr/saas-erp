@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Dialog,
@@ -151,6 +151,12 @@ const TYPE_ICONS_EMIT: Record<FiscalDocType, { icon: React.ReactNode; color: str
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefillNFeDevolution }: EmitirNotaDialogProps) {
+  // Idempotência: chave estável durante a sessão do dialog — retry manual da
+  // MESMA nota reusa a chave (replay/409 no servidor); nova nota = chave nova.
+  const idemKeyRef = useRef<string>(crypto.randomUUID());
+  useEffect(() => {
+    if (open) idemKeyRef.current = crypto.randomUUID();
+  }, [open]);
   const { business, user, firebaseUser } = useAuth();
   const { t } = useTranslation();
   const config = useMemo(() => ({
@@ -575,12 +581,16 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idemKeyRef.current, ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify(body),
       });
 
       const result = await res.json();
 
+      if (res.ok && result.success) {
+        // Próxima emissão é outra nota — não pode reusar a chave (replay).
+        idemKeyRef.current = crypto.randomUUID();
+      }
       if (!res.ok || !result.success) {
         const data = result.data ?? {};
         const mensagens: Array<{ codigo?: string; mensagem?: string }> = Array.isArray(data.mensagens) ? data.mensagens : [];
@@ -660,11 +670,15 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idemKeyRef.current, ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify(apiBody),
       });
 
       const result = await res.json();
+      if (res.ok && result.success) {
+        // Próxima emissão é outra nota — não pode reusar a chave (replay).
+        idemKeyRef.current = crypto.randomUUID();
+      }
       if (!res.ok || !result.success) {
         // Caminho de fallback: SEFAZ caiu e backend salvou como pendente.
         if (result.fallback === 'pending') {
@@ -774,17 +788,21 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idemKeyRef.current, ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify(apiBody),
       });
 
       const result = await res.json();
+      if (res.ok && result.success) {
+        // Próxima emissão é outra nota — não pode reusar a chave (replay).
+        idemKeyRef.current = crypto.randomUUID();
+      }
       if (!res.ok || !result.success) {
         toast.error(result.data?.motivoStatus || result.data?.erros?.[0] || result.details || result.error || 'Erro ao emitir NFe');
         return;
       }
 
-      // Backend já persiste fiscalDocument e incrementa nextNumber via commitInvoiceNumber.
+      // Backend já persiste fiscalDocument; nextNumber é alocado atomicamente na emissão.
       toast.success(result.data.status === 'autorizado' ? t('fiscal.emit.success.nfeAutorizada', 'NFe emitida com sucesso!') : t('fiscal.emit.success.nfeAguardando', 'NFe enviada, aguardando autorização'));
       onSuccess?.();
       onClose();

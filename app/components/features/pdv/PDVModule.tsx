@@ -137,6 +137,9 @@ export default function PDVModule() {
   const { t } = useTranslation();
   const { isDark } = useTheme();
   const { user, business, firebaseUser } = useAuth();
+  // Idempotência NFC-e: chave estável por venda — retry manual da mesma venda
+  // reusa a chave (dedup no servidor); regenerada após emissão autorizada.
+  const nfceIdemKeyRef = useRef<string>(crypto.randomUUID());
   const queryClient = useQueryClient();
 
   const loyaltyConfig = business?.settings?.loyalty;
@@ -679,6 +682,9 @@ export default function PDVModule() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          // Dedup server-side: retry da MESMA venda reusa a chave → replay/409
+          // em vez de segunda NFC-e; regenerada quando a emissão autoriza.
+          'X-Idempotency-Key': nfceIdemKeyRef.current,
           ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}),
         },
         body: JSON.stringify(nfcePayload),
@@ -690,10 +696,23 @@ export default function PDVModule() {
         setNfceResult({
           accessKey: json.data.chaveAcesso,
         });
+        nfceIdemKeyRef.current = crypto.randomUUID();
         setNfceModalState('authorized');
         // FiscalModule usa onSnapshot agora — invalidação não é mais necessária.
 
         return { success: true, accessKey: json.data.chaveAcesso };
+      } else if (json.fallback === 'pending') {
+        // SEFAZ fora do ar: o doc foi salvo como 'pendente' — a venda está OK
+        // e a nota será reenviada pelo módulo Fiscal (não é erro de emissão).
+        setNfceResult({
+          error: 'SEFAZ indisponível no momento. A nota ficou PENDENTE e pode ser reenviada no módulo Fiscal — a venda foi concluída normalmente.',
+        });
+        setNfceModalState('error');
+        return { success: false };
+      } else if (res.status === 409) {
+        setNfceResult({ error: 'Emissão desta venda já está em andamento — aguarde alguns segundos e verifique o módulo Fiscal antes de tentar de novo.' });
+        setNfceModalState('error');
+        return { success: false };
       } else {
         const errorMsg = json.error || json.data?.mensagem || 'Erro desconhecido na emissão da NFC-e';
         setNfceResult({ error: errorMsg });

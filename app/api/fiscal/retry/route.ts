@@ -15,8 +15,8 @@ import {
   resolveAmbiente,
 } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
-import { decryptToken } from '@/lib/utils/encryption';
 import { commitInvoiceNumber } from '@/lib/fiscal/number-sequence';
+import { decryptToken } from '@/lib/utils/encryption';
 
 /**
  * POST /api/fiscal/retry
@@ -165,16 +165,16 @@ export async function POST(request: NextRequest) {
         result = await emitirNFe(payload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
       }
 
-      // Atualiza o documento com o resultado. Mantém number/series originais
-      // da 1ª tentativa. ATENÇÃO: peek não reserva — se outra emissão consumiu
-      // o número entre o pendente e este retry, a SEFAZ rejeita com 539
-      // (reserva atômica é o fix definitivo, pendente no backlog).
+      // Atualiza o documento com o resultado. Mantém number/series originais.
       const nextStatus =
         result.status === 'autorizado' ? 'autorizada' :
         result.status === 'processando' ? 'processando' :
         result.status;
 
-      // Commit quando a SEFAZ consumiu o número (autorizado OU processando).
+      // SALVAGUARDA DE MIGRAÇÃO: docs 'pendente' criados no regime antigo
+      // (peek sem reserva) têm number == nextNumber nunca incrementado — sem
+      // este bump, retry autorizado deixaria a próxima emissão nova colidir
+      // (539). Para docs novos (alocação atômica) o Math.max é no-op barato.
       if (!isContingencia && (nextStatus === 'autorizada' || nextStatus === 'processando')) {
         const docNumber = Number(docData.number);
         if (docNumber > 0) {
