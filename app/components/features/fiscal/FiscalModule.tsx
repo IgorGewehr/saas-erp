@@ -309,14 +309,13 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
 
     setIsSyncing(true);
     try {
-      const response = await fetch('/api/fiscal/query', {
+      // A consulta E a gravação do status acontecem server-side (FSM-gated) —
+      // antes o cliente gravava via updateDoc, burlando o FSM e podendo
+      // rebaixar uma nota autorizada. O onSnapshot reflete a mudança.
+      const response = await fetch('/api/fiscal/sync-status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
-        body: JSON.stringify({
-          type: doc.type,
-          businessId,
-          chaveAcesso: doc.accessKey,
-        }),
+        body: JSON.stringify({ businessId, documentId: doc.id }),
       });
 
       const result = await response.json();
@@ -326,34 +325,11 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
         return;
       }
 
-      // Update Firestore with the latest status from SEFAZ
-      const updateData: Record<string, string> = {
-        updatedAt: new Date().toISOString(),
-      };
-
-      if (result.data?.status) {
-        const statusMap: Record<string, FiscalDocStatus> = {
-          autorizada: 'autorizada',
-          authorized: 'autorizada',
-          cancelada: 'cancelada',
-          cancelled: 'cancelada',
-          rejeitada: 'rejeitada',
-          rejected: 'rejeitada',
-          denied: 'rejeitada',
-        };
-        const mappedStatus = statusMap[result.data.status.toLowerCase()];
-        if (mappedStatus) {
-          updateData.status = mappedStatus;
-        }
-      }
-
-      if (result.data?.protocolo) {
-        updateData.protocol = result.data.protocolo;
-      }
-
-      await updateDoc(firestoreDoc(db, 'fiscalDocuments', doc.id), updateData);
-
-      toast.success(t('fiscal.sync.success', 'Status atualizado com sucesso!'));
+      toast.success(
+        result.unchanged
+          ? t('fiscal.sync.unchanged', 'Status já está atualizado.')
+          : t('fiscal.sync.success', 'Status atualizado com sucesso!'),
+      );
       onDocumentUpdated();
     } catch {
       toast.error(t('fiscal.sync.error', 'Erro ao sincronizar status.'));
