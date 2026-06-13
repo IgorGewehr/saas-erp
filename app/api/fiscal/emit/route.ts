@@ -16,6 +16,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import type { Product } from '@/lib/types';
 import { EmitFiscalRequestSchema } from '@/lib/contracts/api/fiscal/emit';
 import { validateMunicipalRequirements } from '@/lib/fiscal/municipalRequirements';
+import { normalizeFiscalDocumentStatus } from '@/lib/contracts/fsm/fiscalDocument';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -666,6 +667,8 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
         return {
           tipo: code,
           valor: +(Number(p.amount) || 0).toFixed(2),
+          // tPag '99' exige xPag (descrição) no XSD — manda o rótulo do método.
+          ...(code === '99' ? { descricao: (p.method || 'Outros').slice(0, 60) } : {}),
           ...(needsCardInfo ? { cartao: { tipoIntegracao: '2' } } : {}),
         };
       })
@@ -837,7 +840,9 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
             // For NFSe, the SEFAZ returns codigoVerificacao (used to validate the note on the city portal).
             accessKey: result.codigoVerificacao || result.chaveAcesso,
             protocol: result.protocolo,
-            status: result.status === 'autorizado' ? 'autorizada' : result.status,
+            // Canoniza pro feminino do FSM (rejeitado→rejeitada, erro mantém)
+            // — gravar o masculino cru do gateway divergiria do FSM e da UI.
+            status: normalizeFiscalDocumentStatus(result.status) ?? result.status,
             statusMessage: result.motivoStatus || result.mensagens?.[0]?.mensagem || result.erros?.[0] || null,
             xml: result.xml,
             // linkVisualizacao = external URL (city portal) to view/print the NFSe — there's no DANFE for NFSe.
@@ -1024,8 +1029,7 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
           series,
           accessKey: result.chaveAcesso || null,
           protocol: result.protocolo || null,
-          status:
-            result.status === 'autorizado' ? 'autorizada' : result.status,
+          status: normalizeFiscalDocumentStatus(result.status) ?? result.status,
           statusMessage: result.motivoStatus || result.erros?.[0] || null,
           clientName: data.nomeConsumidor || null,
           clientCpfCnpj: data.cpfConsumidor?.replace(/\D/g, '') || null,
@@ -1195,12 +1199,7 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
         series,
         accessKey: result.chaveAcesso || null,
         protocol: result.protocolo || null,
-        status:
-          result.status === 'autorizado'
-            ? 'autorizada'
-            : result.status === 'processando'
-              ? 'processando'
-              : result.status,
+        status: normalizeFiscalDocumentStatus(result.status) ?? result.status,
         statusMessage: result.motivoStatus || result.erros?.[0] || null,
         clientName: data.recipient?.name || null,
         clientCpfCnpj: data.recipient?.document?.replace(/\D/g, '') || null,

@@ -6,51 +6,59 @@ import type { UserRole } from '@/lib/types';
 import { cancelarNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 import { resolveUfEmitente } from '@/lib/fiscal/uf';
+import { CancelFiscalRequestSchema } from '@/lib/contracts/api/fiscal/cancel';
+import {
+  canTransitionFiscalDocument,
+  normalizeFiscalDocumentStatus,
+} from '@/lib/contracts/fsm/fiscalDocument';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
 
-interface CancelRequestBody {
-  type: 'nfse' | 'nfe' | 'nfce';
-  businessId: string;
-  chaveAcesso: string;
-  protocolo?: string;
-  justificativa: string;
-  ufEmitente?: string;
-  /** NFSe only — código legal do motivo (1=Erro emissão, 2=Serviço não prestado, 3=Duplicidade, 4=Erro processamento). Default '1'. */
-  codigoCancelamento?: '1' | '2' | '3' | '4';
-  certificado?: {
-    pfxBase64: string;
-    password: string;
-  };
-}
-
 export async function POST(request: NextRequest) {
   try {
-    const body: CancelRequestBody = await request.json();
+    const rawBody = await request.json();
+    const parsed = CancelFiscalRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Payload inválido para cancelamento fiscal.', details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const body = parsed.data;
     const type = body.type || 'nfe';
 
     // Auth: admin+ only
-    if (!body.businessId) {
-      return NextResponse.json({ error: 'businessId e obrigatorio.' }, { status: 400 });
-    }
     const auth = await verifyAuth(request, body.businessId);
     if (isAuthError(auth)) return auth;
     if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
       return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
     }
 
-    if (!body.justificativa || body.justificativa.trim().length < 15) {
-      return NextResponse.json(
-        { error: 'Justificativa deve ter no minimo 15 caracteres.' },
-        { status: 400 },
-      );
-    }
-    if (body.justificativa.trim().length > 255) {
-      return NextResponse.json(
-        { error: 'Justificativa deve ter no maximo 255 caracteres.' },
-        { status: 400 },
-      );
+    // FSM (R4): só 'autorizada' (e legados que normalizam pra ela) pode virar
+    // 'cancelada'. Checa ANTES de chamar a SEFAZ — evita evento de cancelamento
+    // pra doc já cancelado/rejeitado. Doc inexistente no Firestore segue o
+    // fluxo legado (cancelamento de nota emitida fora do sistema).
+    if (body.chaveAcesso) {
+      const fsmSnap = await adminDb
+        .collection('fiscalDocuments')
+        .where('businessId', '==', body.businessId)
+        .where('accessKey', '==', body.chaveAcesso)
+        .limit(1)
+        .get();
+      if (!fsmSnap.empty) {
+        const currentRaw = fsmSnap.docs[0].data().status;
+        const current = normalizeFiscalDocumentStatus(currentRaw);
+        if (!current || !canTransitionFiscalDocument(current, 'cancelada')) {
+          return NextResponse.json(
+            {
+              error: `Documento com status '${currentRaw}' não pode ser cancelado (transição inválida ${current ?? currentRaw} → cancelada).`,
+              currentStatus: currentRaw,
+            },
+            { status: 409 },
+          );
+        }
+      }
     }
 
     // Resolve certificate, ambiente e UF from Firestore when businessId provided
@@ -310,6 +318,17 @@ async function reverseLinkedTransactions(
       .get();
 
     for (const doc of fiscalSnap.docs) {
+      // FSM (R4): defesa contra corrida entre o pré-check da rota e este
+      // update (ex: doc já marcado 'cancelada' por outra via). SEFAZ já
+      // aceitou o cancelamento — aqui só evitamos sobrescrever estado
+      // terminal; warn pro operador investigar.
+      const current = normalizeFiscalDocumentStatus(doc.data().status);
+      if (!current || !canTransitionFiscalDocument(current, 'cancelada')) {
+        console.warn(
+          `[Fiscal Cancel] FSM: pulando update ${doc.data().status} → cancelada (doc ${doc.id})`,
+        );
+        continue;
+      }
       batch.update(doc.ref, {
         status: 'cancelada',
         canceledAt: now,

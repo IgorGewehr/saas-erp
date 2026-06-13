@@ -109,17 +109,20 @@ export function getPaymentCode(method: string): string {
     'cheque': '02',
     'credito': '03', 'credit_card': '03', 'credit': '03',
     'debito': '04', 'debit_card': '04', 'debit': '04',
-    'credito_loja': '05',
+    // PaymentMethod usa camelCase ('creditoLoja','semPagamento') — após
+    // toLowerCase vira 'creditoloja'/'sempagamento'; mapear ambas as formas
+    // (+ snake_case legado) pra não cair silenciosamente em tPag '99'.
+    'credito_loja': '05', 'creditoloja': '05',
     'vale_alimentacao': '10',
     'vale_refeicao': '11',
-    'vale_presente': '12',
+    'vale_presente': '12', 'gift_card': '12', 'giftcard': '12', 'voucher': '12',
     'vale_combustivel': '13',
     'boleto': '15',
     'deposito': '16',
     'pix': '17',
     'transferencia': '18',
-    'fidelidade': '19',
-    'sem_pagamento': '90',
+    'fidelidade': '19', 'pontos': '19',
+    'sem_pagamento': '90', 'sempagamento': '90',
     'outros': '99', 'other': '99',
   };
   return map[method.toLowerCase()] || '99';

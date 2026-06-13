@@ -198,7 +198,7 @@ export default function PDVModule() {
   const pendingNfceRef = useRef<{
     saleId: string;
     cart: CartItem[];
-    total: number;
+    discount: number;
     payments: Payment[];
     clientName: string;
     cpf: string;
@@ -635,7 +635,7 @@ export default function PDVModule() {
   const emitNfce = useCallback(async (
     saleId: string,
     cartSnapshot: CartItem[],
-    saleTotal: number,
+    saleDiscount: number,
     salePayments: Payment[],
     clientName: string,
     cpf: string,
@@ -646,14 +646,32 @@ export default function PDVModule() {
     setNfceResult(null);
 
     try {
+      // Rateia o desconto de nível de venda proporcionalmente nos itens — o
+      // backend calcula vNF = Σ(vProd − vDesc), então desconto que não vive
+      // nos itens simplesmente some da nota. Último item absorve o resto de
+      // arredondamento; share clampado pro item nunca ficar negativo.
+      const grossOf = (item: CartItem) => item.quantity * item.unitPrice - (item.discount || 0);
+      const grossTotal = cartSnapshot.reduce((sum, item) => sum + grossOf(item), 0);
+      let allocated = 0;
+      const saleDiscountShares = cartSnapshot.map((item, idx) => {
+        const gross = grossOf(item);
+        const raw = idx === cartSnapshot.length - 1
+          ? saleDiscount - allocated
+          : grossTotal > 0 ? (gross / grossTotal) * saleDiscount : 0;
+        const share = Math.min(gross, Math.max(0, +raw.toFixed(2)));
+        allocated = +(allocated + share).toFixed(2);
+        return share;
+      });
+
       // Build items with fiscal data from products
-      const nfceItems = cartSnapshot.map((item) => {
+      const nfceItems = cartSnapshot.map((item, idx) => {
         const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        const discount = +((item.discount || 0) + saleDiscountShares[idx]).toFixed(2);
         return {
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
-          discount: (item.discount || 0) > 0 ? item.discount : undefined,
+          discount: discount > 0 ? discount : undefined,
           ncm: prod?.ncm || undefined,
           cfop: prod?.cfop ? Number(prod.cfop) : undefined,
           barcode: prod?.barcode || undefined,
@@ -662,16 +680,41 @@ export default function PDVModule() {
         };
       });
 
-      // Map primary payment method
-      const primaryPayment = salePayments[0];
-      const paymentMethod = primaryPayment?.method || 'dinheiro';
+      // Total fiscal = Σ itens − descontos (espelha o vNF calculado no backend).
+      const fiscalTotal = +cartSnapshot
+        .reduce((sum, item, idx) => sum + item.quantity * item.unitPrice - ((item.discount || 0) + saleDiscountShares[idx]), 0)
+        .toFixed(2);
+
+      // Envia TODAS as formas de pagamento (antes só salePayments[0] com o
+      // total inteiro — 50% PIX + 50% cartão saía 100% no primeiro método).
+      // SEFAZ exige Σ formas == vNF e o contrato (lib/contracts/api/fiscal/
+      // emit.ts) não tem vTroco nem vOutro: troco e gorjeta não são
+      // representáveis. O excedente é abatido preferencialmente de dinheiro
+      // (semântica de troco) e, se sobrar (ex.: gorjeta no cartão), dos
+      // demais a partir do último.
+      const fiscalPayments = salePayments.map(p => ({ method: p.method, amount: +p.amount.toFixed(2) }));
+      let excess = +(fiscalPayments.reduce((sum, p) => sum + p.amount, 0) - fiscalTotal).toFixed(2);
+      const absorbExcess = (match: (method: PaymentMethod) => boolean) => {
+        for (let i = fiscalPayments.length - 1; i >= 0 && excess > 0; i--) {
+          if (!match(fiscalPayments[i].method)) continue;
+          const cut = Math.min(fiscalPayments[i].amount, excess);
+          fiscalPayments[i].amount = +(fiscalPayments[i].amount - cut).toFixed(2);
+          excess = +(excess - cut).toFixed(2);
+        }
+      };
+      absorbExcess(method => method === 'dinheiro');
+      absorbExcess(() => true);
+      // PDV tolera 1 centavo a menos no pagamento (remaining <= 0.01) —
+      // completa no primeiro método pra fechar com o vNF.
+      if (excess < 0 && fiscalPayments.length > 0) {
+        fiscalPayments[0].amount = +(fiscalPayments[0].amount - excess).toFixed(2);
+      }
 
       const nfcePayload = {
         type: 'nfce' as const,
         businessId: business.id,
         items: nfceItems,
-        paymentMethod,
-        paymentValue: saleTotal,
+        payments: fiscalPayments.filter(p => p.amount > 0),
         cpfConsumidor: cpf.replace(/\D/g, '') || undefined,
         nomeConsumidor: clientName.trim() || undefined,
         presencaComprador: 1,
@@ -982,7 +1025,7 @@ export default function PDVModule() {
         pendingNfceRef.current = {
           saleId: docRef.id,
           cart: [...cart],
-          total,
+          discount: discountAmount,
           payments: [...payments],
           clientName: selectedClient?.name || '',
           cpf: cpfConsumidor,
@@ -995,7 +1038,7 @@ export default function PDVModule() {
         await emitNfce(
           docRef.id,
           cart,
-          total,
+          discountAmount,
           payments,
           selectedClient?.name || '',
           cpfConsumidor,
@@ -1187,7 +1230,7 @@ export default function PDVModule() {
   const handleNfceRetry = useCallback(async () => {
     const ctx = pendingNfceRef.current;
     if (!ctx) return;
-    await emitNfce(ctx.saleId, ctx.cart, ctx.total, ctx.payments, ctx.clientName, ctx.cpf);
+    await emitNfce(ctx.saleId, ctx.cart, ctx.discount, ctx.payments, ctx.clientName, ctx.cpf);
   }, [emitNfce]);
 
   const handlePrintReceipt = useCallback(() => {

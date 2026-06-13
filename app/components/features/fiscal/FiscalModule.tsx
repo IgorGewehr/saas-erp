@@ -182,10 +182,10 @@ interface DocumentDetailDialogProps {
   onDocumentUpdated: () => void;
   businessId: string | null;
   business: { razaoSocial: string; cnpj: string } | null;
-  onPrintDanfe?: (document: FiscalDocument) => void;
+  onPrintDanfe?: (document: FiscalDocument) => void | Promise<void>;
   onCartaCorrecao?: (document: FiscalDocument) => void;
   onEmitirDevolucao?: (document: FiscalDocument) => void;
-  onRetryPendente?: (document: FiscalDocument) => void;
+  onRetryPendente?: (document: FiscalDocument) => void | Promise<void>;
 }
 
 function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated, businessId, business, onPrintDanfe, onCartaCorrecao, onEmitirDevolucao, onRetryPendente }: DocumentDetailDialogProps) {
@@ -197,6 +197,10 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
   const [cancelCode, setCancelCode] = useState<'1' | '2' | '3' | '4'>('1');
   const [isCancelling, setIsCancelling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  // Guards de duplo clique: retry/print disparam POST + window.open — sem o
+  // guard, dois cliques rápidos geram 2 transmissões/2 janelas paralelas.
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
   const [ccOpen, setCcOpen] = useState(false);
   const [ccText, setCcText] = useState('');
 
@@ -636,7 +640,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
                         className={cn(
                           'flex items-center justify-center w-8 h-8 rounded-full border-2',
                           step.completed
-                            ? 'bg-primary-50 border-primary-500 text-primary-600'
+                            ? 'bg-primary-50 dark:bg-primary-900/30 border-primary-500 text-primary-600 dark:text-primary-400'
                             : 'bg-muted border-border text-muted-foreground',
                         )}
                       >
@@ -721,10 +725,15 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
           )}
           {doc.xml && onPrintDanfe && (
             <button
-              onClick={() => onPrintDanfe(doc)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors"
+              onClick={async () => {
+                if (isPrinting) return;
+                setIsPrinting(true);
+                try { await onPrintDanfe(doc); } finally { setIsPrinting(false); }
+              }}
+              disabled={isPrinting}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-colors disabled:opacity-50 disabled:pointer-events-none"
             >
-              <Printer className="w-3.5 h-3.5" />
+              {isPrinting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
               {t('fiscal.actions.imprimirDanfe', 'Imprimir DANFE')}
             </button>
           )}
@@ -759,16 +768,22 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
           )}
           {(doc.status === 'pendente' || doc.status === 'contingencia') && onRetryPendente && (
             <button
-              onClick={() => onRetryPendente(doc)}
+              onClick={async () => {
+                if (isRetrying) return;
+                setIsRetrying(true);
+                try { await onRetryPendente(doc); } finally { setIsRetrying(false); }
+              }}
+              disabled={isRetrying}
               className={cn(
                 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                'disabled:opacity-50 disabled:pointer-events-none',
                 doc.status === 'contingencia'
                   ? 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 hover:bg-purple-100 dark:hover:bg-purple-900/30'
                   : 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/30',
               )}
               title={t('fiscal.actions.retryTooltip', 'Tenta reenviar pra SEFAZ. Use quando o serviço voltar.')}
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshCw className={cn('w-3.5 h-3.5', isRetrying && 'animate-spin')} />
               {doc.status === 'contingencia'
                 ? t('fiscal.actions.transmitirContingencia', 'Transmitir Contingência')
                 : t('fiscal.actions.retrySefaz', 'Reenviar para SEFAZ')}
@@ -784,15 +799,7 @@ function DocumentDetailDialog({ open, onClose, document: doc, onDocumentUpdated,
               {t('fiscal.actions.cartaCorrecao', 'Carta de Correção')}
             </Button>
           )}
-          {(doc.status === 'rejeitada' || doc.status === 'erro') && (
-            <Button
-              startIcon={<Send size={16} />}
-              size="small"
-              sx={{ color: '#DC2626' }}
-            >
-              {t('fiscal.actions.reenviar', 'Reenviar')}
-            </Button>
-          )}
+          {/* Rejeitada/erro não tem "Reenviar": re-emissão exige nota NOVA com número novo (emitir outra nota). */}
           <div className="flex-1" />
           <Button onClick={onClose} sx={{ color: '#64748B' }}>
             {t('fiscal.actions.fechar', 'Fechar')}
@@ -1160,6 +1167,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify({
+          businessId: business?.id,
           xml: document.xml,
           type: document.type,
           status: document.status,
@@ -1415,7 +1423,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
         >
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary-50 text-primary-600">
+              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-primary-50 dark:bg-primary-900/30 text-primary-600 dark:text-primary-400">
                 {typeConfig.icon}
               </div>
               <div>
@@ -1543,7 +1551,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                   className={cn(
                     'px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-200 whitespace-nowrap',
                     activeTab === tab.value
-                      ? 'bg-primary-50 text-primary-700 shadow-sm'
+                      ? 'bg-primary-50 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 shadow-sm'
                       : 'text-muted-foreground hover:text-foreground hover:bg-muted/50',
                   )}
                 >
@@ -1708,11 +1716,7 @@ export default function FiscalModule({ type }: FiscalModuleProps) {
                                   <Printer size={16} className="text-muted-foreground" />
                                 </IconButton>
                               )}
-                              {(fiscalDoc.status === 'rejeitada' || fiscalDoc.status === 'erro') && (
-                                <IconButton size="small" title="Reenviar">
-                                  <Send size={16} className="text-amber-500" />
-                                </IconButton>
-                              )}
+                              {/* Rejeitada/erro não tem "Reenviar": re-emissão exige nota NOVA com número novo (emitir outra nota). */}
                             </div>
                           </td>
                         </motion.tr>

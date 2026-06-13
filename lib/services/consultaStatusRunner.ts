@@ -25,6 +25,10 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { consultarNFe, resolveAmbiente, isTransientSefazError } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
+import {
+  canTransitionFiscalDocument,
+  normalizeFiscalDocumentStatus,
+} from '@/lib/contracts/fsm/fiscalDocument';
 
 const MAX_PER_RUN = 50;
 const MIN_AGE_BEFORE_CONSULT_MS = 5 * 60 * 1000;       // 5 min
@@ -163,6 +167,19 @@ export async function runConsultaProcessando(now: Date = new Date()): Promise<Co
       if (nextStatus === 'processando') {
         summary.aindaProcessando += 1;
         summary.details.push({ documentId, businessId, outcome: 'processando', message: result.motivoStatus });
+        continue;
+      }
+
+      // FSM (R4): from vem do snapshot (query filtra 'processando', mas docs
+      // legados podem ter formas não-canônicas). Transição inválida = warn+skip
+      // — runner nunca derruba o ciclo por causa de 1 doc.
+      const fromStatus = normalizeFiscalDocumentStatus(data.status);
+      if (!fromStatus || !canTransitionFiscalDocument(fromStatus, nextStatus)) {
+        console.warn('[consultaStatusRunner] FSM: transição inválida — pulando doc', {
+          documentId, businessId, from: data.status, to: nextStatus,
+        });
+        summary.erros += 1;
+        summary.details.push({ documentId, businessId, outcome: 'erro', message: `FSM: ${data.status} → ${nextStatus} inválida` });
         continue;
       }
 

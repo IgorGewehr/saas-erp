@@ -5,24 +5,21 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
 import { statusSefaz, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
-
-interface StatusBody {
-  businessId?: string;
-  ufEmitente: string;
-  certificado?: {
-    pfxBase64: string;
-    password: string;
-  };
-}
+import { StatusSefazRequestSchema } from '@/lib/contracts/api/fiscal/status';
 
 export async function POST(request: NextRequest) {
   try {
-    const body: StatusBody = await request.json();
+    const rawBody = await request.json();
+    const parsed = StatusSefazRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Payload inválido para consulta de status SEFAZ.', details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const body = parsed.data;
 
     // Auth: admin+ only
-    if (!body.businessId) {
-      return NextResponse.json({ error: 'businessId e obrigatorio.' }, { status: 400 });
-    }
     const auth = await verifyAuth(request, body.businessId);
     if (isAuthError(auth)) return auth;
     if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {

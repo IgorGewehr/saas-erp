@@ -17,6 +17,11 @@ import {
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 import { commitInvoiceNumber } from '@/lib/fiscal/number-sequence';
 import { decryptToken } from '@/lib/utils/encryption';
+import { RetryFiscalRequestSchema } from '@/lib/contracts/api/fiscal/retry';
+import {
+  canTransitionFiscalDocument,
+  normalizeFiscalDocumentStatus,
+} from '@/lib/contracts/fsm/fiscalDocument';
 
 /**
  * POST /api/fiscal/retry
@@ -37,15 +42,15 @@ import { decryptToken } from '@/lib/utils/encryption';
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { businessId, documentId } = body as { businessId?: string; documentId?: string };
-
-    if (!businessId || !documentId) {
+    const rawBody = await request.json();
+    const parsed = RetryFiscalRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'businessId e documentId são obrigatórios.' },
+        { error: 'businessId e documentId são obrigatórios.', details: parsed.error.flatten() },
         { status: 400 },
       );
     }
+    const { businessId, documentId } = parsed.data;
 
     const auth = await verifyAuth(request, businessId);
     if (isAuthError(auth)) return auth;
@@ -194,8 +199,27 @@ export async function POST(request: NextRequest) {
           ? 'contingencia'
           : nextStatus;
 
+      // FSM (R4): canoniza o status do gateway (masculino 'rejeitado'/'erro'
+      // vazava cru pro Firestore) e valida a transição antes do update.
+      // from é 'pendente'|'contingencia' (guard no topo) — transição inválida
+      // aqui significa resposta desconhecida do gateway: 409 sem persistir.
+      const fromStatus = normalizeFiscalDocumentStatus(docData.status);
+      const toStatus = normalizeFiscalDocumentStatus(statusToPersist);
+      if (!fromStatus || !toStatus || !canTransitionFiscalDocument(fromStatus, toStatus)) {
+        console.warn('[Fiscal Retry] FSM: transição inválida', {
+          documentId, from: docData.status, to: statusToPersist, gatewayStatus: result.status,
+        });
+        return NextResponse.json(
+          {
+            error: `Transição de status inválida (${docData.status} → ${statusToPersist}). Resposta do gateway não reconhecida — documento não foi alterado.`,
+            data: result,
+          },
+          { status: 409 },
+        );
+      }
+
       await docRef.update({
-        status: statusToPersist,
+        status: toStatus,
         statusMessage: result.motivoStatus || result.mensagens?.[0]?.mensagem || result.erros?.[0] || null,
         accessKey: result.chaveAcesso || result.codigoVerificacao || docData.accessKey || null,
         protocol: result.protocolo || null,
