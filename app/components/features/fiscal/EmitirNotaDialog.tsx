@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Dialog,
@@ -146,11 +146,51 @@ const TYPE_ICONS_EMIT: Record<FiscalDocType, { icon: React.ReactNode; color: str
   nfe: { icon: <FileText className="w-5 h-5" />, color: 'text-red-500' },
 };
 
+// ─── Form defaults ───────────────────────────────────────────────────────────
+// Compartilhados entre o useState inicial e o resetForm() — manter idênticos
+// garante que reabrir o dialog equivale a montá-lo do zero.
+
+const createDefaultNfseForm = (): NFSeFormData => ({
+  tomadorTipo: 'cpf',
+  tomadorDocumento: '',
+  tomadorNome: '',
+  tomadorEmail: '',
+  tomadorPhone: '',
+  discriminacao: '',
+  codigoTributacaoNacional: '',
+  codigoTributacaoMunicipal: '',
+  valorServicos: 0,
+  valorDeducoes: 0,
+  valorDescontoIncondicionado: 0,
+  tipoRetencaoISSQN: '1',
+  aliquotaISS: 5,
+  informacoesAdicionais: '',
+});
+
+const createEmptyAddress = () => ({
+  logradouro: '',
+  numero: '',
+  complemento: '',
+  bairro: '',
+  municipio: '',
+  codigoMunicipio: '',
+  uf: '',
+  cep: '',
+});
+
+const createDefaultPayments = (): PaymentForm[] => [{ id: '1', method: 'dinheiro', amount: 0 }];
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefillNFeDevolution }: EmitirNotaDialogProps) {
+  // Idempotência: chave estável durante a sessão do dialog — retry manual da
+  // MESMA nota reusa a chave (replay/409 no servidor); nova nota = chave nova.
+  const idemKeyRef = useRef<string>(crypto.randomUUID());
+  useEffect(() => {
+    if (open) idemKeyRef.current = crypto.randomUUID();
+  }, [open]);
   const { business, user, firebaseUser } = useAuth();
   const { t } = useTranslation();
   const config = useMemo(() => ({
@@ -190,22 +230,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
   const [services, setServices] = useState<Service[]>([]);
 
   // ── NFSe State ──
-  const [nfseForm, setNfseForm] = useState<NFSeFormData>({
-    tomadorTipo: 'cpf',
-    tomadorDocumento: '',
-    tomadorNome: '',
-    tomadorEmail: '',
-    tomadorPhone: '',
-    discriminacao: '',
-    codigoTributacaoNacional: '',
-    codigoTributacaoMunicipal: '',
-    valorServicos: 0,
-    valorDeducoes: 0,
-    valorDescontoIncondicionado: 0,
-    tipoRetencaoISSQN: '1',
-    aliquotaISS: 5,
-    informacoesAdicionais: '',
-  });
+  const [nfseForm, setNfseForm] = useState<NFSeFormData>(createDefaultNfseForm);
 
   // Município onde o serviço foi efetivamente prestado (NFS-e). Quando
   // diferente do município do prestador, o ISS é recolhido lá. Vazio = usa
@@ -219,22 +244,13 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
   // Endereço do tomador (NFS-e). São Paulo (IBGE 3550308) exige endereço
   // completo — sem isso, a Prefeitura Paulistana rejeita. Outras prefeituras
   // toleram parcial; mantemos campos visíveis sempre pra consistência com NF-e.
-  const [nfseTomadorAddress, setNfseTomadorAddress] = useState({
-    logradouro: '',
-    numero: '',
-    complemento: '',
-    bairro: '',
-    municipio: '',
-    codigoMunicipio: '',
-    uf: '',
-    cep: '',
-  });
+  const [nfseTomadorAddress, setNfseTomadorAddress] = useState(createEmptyAddress);
 
   // ── NFCe State ──
   const [nfceConsumidorCpf, setNfceConsumidorCpf] = useState('');
   const [nfceConsumidorNome, setNfceConsumidorNome] = useState('');
-  const [nfceItems, setNfceItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
-  const [nfcePayments, setNfcePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
+  const [nfceItems, setNfceItems] = useState<NFCeItemForm[]>(() => [createEmptyNFCeItem()]);
+  const [nfcePayments, setNfcePayments] = useState<PaymentForm[]>(createDefaultPayments);
 
   // ── NFSe extras ──
   const [nfseNbs, setNfseNbs] = useState('');
@@ -257,21 +273,51 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
   // finalidade=4 (devolução). Operador cola a chave do DANFE da nota original.
   const [nfeRefNFe, setNfeRefNFe] = useState('');
   const [nfeInfoAdicionais, setNfeInfoAdicionais] = useState('');
-  const [nfeItems, setNfeItems] = useState<NFCeItemForm[]>([createEmptyNFCeItem()]);
-  const [nfePayments, setNfePayments] = useState<PaymentForm[]>([{ id: '1', method: 'dinheiro', amount: 0 }]);
+  const [nfeItems, setNfeItems] = useState<NFCeItemForm[]>(() => [createEmptyNFCeItem()]);
+  const [nfePayments, setNfePayments] = useState<PaymentForm[]>(createDefaultPayments);
 
   // ── NFe recipient address ──
-  const [nfeRecipientAddress, setNfeRecipientAddress] = useState({
-    logradouro: '',
-    numero: '',
-    complemento: '',
-    bairro: '',
-    municipio: '',
-    codigoMunicipio: '',
-    uf: '',
-    cep: '',
-  });
+  const [nfeRecipientAddress, setNfeRecipientAddress] = useState(createEmptyAddress);
   const [nfeRecipientIndicadorIE, setNfeRecipientIndicadorIE] = useState<'1' | '2' | '9'>('9');
+
+  // Reset completo ao abrir: sem isso, o estado da emissão anterior (itens,
+  // pagamentos, consumidor — e o prefill de devolução: finalidade=4, chave
+  // referenciada, natureza) vaza pra próxima nota emitida no mesmo mount.
+  // O prefill de devolução é reaplicado pelo effect declarado mais abaixo,
+  // que roda DEPOIS deste (ordem de declaração dos effects no mesmo commit).
+  // clients/products/services não entram aqui: são caches recarregados pelos
+  // effects de load a cada abertura. idemKeyRef já regenera no effect acima.
+  const resetForm = useCallback(() => {
+    setIsEmitting(false);
+    setIsFetchingCep(false);
+    setNfseForm(createDefaultNfseForm());
+    setNfseLocalPrestacao('');
+    setNfseCnae('');
+    setNfseTomadorAddress(createEmptyAddress());
+    setNfseNbs('');
+    setNfceConsumidorCpf('');
+    setNfceConsumidorNome('');
+    setNfceItems([createEmptyNFCeItem()]);
+    setNfcePayments(createDefaultPayments());
+    setNfceInfoAdicionais('');
+    setNfceForcarContingencia(false);
+    setNfceMotivoContingencia('');
+    setNfeRecipientDoc('');
+    setNfeRecipientName('');
+    setNfeRecipientIE('');
+    setNfeNatureza(NFE_NATUREZAS[0]);
+    setNfeFinalidade('1');
+    setNfeRefNFe('');
+    setNfeInfoAdicionais('');
+    setNfeItems([createEmptyNFCeItem()]);
+    setNfePayments(createDefaultPayments());
+    setNfeRecipientAddress(createEmptyAddress());
+    setNfeRecipientIndicadorIE('9');
+  }, []);
+
+  useEffect(() => {
+    if (open) resetForm();
+  }, [open, resetForm]);
 
   // Load clients from Firestore
   useEffect(() => {
@@ -575,12 +621,16 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idemKeyRef.current, ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify(body),
       });
 
       const result = await res.json();
 
+      if (res.ok && result.success) {
+        // Próxima emissão é outra nota — não pode reusar a chave (replay).
+        idemKeyRef.current = crypto.randomUUID();
+      }
       if (!res.ok || !result.success) {
         const data = result.data ?? {};
         const mensagens: Array<{ codigo?: string; mensagem?: string }> = Array.isArray(data.mensagens) ? data.mensagens : [];
@@ -660,11 +710,15 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idemKeyRef.current, ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify(apiBody),
       });
 
       const result = await res.json();
+      if (res.ok && result.success) {
+        // Próxima emissão é outra nota — não pode reusar a chave (replay).
+        idemKeyRef.current = crypto.randomUUID();
+      }
       if (!res.ok || !result.success) {
         // Caminho de fallback: SEFAZ caiu e backend salvou como pendente.
         if (result.fallback === 'pending') {
@@ -774,17 +828,21 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idemKeyRef.current, ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}) },
         body: JSON.stringify(apiBody),
       });
 
       const result = await res.json();
+      if (res.ok && result.success) {
+        // Próxima emissão é outra nota — não pode reusar a chave (replay).
+        idemKeyRef.current = crypto.randomUUID();
+      }
       if (!res.ok || !result.success) {
         toast.error(result.data?.motivoStatus || result.data?.erros?.[0] || result.details || result.error || 'Erro ao emitir NFe');
         return;
       }
 
-      // Backend já persiste fiscalDocument e incrementa nextNumber via commitInvoiceNumber.
+      // Backend já persiste fiscalDocument; nextNumber é alocado atomicamente na emissão.
       toast.success(result.data.status === 'autorizado' ? t('fiscal.emit.success.nfeAutorizada', 'NFe emitida com sucesso!') : t('fiscal.emit.success.nfeAguardando', 'NFe enviada, aguardando autorização'));
       onSuccess?.();
       onClose();

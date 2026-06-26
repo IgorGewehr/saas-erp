@@ -27,6 +27,10 @@ import {
   markSuccessfulRun,
 } from '@/lib/services/scheduledFallback';
 import { upsertConversationFromCampaign } from '@/lib/services/conversationFromCampaign';
+import {
+  buildTemplateComponents,
+  type HeaderMediaPayload,
+} from '@/lib/services/channels/whatsappTemplateComponents';
 import type {
   BirthdayCampaign,
   BroadcastTemplateParam,
@@ -250,16 +254,20 @@ function renderTemplateBody(body: string, values: string[]): string {
 }
 
 /**
- * Resolve `BroadcastTemplateParam[]` em `components[]` do Meta — espelho
- * da função em /api/broadcasts/send/route.ts. Duplicado conscientemente
- * pra manter o runner desacoplado da rota de broadcast pontual.
+ * Resolve `BroadcastTemplateParam[]` em `components[]` do Meta, opcionalmente
+ * prepondo um componente 'header' quando a campanha tem media header.
+ *
+ * Antes desta versão, este runner duplicava a lógica de /api/broadcasts/send
+ * conscientemente. Com o helper compartilhado `buildTemplateComponents`,
+ * a duplicação é só na resolução de placeholder por client (que tem campos
+ * diferentes do `recipient` de broadcasts genéricos).
  */
 function resolveTemplateComponents(
   params: BroadcastTemplateParam[] | undefined,
   client: Client,
+  headerMedia?: HeaderMediaPayload | null,
 ): unknown[] {
-  if (!params?.length) return [];
-  const resolved = params.map(p => {
+  const bodyParams: string[] = (params ?? []).map(p => {
     if (p.kind === 'literal') return p.value;
     if (p.kind === 'field') {
       if (p.field === 'name') return client.name || '';
@@ -268,10 +276,7 @@ function resolveTemplateComponents(
     }
     return '';
   });
-  return [{
-    type: 'body',
-    parameters: resolved.map(text => ({ type: 'text', text })),
-  }];
+  return buildTemplateComponents({ headerMedia, bodyParams });
 }
 
 /**
@@ -545,7 +550,7 @@ async function executeCampaign(
             template: {
               name: campaign.templateName,
               language: { code: campaign.templateLanguage || 'pt_BR' },
-              components: resolveTemplateComponents(campaign.templateParams, client),
+              components: resolveTemplateComponents(campaign.templateParams, client, campaign.headerMedia),
             },
           }),
         });

@@ -2098,6 +2098,20 @@ function CampaignsTab({ businessId }: { businessId: string }) {
           toast.error('Data/hora de agendamento deve estar no futuro.');
           return;
         }
+        // Cap de 25 dias quando o template tem mídia de header: o mediaId
+        // da Meta expira em ~30d e o backend NÃO revalida no cron. Margem
+        // de 5d garante que o envio cabe na janela. Sem mídia (templates
+        // TEXT ou só texto livre), agendamento longo continua liberado.
+        if (effectiveMsgType === 'template' && formTemplate?.headerMedia) {
+          const maxScheduledMs = Date.now() + 25 * 24 * 60 * 60 * 1000;
+          if (dt.getTime() > maxScheduledMs) {
+            toast.error(
+              'Template com mídia (vídeo/imagem/documento) só pode ser agendado em até 25 dias. ' +
+              'A mídia carregada expira na Meta após ~30 dias.',
+            );
+            return;
+          }
+        }
         scheduledAtIso = dt.toISOString();
       }
       const initialStatus: BroadcastStatus = scheduledAtIso ? 'scheduled' : 'draft';
@@ -2140,6 +2154,12 @@ function CampaignsTab({ businessId }: { businessId: string }) {
         // quando der upsert da conversa. Sem isso a aba Conversas mostrava só
         // "[Template: nome]" em vez do conteúdo enviado.
         templateBody: effectiveMsgType === 'template' && formTemplate ? formTemplate.preview : undefined,
+        // Mídia do header (IMAGE/VIDEO/DOCUMENT). mediaId vem do upload
+        // /api/channels/whatsapp-media/upload e é reusado por todos os recipients
+        // da campanha. process-scheduled e a runner de broadcast pegam daqui.
+        headerMedia: effectiveMsgType === 'template' && formTemplate?.headerMedia
+          ? formTemplate.headerMedia
+          : undefined,
         messageContent: effectiveMsgType === 'text' ? formContent.trim() : undefined,
         emailSubject: formChannel === 'email' ? formEmailSubject.trim() : undefined,
         viaBaileys: isBaileysSend,

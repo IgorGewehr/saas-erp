@@ -19,6 +19,10 @@ import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ensureBaileysSessionConnected } from '@/app/api/whatsapp/baileys-manager';
 import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
 import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
+import {
+  buildTemplateComponents,
+  type HeaderMediaPayload,
+} from '@/lib/services/channels/whatsappTemplateComponents';
 import type {
   ConversationChannel,
   ChannelCredentials,
@@ -39,7 +43,20 @@ interface SendRequestBody {
   type?: 'text' | 'template' | 'media'; // message type (default: text)
   templateName?: string; // WhatsApp template name (e.g. 'hello_world')
   templateLanguage?: string; // template language code (e.g. 'pt_BR')
-  templateParams?: unknown[]; // template component parameters
+  /** Caminho LEGADO: array de componentes Meta pré-montado OU array de strings
+   *  resolvidas. Quando passado, o backend só faz passthrough — caller é
+   *  responsável pelo shape correto. Preferir templateBodyParams pra envios
+   *  novos (deixa o backend montar via helper compartilhado). */
+  templateParams?: unknown[];
+  /** Caminho NOVO: array de strings já resolvidas, na ordem {{1}}, {{2}}, ...
+   *  O backend monta os componentes Meta corretos via buildTemplateComponents,
+   *  combinando com headerMedia se presente. Mutuamente exclusivo com templateParams
+   *  na prática — se ambos vierem, prevalece o novo (estruturado). */
+  templateBodyParams?: string[];
+  /** Header de mídia do template — IMAGE/VIDEO/DOCUMENT. mediaId obtido em
+   *  /api/channels/whatsapp-media/upload. Quando presente, o backend prepende
+   *  um componente 'header' nos `components`. */
+  headerMedia?: HeaderMediaPayload;
   mediaUrl?: string; // URL of the media file (Firebase Storage)
   mediaType?: 'image' | 'video' | 'audio' | 'document'; // type of media
   /** Nome do arquivo original para documentos. Cloud API usa em
@@ -176,8 +193,29 @@ export async function POST(req: NextRequest) {
     // Read the body as text first so we can (a) verify HMAC when agent-signed and (b) reuse it as JSON.
     const rawBody = await req.text();
     const body: SendRequestBody = JSON.parse(rawBody);
-    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, mediaUrl, mediaType, fileName, voice, replyToMessageId, replyToMessageContent, replyToMessageFromMe, clientMessageId } = body;
+    const { businessId, conversationId, messageId, messageDocId, channel, recipientId, content, type, templateName, templateLanguage, templateParams, templateBodyParams, headerMedia, mediaUrl, mediaType, fileName, voice, replyToMessageId, replyToMessageContent, replyToMessageFromMe, clientMessageId } = body;
     failureContext = { businessId, conversationId, recipientId, channel };
+
+    // Cap defensivo em templateBodyParams — Meta aceita no máximo ~10 variáveis
+    // por template, então 20 é folga sobrada. Sem isso, caller autenticado
+    // poderia mandar Array(50000).fill('x'.repeat(1024)) = ~50MB e estressar
+    // o heap antes da Meta rejeitar. Reportado em auditoria pré-prod.
+    if (templateBodyParams !== undefined) {
+      if (!Array.isArray(templateBodyParams) || templateBodyParams.length > 20) {
+        return NextResponse.json(
+          { error: 'templateBodyParams deve ser array de até 20 elementos' },
+          { status: 400 },
+        );
+      }
+      for (const p of templateBodyParams) {
+        if (typeof p !== 'string' || p.length > 1024) {
+          return NextResponse.json(
+            { error: 'Cada templateBodyParam deve ser string de até 1024 chars' },
+            { status: 400 },
+          );
+        }
+      }
+    }
 
     // Authentication: accept either a Firebase session (UI) or an HMAC-signed agent call.
     const agentSignature = req.headers.get('x-agent-signature');
@@ -535,6 +573,8 @@ export async function POST(req: NextRequest) {
             templateName,
             templateLanguage,
             templateParams,
+            templateBodyParams,
+            headerMedia,
             media: cloudMediaOpts,
             replyToMessageId,
           });
@@ -842,7 +882,12 @@ interface WhatsAppTemplateOptions {
   type?: 'text' | 'template' | 'media';
   templateName?: string;
   templateLanguage?: string;
+  /** Caminho LEGADO (passthrough cru). Veja SendRequestBody.templateParams. */
   templateParams?: unknown[];
+  /** Caminho NOVO: strings resolvidas; backend monta components via helper. */
+  templateBodyParams?: string[];
+  /** Header de mídia — IMAGE/VIDEO/DOCUMENT. */
+  headerMedia?: HeaderMediaPayload;
   media?: MediaOptions;
   /** wamid da mensagem citada — vai pro Cloud em `context.message_id`.
    *  Templates ignoram o context (a Meta retorna 400 se misturar); só
@@ -872,6 +917,22 @@ async function sendWhatsApp(
   let messageBody: Record<string, unknown>;
 
   if (templateOptions?.type === 'template') {
+    // Decisão de shape dos `components`:
+    //   1. Caminho NOVO (preferido): templateBodyParams (strings resolvidas) e/ou
+    //      headerMedia. Backend monta via buildTemplateComponents — shape correto
+    //      garantido pra Meta.
+    //   2. Caminho LEGADO: templateParams cru. Passthrough sem montagem,
+    //      preserva o comportamento atual de callers que já constroem o array.
+    //      Se headerMedia chegar JUNTO com legado, o helper consegue compor —
+    //      delegamos a decisão pra resolveTemplateComponents (broadcast já faz
+    //      isso). Aqui no 1:1, simplificamos: novo OU legado, não ambos.
+    const usesStructured = !!templateOptions.headerMedia || Array.isArray(templateOptions.templateBodyParams);
+    const components = usesStructured
+      ? buildTemplateComponents({
+          headerMedia: templateOptions.headerMedia,
+          bodyParams: templateOptions.templateBodyParams ?? [],
+        })
+      : templateOptions.templateParams;
     messageBody = {
       messaging_product: 'whatsapp',
       to: recipientId,
@@ -879,7 +940,7 @@ async function sendWhatsApp(
       template: {
         name: templateOptions.templateName || 'hello_world',
         language: { code: templateOptions.templateLanguage || 'pt_BR' },
-        ...(templateOptions.templateParams ? { components: templateOptions.templateParams } : {}),
+        ...(Array.isArray(components) && components.length > 0 ? { components } : {}),
       },
     };
   } else if (templateOptions?.type === 'media' && templateOptions.media) {

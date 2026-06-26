@@ -17,10 +17,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getAuth } from 'firebase/auth';
-import { Loader2, AlertTriangle, Check, Sparkles, Type as TypeIcon, User as UserIcon, Phone, Mail, Database } from 'lucide-react';
+import { Loader2, AlertTriangle, Check, Sparkles, Type as TypeIcon, User as UserIcon, Phone, Mail, Database, Upload, X, FileVideo, FileImage, FileText, CheckCircle2 } from 'lucide-react';
 import { FormControl, InputLabel, Select, MenuItem, Box } from '@mui/material';
 import { cn } from '@/lib/utils';
 import type { BroadcastRecipient, BroadcastTemplateParam } from '@/lib/types';
+
+/** Formato do header conforme retornado pela Meta. NONE = sem header
+ *  (template só com body); LOCATION é raro e não tem mídia upload-ável. */
+type WhatsAppHeaderFormat = 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION';
+/** Formatos que exigem upload de mídia em runtime (mediaId via Meta /media). */
+type HeaderMediaFormat = 'IMAGE' | 'VIDEO' | 'DOCUMENT';
 
 interface WhatsAppTemplate {
   name: string;
@@ -28,6 +34,12 @@ interface WhatsAppTemplate {
   category: string;
   preview: string;
   hasVariables: boolean;
+  /** Novo — vem do endpoint enriquecido em /api/channels/whatsapp-templates.
+   *  Quando ausente (template legado ou sem header), tratamos como TEXT/none. */
+  header?: {
+    format: WhatsAppHeaderFormat;
+    text?: string;
+  } | null;
 }
 
 export interface TemplateSelection {
@@ -37,6 +49,62 @@ export interface TemplateSelection {
   /** Body cru com `{{N}}` placeholders — usado pra render no histórico
    *  da conversa (sem isso, broadcast aparecia como "[Template: nome]"). */
   preview?: string;
+  /** Anotação do formato de header exigido pelo template (IMAGE/VIDEO/DOCUMENT).
+   *  Setado em handleSelectTemplateValue e usado pelo validator pra exigir
+   *  headerMedia sem precisar reconsultar o template original. Ausente quando
+   *  o header é TEXT/LOCATION/none. */
+  headerFormat?: HeaderMediaFormat;
+  /** mediaId obtido via /api/channels/whatsapp-media/upload — a Meta usará
+   *  esse id em `template.components[].parameters[].{video|image|document}.id`
+   *  no momento do envio. Obrigatório quando headerFormat está setado. */
+  headerMedia?: {
+    mediaId: string;
+    mimeType: string;
+    fileName?: string;
+    sizeBytes?: number;
+  };
+}
+
+/** Tipos aceitos pelo input file por formato de header — alinhado com a
+ *  whitelist do endpoint /api/channels/whatsapp-media/upload. */
+const HEADER_MEDIA_ACCEPT: Record<HeaderMediaFormat, string> = {
+  IMAGE: 'image/jpeg,image/png',
+  VIDEO: 'video/mp4,video/3gpp',
+  DOCUMENT: 'application/pdf,application/msword,application/vnd.ms-excel,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain',
+};
+/** Limite Meta por categoria (em bytes). Validamos client-side pra dar erro
+ *  rápido — o backend também valida, mas evita round-trip pra arquivo grande. */
+const HEADER_MEDIA_MAX_BYTES: Record<HeaderMediaFormat, number> = {
+  IMAGE: 5 * 1024 * 1024,
+  VIDEO: 16 * 1024 * 1024,
+  DOCUMENT: 100 * 1024 * 1024,
+};
+const HEADER_MEDIA_LABEL: Record<HeaderMediaFormat, string> = {
+  IMAGE: 'imagem',
+  VIDEO: 'vídeo',
+  DOCUMENT: 'documento',
+};
+const HEADER_MEDIA_ICON: Record<HeaderMediaFormat, React.ReactNode> = {
+  IMAGE: <FileImage className="w-4 h-4" />,
+  VIDEO: <FileVideo className="w-4 h-4" />,
+  DOCUMENT: <FileText className="w-4 h-4" />,
+};
+
+/** Badge visual no dropdown — sinaliza tipo de header sem operador precisar
+ *  clicar pra descobrir. Cores distintas por categoria pra scan rápido em
+ *  lista longa de templates. Tamanho compacto pra não dominar o MenuItem. */
+function HeaderFormatBadge({ format }: { format: HeaderMediaFormat }) {
+  const config = {
+    VIDEO:    { icon: <FileVideo className="w-2.5 h-2.5" />,  label: 'Vídeo',     cls: 'text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/20' },
+    IMAGE:    { icon: <FileImage className="w-2.5 h-2.5" />,  label: 'Imagem',    cls: 'text-sky-700 dark:text-sky-400 bg-sky-50 dark:bg-sky-500/10 border-sky-200 dark:border-sky-500/20' },
+    DOCUMENT: { icon: <FileText className="w-2.5 h-2.5" />,   label: 'Documento', cls: 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-500/20' },
+  }[format];
+  return (
+    <span className={cn('inline-flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-wide px-1 py-0.5 rounded border', config.cls)}>
+      {config.icon}
+      {config.label}
+    </span>
+  );
 }
 
 interface Props {
@@ -106,6 +174,10 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Estado do upload de mídia do header — separado do error global porque pode
+  // co-existir com seleção válida (template OK, faltou só anexar o vídeo).
+  const [headerUploading, setHeaderUploading] = useState(false);
+  const [headerUploadError, setHeaderUploadError] = useState<string | null>(null);
   const fieldOptions = useMemo(() => fieldOptionsForChannel(channel), [channel]);
 
   // Fetch templates aprovados na WABA
@@ -195,12 +267,164 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
     const tpl = templates.find(t => `${t.name}__${t.language}` === v);
     if (!tpl) return;
     const count = maxVariableIndex(tpl.preview);
+    // Reseta erro de upload ao trocar de template — o anterior pode não se aplicar mais.
+    setHeaderUploadError(null);
+    // Anota headerFormat só quando exige mídia (IMAGE/VIDEO/DOCUMENT) —
+    // TEXT/LOCATION não precisam de upload, ficam undefined.
+    const fmt = tpl.header?.format;
+    const headerFormat: HeaderMediaFormat | undefined =
+      fmt === 'IMAGE' || fmt === 'VIDEO' || fmt === 'DOCUMENT' ? fmt : undefined;
     onChange({
       name: tpl.name,
       language: tpl.language,
       params: Array.from({ length: count }, () => ({ kind: 'literal', value: '' } as BroadcastTemplateParam)),
       preview: tpl.preview,
+      ...(headerFormat ? { headerFormat } : {}),
     });
+  };
+
+  /** Calcula SHA-256 hex do conteúdo do arquivo via SubtleCrypto (disponível
+   *  em todos browsers modernos). Roda em ~500ms até pra arquivos de 100MB.
+   *  Usado pra consultar cache de mediaId antes do upload — evita re-mandar
+   *  bytes quando o mesmo arquivo já foi enviado nos últimos 25 dias. */
+  const computeFileSha256 = async (file: File): Promise<string | null> => {
+    try {
+      if (!crypto?.subtle?.digest) return null;
+      const buf = await file.arrayBuffer();
+      const hash = await crypto.subtle.digest('SHA-256', buf);
+      return Array.from(new Uint8Array(hash))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    } catch (err) {
+      // Browser muito antigo ou erro de memória — segue sem cache, upload normal.
+      console.warn('[TemplateSelector] sha256 failed (continuing without cache):', err);
+      return null;
+    }
+  };
+
+  /** Faz upload do arquivo de header pra Meta via /api/channels/whatsapp-media/upload,
+   *  consultando primeiro a cache via /cache-lookup. Cache hit = zero bytes na rede;
+   *  miss = upload completo + cache write. Validação client-side (tamanho) antes
+   *  pra não desperdiçar tempo computando hash de arquivo gigante. */
+  const handleHeaderUpload = async (file: File) => {
+    if (!value || !value.headerFormat) return;
+    const maxBytes = HEADER_MEDIA_MAX_BYTES[value.headerFormat];
+    if (file.size > maxBytes) {
+      setHeaderUploadError(
+        `Arquivo excede ${(maxBytes / 1024 / 1024).toFixed(0)} MB ` +
+        `(recebido ${(file.size / 1024 / 1024).toFixed(1)} MB).`,
+      );
+      return;
+    }
+    // Snapshot do template no início do upload — se mudar durante o async
+    // (parent overrides programaticamente o value, ou bug do disabled), descartamos
+    // o resultado em vez de gravar mediaId num template diferente.
+    // O Select está disabled durante upload (defense primária); este check é
+    // defesa em profundidade caso o disable seja burlado.
+    const startSnapshot = { name: value.name, language: value.language };
+    const matchesSnapshot = (current: typeof value) =>
+      !!current && current.name === startSnapshot.name && current.language === startSnapshot.language;
+    setHeaderUploading(true);
+    setHeaderUploadError(null);
+    try {
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) {
+        setHeaderUploadError('Sessão expirada. Faça login novamente.');
+        return;
+      }
+
+      // ── 1. Hash + cache lookup ────────────────────────────────────────
+      // Calcula sha256 (best-effort — falha cai silenciosamente pro upload).
+      const sha256 = await computeFileSha256(file);
+      if (sha256) {
+        try {
+          const lookupRes = await fetch('/api/channels/whatsapp-media/cache-lookup', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ businessId, sha256 }),
+          });
+          if (lookupRes.ok) {
+            const lookupData = (await lookupRes.json()) as {
+              cached: boolean;
+              mediaId?: string;
+              mimeType?: string;
+              sizeBytes?: number;
+            };
+            if (lookupData.cached && lookupData.mediaId && lookupData.mimeType) {
+              // Cache hit — devolvemos sem upload, ~zero bytes na rede.
+              // Guard: só atualiza se template ainda é o mesmo (defense em profundidade).
+              if (!matchesSnapshot(value)) {
+                console.warn('[TemplateSelector] Template trocado durante cache-lookup, descartando');
+                return;
+              }
+              onChange({
+                ...value,
+                headerMedia: {
+                  mediaId: lookupData.mediaId,
+                  mimeType: lookupData.mimeType,
+                  fileName: file.name,
+                  sizeBytes: lookupData.sizeBytes ?? file.size,
+                },
+              });
+              return;
+            }
+          }
+        } catch (err) {
+          // Lookup falhou — não bloqueia, segue pro upload normal.
+          console.warn('[TemplateSelector] Cache lookup failed:', err);
+        }
+      }
+
+      // ── 2. Upload completo (cache miss ou sha256 indisponível) ────────
+      const form = new FormData();
+      form.append('businessId', businessId);
+      form.append('file', file);
+      if (sha256) form.append('sha256', sha256); // permite o backend gravar na cache
+      const res = await fetch('/api/channels/whatsapp-media/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({} as { error?: string }));
+        setHeaderUploadError(data.error || `Erro ${res.status} no upload`);
+        return;
+      }
+      const data = await res.json() as {
+        mediaId: string;
+        mimeType: string;
+        sizeBytes: number;
+        category: string;
+      };
+      // Mesmo guard de snapshot — se o template foi trocado durante o upload
+      // de 100MB, não escreve o mediaId num value stale.
+      if (!matchesSnapshot(value)) {
+        console.warn('[TemplateSelector] Template trocado durante upload, descartando mediaId');
+        return;
+      }
+      onChange({
+        ...value,
+        headerMedia: {
+          mediaId: data.mediaId,
+          mimeType: data.mimeType,
+          fileName: file.name,
+          sizeBytes: data.sizeBytes,
+        },
+      });
+    } catch (err) {
+      setHeaderUploadError(err instanceof Error ? err.message : 'Erro de rede no upload');
+    } finally {
+      setHeaderUploading(false);
+    }
+  };
+
+  const handleHeaderRemove = () => {
+    if (!value) return;
+    onChange({ ...value, headerMedia: undefined });
+    setHeaderUploadError(null);
   };
 
   const updateParam = (index: number, next: BroadcastTemplateParam) => {
@@ -209,9 +433,12 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
     onChange({ ...value, params: newParams });
   };
 
-  // Validação: tudo mapeado e literais não-vazios
+  // Validação: tudo mapeado, literais não-vazios, header media presente se exigido
   const validationError = useMemo(() => {
     if (!value || !selected) return null;
+    if (value.headerFormat && !value.headerMedia?.mediaId) {
+      return `Anexe o ${HEADER_MEDIA_LABEL[value.headerFormat]} do header do template`;
+    }
     if (value.params.length !== variableCount) return 'Mapeamento incompleto';
     for (let i = 0; i < value.params.length; i++) {
       const p = value.params[i];
@@ -252,7 +479,7 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
             </div>
           </div>
         ) : (
-          <FormControl fullWidth size="small">
+          <FormControl fullWidth size="small" disabled={headerUploading}>
             <InputLabel id="broadcast-template-select-label" shrink>Template aprovado</InputLabel>
             <Select
               labelId="broadcast-template-select-label"
@@ -260,12 +487,16 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
               value={value ? `${value.name}__${value.language}` : ''}
               onChange={(e) => handleSelectTemplateValue(e.target.value as string)}
               displayEmpty
+              disabled={headerUploading}
               renderValue={(sel) => {
                 if (!sel) return <span className="text-gray-400">Selecione um template…</span>;
                 const tpl = templates.find(t => `${t.name}__${t.language}` === sel);
                 if (!tpl) return sel as string;
+                const fmt = tpl.header?.format;
+                const isMediaFmt = fmt === 'IMAGE' || fmt === 'VIDEO' || fmt === 'DOCUMENT';
                 return (
                   <span className="inline-flex items-center gap-2">
+                    {isMediaFmt && <HeaderFormatBadge format={fmt} />}
                     <span className="font-medium">{tpl.name}</span>
                     <span className="text-xs text-gray-400">— {tpl.category} ({tpl.language})</span>
                   </span>
@@ -273,14 +504,21 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
               }}
             >
               <MenuItem value="" disabled>Selecione um template…</MenuItem>
-              {templates.map(t => (
-                <MenuItem key={`${t.name}__${t.language}`} value={`${t.name}__${t.language}`}>
-                  <Box className="flex items-center justify-between w-full gap-3 min-w-0">
-                    <span className="font-medium text-sm truncate">{t.name}</span>
-                    <span className="text-xs text-gray-400 flex-shrink-0">{t.category} • {t.language}</span>
-                  </Box>
-                </MenuItem>
-              ))}
+              {templates.map(t => {
+                const fmt = t.header?.format;
+                const isMediaFmt = fmt === 'IMAGE' || fmt === 'VIDEO' || fmt === 'DOCUMENT';
+                return (
+                  <MenuItem key={`${t.name}__${t.language}`} value={`${t.name}__${t.language}`}>
+                    <Box className="flex items-center justify-between w-full gap-3 min-w-0">
+                      <span className="inline-flex items-center gap-1.5 min-w-0">
+                        {isMediaFmt && <HeaderFormatBadge format={fmt} />}
+                        <span className="font-medium text-sm truncate">{t.name}</span>
+                      </span>
+                      <span className="text-xs text-gray-400 flex-shrink-0">{t.category} • {t.language}</span>
+                    </Box>
+                  </MenuItem>
+                );
+              })}
             </Select>
           </FormControl>
         )}
@@ -291,6 +529,84 @@ export default function TemplateSelector({ businessId, value, onChange, sampleRe
         <div className="px-3 py-2 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-gray-200 dark:border-gray-700">
           <p className="text-[9px] font-bold text-gray-400 uppercase mb-1">Conteúdo do template</p>
           <p className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">{selected.preview}</p>
+        </div>
+      )}
+
+      {/* Upload do header de mídia — só pra templates IMAGE/VIDEO/DOCUMENT.
+          Vai pra /api/channels/whatsapp-media/upload, retorna mediaId que o
+          builder de envio usa em components[].parameters[].{video|image|document}.id */}
+      {selected && value?.headerFormat && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1.5">
+            {HEADER_MEDIA_ICON[value.headerFormat]}
+            Mídia do header — {HEADER_MEDIA_LABEL[value.headerFormat]}
+            <span className="text-red-500 font-bold">*</span>
+          </p>
+          {!value.headerMedia ? (
+            <div className="px-3 py-3 rounded-lg bg-gray-50 dark:bg-white/[0.04] border border-dashed border-gray-300 dark:border-gray-600 flex flex-col items-center gap-2">
+              <label className={cn(
+                'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition-colors',
+                headerUploading
+                  ? 'bg-gray-200 dark:bg-gray-700 text-gray-400 cursor-wait'
+                  : 'bg-red-600 hover:bg-red-700 text-white',
+              )}>
+                {headerUploading ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Enviando…</>
+                ) : (
+                  <><Upload className="w-3.5 h-3.5" /> Selecionar {HEADER_MEDIA_LABEL[value.headerFormat]}</>
+                )}
+                <input
+                  type="file"
+                  hidden
+                  accept={HEADER_MEDIA_ACCEPT[value.headerFormat]}
+                  disabled={headerUploading}
+                  // Reset do value pra permitir re-selecionar o mesmo arquivo após erro.
+                  onClick={(e) => { (e.currentTarget as HTMLInputElement).value = ''; }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) handleHeaderUpload(f);
+                  }}
+                />
+              </label>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500 text-center">
+                Limite Meta: {(HEADER_MEDIA_MAX_BYTES[value.headerFormat] / 1024 / 1024).toFixed(0)} MB.
+                {value.headerFormat === 'VIDEO' && ' MP4 (H.264 + AAC) ou 3GP.'}
+                {value.headerFormat === 'IMAGE' && ' JPEG ou PNG.'}
+                {value.headerFormat === 'DOCUMENT' && ' PDF, Office ou TXT.'}
+              </p>
+            </div>
+          ) : (
+            <div className="px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-emerald-900 dark:text-emerald-200 truncate">
+                  {value.headerMedia.fileName || 'arquivo'}
+                </p>
+                <p className="text-[10px] text-emerald-700 dark:text-emerald-400">
+                  {value.headerMedia.sizeBytes
+                    ? `${(value.headerMedia.sizeBytes / 1024 / 1024).toFixed(1)} MB · `
+                    : ''}
+                  carregado na Meta
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleHeaderRemove}
+                className="p-1 rounded-md hover:bg-emerald-100 dark:hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 flex-shrink-0"
+                title="Remover e enviar outro"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          {headerUploadError && (
+            <div className="px-2.5 py-1.5 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20">
+              <p className="text-[10px] text-red-700 dark:text-red-400">
+                <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
+                {headerUploadError}
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -409,6 +725,11 @@ export function isTemplateSelectionValid(
   if (typeof expectedVarCount === 'number' && sel.params.length !== expectedVarCount) {
     return false;
   }
+  // Header de mídia exigido (templates com format IMAGE/VIDEO/DOCUMENT). O
+  // headerFormat é gravado na seleção quando o usuário escolhe o template —
+  // callers externos (CRMModule, BirthdayCampaignDialog) não precisam saber
+  // sobre essa regra, só passar a seleção.
+  if (sel.headerFormat && !sel.headerMedia?.mediaId) return false;
   for (const p of sel.params) {
     if (p.kind === 'literal' && !p.value.trim()) return false;
     if (p.kind === 'csvColumn' && !p.column.trim()) return false;

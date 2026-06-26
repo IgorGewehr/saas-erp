@@ -47,6 +47,7 @@ import { sendConversationToPipeline } from '@/lib/services/conversationToPipelin
 import { getVisibleStages } from '@/app/components/features/crm/shared';
 import { ScheduleFromConversationDialog } from './ScheduleFromConversationDialog';
 import ExportPhonesDialog from './ExportPhonesDialog';
+import TemplateSelector, { type TemplateSelection, isTemplateSelectionValid } from '../crm/TemplateSelector';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
 import EmojiPicker, { EmojiStyle, Theme as EmojiPickerTheme } from 'emoji-picker-react';
 import { pickReadableTextColor } from '@/lib/utils/color';
@@ -4324,7 +4325,15 @@ function NewConversationDialog({
       if (sendType === 'template') {
         sendBody.templateName = templateName;
         sendBody.templateLanguage = templateLanguage;
-        sendBody.templateParams = templateParams;
+        // Caminho NOVO (estruturado): templateBodyParams como string[] resolvido —
+        // backend monta components Meta via buildTemplateComponents. Antes mandava
+        // `templateParams` cru, que o passthrough legacy do /conversations/send
+        // injetava como `components` no payload Meta — strings cruas em components
+        // sao rejeitadas pela Meta (codigo 132000) e a bolha ficava em 'sending'
+        // eterno. Bug pre-existente identificado na auditoria pre-prod.
+        if (templateParams.length > 0) {
+          sendBody.templateBodyParams = templateParams;
+        }
       }
 
       const res = await fetch('/api/conversations/send', {
@@ -6945,6 +6954,9 @@ export default function ConversasModule() {
   // = quer marcar lida de novo).
   const [intentionallyUnreadIds, setIntentionallyUnreadIds] = useState<Set<string>>(new Set());
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  // Seleção atual no novo TemplateSelector (suporta header de mídia + variáveis).
+  // Reset ao fechar o painel ou após envio bem sucedido.
+  const [templateSelection, setTemplateSelection] = useState<TemplateSelection | null>(null);
   const [templateList, setTemplateList] = useState<Array<{ name: string; language: string; category: string; preview: string; hasVariables: boolean }>>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
@@ -8081,20 +8093,49 @@ export default function ConversasModule() {
 
   // ── Send template message ─────────────────────────────────────────────────
 
+  /**
+   * Envia template selecionado pelo TemplateSelector. Suporta:
+   *   - Variáveis literais (texto fixo digitado pelo operador)
+   *   - Variáveis field (resolvidas do contato da conversa: name, phoneNumber)
+   *   - Header de mídia (IMAGE/VIDEO/DOCUMENT) carregado via /whatsapp-media/upload
+   *
+   * O backend (conversations/send) usa templateBodyParams + headerMedia pra montar
+   * components Meta via buildTemplateComponents. csvColumn não é oferecido em 1:1
+   * (sem CSV context) — TemplateSelector é chamado sem prop csvColumns.
+   */
   const handleSendTemplate = useCallback(
-    async (templateName: string, templateLanguage: string) => {
+    async (sel: TemplateSelection) => {
       if (!selectedConversation || !business?.id || !user) return;
+      if (!isTemplateSelectionValid(sel)) return;
 
       setShowTemplateSelector(false);
+      setTemplateSelection(null);
       const now = new Date().toISOString();
 
-      // Tenta usar o preview do template (texto real renderizado) em vez do
-      // placeholder cru "[Template: nome]". Cai pro placeholder se não achar
-      // (ex: hello_world fallback antes do fetch).
-      const tpl = templateList.find(t => t.name === templateName);
-      const displayContent = tpl?.preview && tpl.preview.trim()
-        ? tpl.preview
-        : `[Template: ${templateName}]`;
+      // Resolve cada variável BroadcastTemplateParam para string. Contato da
+      // conversa é o "sample" — mesma lógica do TemplateSelector internamente
+      // (renderPreview), reproduzida aqui pra ser enviada ao backend.
+      const resolvedParams: string[] = sel.params.map(p => {
+        if (p.kind === 'literal') return p.value;
+        if (p.kind === 'field') {
+          if (p.field === 'name') return selectedConversation.contactName || '';
+          if (p.field === 'phoneNumber') return selectedConversation.contactExternalId || '';
+          if (p.field === 'email') return ''; // 1:1 não carrega email aqui
+        }
+        return ''; // csvColumn não aplicável em 1:1 (defesa em profundidade)
+      });
+
+      // Renderiza o body com os valores resolvidos pra exibir na bolha local
+      // — o backend manda a mesma string em `content` pro registro do
+      // conversationMessages denormalizar; outras pontas (notifications, logs)
+      // veem o texto real, não o placeholder.
+      const previewBody = sel.preview || '';
+      const displayContent = previewBody
+        ? previewBody.replace(/\{\{(\d+)\}\}/g, (m, idxStr) => {
+            const idx = Number(idxStr) - 1;
+            return idx >= 0 && idx < resolvedParams.length ? resolvedParams[idx] : m;
+          })
+        : `[Template: ${sel.name}]`;
 
       try {
         // 1. Save template message to Firestore (otimista). Templates SEMPRE
@@ -8110,8 +8151,8 @@ export default function ConversasModule() {
           direction: 'outbound' as const,
           content: displayContent,
           // Mantém o nome do template como metadado pra debug/audit
-          templateName,
-          templateLanguage,
+          templateName: sel.name,
+          templateLanguage: sel.language,
           status: 'sending' as const,
           senderName: user.name,
           sentAt: now,
@@ -8151,13 +8192,27 @@ export default function ConversasModule() {
               // ver o texto real, não o placeholder.
               content: displayContent,
               type: 'template',
-              templateName,
-              templateLanguage,
+              templateName: sel.name,
+              templateLanguage: sel.language,
+              // Caminho NOVO (estruturado): backend monta components via
+              // buildTemplateComponents. Omitimos os campos quando vazios
+              // pra deixar o backend cair no comportamento "template sem
+              // variáveis" (ex: hello_world).
+              ...(resolvedParams.length > 0 ? { templateBodyParams: resolvedParams } : {}),
+              ...(sel.headerMedia
+                ? {
+                    headerMedia: {
+                      mediaId: sel.headerMedia.mediaId,
+                      mimeType: sel.headerMedia.mimeType,
+                      ...(sel.headerMedia.fileName ? { fileName: sel.headerMedia.fileName } : {}),
+                    },
+                  }
+                : {}),
             }),
           });
           if (!res.ok) {
             const errBody = await res.json().catch(() => ({ error: 'Erro desconhecido' }));
-            toast.error(`Falha ao enviar template "${templateName}": ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
+            toast.error(`Falha ao enviar template "${sel.name}": ${errBody.error || 'erro desconhecido'}${errBody.metaCode ? ` (Meta #${errBody.metaCode})` : ''}`);
             console.warn('[SendTemplate] API error:', errBody);
             // Marca como falhou + persiste erro Meta — sem isso, o doc otimista
             // fica em 'sending' pra sempre e o operador não vê o motivo da falha.
@@ -8186,7 +8241,7 @@ export default function ConversasModule() {
         }
       }
     },
-    [selectedConversation, business?.id, user, templateList],
+    [selectedConversation, business?.id, user],
   );
 
   // ── Mark as read ───────────────────────────────────────────────────────────
@@ -10192,7 +10247,7 @@ export default function ConversasModule() {
 
                 {/* Template selector dropdown */}
                 <AnimatePresence>
-                  {showTemplateSelector && (
+                  {showTemplateSelector && business?.id && (
                     <motion.div
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
@@ -10203,54 +10258,48 @@ export default function ConversasModule() {
                       <div className="flex items-center justify-between mb-2.5">
                         <h4 className="text-xs font-semibold text-gray-900 dark:text-white">{t('conversations.selectTemplate', 'Selecionar Template')}</h4>
                         <button
-                          onClick={() => setShowTemplateSelector(false)}
+                          onClick={() => {
+                            setShowTemplateSelector(false);
+                            setTemplateSelection(null);
+                          }}
                           className="w-5 h-5 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                         >
                           <X className="w-3 h-3" />
                         </button>
                       </div>
-                      <div className="space-y-1.5">
-                        {templatesLoading && (
-                          <div className="flex items-center justify-center py-4 gap-2 text-gray-400 dark:text-gray-500">
-                            <div className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                            <span className="text-xs">Carregando templates...</span>
-                          </div>
+                      {/* TemplateSelector centraliza: dropdown de templates aprovados,
+                          variáveis ({{1}}, {{2}}, ...) e upload de header de mídia
+                          (IMAGE/VIDEO/DOCUMENT). Em 1:1, sampleRecipient é o contato
+                          da conversa, então o preview mostra valores reais. csvColumns
+                          não passa (não há contexto CSV). */}
+                      <TemplateSelector
+                        businessId={business.id}
+                        value={templateSelection}
+                        onChange={setTemplateSelection}
+                        channel="whatsapp"
+                        sampleRecipient={selectedConversation
+                          ? {
+                              name: selectedConversation.contactName,
+                              phoneNumber: selectedConversation.contactExternalId,
+                              recipientId: selectedConversation.contactExternalId,
+                            }
+                          : undefined
+                        }
+                      />
+                      <button
+                        type="button"
+                        onClick={() => templateSelection && handleSendTemplate(templateSelection)}
+                        disabled={!isTemplateSelectionValid(templateSelection)}
+                        className={cn(
+                          'w-full mt-2.5 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors',
+                          isTemplateSelectionValid(templateSelection)
+                            ? 'bg-[#25D366] hover:bg-[#22c35d] text-white'
+                            : 'bg-gray-200 dark:bg-white/[0.06] text-gray-400 dark:text-gray-500 cursor-not-allowed',
                         )}
-                        {templatesError && !templatesLoading && templateList.length === 0 && (
-                          <div className="text-xs text-red-500 dark:text-red-400 text-center py-3 px-2">
-                            {templatesError}
-                          </div>
-                        )}
-                        {templatesError && !templatesLoading && templateList.length > 0 && (
-                          <div className="text-[10px] text-amber-600 dark:text-amber-400 px-2 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
-                            <AlertTriangle className="w-3 h-3 inline mr-1 -mt-0.5" />
-                            {templatesError}
-                          </div>
-                        )}
-                        {!templatesLoading && !templatesError && templateList.length === 0 && (
-                          <div className="text-xs text-gray-400 dark:text-gray-500 text-center py-3">
-                            Nenhum template aprovado encontrado.
-                          </div>
-                        )}
-                        {!templatesLoading && templateList.map((tpl) => (
-                          <button
-                            key={`${tpl.name}_${tpl.language}`}
-                            onClick={() => handleSendTemplate(tpl.name, tpl.language)}
-                            className="w-full text-left p-2.5 rounded-lg hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors group"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0 flex-1">
-                                <span className="text-sm font-medium text-gray-800 dark:text-gray-200 block truncate">{tpl.name}</span>
-                                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">{tpl.preview}</p>
-                              </div>
-                              <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                                <Send className="w-3 h-3 text-gray-300 dark:text-gray-600 group-hover:text-[#25D366] transition-colors" />
-                                <span className="text-[9px] uppercase text-gray-400 dark:text-gray-500">{tpl.language}</span>
-                              </div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        Enviar template
+                      </button>
                     </motion.div>
                   )}
                 </AnimatePresence>

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
-import { getInitials } from '@/lib/utils/format';
+import { getInitials, formatCurrency } from '@/lib/utils/format';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useTheme } from '@/app/components/providers/ThemeProvider';
@@ -37,6 +37,7 @@ import {
   MessageCircle,
   MessageCircleOff,
   Package,
+  DollarSign,
 } from 'lucide-react';
 import { useNotificationPrefs } from '@/lib/utils/notification-prefs';
 import { getDesktopPermission, requestDesktopPermission } from '@/lib/utils/notification-alerts';
@@ -45,6 +46,27 @@ import type { UserStatus } from '@/lib/types';
 import type { MenuPage } from './Sidebar';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import { TeamChatPanel } from '@/app/components/features/team-chat/TeamChatPanel';
+
+interface UrgentRecurringItem {
+  id: string;
+  title: string;
+  amount: number;
+  type?: string;
+  /** 'YYYY-MM-DD' — vencimento da próxima ocorrência da recorrência. */
+  nextDueDate: string;
+}
+
+/** Rótulo relativo de vencimento (pt-BR). `dateStr` = 'YYYY-MM-DD'. */
+function dueLabel(dateStr: string): string {
+  const due = new Date(`${dateStr}T00:00:00`);
+  if (isNaN(due.getTime())) return '';
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.round((due.getTime() - today.getTime()) / 86_400_000);
+  if (days <= 0) return 'vence hoje';
+  if (days === 1) return 'vence amanhã';
+  return `vence em ${days} dias`;
+}
 
 interface TopBarProps {
   activePage?: MenuPage;
@@ -256,8 +278,61 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
     return () => unsub();
   }, [user?.uid, businessId]);
 
+  // ── Lembretes de lançamentos recorrentes a vencer (≤3 dias) ──
+  // Mesma fonte do badge do Financeiro na Sidebar (range em recurrence.nextDueDate),
+  // mas aqui cada um vira item DISPENSÁVEL no sino. Dispensar marca
+  // reminderDismissedFor = nextDueDate na transação → some do sino E do badge, e
+  // volta no próximo vencimento da recorrência. NÃO marca pago.
+  const [urgentRecurring, setUrgentRecurring] = useState<UrgentRecurringItem[]>([]);
+  useEffect(() => {
+    if (!businessId) { setUrgentRecurring([]); return; }
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const in3d = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    const q = query(
+      collection(db, 'transactions'),
+      where('businessId', '==', businessId),
+      where('recurrence.nextDueDate', '>=', todayStr),
+      where('recurrence.nextDueDate', '<=', in3d),
+      orderBy('recurrence.nextDueDate', 'asc'),
+      limit(200),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const items: UrgentRecurringItem[] = [];
+        for (const d of snap.docs) {
+          const data = d.data() as {
+            description?: string; category?: string; amount?: number; type?: string;
+            recurrence?: { isActive?: boolean; nextDueDate?: string; reminderDismissedFor?: string };
+          };
+          const rec = data.recurrence;
+          if (rec?.isActive !== true || !rec.nextDueDate) continue;
+          if (rec.reminderDismissedFor === rec.nextDueDate) continue; // dispensado nesta ocorrência
+          items.push({
+            id: d.id,
+            title: data.description || data.category || 'Lançamento recorrente',
+            amount: Number(data.amount ?? 0),
+            type: data.type,
+            nextDueDate: rec.nextDueDate,
+          });
+        }
+        setUrgentRecurring(items);
+      },
+      (err) => console.warn('[TopBar] urgent recurring snapshot error:', err),
+    );
+    return () => unsub();
+  }, [businessId]);
+
+  const handleDismissRecurring = useCallback(async (txId: string, nextDueDate: string) => {
+    try {
+      await updateDoc(doc(db, 'transactions', txId), { 'recurrence.reminderDismissedFor': nextDueDate });
+    } catch (err) {
+      console.warn('[TopBar] dispensar recorrente falhou:', err);
+    }
+  }, []);
+
   const unreadNotifCount = notifications.filter(n => !n.isRead).length;
-  const totalBadge = unreadCount + unreadNotifCount;
+  const totalBadge = unreadCount + unreadNotifCount + urgentRecurring.length;
 
   const handleMarkRead = useCallback(async (id: string) => {
     await updateDoc(doc(db, 'notifications', id), { isRead: true });
@@ -285,13 +360,37 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
   }, []);
 
   const handleClearUnreadConvs = useCallback(async () => {
-    if (unreadConvIds.length === 0) return;
-    const batch = writeBatch(db);
-    for (const id of unreadConvIds) {
-      batch.update(doc(db, 'conversations', id), { unreadCount: 0 });
+    if (!businessId) return;
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) return;
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+      // 1. Marca as não-lidas VISÍVEIS como lidas via servidor (transacional:
+      //    zera a conversa E decrementa o contador denormalizado em lockstep).
+      //    Antes isto fazia updateDoc client-side direto na conversa, que NÃO
+      //    baixava o agregado → o badge não somava certo.
+      await Promise.all(
+        unreadConvIds.map((id) =>
+          fetch(`/api/conversations/${id}`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ businessId, action: 'markAsRead' }),
+          }).catch(() => {}),
+        ),
+      );
+      // 2. Reconcilia o agregado a partir da verdade — limpa drift fantasma (ex:
+      //    conversas com não-lidas que foram soft-deletadas e inflaram o contador).
+      //    O onSnapshot de unreadCounters atualiza o badge sozinho.
+      await fetch('/api/conversations/recount', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ businessId }),
+      });
+    } catch (err) {
+      console.warn('[TopBar] limpar não-lidas falhou:', err);
     }
-    await batch.commit();
-  }, [unreadConvIds]);
+  }, [businessId, unreadConvIds]);
 
   // Close notif dropdown on outside click
   useEffect(() => {
@@ -549,9 +648,43 @@ export default function TopBar({ onMobileMenuToggle, onNavigate }: TopBarProps) 
                     </div>
                   )}
 
+                  {/* Lembretes de recorrentes a vencer — dispensáveis */}
+                  {urgentRecurring.map((item) => (
+                    <div
+                      key={item.id}
+                      className="w-full flex items-center gap-2 px-4 py-3 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors border-b border-gray-100 dark:border-gray-700/50"
+                    >
+                      <button
+                        onClick={() => { onNavigate?.('Financeiro'); setIsNotifOpen(false); }}
+                        className="flex-1 flex items-center gap-3 text-left min-w-0"
+                      >
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center text-amber-500 bg-amber-50 dark:bg-amber-500/10 shrink-0">
+                          <DollarSign className="w-4 h-4" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{item.title}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">
+                            {formatCurrency(item.amount)} · {dueLabel(item.nextDueDate)}
+                          </p>
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => handleDismissRecurring(item.id, item.nextDueDate)}
+                        title={t('topbar.notif.dismissRecurring', 'Dispensar lembrete')}
+                        className={cn(
+                          'w-7 h-7 flex items-center justify-center rounded-md shrink-0 transition-colors',
+                          'text-gray-500 hover:text-red-600 hover:bg-red-50',
+                          'dark:text-gray-400 dark:hover:text-red-400 dark:hover:bg-red-500/15',
+                        )}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+
                   {/* Notification list */}
                   <div className="max-h-80 overflow-y-auto">
-                    {notifications.length === 0 && unreadCount === 0 ? (
+                    {notifications.length === 0 && unreadCount === 0 && urgentRecurring.length === 0 ? (
                       <div className="py-10 text-center">
                         <Bell className="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" />
                         <p className="text-sm text-gray-500 dark:text-gray-400">

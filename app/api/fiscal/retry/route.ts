@@ -15,6 +15,13 @@ import {
   resolveAmbiente,
 } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
+import { commitInvoiceNumber } from '@/lib/fiscal/number-sequence';
+import { decryptToken } from '@/lib/utils/encryption';
+import { RetryFiscalRequestSchema } from '@/lib/contracts/api/fiscal/retry';
+import {
+  canTransitionFiscalDocument,
+  normalizeFiscalDocumentStatus,
+} from '@/lib/contracts/fsm/fiscalDocument';
 
 /**
  * POST /api/fiscal/retry
@@ -35,15 +42,15 @@ import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
  */
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { businessId, documentId } = body as { businessId?: string; documentId?: string };
-
-    if (!businessId || !documentId) {
+    const rawBody = await request.json();
+    const parsed = RetryFiscalRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
       return NextResponse.json(
-        { error: 'businessId e documentId são obrigatórios.' },
+        { error: 'businessId e documentId são obrigatórios.', details: parsed.error.flatten() },
         { status: 400 },
       );
     }
+    const { businessId, documentId } = parsed.data;
 
     const auth = await verifyAuth(request, businessId);
     if (isAuthError(auth)) return auth;
@@ -100,6 +107,20 @@ export async function POST(request: NextRequest) {
     const type = docData.type as 'nfe' | 'nfce' | 'nfse';
     const isContingencia = docData.status === 'contingencia';
 
+    // Docs pendentes antigos guardavam o request da UI (items/recipient/...),
+    // não o payload do gateway — replay direto resultaria em 400 opaco do
+    // sefaz-api. Detecta o formato legado e orienta reemissão.
+    if (!isContingencia) {
+      const isGatewayShape =
+        type === 'nfse' ? 'prestador' in originalRequest : 'emitente' in originalRequest;
+      if (!isGatewayShape) {
+        return NextResponse.json(
+          { error: 'Documento pendente em formato antigo (anterior à correção do retry) — não é possível reenviar. Emita uma nova nota.' },
+          { status: 400 },
+        );
+      }
+    }
+
     try {
       let result: Awaited<ReturnType<typeof emitirNFe>>;
       if (isContingencia) {
@@ -120,29 +141,89 @@ export async function POST(request: NextRequest) {
           ambiente: resolveAmbiente(meta.ambiente),
         });
       } else if (type === 'nfse') {
+        // originalRequest é o payload do gateway montado pelo emit (sem
+        // certificado, removido por segurança) — replay direto.
         const payload = { ...originalRequest, certificado };
         result = await emitirNFSe(payload as NfsePayload);
       } else if (type === 'nfce') {
-        const payload = { ...originalRequest, certificado };
-        result = await emitirNFCe(payload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
+        // CSC não é persistido (token sensível) — re-resolve do business,
+        // mesma lógica do emit (cscTokenEncrypted preferido, legado plaintext).
+        const businessDoc = await adminDb.collection('businesses').doc(businessId).get();
+        const nfceConfig = businessDoc.data()?.fiscal?.nfceConfig;
+        const cscTokenPlain = nfceConfig?.cscTokenEncrypted
+          ? await decryptToken(nfceConfig.cscTokenEncrypted)
+          : nfceConfig?.cscToken || '';
+        if (!nfceConfig?.cscId || !cscTokenPlain) {
+          return NextResponse.json(
+            { error: 'CSC não configurado para NFC-e — configure em Configurações → Fiscal antes de reenviar.' },
+            { status: 400 },
+          );
+        }
+        const payload = {
+          ...originalRequest,
+          csc: { id: nfceConfig.cscId, token: cscTokenPlain },
+          certificado,
+        };
+        result = await emitirNFCe(payload as unknown as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
       } else {
         const payload = { ...originalRequest, certificado };
         result = await emitirNFe(payload as Record<string, unknown> & { certificado: CertificadoPayload; ambiente: SefazAmbiente });
       }
 
-      // Atualiza o documento com o resultado. Mantém number/series originais —
-      // foram reservados na 1ª tentativa via peekNextInvoiceNumber.
+      // Atualiza o documento com o resultado. Mantém number/series originais.
       const nextStatus =
         result.status === 'autorizado' ? 'autorizada' :
         result.status === 'processando' ? 'processando' :
         result.status;
 
+      // SALVAGUARDA DE MIGRAÇÃO: docs 'pendente' criados no regime antigo
+      // (peek sem reserva) têm number == nextNumber nunca incrementado — sem
+      // este bump, retry autorizado deixaria a próxima emissão nova colidir
+      // (539). Para docs novos (alocação atômica) o Math.max é no-op barato.
+      if (!isContingencia && (nextStatus === 'autorizada' || nextStatus === 'processando')) {
+        const docNumber = Number(docData.number);
+        if (docNumber > 0) {
+          await commitInvoiceNumber(businessId, type, docNumber);
+        }
+      }
+
+      // Contingência: o XML assinado tpEmis=9 (DANFCE já impresso pro cliente)
+      // é o ÚNICO artefato da nota — nunca sobrescrever com null em rejeição/
+      // processando, senão o doc fica irrecuperável.
+      const xmlToPersist = result.xml || (isContingencia ? docData.xml : null);
+      // Rejeição na transmissão de contingência mantém o doc elegível pra
+      // retry (status 'contingencia') — extemporaneidade é tratada pelo cron
+      // (marca 'rejeitada' após a janela de 24h).
+      const statusToPersist =
+        isContingencia && nextStatus !== 'autorizada' && nextStatus !== 'processando'
+          ? 'contingencia'
+          : nextStatus;
+
+      // FSM (R4): canoniza o status do gateway (masculino 'rejeitado'/'erro'
+      // vazava cru pro Firestore) e valida a transição antes do update.
+      // from é 'pendente'|'contingencia' (guard no topo) — transição inválida
+      // aqui significa resposta desconhecida do gateway: 409 sem persistir.
+      const fromStatus = normalizeFiscalDocumentStatus(docData.status);
+      const toStatus = normalizeFiscalDocumentStatus(statusToPersist);
+      if (!fromStatus || !toStatus || !canTransitionFiscalDocument(fromStatus, toStatus)) {
+        console.warn('[Fiscal Retry] FSM: transição inválida', {
+          documentId, from: docData.status, to: statusToPersist, gatewayStatus: result.status,
+        });
+        return NextResponse.json(
+          {
+            error: `Transição de status inválida (${docData.status} → ${statusToPersist}). Resposta do gateway não reconhecida — documento não foi alterado.`,
+            data: result,
+          },
+          { status: 409 },
+        );
+      }
+
       await docRef.update({
-        status: nextStatus,
+        status: toStatus,
         statusMessage: result.motivoStatus || result.mensagens?.[0]?.mensagem || result.erros?.[0] || null,
         accessKey: result.chaveAcesso || result.codigoVerificacao || docData.accessKey || null,
         protocol: result.protocolo || null,
-        xml: result.xml || null,
+        xml: xmlToPersist,
         pdfUrl: result.linkVisualizacao || null,
         sefazResponse: result,
         // Limpa originalRequest após sucesso — não precisa mais e libera espaço.

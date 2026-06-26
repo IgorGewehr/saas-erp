@@ -52,14 +52,32 @@ export async function DELETE(
     //    legado durante a janela de backfill). authResult tem uid mas nao
     //    name — usa uid como fallback (ideal: buscar nome do users/{uid},
     //    pendente).
-    //    Zerar unreadCount: defesa em profundidade contra badge fantasma.
+    //    Roda em runTransaction: lê prevUnread + escopo da conversa e DECREMENTA
+    //    o contador denormalizado (unreadCounters) ANTES de zerar — senão o
+    //    agregado fica inflado pra sempre (badge fantasma: conversa some mas o
+    //    contador não baixa). Mesmo lockstep do markAsRead. Idempotente: se já
+    //    estava 0/soft-deletada, o decremento é no-op (prevUnread<=0).
     const now = new Date().toISOString();
-    await adminDb.doc(`conversations/${conversationId}`).update({
-      deletedAt: now,
-      deletedBy: authResult.uid,
-      deletedByName: authResult.uid,
-      unreadCount: 0,
-      updatedAt: now,
+    const convRef = adminDb.doc(`conversations/${conversationId}`);
+    await adminDb.runTransaction(async (tx) => {
+      const snap = await tx.get(convRef);
+      if (!snap.exists) return;
+      const data = snap.data()!;
+      const prevUnread = Number(data.unreadCount ?? 0);
+      const scope = {
+        channelOwnerType: data.channelOwnerType as string | undefined,
+        channelOwnerId: data.channelOwnerId as string | undefined,
+      };
+      // Decremento primeiro: o helper faz tx.get internamente, e o Admin SDK
+      // exige todas as leituras antes das escritas.
+      await decrementUnreadCounterInTx(tx, adminDb, businessId, scope, prevUnread);
+      tx.update(convRef, {
+        deletedAt: now,
+        deletedBy: authResult.uid,
+        deletedByName: authResult.uid,
+        unreadCount: 0,
+        updatedAt: now,
+      });
     });
 
     return NextResponse.json({

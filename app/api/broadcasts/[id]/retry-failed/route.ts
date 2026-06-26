@@ -124,6 +124,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (original.templateLanguage) newBroadcastData.templateLanguage = original.templateLanguage;
     if (original.templateParams) newBroadcastData.templateParams = original.templateParams;
     if (original.templateBody) newBroadcastData.templateBody = original.templateBody;
+    // Header de mídia (IMAGE/VIDEO/DOCUMENT) reusa o mesmo mediaId do original
+    // — TTL Meta ~30d cobre janela de retry; sem isso, retry de campanha com
+    // vídeo perderia o header e Meta rejeitaria por param count mismatch (132000).
+    if (original.headerMedia) newBroadcastData.headerMedia = original.headerMedia;
     if (original.messageContent) newBroadcastData.messageContent = original.messageContent;
     if (original.emailSubject) newBroadcastData.emailSubject = original.emailSubject;
     if (original.viaBaileys) newBroadcastData.viaBaileys = true;

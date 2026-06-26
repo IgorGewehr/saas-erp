@@ -5,56 +5,25 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
 import { inutilizarNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
-
-interface InutilizarBody {
-  businessId: string;
-  ano: number;
-  serie: string;
-  numeroInicial: number;
-  numeroFinal: number;
-  justificativa: string;
-  ufEmitente: string;
-  cnpj: string;
-  modelo: '55' | '65'; // 55=NFe, 65=NFCe
-  certificado?: {
-    pfxBase64: string;
-    password: string;
-  };
-}
+import { InutilizarRequestSchema } from '@/lib/contracts/api/fiscal/inutilizar';
 
 export async function POST(request: NextRequest) {
   try {
-    const body: InutilizarBody = await request.json();
+    const rawBody = await request.json();
+    const parsed = InutilizarRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Payload inválido para inutilização.', details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const body = parsed.data;
 
     // Auth: admin+ only
-    if (!body.businessId) {
-      return NextResponse.json({ error: 'businessId e obrigatorio.' }, { status: 400 });
-    }
     const auth = await verifyAuth(request, body.businessId);
     if (isAuthError(auth)) return auth;
     if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
       return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
-    }
-
-    if (!body.justificativa || body.justificativa.trim().length < 15) {
-      return NextResponse.json(
-        { error: 'Justificativa deve ter no minimo 15 caracteres.' },
-        { status: 400 },
-      );
-    }
-
-    if (body.justificativa.trim().length > 255) {
-      return NextResponse.json(
-        { error: 'Justificativa deve ter no maximo 255 caracteres.' },
-        { status: 400 },
-      );
-    }
-
-    if (body.numeroInicial > body.numeroFinal) {
-      return NextResponse.json(
-        { error: 'Numero inicial deve ser menor ou igual ao numero final.' },
-        { status: 400 },
-      );
     }
 
     // Resolve certificate & ambiente from Firestore

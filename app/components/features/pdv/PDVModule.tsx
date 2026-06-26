@@ -59,7 +59,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { notifyLowStock } from '@/lib/services/notifications';
@@ -136,7 +136,10 @@ interface CartItem extends SaleItem {
 export default function PDVModule() {
   const { t } = useTranslation();
   const { isDark } = useTheme();
-  const { user, business } = useAuth();
+  const { user, business, firebaseUser } = useAuth();
+  // Idempotência NFC-e: chave estável por venda — retry manual da mesma venda
+  // reusa a chave (dedup no servidor); regenerada após emissão autorizada.
+  const nfceIdemKeyRef = useRef<string>(crypto.randomUUID());
   const queryClient = useQueryClient();
 
   const loyaltyConfig = business?.settings?.loyalty;
@@ -195,7 +198,7 @@ export default function PDVModule() {
   const pendingNfceRef = useRef<{
     saleId: string;
     cart: CartItem[];
-    total: number;
+    discount: number;
     payments: Payment[];
     clientName: string;
     cpf: string;
@@ -632,7 +635,7 @@ export default function PDVModule() {
   const emitNfce = useCallback(async (
     saleId: string,
     cartSnapshot: CartItem[],
-    saleTotal: number,
+    saleDiscount: number,
     salePayments: Payment[],
     clientName: string,
     cpf: string,
@@ -643,14 +646,32 @@ export default function PDVModule() {
     setNfceResult(null);
 
     try {
+      // Rateia o desconto de nível de venda proporcionalmente nos itens — o
+      // backend calcula vNF = Σ(vProd − vDesc), então desconto que não vive
+      // nos itens simplesmente some da nota. Último item absorve o resto de
+      // arredondamento; share clampado pro item nunca ficar negativo.
+      const grossOf = (item: CartItem) => item.quantity * item.unitPrice - (item.discount || 0);
+      const grossTotal = cartSnapshot.reduce((sum, item) => sum + grossOf(item), 0);
+      let allocated = 0;
+      const saleDiscountShares = cartSnapshot.map((item, idx) => {
+        const gross = grossOf(item);
+        const raw = idx === cartSnapshot.length - 1
+          ? saleDiscount - allocated
+          : grossTotal > 0 ? (gross / grossTotal) * saleDiscount : 0;
+        const share = Math.min(gross, Math.max(0, +raw.toFixed(2)));
+        allocated = +(allocated + share).toFixed(2);
+        return share;
+      });
+
       // Build items with fiscal data from products
-      const nfceItems = cartSnapshot.map((item) => {
+      const nfceItems = cartSnapshot.map((item, idx) => {
         const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        const discount = +((item.discount || 0) + saleDiscountShares[idx]).toFixed(2);
         return {
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
-          discount: (item.discount || 0) > 0 ? item.discount : undefined,
+          discount: discount > 0 ? discount : undefined,
           ncm: prod?.ncm || undefined,
           cfop: prod?.cfop ? Number(prod.cfop) : undefined,
           barcode: prod?.barcode || undefined,
@@ -659,16 +680,41 @@ export default function PDVModule() {
         };
       });
 
-      // Map primary payment method
-      const primaryPayment = salePayments[0];
-      const paymentMethod = primaryPayment?.method || 'dinheiro';
+      // Total fiscal = Σ itens − descontos (espelha o vNF calculado no backend).
+      const fiscalTotal = +cartSnapshot
+        .reduce((sum, item, idx) => sum + item.quantity * item.unitPrice - ((item.discount || 0) + saleDiscountShares[idx]), 0)
+        .toFixed(2);
+
+      // Envia TODAS as formas de pagamento (antes só salePayments[0] com o
+      // total inteiro — 50% PIX + 50% cartão saía 100% no primeiro método).
+      // SEFAZ exige Σ formas == vNF e o contrato (lib/contracts/api/fiscal/
+      // emit.ts) não tem vTroco nem vOutro: troco e gorjeta não são
+      // representáveis. O excedente é abatido preferencialmente de dinheiro
+      // (semântica de troco) e, se sobrar (ex.: gorjeta no cartão), dos
+      // demais a partir do último.
+      const fiscalPayments = salePayments.map(p => ({ method: p.method, amount: +p.amount.toFixed(2) }));
+      let excess = +(fiscalPayments.reduce((sum, p) => sum + p.amount, 0) - fiscalTotal).toFixed(2);
+      const absorbExcess = (match: (method: PaymentMethod) => boolean) => {
+        for (let i = fiscalPayments.length - 1; i >= 0 && excess > 0; i--) {
+          if (!match(fiscalPayments[i].method)) continue;
+          const cut = Math.min(fiscalPayments[i].amount, excess);
+          fiscalPayments[i].amount = +(fiscalPayments[i].amount - cut).toFixed(2);
+          excess = +(excess - cut).toFixed(2);
+        }
+      };
+      absorbExcess(method => method === 'dinheiro');
+      absorbExcess(() => true);
+      // PDV tolera 1 centavo a menos no pagamento (remaining <= 0.01) —
+      // completa no primeiro método pra fechar com o vNF.
+      if (excess < 0 && fiscalPayments.length > 0) {
+        fiscalPayments[0].amount = +(fiscalPayments[0].amount - excess).toFixed(2);
+      }
 
       const nfcePayload = {
         type: 'nfce' as const,
         businessId: business.id,
         items: nfceItems,
-        paymentMethod,
-        paymentValue: saleTotal,
+        payments: fiscalPayments.filter(p => p.amount > 0),
         cpfConsumidor: cpf.replace(/\D/g, '') || undefined,
         nomeConsumidor: clientName.trim() || undefined,
         presencaComprador: 1,
@@ -677,7 +723,13 @@ export default function PDVModule() {
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Dedup server-side: retry da MESMA venda reusa a chave → replay/409
+          // em vez de segunda NFC-e; regenerada quando a emissão autoriza.
+          'X-Idempotency-Key': nfceIdemKeyRef.current,
+          ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}),
+        },
         body: JSON.stringify(nfcePayload),
       });
 
@@ -687,10 +739,23 @@ export default function PDVModule() {
         setNfceResult({
           accessKey: json.data.chaveAcesso,
         });
+        nfceIdemKeyRef.current = crypto.randomUUID();
         setNfceModalState('authorized');
         // FiscalModule usa onSnapshot agora — invalidação não é mais necessária.
 
         return { success: true, accessKey: json.data.chaveAcesso };
+      } else if (json.fallback === 'pending') {
+        // SEFAZ fora do ar: o doc foi salvo como 'pendente' — a venda está OK
+        // e a nota será reenviada pelo módulo Fiscal (não é erro de emissão).
+        setNfceResult({
+          error: 'SEFAZ indisponível no momento. A nota ficou PENDENTE e pode ser reenviada no módulo Fiscal — a venda foi concluída normalmente.',
+        });
+        setNfceModalState('error');
+        return { success: false };
+      } else if (res.status === 409) {
+        setNfceResult({ error: 'Emissão desta venda já está em andamento — aguarde alguns segundos e verifique o módulo Fiscal antes de tentar de novo.' });
+        setNfceModalState('error');
+        return { success: false };
       } else {
         const errorMsg = json.error || json.data?.mensagem || 'Erro desconhecido na emissão da NFC-e';
         setNfceResult({ error: errorMsg });
@@ -703,7 +768,7 @@ export default function PDVModule() {
       setNfceModalState('error');
       return { success: false };
     }
-  }, [business, products, queryClient]);
+  }, [business, products, firebaseUser]);
 
   const confirmSale = useCallback(async () => {
     if (!user || !business) return;
@@ -857,19 +922,16 @@ export default function PDVModule() {
       }
 
       // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
-      // TODO(auditoria P2.12): comissão é addDoc avulso pós-commit, sem chave de
-      // idempotência nem `commissionTransactionId` na Sale. A correção canônica
-      // (comissão dentro do batch com ID determinístico de saleRef.id + link na
-      // Sale) já existe em lib/services/sales-server.ts createSaleWithSideEffects;
-      // migrar o PDV pra esse serviço é arriscado agora (PDV usa client SDK e
-      // batch único atômico; o serviço usa firebase-admin). Migração rastreada
-      // como dívida — caminho de duplicação aqui é estreito (sem retry automático,
-      // guard de UI).
+      // P2.12: comissão gravada com ID DETERMINÍSTICO (`comm_sale_<saleId>`) via
+      // setDoc em vez de addDoc. Como o saleRef.id é único por venda, um re-clique
+      // ou retry pós-commit sobrescreve o mesmo doc em vez de criar uma 2ª comissão
+      // — fecha a janela de duplicação. A migração completa pro motor server-side
+      // (sales-server) segue como dívida; este guard idempotente cobre o risco real.
       const commissionRate = user.commissionRate ?? 0;
       if (commissionRate > 0 && total > 0) {
         const commissionAmount = Math.round(total * commissionRate) / 100;
         try {
-          await addDoc(collection(db, 'transactions'), {
+          await setDoc(doc(db, 'transactions', `comm_sale_${saleRef.id}`), {
             businessId: business.id,
             type: 'despesa',
             category: 'Comissoes',
@@ -963,7 +1025,7 @@ export default function PDVModule() {
         pendingNfceRef.current = {
           saleId: docRef.id,
           cart: [...cart],
-          total,
+          discount: discountAmount,
           payments: [...payments],
           clientName: selectedClient?.name || '',
           cpf: cpfConsumidor,
@@ -976,7 +1038,7 @@ export default function PDVModule() {
         await emitNfce(
           docRef.id,
           cart,
-          total,
+          discountAmount,
           payments,
           selectedClient?.name || '',
           cpfConsumidor,
@@ -1168,7 +1230,7 @@ export default function PDVModule() {
   const handleNfceRetry = useCallback(async () => {
     const ctx = pendingNfceRef.current;
     if (!ctx) return;
-    await emitNfce(ctx.saleId, ctx.cart, ctx.total, ctx.payments, ctx.clientName, ctx.cpf);
+    await emitNfce(ctx.saleId, ctx.cart, ctx.discount, ctx.payments, ctx.clientName, ctx.cpf);
   }, [emitNfce]);
 
   const handlePrintReceipt = useCallback(() => {

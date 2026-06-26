@@ -1139,6 +1139,11 @@ export interface TransactionRecurrence {
   interestPctMonth?: number; // FIN-R18: monthly interest % pro-rata (e.g. 1 = 1%/month)
   label?: string;            // user-friendly name (e.g. "Aluguel")
   history?: TransactionRecurrenceEntry[]; // log of past paid occurrences
+  /** Lembrete "a vencer" (sino/badge) dispensado manualmente para esta ocorrência.
+   *  Guarda o nextDueDate dispensado; quando === nextDueDate, o lembrete some do
+   *  sino e do badge do Financeiro. Volta sozinho no próximo ciclo (nextDueDate muda).
+   *  NÃO marca a transação como paga. */
+  reminderDismissedFor?: string;
 }
 
 export interface TransactionAttachment {
@@ -3350,6 +3355,18 @@ export interface Broadcast {
    * "[Template: nome]" no lugar do texto enviado.
    */
   templateBody?: string;
+  /**
+   * Mídia do header (templates com format IMAGE/VIDEO/DOCUMENT). mediaId vem
+   * do POST /api/channels/whatsapp-media/upload, é scoped pelo phone_number_id
+   * do business e tem TTL ~30 dias na Meta. /api/broadcasts/send usa esse
+   * payload para montar `components[0]` do template via buildTemplateComponents.
+   * Ausente em templates com header TEXT/LOCATION ou só body.
+   */
+  headerMedia?: {
+    mediaId: string;
+    mimeType: string;
+    fileName?: string;
+  };
   messageContent?: string;
   /** Assunto para canal email (broadcasts via notification-server). */
   emailSubject?: string;
@@ -3477,6 +3494,13 @@ export interface BirthdayCampaign {
   templateParams?: BroadcastTemplateParam[];
   /** Body cru do template — usado pra renderizar preview na conversa. */
   templateBody?: string;
+  /** Mídia do header — quando o template tem format IMAGE/VIDEO/DOCUMENT.
+   *  Reaproveitado em todos os recipients da campanha (Meta scope: phone_number_id). */
+  headerMedia?: {
+    mediaId: string;
+    mimeType: string;
+    fileName?: string;
+  };
 
   // ── Filtro de quem entra ───────────────────────
   filters?: {
