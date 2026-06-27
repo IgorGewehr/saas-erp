@@ -270,3 +270,73 @@ export async function deductStockAdmin(
     return adjustments;
   });
 }
+
+/**
+ * Atomically RESTORE stock for a set of order lines (reverse of
+ * deductStockAdmin). Expands composite products and writes one product update +
+ * one `entrada` stockMovement per resulting leaf SKU, incrementing currentStock.
+ *
+ * Usado quando uma cobrança é desfeita (PIX expirado, estorno) e o estoque que
+ * fora debitado na criação do pedido precisa voltar. A idempotência é
+ * responsabilidade do CALLER (ex: guard `stockRestoredAt` no pedido) — chamar
+ * esta função duas vezes incrementa o estoque duas vezes.
+ */
+export async function restoreStockAdmin(
+  db: Firestore,
+  lines: StockDeductionLine[],
+  ctx: StockDeductionContextAdmin,
+): Promise<StockAdjustmentAdmin[]> {
+  const expanded = expandComponents(lines, ctx.productIndex);
+  if (expanded.length === 0) return [];
+
+  const now = new Date().toISOString();
+
+  return db.runTransaction(async (tx) => {
+    const reads: Array<{ line: StockDeductionLine; product: Product; previousStock: number }> = [];
+    for (const line of expanded) {
+      const product = ctx.productIndex.get(line.productId);
+      if (!product) continue;
+      const snap = await tx.get(db.collection('products').doc(product.id));
+      const previousStock =
+        (snap.exists ? (snap.data()?.currentStock as number | undefined) : undefined) ?? 0;
+      reads.push({ line, product, previousStock });
+    }
+
+    const adjustments: StockAdjustmentAdmin[] = [];
+    for (const { line, product, previousStock } of reads) {
+      const newStock = previousStock + line.quantity;
+
+      tx.update(db.collection('products').doc(product.id), {
+        currentStock: FieldValue.increment(line.quantity),
+        updatedAt: now,
+      });
+
+      const movementRef = db.collection('stockMovements').doc();
+      const movement: Omit<StockMovement, 'id'> = {
+        businessId: ctx.businessId,
+        productId: product.id,
+        productName: product.name,
+        type: 'entrada',
+        quantity: line.quantity,
+        previousStock,
+        newStock,
+        reason: ctx.reason,
+        ...(ctx.sourceId ? { saleId: ctx.sourceId } : {}),
+        operatorId: ctx.operatorId,
+        operatorName: ctx.operatorName,
+        createdAt: now,
+      };
+      tx.set(movementRef, movement);
+
+      adjustments.push({
+        productId: product.id,
+        productName: product.name,
+        delta: line.quantity,
+        previousStock,
+        newStock,
+      });
+    }
+
+    return adjustments;
+  });
+}

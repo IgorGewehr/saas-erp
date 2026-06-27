@@ -186,6 +186,39 @@ export const ConversationReopenedSchema = EventEnvelopeBase.extend({
   reason: z.enum(['inbound_after_resolve', 'manual_reopen']),
 });
 
+/**
+ * Pagamento online aprovado (Mercado Pago) — payment FSM → paid.
+ * Emitido pelo webhook do MP após confirmar o pagamento (dedup por externalPaymentId).
+ *
+ * Subscribers conhecidos (GAP G5 — não implementado ainda):
+ *   - DeliveryOrder: paymentStatus = 'pago', set paidAt + assertTransitionPayment → paid
+ *   - lib/services/* (financial): cria Transaction de RECEITA idempotente
+ *     (guard order.transactionId)
+ *   - Notifications: avisa cliente via WhatsApp ("pagamento confirmado")
+ */
+export const PaymentApprovedSchema = EventEnvelopeBase.extend({
+  type: z.literal('payment.approved'),
+  orderId: z.string().min(1),
+  externalPaymentId: z.string().min(1),
+  paymentMethodKind: z.enum(['pix', 'card']).optional(),
+  amount: z.number().nonnegative(),
+});
+
+/**
+ * Pagamento estornado (refund total) — payment FSM paid → refunded.
+ *
+ * Subscribers conhecidos (GAP G5 — não implementado ainda):
+ *   - lib/services/stock.ts → restoreStock (devolve itens ao estoque)
+ *   - lib/services/* (financial): estorna/contra-lança a Transaction de receita
+ *   - DeliveryOrder: paymentStatus = 'estornado', set refundedAt
+ */
+export const PaymentRefundedSchema = EventEnvelopeBase.extend({
+  type: z.literal('payment.refunded'),
+  orderId: z.string().min(1),
+  externalPaymentId: z.string().min(1),
+  amount: z.number().nonnegative(),
+});
+
 // ============================================================================
 // Discriminated union — fonte da verdade dos eventos do sistema
 // ============================================================================
@@ -202,6 +235,8 @@ export const DomainEventSchema = z.discriminatedUnion('type', [
   DeliveryOrderConfirmedSchema,
   PurchaseImportedSchema,
   ConversationReopenedSchema,
+  PaymentApprovedSchema,
+  PaymentRefundedSchema,
 ]);
 
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
@@ -219,6 +254,8 @@ export const DOMAIN_EVENT_TYPES = [
   'deliveryOrder.confirmed',
   'purchase.imported',
   'conversation.reopened',
+  'payment.approved',
+  'payment.refunded',
 ] as const satisfies readonly DomainEventType[];
 
 /** Extrai o evento concreto de um tipo da union. */

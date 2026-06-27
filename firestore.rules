@@ -1067,10 +1067,44 @@ service cloud.firestore {
                     && incomingBelongsToBusiness()
                     && isOperator();
 
+      // Campos de PAGAMENTO online (Mercado Pago) são escritos SÓ pelo Admin SDK
+      // (webhook MP / rota de cartão), nunca pelo client. Permitir staff gravá-los
+      // pelo SDK web deixaria marcar pedido 'pago' sem confirmação do provedor.
+      // Trava só estes campos via diff(); o staff continua livre pra avançar o
+      // status de FABRICAÇÃO (recebido→entregue) e demais campos do pedido.
+      //
+      // ATENÇÃO: 'paymentStatus' NÃO entra aqui. Ele é tambem o flag de pagamento
+      // MANUAL/offline (dinheiro/voucher) que o staff confirma pelo SDK web
+      // (OrdersModule). Travá-lo sempre regrediu a confirmação manual de pedidos
+      // em dinheiro. Ver paymentStatusLocked() abaixo — só trava em pedidos MP.
+      function paymentFieldsLocked() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny([
+                   'paymentFsmStatus', 'externalPaymentId', 'paidAt',
+                   // defesa em profundidade: client nunca edita estes
+                   'paymentAmount', 'pixMintAt', 'pixMintBy',
+                   // stockDeductedAt NÃO entra: o staff grava esse campo no fluxo
+                   // de fabricação manual (preparando/cancelar/excluir via SDK web).
+                   // Só stockRestoredAt é server-only (cron expire-pix + webhook).
+                   'stockRestoredAt'
+                 ]);
+      }
+
+      // paymentStatus só é travado pro client quando o pedido é online (MP).
+      // Pedidos manuais (sem paymentProvider == 'mercadopago') seguem podendo
+      // ter paymentStatus alterado pelo staff (ex.: dinheiro → 'pago').
+      function paymentStatusLocked() {
+        return resource.data.paymentProvider == 'mercadopago'
+               && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasAny(['paymentStatus']);
+      }
+
       allow update: if isAuthenticated()
                     && isOwnBusiness()
                     && isOperator()
-                    && incomingBelongsToBusiness();
+                    && incomingBelongsToBusiness()
+                    && !paymentFieldsLocked()
+                    && !paymentStatusLocked();
 
       // Fase 5e: deliveryOrders e Tier 2 status-driven. "Excluir" agora e
       // transicao FSM pra status='cancelado'. Hard-delete proibido —
@@ -1081,6 +1115,22 @@ service cloud.firestore {
     // Contadores sequenciais (subcollection businesses/{id}/counters/{name})
     match /businesses/{businessId}/counters/{counterId} {
       allow read, write: if isAuthenticated() && belongsToBusiness(businessId);
+    }
+
+    // ============================================
+    // BUSINESS PRIVATE (segredos do tenant — Admin SDK only)
+    // ============================================
+    // Subcollection businesses/{id}/private/{doc}. Guarda credenciais sensíveis
+    // do tenant que NUNCA podem chegar ao cliente:
+    //   - mpAuth      → tokens OAuth do Mercado Pago do vendedor (access/refresh
+    //                   cifrados com AES-256-GCM via ENCRYPTION_KEY). Flags
+    //                   públicas (conectado/nickname) ficam espelhadas no doc
+    //                   businesses/{id} — só ISTO o cliente lê.
+    //   - mpTokenLock → lock de concorrência do refresh de token OAuth.
+    // Acesso exclusivo via Admin SDK (server-side, bypassa rules). Mesmo cifrado,
+    // vazar habilita ataque offline contra a chave — clientes NÃO leem/escrevem.
+    match /businesses/{businessId}/private/{doc} {
+      allow read, write: if false;
     }
 
     // ============================================

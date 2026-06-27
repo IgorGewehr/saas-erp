@@ -1426,6 +1426,33 @@
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "paymentProvider", "order": "ASCENDING" },
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" },
+        { "fieldPath": "paymentExpiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" },
+        { "fieldPath": "stockRestoredAt", "order": "ASCENDING" }
+      ]
+    },
 
     {
       "collectionGroup": "kanbanCards",

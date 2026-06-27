@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -104,8 +105,11 @@ export async function POST(req: NextRequest) {
     const { result } = await withIdempotency(
       adminDb,
       { businessId, key: idempotencyKey, endpoint: 'POST /api/orders/public' },
-      async (): Promise<{ orderId: string; orderNumber: number }> => {
+      async (): Promise<{ orderId: string; orderNumber: number; trackingToken: string }> => {
     const now = new Date().toISOString();
+    // Token OPACO de acompanhamento: capability URL pro cliente anônimo pagar e
+    // acompanhar SÓ o próprio pedido, sem abrir leitura pública de deliveryOrders.
+    const trackingToken = randomBytes(32).toString('base64url');
 
     // ── 1. Validate business exists ──────────────────────────────────────────
     const bizRef = adminDb.collection('businesses').doc(businessId);
@@ -322,6 +326,7 @@ export async function POST(req: NextRequest) {
       paymentStatus: 'pendente',
       changeFor: changeFor && changeFor > total ? changeFor : undefined,
       customerNotes: customerNotes?.slice(0, 1000) || undefined,
+      trackingToken,
       ...(stockDeductedAt ? { stockDeductedAt } : {}),
       createdAt: now,
       updatedAt: now,
@@ -332,7 +337,7 @@ export async function POST(req: NextRequest) {
     // ── 7. WhatsApp notification to business (best-effort) ───────────────────
     notifyBusiness(businessId, orderNumber, clientName.trim(), total, deliveryType, validatedItems).catch(() => {});
 
-        return { orderId: orderRef.id, orderNumber };
+        return { orderId: orderRef.id, orderNumber, trackingToken };
       },
     );
 

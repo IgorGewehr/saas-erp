@@ -94,6 +94,7 @@ import { AuditoriaTab } from './AuditoriaTab';
 import ValidatorChipSection from './ValidatorChipSection';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
+import MercadoPagoConnectCard from './MercadoPagoConnectCard';
 import {
   DeliveryZonesEditor,
   UpsellRulesEditor,
@@ -118,7 +119,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'auditoria';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'pagamentos' | 'auditoria';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -7708,6 +7709,7 @@ export default function SettingsModule() {
     { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
     { id: 'setores'    as Tab, label: t('settings.tabs.setores',  'Setores'),    icon: Layers     },
     { id: 'canais'     as Tab, label: t('settings.tabs.canais',   'Canais'),     icon: Plug2      },
+    { id: 'pagamentos' as Tab, label: t('settings.tabs.pagamentos', 'Pagamentos'), icon: CreditCard },
     // 'respostas' foi unificado dentro de 'canais' como sub-seção (Respostas
     // Rápidas aparece abaixo das conexões de canal). Tab top-level removida
     // pra reduzir poluição na barra de configurações.
@@ -7719,7 +7721,7 @@ export default function SettingsModule() {
   ];
 
   const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
-  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'enterprise', 'auditoria']);
+  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'pagamentos', 'enterprise', 'auditoria']);
   const tabs = isAdmin ? allTabs : allTabs.filter(tab => !ADMIN_ONLY_TABS.has(tab.id));
 
   return (
@@ -7834,6 +7836,18 @@ export default function SettingsModule() {
         {activeTab === 'setores'    && <SectorsTab key="setores" />}
 
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
+        {activeTab === 'pagamentos' && (
+          <motion.div
+            key="pagamentos"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
+            className="max-w-2xl"
+          >
+            <MercadoPagoConnectCard />
+          </motion.div>
+        )}
         {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
         {activeTab === 'auditoria'  && <AuditoriaTab key="auditoria" />}
       </AnimatePresence>

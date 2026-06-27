@@ -105,6 +105,8 @@ const PAYMENT_METHOD_LABELS: Record<OrderPaymentMethod, string> = {
   pix: 'Pix',
   voucher: 'Voucher',
   outro: 'Outro',
+  pix_online: 'Pix (online)',
+  cartao_online: 'Cartão (online)',
 };
 
 function timeSince(iso: string): string {
@@ -705,7 +707,9 @@ function OrderFormDialog({
                 <select className={inputCls}
                   value={form.paymentMethod}
                   onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value as OrderPaymentMethod }))}>
-                  {Object.entries(PAYMENT_METHOD_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  {Object.entries(PAYMENT_METHOD_LABELS)
+                    .filter(([k]) => !k.endsWith('_online')) // online só via checkout/webhook MP, não no pedido manual
+                    .map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
               </div>
               <div>

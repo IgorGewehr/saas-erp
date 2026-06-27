@@ -143,6 +143,13 @@ export interface Business {
   };
   // Omnichannel (WhatsApp, Facebook, Instagram)
   channels?: ChannelCredentials;
+  // Mercado Pago — flags PÚBLICAS espelhadas (PaymentAccountPublic). Os tokens
+  // ficam só em businesses/{id}/private/mpAuth (Admin SDK); estas são seguras
+  // para o client e usadas pelo cardápio público para ofertar pagamento online.
+  mpConnected?: boolean;
+  mpPublicKey?: string;
+  mpLiveMode?: boolean;
+  mpNeedsReauth?: boolean;
   // Status
   isActive: boolean;
   createdAt: string;
@@ -1732,7 +1739,25 @@ export type DeliveryOrderPaymentMethod =
   | 'cartao_debito'
   | 'pix'
   | 'voucher'
-  | 'outro';
+  | 'outro'
+  // ── pagamento online (Mercado Pago) — pago antes da entrega ──
+  | 'pix_online'
+  | 'cartao_online';
+
+/**
+ * Status da FSM de PAGAMENTO (dinheiro) — independente de DeliveryOrder.status
+ * (fabricação). Fonte da verdade em lib/contracts/fsm/payment.ts.
+ */
+export type PaymentFsmStatus =
+  | 'pending'
+  | 'authorized'
+  | 'paid'
+  | 'failed'
+  | 'refunded'
+  | 'expired';
+
+/** Método de pagamento online suportado na v1. */
+export type PaymentMethodKind = 'pix' | 'card';
 
 export interface DeliveryOrderItem {
   productId: string;
@@ -1796,11 +1821,50 @@ export interface DeliveryOrder {
   paymentStatus: DeliveryOrderPaymentStatus;
   changeFor?: number;
 
+  // ── Pagamento online (Mercado Pago) — bloco INLINE, opcional ──
+  // Só preenchido quando o cliente paga online. Espelha
+  // lib/contracts/domain/payment.ts (PaymentBlockSchema). Pagamento na entrega
+  // não preenche nada disto — continua usando paymentStatus acima.
+  paymentProvider?: 'mercadopago';
+  /** ID do payment no MP — guard de idempotência do webhook. */
+  externalPaymentId?: string;
+  preferenceId?: string;
+  paymentMethodKind?: PaymentMethodKind;
+  /** PIX: conteúdo EMV do QR (== copia e cola). */
+  qrCode?: string;
+  /** PIX: PNG do QR em base64 (sem prefixo data:). */
+  qrCodeBase64?: string;
+  copiaECola?: string;
+  ticketUrl?: string;
+  /** Valor cobrado online (R$). */
+  paymentAmount?: number;
+  paidAt?: string;
+  refundedAt?: string;
+  /** Expiração da cobrança PIX (ISO). */
+  paymentExpiresAt?: string;
+  /** FSM de dinheiro — separada de status (fabricação). */
+  paymentFsmStatus?: PaymentFsmStatus;
+  /** Último motivo de recusa de pagamento (status_detail do MP). Exibido ao
+   *  cliente anônimo no acompanhamento; não-sensível. */
+  lastPaymentDeclineReason?: string;
+
+  // ── Lock de "mint" do PIX (anti-corrida entre 2 aparelhos) ──
+  // Dois dispositivos pagando o mesmo pedido não podem gerar 2 QRs pagáveis.
+  // pay-pix adquire este lock (stale 60s) antes de chamar o MP; um PIX ainda
+  // válido é reusado em vez de gerar outro. Não fazem parte do PaymentBlock.
+  /** ISO do início da geração de um PIX em andamento. */
+  pixMintAt?: string;
+  /** Identificador (IP/sessão) de quem iniciou a geração. */
+  pixMintBy?: string;
+
   customerNotes?: string;
   internalNotes?: string;
 
   // Tracks when stock was deducted so transitions stay idempotent.
   stockDeductedAt?: string;
+  /** Setado quando o estoque debitado foi RESTAURADO (ex: PIX expirado /
+   *  estorno). Guard de idempotência: a restauração só roda se vazio. */
+  stockRestoredAt?: string;
 
   /** FK para a Transaction de receita gerada ao entregar/pagar. Guard de
    *  idempotência: Transaction só é criada se este campo estiver vazio. */
@@ -1808,6 +1872,12 @@ export interface DeliveryOrder {
 
   /** FK opcional para o CRMDeal que originou este pedido (ROI por deal — P2.10). */
   dealId?: string;
+
+  /** Token OPACO aleatório gerado na criação do pedido. Permite que o cliente
+   *  ANÔNIMO acompanhe e pague SOMENTE o próprio pedido (capability URL), sem
+   *  abrir leitura pública de deliveryOrders. Validado com timingSafeEqual nas
+   *  rotas /status, /pay-pix e /pay-card. Nunca exposto em projeções públicas. */
+  trackingToken?: string;
 
   createdAt: string;
   updatedAt: string;
