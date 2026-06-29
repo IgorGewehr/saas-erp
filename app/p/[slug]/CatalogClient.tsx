@@ -239,13 +239,15 @@ export default function CatalogClient({ business, products, categories }: Props)
   });
 
   // MP espelhado no doc do business (projeção pública). Pagamento online só é
-  // ofertado quando a loja tem conta conectada + public key disponível.
-  const onlinePaymentEnabled = Boolean(business.mpConnected) && Boolean(business.mpPublicKey);
+  // ofertado quando a loja tem conta conectada + public key + ambiente de PRODUÇÃO.
+  // MP-01: NÃO ofertamos checkout sandbox (mpLiveMode!==true) ao público anônimo —
+  // chave TEST-* aceitaria cartões de teste e geraria fulfillment de pedido não
+  // pago de verdade. O dono valida em sandbox via smoke test, não no cardápio real.
+  const onlinePaymentEnabled =
+    Boolean(business.mpConnected) && Boolean(business.mpPublicKey) && business.mpLiveMode === true;
   const mpPublicKey = business.mpPublicKey ?? '';
-  // M9 — gate de ambiente: sem mpLiveMode a public key é de SANDBOX (TEST-*).
-  // Mantemos a oferta (merchant testando), mas avisamos o cliente de forma
-  // inequívoca pra ninguém pagar achando que a cobrança é real.
-  const mpTestMode = onlinePaymentEnabled && business.mpLiveMode !== true;
+  // onlinePaymentEnabled já exige produção, então não há mais modo-teste exposto.
+  const mpTestMode = false;
 
   const deliveryFee = business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0;
   const isOpen = isBusinessOpen(business.settings?.openingHours);

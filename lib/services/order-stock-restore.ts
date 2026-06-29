@@ -69,7 +69,19 @@ export async function restoreOrderStockRecoverable(
     }
   }
 
-  const productIndex = await loadProductIndex(adminDb, [...itemIds, ...linkedIds], businessId);
+  // Índice base (itens + insumos de modificadores).
+  const baseIndex = await loadProductIndex(adminDb, [...itemIds, ...linkedIds], businessId);
+  // CRÍTICO — simetria EXATA com a dedução (orders/public carrega
+  // [...baseIds, ...componentIds]): inclui as FOLHAS de BOM dos produtos
+  // compostos. restoreStockAdmin PULA linhas cujo produto não está no índice,
+  // então SEM isto o estoque de COMPONENTES de produtos compostos nunca era
+  // restaurado (cancelamento/PIX expirado/estorno) → corrupção de inventário.
+  const componentIds = [...itemIds, ...linkedIds].flatMap((id) =>
+    (baseIndex.get(id)?.components ?? []).map((c) => c.productId),
+  );
+  const productIndex = componentIds.length
+    ? await loadProductIndex(adminDb, [...itemIds, ...linkedIds, ...componentIds], businessId)
+    : baseIndex;
   const lines = buildOrderStockLines(order, productIndex);
 
   const adjustments = await restoreStockAdmin(adminDb, lines, {

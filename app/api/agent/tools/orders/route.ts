@@ -305,6 +305,7 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
     let revenueRecognized = false;
     let purchaseClientId: string | undefined;
     let purchaseAmount = 0;
+    let purchaseCountVisit = true;
     await adminDb.runTransaction(async (t) => {
       const cur = await t.get(ref);
       if (!cur.exists) throw new Error('Order not found');
@@ -314,13 +315,18 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
       const isOnlinePayment = !!curData.paymentProvider;
       const onlineUnpaid = isOnlinePayment && curData.paymentFsmStatus !== 'paid';
 
-      // Receita reconhecida = entrega de pedido cujo dinheiro entrou (gate online).
-      // Vale também quando a receita já existia (transactionId presente): o registro
-      // de compra na ficha do cliente é idempotente, então atribuir a compra aqui é
-      // no-op se já fora atribuída no fluxo de aprovação do pagamento.
-      revenueRecognized = !onlineUnpaid;
+      // F2 — gate pagamento→entrega (espelha a UI): pedido online ainda NÃO pago
+      // NÃO pode ser entregue — aborta antes de mudar o status (antes só pulava a
+      // receita mas marcava 'entregue', criando receita pendente fantasma/assimetria).
+      if (onlineUnpaid) {
+        throw new Error('Pedido com pagamento online ainda não confirmado — só pode ser entregue após o pagamento aprovar.');
+      }
+
+      revenueRecognized = true;
       purchaseClientId = curData.clientId;
       purchaseAmount = curData.total;
+      // CLI-1 — 'site' (cardápio público) já contou a visita na criação; não recontar.
+      purchaseCountVisit = curData.channel !== 'site';
 
       // CAS em transactionId: só lança se ainda não houver receita E o gate online passar.
       if (!curData.transactionId && !onlineUnpaid) {
@@ -360,6 +366,7 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
           clientId: purchaseClientId,
           sourceId: orderId,
           amount: purchaseAmount,
+          countVisit: purchaseCountVisit,
         });
       } catch (purchaseErr) {
         console.error('[orders/updateStatus] recordClientPurchase failed:', purchaseErr);
@@ -472,38 +479,6 @@ async function cancelOrder(businessId: string, orderId: string, reason?: string)
   }
 
   return { id: orderId, status: 'cancelado' };
-}
-
-async function buildStockBucket(items: DeliveryOrderItem[]): Promise<Map<string, number>> {
-  const bucket = new Map<string, number>();
-  const productSnaps = await Promise.all(items.map(i => adminDb.collection('products').doc(i.productId).get()));
-  const productIndex = new Map<string, Product>();
-  productSnaps.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
-
-  // Fetch any BOM leaf products not in the top-level set
-  const leafIds = new Set<string>();
-  for (const item of items) {
-    const p = productIndex.get(item.productId);
-    if (p?.components?.length) p.components.forEach(c => leafIds.add(c.productId));
-  }
-  const missing = Array.from(leafIds).filter(id => !productIndex.has(id));
-  if (missing.length > 0) {
-    const extra = await Promise.all(missing.map(id => adminDb.collection('products').doc(id).get()));
-    extra.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
-  }
-
-  for (const item of items) {
-    const p = productIndex.get(item.productId);
-    if (!p) continue;
-    if (p.components?.length) {
-      for (const comp of p.components) {
-        bucket.set(comp.productId, (bucket.get(comp.productId) || 0) + comp.quantity * item.quantity);
-      }
-    } else {
-      bucket.set(p.id, (bucket.get(p.id) || 0) + item.quantity);
-    }
-  }
-  return bucket;
 }
 
 async function listRecent(businessId: string, limit: number) {
