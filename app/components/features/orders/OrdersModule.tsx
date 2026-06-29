@@ -11,10 +11,11 @@ import {
   LayoutGrid, List, Filter, Home,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, onSnapshot, addDoc, updateDoc,
+  collection, query, where, orderBy, onSnapshot, setDoc, getDoc, updateDoc,
   doc, runTransaction,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
+import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
@@ -370,7 +371,7 @@ function OrderFormDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onSave: (data: OrderFormData) => Promise<void>;
+  onSave: (data: OrderFormData, idempotencyKey: string) => Promise<void>;
   initial: OrderFormData;
   clients: Client[];
   products: Product[];
@@ -386,11 +387,17 @@ function OrderFormDialog({
   const [showClientDropdown, setShowClientDropdown] = useState(false);
   const [showProductDropdown, setShowProductDropdown] = useState(false);
 
+  // Grupo 11: chave de idempotência ESTÁVEL por sessão do formulário. Vira o doc
+  // id do pedido (setDoc) ⇒ retries do mesmo formulário (duplo-clique, rede lenta)
+  // colapsam num único pedido em vez de duplicar. Renovada a cada abertura.
+  const idemKeyRef = useRef<string>(crypto.randomUUID());
+
   useEffect(() => {
     if (open) {
       setForm(initial);
       setClientSearch(initial.clientName || '');
       setProductSearch('');
+      idemKeyRef.current = crypto.randomUUID();
     }
   }, [open, initial]);
 
@@ -468,7 +475,7 @@ function OrderFormDialog({
     if (!form.clientName.trim() || form.items.length === 0) return;
     setSaving(true);
     try {
-      await onSave(form);
+      await onSave(form, idemKeyRef.current);
       onClose();
     } finally {
       setSaving(false);
@@ -1178,6 +1185,10 @@ export default function OrdersModule() {
   const kpis = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const todayOrders = orders.filter(o => o.createdAt.startsWith(today));
+    // Grupo 10: receita POTENCIAL (todos os pedidos não-cancelados de hoje,
+    // inclusive não-entregues/não-pagos). NÃO é a receita reconhecida do
+    // Financeiro — essa é lançada por competência só na entrega
+    // (bookDeliveryRevenue). KPI rotulado "Receita potencial" pra não confundir.
     const todayRevenue = todayOrders
       .filter(o => o.status !== 'cancelado')
       .reduce((s, o) => s + o.total, 0);
@@ -1192,7 +1203,7 @@ export default function OrdersModule() {
   }, [orders]);
 
   // Persist new/edit
-  const persistOrder = async (data: OrderFormData) => {
+  const persistOrder = async (data: OrderFormData, idempotencyKey: string) => {
     if (!business?.id || !user) return;
     const now = new Date().toISOString();
     const subtotal = data.items.reduce((s, i) => s + i.total, 0);
@@ -1227,6 +1238,19 @@ export default function OrdersModule() {
         await updateDoc(doc(db, 'deliveryOrders',editingOrder.id), cleaned);
         toast.success('Pedido atualizado');
       } else {
+        // Grupo 11: idempotência do pedido manual. A chave do formulário vira o
+        // doc id ⇒ duplo-clique/retry reusa o MESMO doc. Pré-check evita queimar
+        // um número sequencial num retry cujo pedido já existe.
+        const orderRef = doc(db, 'deliveryOrders', idempotencyKey);
+        const existing = await getDoc(orderRef);
+        if (existing.exists()) {
+          toast.info(`Pedido #${(existing.data() as Order).number} já foi criado`);
+          setEditingOrder(null);
+          setPrefillFromConversation(null);
+          setPrefillCartItems([]);
+          setFormOpen(false);
+          return;
+        }
         // X1: numeração atômica via contador monotônico do business
         // (allocateOrderNumber, runTransaction). Substitui o max()+1 lido em
         // memória, que colidia com o canal público (orders/public) sob concorrência.
@@ -1274,7 +1298,7 @@ export default function OrdersModule() {
           toast.warn(`Estoque insuficiente: ${names}`, { autoClose: 7000 });
         }
 
-        await addDoc(collection(db, 'deliveryOrders'), cleaned);
+        await setDoc(orderRef, cleaned);
         toast.success(`Pedido #${number} criado!`);
       }
       setEditingOrder(null);
@@ -1377,6 +1401,26 @@ export default function OrdersModule() {
       }
       trx.update(orderRef, patch);
     });
+
+    // Grupo 6: no reconhecimento da receita (entrega), registra a compra na ficha
+    // do cliente — totalSpent/lastVisit/lifecycle — de forma idempotente por pedido
+    // (guard clients/{id}/purchases/{orderId}), logo reentrada/concorrência não
+    // re-conta. Pedidos do cardápio público (channel 'site') já incrementaram
+    // visitCount na criação ⇒ countVisit:false; manual/whatsapp/... contam aqui.
+    // Best-effort: não derruba a entrega já efetivada se a ficha falhar.
+    if (order.clientId) {
+      try {
+        await recordClientPurchaseClient({
+          businessId,
+          clientId: order.clientId,
+          sourceId: order.id,
+          amount: order.total,
+          countVisit: order.channel !== 'site',
+        });
+      } catch (err) {
+        console.warn('[Orders] recordClientPurchase failed:', err);
+      }
+    }
   }, [business?.id]);
 
   // Status change — deducts stock on transition into "preparando" (idempotent).
@@ -1611,7 +1655,7 @@ export default function OrdersModule() {
         {/* KPIs strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <KPIMini label="Hoje" value={String(kpis.todayCount)} icon={ClipboardCheck} accent="text-blue-500" />
-          <KPIMini label="Receita" value={formatCurrency(kpis.todayRevenue)} icon={DollarSign} accent="text-emerald-500" />
+          <KPIMini label="Receita potencial" value={formatCurrency(kpis.todayRevenue)} icon={DollarSign} accent="text-emerald-500" />
           <KPIMini label="Em andamento" value={String(kpis.active)} icon={Timer} accent="text-amber-500" />
           <KPIMini
             label="Atrasados"

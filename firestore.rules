@@ -226,6 +226,19 @@ service cloud.firestore {
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
                     && isManager();
+
+      // Guard de idempotência de compra (recordClientPurchase, client SDK).
+      // Subcoleção IMUTÁVEL escopada por businessId — só read + create (sem
+      // update/delete). Sem esta regra o catch-all nega e as stats de cliente
+      // dos canais client-SDK (PDV/Pedidos) não eram gravadas.
+      match /purchases/{purchaseId} {
+        allow read: if isAuthenticated()
+                    && isOperator()
+                    && resource.data.businessId == userBusinessId();
+        allow create: if isAuthenticated()
+                      && isOperator()
+                      && incomingBelongsToBusiness();
+      }
     }
 
     // ============================================

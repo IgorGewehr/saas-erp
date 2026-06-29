@@ -9,9 +9,10 @@ import {
 } from '@/lib/services/stock-admin';
 import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
+import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
 import type {
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
-  DeliveryOrderPaymentMethod, DeliveryType, Client, SelectedModifier,
+  DeliveryOrderPaymentMethod, DeliveryType, SelectedModifier,
   Product, ProductModifierGroup, ModifierPriceStrategy,
 } from '@/lib/types';
 
@@ -196,46 +197,34 @@ export async function POST(req: NextRequest) {
       productMap,
     );
 
-    // ── 3. Upsert client by phone ────────────────────────────────────────────
+    // ── 3. Resolve client identity by phone (dedup/canonical/merge) ──────────
+    // Ponto ÚNICO de "achar ou criar" Client por telefone: segue os candidatos
+    // BR, canonicalização, a cadeia de mergedInto e ignora soft-deleted. Antes
+    // este caminho fazia match por phone exato (digitsOnly), criando uma
+    // duplicata a cada pedido quando o número fora gravado em outra forma.
     let clientId: string | undefined;
     if (clientPhone) {
       const phone = clientPhone.replace(/\D/g, '');
       if (phone.length < 8) {
         throw new PublicOrderError(400, 'Telefone inválido');
       }
-      const clientSnap = await adminDb
-        .collection('clients')
-        .where('businessId', '==', businessId)
-        .where('phone', '==', phone)
-        .limit(1)
-        .get();
-
-      if (!clientSnap.empty) {
-        clientId = clientSnap.docs[0].id;
-        await clientSnap.docs[0].ref.update({
-          name: clientSnap.docs[0].data().name || clientName.trim(),
-          visitCount: FieldValue.increment(1),
-          lastVisit: now,
-          updatedAt: now,
-        });
-      } else {
-        const newClient: Omit<Client, 'id'> = {
-          businessId,
-          name: clientName.trim(),
-          phone,
-          whatsapp: phone,
-          source: 'outro',
-          status: 'novo',
-          score: 0,
-          isActive: true,
-          visitCount: 1,
-          lastVisit: now,
-          createdAt: now,
-          updatedAt: now,
-        };
-        const clientRef = await adminDb.collection('clients').add(newClient);
-        clientId = clientRef.id;
-      }
+      const { clientId: resolvedId } = await resolveClientIdentityAdmin({
+        db: adminDb,
+        businessId,
+        phone: clientPhone,
+        name: clientName,
+      });
+      clientId = resolvedId ?? undefined; // default createIfMissing=true → sempre string
+      // Conta a visita no cliente primário (resolveClientIdentity não conta) e
+      // preenche o nome só se ainda estiver vazio — não sobrescreve nome real.
+      const clientRef = adminDb.collection('clients').doc(clientId!);
+      const clientSnap = await clientRef.get();
+      await clientRef.update({
+        name: clientSnap.data()?.name || clientName.trim(),
+        visitCount: FieldValue.increment(1),
+        lastVisit: now,
+        updatedAt: now,
+      });
     }
 
     // ── 4. Compute totals server-side ────────────────────────────────────────

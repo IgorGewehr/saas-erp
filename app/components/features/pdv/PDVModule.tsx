@@ -59,12 +59,14 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { notifyLowStock } from '@/lib/services/notifications';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
+import { resolveClientIdentityClient } from '@/lib/services/clients/resolveIdentity';
+import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
 import { db } from '@/lib/config/firebase';
 import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
@@ -788,9 +790,29 @@ export default function PDVModule() {
     try {
       const now = new Date().toISOString();
 
+      // Identidade canônica do cliente (dedup/merge) — ponto ÚNICO compartilhado
+      // com o cardápio (orders/public). Segue a cadeia de mergedInto e evita
+      // anexar a venda a um duplicado. NÃO cria duplicata: se a resolução não
+      // casar com o cliente selecionado (created=true), mantém o id original.
+      let saleClientId: string | null = selectedClient?.id ?? null;
+      if (selectedClient?.phone) {
+        try {
+          const resolved = await resolveClientIdentityClient({
+            businessId: business.id,
+            phone: selectedClient.phone,
+            name: selectedClient.name,
+            createIfMissing: false, // cliente já selecionado: find-only, nunca cria órfão
+          });
+          // Casou com um primário (possível merge) → usa-o; senão mantém o selecionado.
+          if (resolved.clientId) saleClientId = resolved.clientId;
+        } catch (err) {
+          console.warn('[pdv] resolveClientIdentity falhou, usando id selecionado:', err);
+        }
+      }
+
       const saleData = {
         businessId: business.id,
-        clientId: selectedClient?.id || null,
+        clientId: saleClientId,
         clientName: selectedClient?.name || null,
         items: cart.map(item => ({
           id: generateId(),
@@ -866,8 +888,8 @@ export default function PDVModule() {
         dueDate: now.split('T')[0],
         paymentDate: now.split('T')[0],
         status: 'pago',
-        clientId: selectedClient?.id || null,
-        contactId: selectedClient?.id || null,
+        clientId: saleClientId,
+        contactId: saleClientId,
         clientName: selectedClient?.name || null,
         saleId: saleRef.id,
         paymentMethod: payments[0]?.method || 'dinheiro',
@@ -880,18 +902,13 @@ export default function PDVModule() {
       // status/lifecycleStage — lead que comprava continuava marcado como
       // "qualificado" pra sempre. Após primeira venda paga, marca como
       // 'ganho' / 'customer'.
-      if (selectedClient) {
-        const promote: Record<string, unknown> = {
-          totalSpent: increment(total),
-          visitCount: increment(1),
-          lastVisit: now,
-          updatedAt: now,
-        };
-        if (selectedClient.status !== 'ganho') promote.status = 'ganho';
-        // lifecycleStage opcional no tipo Client — só promove se ainda não é customer
-        const currentStage = (selectedClient as { lifecycleStage?: string }).lifecycleStage;
-        if (currentStage !== 'customer') promote.lifecycleStage = 'customer';
-        batch.update(doc(db, 'clients', selectedClient.id), promote);
+      // Promoção de status (lead → ganho) na mesma transação atômica da venda.
+      // As STATS de contagem (totalSpent/visitCount/lastVisit/lifecycleStage)
+      // saíram do batch e são aplicadas via recordClientPurchaseClient após o
+      // commit — idempotente por venda (guard clients/{id}/purchases/{saleId}),
+      // fechando o double-count em retry/duplo-clique.
+      if (saleClientId && selectedClient && selectedClient.status !== 'ganho') {
+        batch.update(doc(db, 'clients', saleClientId), { status: 'ganho', updatedAt: now });
       }
 
       // Commit all core operations atomically
@@ -950,6 +967,26 @@ export default function PDVModule() {
           });
         } catch (err) {
           console.warn('[pdv] commission transaction failed:', err);
+        }
+      }
+
+      // ── Client stats (idempotente por venda) ──────────────────────────────
+      // Reconhece a receita na ficha do cliente: totalSpent/visitCount/lastVisit
+      // + lifecycleStage='customer'. O guard clients/{id}/purchases/{saleId}
+      // torna o efeito idempotente (retry/duplo-clique não conta de novo). PDV
+      // conta a visita (countVisit default true) — ao contrário do cardápio, que
+      // já contou na criação do pedido. Mesmo helper compartilhado, execução
+      // client-SDK. Best-effort: falha aqui não afeta a venda (já commitada).
+      if (saleClientId) {
+        try {
+          await recordClientPurchaseClient({
+            businessId: business.id,
+            clientId: saleClientId,
+            sourceId: saleRef.id,
+            amount: total,
+          });
+        } catch (err) {
+          console.warn('[pdv] recordClientPurchase falhou:', err);
         }
       }
 

@@ -12,6 +12,8 @@ import { deductStockAdmin } from '@/lib/services/stock-admin';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
 import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
 import { restoreOrderStockRecoverable } from '@/lib/services/order-stock-restore';
+import { recordClientPurchaseAdmin } from '@/lib/services/clients/recordPurchase';
+import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -201,11 +203,24 @@ async function createOrder(businessId: string, params: CreateParams) {
     productIndex,
   });
 
+  // Identidade canônica do cliente quando veio só o telefone (sem clientId):
+  // dedup compartilhado com cardápio/PDV + garante clientId no pedido pra a
+  // entrega registrar a compra (recordClientPurchase precisa dele). Best-effort.
+  let resolvedClientId = params.clientId;
+  if (!resolvedClientId && params.clientPhone) {
+    try {
+      const r = await resolveClientIdentityAdmin({ db: adminDb, businessId, phone: params.clientPhone, name: params.clientName });
+      resolvedClientId = r.clientId ?? undefined;
+    } catch (e) {
+      console.warn('[orders/create] resolveClientIdentity falhou:', e);
+    }
+  }
+
   const doc: Omit<DeliveryOrder, 'id'> = {
     businessId,
     number,
     status: 'recebido',
-    clientId: params.clientId,
+    clientId: resolvedClientId,
     clientName: params.clientName.trim(),
     clientPhone: params.clientPhone,
     channel: params.channel || 'manual',
@@ -287,6 +302,9 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
     // lança receita aqui — o dinheiro não entrou; a receita será lançada pelo
     // fluxo de aprovação do pagamento usando o MESMO ID determinístico.
     const txRef = adminDb.collection('transactions').doc(`${orderId}_revenue`);
+    let revenueRecognized = false;
+    let purchaseClientId: string | undefined;
+    let purchaseAmount = 0;
     await adminDb.runTransaction(async (t) => {
       const cur = await t.get(ref);
       if (!cur.exists) throw new Error('Order not found');
@@ -295,6 +313,14 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
 
       const isOnlinePayment = !!curData.paymentProvider;
       const onlineUnpaid = isOnlinePayment && curData.paymentFsmStatus !== 'paid';
+
+      // Receita reconhecida = entrega de pedido cujo dinheiro entrou (gate online).
+      // Vale também quando a receita já existia (transactionId presente): o registro
+      // de compra na ficha do cliente é idempotente, então atribuir a compra aqui é
+      // no-op se já fora atribuída no fluxo de aprovação do pagamento.
+      revenueRecognized = !onlineUnpaid;
+      purchaseClientId = curData.clientId;
+      purchaseAmount = curData.total;
 
       // CAS em transactionId: só lança se ainda não houver receita E o gate online passar.
       if (!curData.transactionId && !onlineUnpaid) {
@@ -319,6 +345,26 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
       }
       t.update(ref, orderPatch);
     });
+
+    // Atribui a compra à ficha do cliente — espelha a receita acima e o fluxo da UI
+    // (OrdersModule). Idempotente por clients/{clientId}/purchases/{orderId}, então
+    // entregar pela tool, pela UI ou pelo fluxo de pagamento converge num único
+    // registro. countVisit default (true): o createOrder do agente não conta visita
+    // na origem (≠ cardápio público, que conta na criação). Side-effect: falha aqui
+    // não reverte a entrega — apenas loga, como no estorno de estoque.
+    if (revenueRecognized && purchaseClientId) {
+      try {
+        await recordClientPurchaseAdmin({
+          db: adminDb,
+          businessId,
+          clientId: purchaseClientId,
+          sourceId: orderId,
+          amount: purchaseAmount,
+        });
+      } catch (purchaseErr) {
+        console.error('[orders/updateStatus] recordClientPurchase failed:', purchaseErr);
+      }
+    }
     return { id: orderId, status };
   }
 

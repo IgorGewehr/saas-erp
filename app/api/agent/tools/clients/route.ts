@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Client } from '@/lib/types';
+import { buildPhoneMatchCandidates } from '@/lib/services/clients/resolveIdentity';
 
 type Action = 'lookup_by_phone' | 'create' | 'get' | 'update' | 'update_address' | 'get_full_history';
 
@@ -47,15 +48,25 @@ export async function POST(req: NextRequest) {
 }
 
 async function lookupByPhone(businessId: string, phone: string) {
-  const p = digits(phone);
-  if (!p) return null;
-  // Try phone and whatsapp
-  const [phoneSnap, waSnap] = await Promise.all([
-    adminDb.collection('clients').where('businessId', '==', businessId).where('phone', '==', p).limit(1).get(),
-    adminDb.collection('clients').where('businessId', '==', businessId).where('whatsapp', '==', p).limit(1).get(),
-  ]);
-  const doc = phoneSnap.docs[0] || waSnap.docs[0];
-  return doc ? { ...(doc.data() as Client), id: doc.id } : null;
+  // Match canônico BR (com/sem 55, com/sem 9, últimos 8 dígitos) em
+  // phone + whatsapp + channelIdentities.whatsapp — mesma regra do helper de
+  // identidade (resolveClientIdentity), pra casar dados legados e não duplicar.
+  const candidates = buildPhoneMatchCandidates(phone);
+  if (candidates.length === 0) return null;
+  const fields = ['phone', 'whatsapp', 'channelIdentities.whatsapp'] as const;
+  const snaps = await Promise.all(
+    fields.map((f) =>
+      adminDb.collection('clients').where('businessId', '==', businessId).where(f, 'in', candidates).limit(5).get(),
+    ),
+  );
+  for (const snap of snaps) {
+    for (const d of snap.docs) {
+      const data = d.data() as Client;
+      if ((data as { deletedAt?: string }).deletedAt) continue; // soft-deleted não casa
+      return { ...data, id: d.id };
+    }
+  }
+  return null;
 }
 
 async function createClient(businessId: string, params: Record<string, unknown>) {
