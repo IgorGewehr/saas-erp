@@ -231,10 +231,13 @@ service cloud.firestore {
       // Subcoleção IMUTÁVEL escopada por businessId — só read + create (sem
       // update/delete). Sem esta regra o catch-all nega e as stats de cliente
       // dos canais client-SDK (PDV/Pedidos) não eram gravadas.
+      // read aceita resource == null: a tx faz tx.get(guardRef) ANTES do create e,
+      // na 1ª compra, o doc-guard NÃO existe — sem o ramo null, resource.data falha
+      // e a leitura é negada ⇒ a tx inteira aborta e as stats nunca gravam.
       match /purchases/{purchaseId} {
         allow read: if isAuthenticated()
                     && isOperator()
-                    && resource.data.businessId == userBusinessId();
+                    && (resource == null || resource.data.businessId == userBusinessId());
         allow create: if isAuthenticated()
                       && isOperator()
                       && incomingBelongsToBusiness();

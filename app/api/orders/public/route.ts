@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
     const { result } = await withIdempotency(
       adminDb,
       { businessId, key: idempotencyKey, endpoint: 'POST /api/orders/public' },
-      async (): Promise<{ orderId: string; orderNumber: number; trackingToken: string }> => {
+      async (): Promise<{ orderId: string; orderNumber: number; trackingToken: string; total: number }> => {
     const now = new Date().toISOString();
     // Token OPACO de acompanhamento: capability URL pro cliente anônimo pagar e
     // acompanhar SÓ o próprio pedido, sem abrir leitura pública de deliveryOrders.
@@ -261,14 +261,20 @@ export async function POST(req: NextRequest) {
       // Index precisa cobrir produtos base, insumos de modifier e folhas de BOM
       // (para nome/minStock e expansão), todos filtrados por businessId.
       const baseIds = stockLines.map(l => l.productId);
+      // baseIds já inclui os insumos LINKADOS de modificadores (linkedProductId),
+      // mas `productMap` só carregou os produtos dos ITENS — não os linkados. Se um
+      // insumo linkado for ele próprio COMPOSTO (tem components), coletar seus
+      // components a partir de productMap perderia as folhas e elas nunca seriam
+      // debitadas (assimetria com o restauro). Por isso, espelhando
+      // order-stock-restore, carregamos um índice base sobre baseIds (itens +
+      // linkados) ANTES de coletar componentIds, garantindo simetria baixa↔restauro.
+      const baseIndex = await loadProductIndex(adminDb, baseIds, businessId);
       const componentIds = baseIds.flatMap(id =>
-        (productMap.get(id)?.components || []).map(c => c.productId),
+        (baseIndex.get(id)?.components || []).map(c => c.productId),
       );
-      const stockIndex = await loadProductIndex(
-        adminDb,
-        [...baseIds, ...componentIds],
-        businessId,
-      );
+      const stockIndex = componentIds.length
+        ? await loadProductIndex(adminDb, [...baseIds, ...componentIds], businessId)
+        : baseIndex;
       try {
         await deductStockAdmin(adminDb, stockLines, {
           businessId,
@@ -322,7 +328,10 @@ export async function POST(req: NextRequest) {
     // ── 7. WhatsApp notification to business (best-effort) ───────────────────
     notifyBusiness(businessId, orderNumber, clientName.trim(), total, deliveryType, validatedItems).catch(() => {});
 
-        return { orderId: orderRef.id, orderNumber, trackingToken };
+        // `total` AUTORITATIVO (recomputado server-side, = subtotal + fee) devolvido
+        // ao cliente: é exatamente o valor que será cobrado, fechando a janela em
+        // que o front exibia o total local em vez do efetivamente persistido.
+        return { orderId: orderRef.id, orderNumber, trackingToken, total };
       },
     );
 

@@ -26,6 +26,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
+import { dispatchDomainEvent } from '@/contracts/_runtime/dispatch';
 import { CreateCardChargeBodySchema, CreateCardChargeResponseSchema } from '@/contracts/api/orders/payment';
 import { assertTransitionPayment, type PaymentFsmStatus } from '@/contracts/fsm/payment';
 import { createCardPayment } from '@/lib/services/mercadopago/card';
@@ -198,7 +199,13 @@ export async function POST(
         // Persiste com guard de corrida + FSM (R4). O webhook é a fonte final:
         // se já liquidou, não rebaixa. assertTransitionPayment é o guard de
         // transição E a idempotência (reaplicar o mesmo status é no-op).
+        // MP-01b: marca a aprovação SÍNCRONA fresca (pending → paid nesta rota)
+        // p/ disparar payment.approved FORA da tx — espelha a trilha de auditoria
+        // que o webhook (settlePaymentNotification) emite pro PIX. Resetado a cada
+        // (re)execução da tx; o valor refletido é o do caminho efetivamente commitado.
+        let freshlyPaid = false;
         const persisted = await adminDb.runTransaction<CardSuccess>(async (tx) => {
+          freshlyPaid = false;
           const cur = await tx.get(orderRef);
           const curOrder = cur.data() as DeliveryOrder | undefined;
           if (!curOrder || curOrder.businessId !== businessId) {
@@ -207,7 +214,8 @@ export async function POST(
 
           const from: PaymentFsmStatus = curOrder.paymentFsmStatus ?? 'pending';
 
-          // Webhook já liquidou (paid/authorized/refunded) → não rebaixa.
+          // Webhook já liquidou (paid/authorized/refunded) → não rebaixa. O
+          // payment.approved (se houve aprovação) já saiu pela trilha do webhook.
           if (ALREADY_SETTLED.has(from)) {
             return { status: from, externalPaymentId: curOrder.externalPaymentId ?? card.externalPaymentId };
           }
@@ -232,8 +240,28 @@ export async function POST(
             ...(target === 'paid' ? { paymentStatus: 'pago', paidAt: nowIso } : {}),
             updatedAt: nowIso,
           });
+          if (target === 'paid') freshlyPaid = true;
           return { status: target, externalPaymentId: card.externalPaymentId };
         });
+
+        // R5: side-effect cross-módulo (trilha de auditoria) FORA da tx. Só na
+        // aprovação SÍNCRONA fresca — replays do withIdempotency não reexecutam
+        // este compute, então o evento não duplica. Best-effort, não-fatal:
+        // espelha o payment.approved que o webhook emite pro PIX.
+        if (freshlyPaid) {
+          await dispatchDomainEvent(adminDb, {
+            type: 'payment.approved',
+            businessId,
+            occurredAt: new Date().toISOString(),
+            actorType: 'system',
+            orderId,
+            externalPaymentId: card.externalPaymentId,
+            paymentMethodKind: 'card',
+            amount: total,
+          }).catch((err) => {
+            console.error('[pay-card] dispatch payment.approved falhou (não-fatal):', err);
+          });
+        }
 
         return persisted;
       },

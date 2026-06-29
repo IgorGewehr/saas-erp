@@ -125,17 +125,27 @@ export async function recordClientPurchaseClient(
   const clientRef = doc(db, 'clients', clientId);
   const guardRef = doc(collection(clientRef, 'purchases'), sourceId);
 
-  return runTransaction(db, async (tx) => {
-    const guardSnap = await tx.get(guardRef);
-    if (guardSnap.exists()) return { recorded: false };
-    const clientSnap = await tx.get(clientRef);
-    if (!clientSnap.exists()) throw new Error('recordClientPurchase: cliente não encontrado');
-    const data = clientSnap.data() as Client;
-    if (data.businessId !== businessId) throw new Error('recordClientPurchase: cross-tenant negado');
+  try {
+    return await runTransaction(db, async (tx) => {
+      const guardSnap = await tx.get(guardRef);
+      if (guardSnap.exists()) return { recorded: false };
+      const clientSnap = await tx.get(clientRef);
+      if (!clientSnap.exists()) throw new Error('recordClientPurchase: cliente não encontrado');
+      const data = clientSnap.data() as Client;
+      if (data.businessId !== businessId) throw new Error('recordClientPurchase: cross-tenant negado');
 
-    const now = new Date().toISOString();
-    tx.update(clientRef, computePurchasePatch(data, amount, countVisit, now));
-    tx.set(guardRef, { businessId, sourceId, amount: amount || 0, recordedAt: now });
-    return { recorded: true };
-  });
+      const now = new Date().toISOString();
+      tx.update(clientRef, computePurchasePatch(data, amount, countVisit, now));
+      tx.set(guardRef, { businessId, sourceId, amount: amount || 0, recordedAt: now });
+      return { recorded: true };
+    });
+  } catch (err) {
+    // Sinal observável na origem: a leitura do guard (clients/{id}/purchases/{sourceId})
+    // é a 1ª op da tx e, na 1ª compra, o doc-guard AINDA não existe — se a regra
+    // Firestore negar read de doc inexistente, a tx inteira falha e as stats do
+    // cliente (PDV/Pedidos, client-SDK) nunca gravam. console.error (não warn) pra
+    // que esse modo de falha apareça nos logs. Re-lança: callers tratam best-effort.
+    console.error('[recordClientPurchase] guard tx falhou — stats do cliente NÃO gravadas:', err);
+    throw err;
+  }
 }

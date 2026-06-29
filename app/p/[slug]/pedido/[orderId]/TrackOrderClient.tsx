@@ -19,6 +19,10 @@ import type { PaymentFsmStatus } from '@/lib/contracts/fsm/payment';
  */
 
 const POLL_MS = 5000;
+// Após este nº de ciclos sem mudança de estado, pausamos o polling (≈5 min) e
+// oferecemos refresh manual. Evita polling eterno/consumo quando nada mais muda
+// pela tela (ex.: PIX expirado/recusado com pedido ainda não finalizado).
+const MAX_IDLE_CYCLES = 60;
 
 // Projeção mínima devolvida por /api/orders/[id]/status (R6: confiamos no shape).
 interface OrderStatusResponse {
@@ -51,6 +55,11 @@ function isTerminal(s?: OrderStatusResponse): boolean {
   return orderDone && paySettled;
 }
 
+// Assinatura dos campos exibidos: se não muda entre ciclos, contamos como "idle".
+function statusSig(s: OrderStatusResponse): string {
+  return `${s.status}|${s.paymentFsmStatus ?? ''}|${s.paymentStatus ?? ''}`;
+}
+
 export default function TrackOrderClient({
   orderId,
   token,
@@ -65,11 +74,17 @@ export default function TrackOrderClient({
   const [data, setData] = useState<OrderStatusResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [paused, setPaused] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelledRef = useRef(false);
+  const notFoundRef = useRef(false);
+  const idleCountRef = useRef(0);
+  const lastSigRef = useRef<string | null>(null);
 
   const fetchStatus = useCallback(async (): Promise<OrderStatusResponse | null> => {
     if (!token) {
+      notFoundRef.current = true;
       setNotFound(true);
       setLoading(false);
       return null;
@@ -80,6 +95,7 @@ export default function TrackOrderClient({
         { cache: 'no-store' },
       );
       if (res.status === 404) {
+        notFoundRef.current = true;
         setNotFound(true);
         setLoading(false);
         return null;
@@ -99,13 +115,32 @@ export default function TrackOrderClient({
     }
   }, [orderId, token, data]);
 
-  // Polling com setTimeout encadeado (para naturalmente em estado terminal).
+  // Polling com setTimeout encadeado. Pausa em: estado terminal, 404, ou após
+  // MAX_IDLE_CYCLES sem mudança de estado. Pausado → refresh manual reativa.
   useEffect(() => {
+    if (paused) return;
     cancelledRef.current = false;
     const tick = async () => {
       const latest = await fetchStatus();
       if (cancelledRef.current) return;
-      if (latest && isTerminal(latest)) return; // chegou ao fim → para de pollar
+      if (notFoundRef.current) return; // pedido inexistente/expirado → para
+      if (latest && isTerminal(latest)) {
+        setPaused(true); // chegou ao fim → exibição final, para de pollar
+        return;
+      }
+      if (latest) {
+        const sig = statusSig(latest);
+        if (sig === lastSigRef.current) {
+          idleCountRef.current += 1;
+        } else {
+          lastSigRef.current = sig;
+          idleCountRef.current = 0;
+        }
+        if (idleCountRef.current >= MAX_IDLE_CYCLES) {
+          setPaused(true); // nada muda há muito tempo → pausa, oferece refresh
+          return;
+        }
+      }
       timerRef.current = setTimeout(tick, POLL_MS);
     };
     tick();
@@ -115,7 +150,21 @@ export default function TrackOrderClient({
     };
     // fetchStatus muda quando `data` muda; o encadeamento já cuida do loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orderId, token]);
+  }, [orderId, token, paused]);
+
+  // Refresh manual (botão "Atualizar"): busca uma vez; se ainda houver o que
+  // acompanhar, retoma o polling automático.
+  const refreshNow = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    const latest = await fetchStatus();
+    setRefreshing(false);
+    if (latest && !isTerminal(latest) && !notFoundRef.current) {
+      idleCountRef.current = 0;
+      lastSigRef.current = statusSig(latest);
+      setPaused(false); // retoma o loop automático
+    }
+  }, [fetchStatus, refreshing]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -148,7 +197,13 @@ export default function TrackOrderClient({
               animate={{ opacity: 1, y: 0 }}
               className="space-y-5 pt-5"
             >
-              <OrderNumberBadge number={data.number} status={data.status} />
+              <OrderNumberBadge
+                number={data.number}
+                status={data.status}
+                paused={paused}
+                refreshing={refreshing}
+                onRefresh={refreshNow}
+              />
               <FabricationTimeline status={data.status} />
               <PaymentSection data={data} />
             </motion.div>
@@ -184,7 +239,19 @@ function Header({ name, logo }: { name?: string; logo?: string }) {
 }
 
 // ─── Order number badge ────────────────────────────────────────────────────────
-function OrderNumberBadge({ number, status }: { number: number; status: DeliveryOrderStatus }) {
+function OrderNumberBadge({
+  number,
+  status,
+  paused,
+  refreshing,
+  onRefresh,
+}: {
+  number: number;
+  status: DeliveryOrderStatus;
+  paused: boolean;
+  refreshing: boolean;
+  onRefresh: () => void;
+}) {
   const cancelled = status === 'cancelado';
   return (
     <div className="flex items-center justify-between">
@@ -192,12 +259,21 @@ function OrderNumberBadge({ number, status }: { number: number; status: Delivery
         <span className="text-xs text-gray-400">Pedido</span>
         <span className="font-black">#{String(number).padStart(4, '0')}</span>
       </div>
-      {!cancelled && (
+      {paused ? (
+        <button
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white transition-colors disabled:opacity-60"
+        >
+          <RefreshCw className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} />
+          {refreshing ? 'Atualizando…' : 'Atualizar'}
+        </button>
+      ) : !cancelled ? (
         <span className="inline-flex items-center gap-1.5 text-xs text-gray-400">
           <RefreshCw className="w-3 h-3 animate-spin [animation-duration:3s]" />
           Atualizando…
         </span>
-      )}
+      ) : null}
     </div>
   );
 }

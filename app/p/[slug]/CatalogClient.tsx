@@ -37,6 +37,9 @@ interface CreatedOrder {
   orderId: string;
   orderNumber: number;
   trackingToken: string;
+  /** Total AUTORITATIVO recomputado server-side (subtotal + fee). Garante que o
+   *  valor exibido/cobrado == o persistido. Fallback pro cartTotal se ausente. */
+  total?: number;
 }
 
 /** Projeção PÚBLICA do business entregue ao cardápio anônimo. A page.tsx monta
@@ -555,6 +558,7 @@ export default function CatalogClient({ business, products, categories }: Props)
       orderId: data.orderId,
       orderNumber: data.orderNumber,
       trackingToken: data.trackingToken,
+      total: typeof data.total === 'number' ? data.total : undefined,
     };
     setCreatedOrder(created);
     setOrderId(created.orderId);
@@ -1311,7 +1315,7 @@ export default function CatalogClient({ business, products, categories }: Props)
                         orderId={createdOrder.orderId}
                         trackingToken={createdOrder.trackingToken}
                         orderNumber={createdOrder.orderNumber}
-                        amount={cartTotal}
+                        amount={createdOrder.total ?? cartTotal}
                         pix={pixData}
                         businessName={businessName}
                         onConfirmed={clearIdempotencyKey}
@@ -1329,7 +1333,7 @@ export default function CatalogClient({ business, products, categories }: Props)
                         trackingToken={createdOrder.trackingToken}
                         orderNumber={createdOrder.orderNumber}
                         publicKey={mpPublicKey}
-                        amount={cartTotal}
+                        amount={createdOrder.total ?? cartTotal}
                         businessName={businessName}
                         onApproved={clearIdempotencyKey}
                         onBackToMenu={finishAndReset}

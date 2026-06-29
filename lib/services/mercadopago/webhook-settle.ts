@@ -26,6 +26,7 @@ import { parseExternalReference } from '@/contracts/domain/payment';
 import {
   assertTransitionPayment,
   canTransitionPayment,
+  PAYMENT_TERMINAL_STATUSES,
   type PaymentFsmStatus,
 } from '@/contracts/fsm/payment';
 import type { DeliveryOrder } from '@/lib/types';
@@ -268,7 +269,17 @@ async function settleOnce(args: {
       // settleMismatch em vez de throw — um throw aqui viraria 500 e o MP
       // reentregaria pra sempre um estado impossível.
       if (!canTransitionPayment(from, 'paid')) {
-        recordMismatch(`transição inválida ${from} → paid`);
+        // 'approved' chega mas a FSM proíbe paid a partir de `from`.
+        // - refunded: estorno já concluído; um 'approved' tardio/duplicado do MP é
+        //   stale (o dinheiro já voltou) → NO-OP silencioso.
+        if (from === 'refunded') {
+          return { noop: true, businessId, orderId, externalPaymentId: dataId, paymentFsmStatus: from };
+        }
+        // - expired/failed (pedido MORTO localmente pelo cron/recusa) ou estado
+        //   não-terminal inesperado: um pagamento REALMENTE aprovado aqui significa
+        //   DINHEIRO RECEBIDO no MP que a FSM não consegue liquidar. NÃO engolir —
+        //   sinaliza revisão manual (estornar ao cliente OU reativar o pedido).
+        recordMismatch(`pagamento aprovado em pedido '${from}' — requer revisão manual (dinheiro pode ter sido recebido)`);
         return { mismatch: true, needsManualReview: true, businessId, orderId, externalPaymentId: dataId };
       }
       assertTransitionPayment(from, 'paid');
@@ -314,8 +325,14 @@ async function settleOnce(args: {
       }
 
       if (!canTransitionPayment(from, target)) {
-        // Reversão impossível pela FSM (ex: refund de pedido nunca pago) →
-        // registra e não muda dinheiro.
+        // MP-02: se o pedido JÁ está terminal (expired/refunded/failed) por
+        // OUTRO caminho (cron expire-pix / estorno concorrente), uma reversão
+        // tardia do MP é NO-OP silencioso — não settleMismatch/needsManualReview.
+        if (PAYMENT_TERMINAL_STATUSES.has(from)) {
+          return { noop: true, businessId, orderId, externalPaymentId: dataId, paymentFsmStatus: from };
+        }
+        // Reversão impossível a partir de estado NÃO-terminal (ex: refund de
+        // pedido nunca pago) → divergência REAL: registra e não muda dinheiro.
         recordMismatch(`reversão inválida ${from} → ${target}`);
         return { mismatch: true, needsManualReview: true, businessId, orderId, externalPaymentId: dataId };
       }

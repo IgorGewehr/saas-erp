@@ -1371,6 +1371,11 @@ export default function OrdersModule() {
     if (!businessId) return;
     const orderRef = doc(db, 'deliveryOrders', order.id);
     const txRef = doc(db, 'transactions', `${order.id}_revenue`);
+    // Capturados FRESCOS dentro da transação (não do closure, que pode estar
+    // stale se o pedido mutou concorrentemente) pra alimentar o recordClientPurchase.
+    let freshClientId: string | undefined;
+    let freshTotal = 0;
+    let freshChannel: Order['channel'] | undefined;
     await runTransaction(db, async (trx) => {
       const snap = await trx.get(orderRef);
       const data = snap.data() as Order | undefined;
@@ -1378,22 +1383,25 @@ export default function OrdersModule() {
       if (isOnlineOrder(data) && data.paymentFsmStatus !== 'paid') {
         throw new Error('ONLINE_UNPAID: pagamento online não confirmado');
       }
+      freshClientId = data.clientId || undefined;
+      freshTotal = data.total;
+      freshChannel = data.channel;
       const patch: Record<string, unknown> = { status: 'entregue', deliveredAt: now, updatedAt: now };
       if (!data.transactionId) {
         trx.set(txRef, {
           businessId,
           type: 'receita',
           category: 'Vendas',
-          description: `Pedido #${order.number}${order.clientName ? ` - ${order.clientName}` : ''}`,
-          amount: order.total,
+          description: `Pedido #${data.number}${data.clientName ? ` - ${data.clientName}` : ''}`,
+          amount: data.total,
           dueDate: now.split('T')[0],
           paymentDate: now.split('T')[0],
           status: 'pago',
-          clientId: order.clientId || null,
-          contactId: order.clientId || null,
-          clientName: order.clientName || null,
+          clientId: data.clientId || null,
+          contactId: data.clientId || null,
+          clientName: data.clientName || null,
           deliveryOrderId: order.id,
-          paymentMethod: order.paymentMethod || null,
+          paymentMethod: data.paymentMethod || null,
           createdAt: now,
           updatedAt: now,
         });
@@ -1408,14 +1416,14 @@ export default function OrdersModule() {
     // re-conta. Pedidos do cardápio público (channel 'site') já incrementaram
     // visitCount na criação ⇒ countVisit:false; manual/whatsapp/... contam aqui.
     // Best-effort: não derruba a entrega já efetivada se a ficha falhar.
-    if (order.clientId) {
+    if (freshClientId) {
       try {
         await recordClientPurchaseClient({
           businessId,
-          clientId: order.clientId,
+          clientId: freshClientId,
           sourceId: order.id,
-          amount: order.total,
-          countVisit: order.channel !== 'site',
+          amount: freshTotal,
+          countVisit: freshChannel !== 'site',
         });
       } catch (err) {
         console.warn('[Orders] recordClientPurchase failed:', err);

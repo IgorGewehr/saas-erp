@@ -39,6 +39,12 @@ export const maxDuration = 60;
 /** Máximo de pedidos re-consultados por tenant por execução (por varredura). */
 const MAX_ORDERS_PER_TENANT = 100;
 
+/** Teto da varredura GLOBAL de órfãos de estorno (read-only, observabilidade). */
+const MAX_ORPHAN_SCAN = 300;
+
+/** Janela "recente" (horas) dos sinais operacionais agregados ao fim do run. */
+const RECENT_WINDOW_HOURS = 24;
+
 /** Guards de reversão que vivem no pedido mas não no tipo base (espelha
  *  transaction-reversal.ts e os campos gravados por webhook-settle). */
 type OrderWithReviewGuard = DeliveryOrder & {
@@ -172,6 +178,128 @@ async function recoverReversalEffects(
   }
 }
 
+interface OrphanReversalAlert {
+  /** Pedidos refunded|failed com efeitos pendentes em tenants SEM MP conectado. */
+  orphanedReversalsPending: number;
+  /** Tenants distintos afetados. */
+  affectedTenants: number;
+  /** Teto MAX_ORPHAN_SCAN atingido → a contagem pode estar SUBESTIMADA (backlog
+   *  maior que o cap). Sinaliza pra não ler o número como completo. */
+  scanCapReached?: boolean;
+  /** Erro de índice/consulta — degrada gracioso, não interrompe o run. */
+  error?: string;
+}
+
+/**
+ * MP-03 — ALERTA (read-only): pedidos refunded|failed cujos EFEITOS de reversão
+ * ficaram pendentes em tenants que DESCONECTARAM o MP. Sem token, este cron NÃO
+ * consegue re-drenar (settlePaymentNotification re-consulta o MP), então em vez de
+ * silenciosamente não recuperar, CONTABILIZA e emite console.warn estruturado para
+ * disparar reconexão/intervenção manual. NÃO muda estado financeiro.
+ *
+ * Varredura GLOBAL indexada (single-field `in` é auto-indexado — nunca full-scan),
+ * filtrada em código por provider + tenant-desconectado + efeitos pendentes. Cap
+ * MAX_ORPHAN_SCAN. Tenants conectados são pulados — já são tratados pelas varreduras
+ * autoritativas acima.
+ */
+async function alertOrphanedReversals(connected: Set<string>): Promise<OrphanReversalAlert> {
+  let snap;
+  try {
+    snap = await adminDb
+      .collection('deliveryOrders')
+      .where('paymentFsmStatus', 'in', ['refunded', 'failed'])
+      .limit(MAX_ORPHAN_SCAN)
+      .get();
+  } catch (err) {
+    return {
+      orphanedReversalsPending: 0,
+      affectedTenants: 0,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  const perTenant = new Map<string, number>();
+  for (const doc of snap.docs) {
+    const order = doc.data() as OrderWithReviewGuard;
+    if (order.paymentProvider !== 'mercadopago') continue;
+    if (!order.businessId || connected.has(order.businessId)) continue; // conectado → já tratado
+    if (!reversalEffectsPending(order)) continue;
+    perTenant.set(order.businessId, (perTenant.get(order.businessId) ?? 0) + 1);
+  }
+
+  // Teto atingido → a varredura global pode ter SUBESTIMADO o backlog real.
+  const scanCapReached = snap.size >= MAX_ORPHAN_SCAN;
+  const orphanedReversalsPending = [...perTenant.values()].reduce((s, n) => s + n, 0);
+  if (orphanedReversalsPending > 0 || scanCapReached) {
+    console.warn(
+      '[mp-cron/reconcile] ALERTA órfãos de estorno (MP desconectado, efeitos pendentes):',
+      JSON.stringify({
+        orphanedReversalsPending,
+        affectedTenants: perTenant.size,
+        scanCapReached,
+        ...(scanCapReached ? { hintCap: `varredura atingiu o teto de ${MAX_ORPHAN_SCAN} — contagem possivelmente subestimada; pagine/eleve o cap.` } : {}),
+        tenants: [...perTenant.entries()].map(([businessId, pending]) => ({ businessId, pending })),
+        hint: 'Reconectar o Mercado Pago do tenant ou tratar manualmente o estorno (estoque/receita).',
+      }),
+    );
+  }
+  return { orphanedReversalsPending, affectedTenants: perTenant.size, scanCapReached };
+}
+
+interface OperationalSignals {
+  /** -1 = sinal indisponível (consulta falhou; não-fatal). */
+  settleMismatchRecent: number;
+  unmatchedPaymentsRecent: number;
+  ordersNeedingReview: number;
+  windowHours: number;
+}
+
+/**
+ * Observability — conta sinais operacionais ao final do run (read-only, NÃO muda
+ * estado financeiro): settleMismatch + unmatchedPayments criados na janela recente,
+ * e o backlog atual de pedidos com needsManualReview. Cada contagem é isolada
+ * (try/catch → -1) — um sinal indisponível não quebra o run nem os demais.
+ */
+async function tallyOperationalSignals(): Promise<OperationalSignals> {
+  const cutoffIso = new Date(Date.now() - RECENT_WINDOW_HOURS * 3_600_000).toISOString();
+  const safeCount = async (run: () => Promise<number>): Promise<number> => {
+    try {
+      return await run();
+    } catch {
+      return -1;
+    }
+  };
+
+  const [settleMismatchRecent, unmatchedPaymentsRecent, ordersNeedingReview] = await Promise.all([
+    safeCount(async () =>
+      (
+        await adminDb.collection('settleMismatch').where('createdAt', '>=', cutoffIso).count().get()
+      ).data().count,
+    ),
+    safeCount(async () =>
+      (
+        await adminDb
+          .collection('unmatchedPayments')
+          .where('createdAt', '>=', cutoffIso)
+          .count()
+          .get()
+      ).data().count,
+    ),
+    safeCount(async () =>
+      (
+        await adminDb.collection('deliveryOrders').where('needsManualReview', '==', true).count().get()
+      ).data().count,
+    ),
+  ]);
+
+  return {
+    settleMismatchRecent,
+    unmatchedPaymentsRecent,
+    ordersNeedingReview,
+    windowHours: RECENT_WINDOW_HOURS,
+  };
+}
+
 async function reconcileTenant(businessId: string): Promise<TenantSummary> {
   const summary: TenantSummary = {
     businessId,
@@ -194,6 +322,7 @@ async function handle(req: NextRequest) {
 
   try {
     const businessIds = await listConnectedBusinessIds();
+    const connectedSet = new Set(businessIds);
     const tenants: TenantSummary[] = [];
 
     for (const businessId of businessIds) {
@@ -215,6 +344,12 @@ async function handle(req: NextRequest) {
       }
     }
 
+    // Read-only, pós-varreduras: alerta de órfãos (MP-03) + sinais operacionais.
+    const [orphanedReversals, signals] = await Promise.all([
+      alertOrphanedReversals(connectedSet),
+      tallyOperationalSignals(),
+    ]);
+
     const summary = {
       scannedTenants: tenants.length,
       candidates: tenants.reduce((s, t) => s + t.candidates, 0),
@@ -223,6 +358,8 @@ async function handle(req: NextRequest) {
       reversalRecovered: tenants.reduce((s, t) => s + t.reversalRecovered, 0),
       manualReview: tenants.reduce((s, t) => s + t.manualReview, 0),
       failed: tenants.reduce((s, t) => s + t.failed, 0),
+      orphanedReversals,
+      signals,
       tenants,
     };
     console.log('[mp-cron/reconcile] resumo:', JSON.stringify({ ...summary, tenants: undefined }));
