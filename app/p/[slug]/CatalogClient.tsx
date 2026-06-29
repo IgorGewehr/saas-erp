@@ -242,6 +242,10 @@ export default function CatalogClient({ business, products, categories }: Props)
   // ofertado quando a loja tem conta conectada + public key disponível.
   const onlinePaymentEnabled = Boolean(business.mpConnected) && Boolean(business.mpPublicKey);
   const mpPublicKey = business.mpPublicKey ?? '';
+  // M9 — gate de ambiente: sem mpLiveMode a public key é de SANDBOX (TEST-*).
+  // Mantemos a oferta (merchant testando), mas avisamos o cliente de forma
+  // inequívoca pra ninguém pagar achando que a cobrança é real.
+  const mpTestMode = onlinePaymentEnabled && business.mpLiveMode !== true;
 
   const deliveryFee = business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0;
   const isOpen = isBusinessOpen(business.settings?.openingHours);
@@ -559,13 +563,13 @@ export default function CatalogClient({ business, products, categories }: Props)
   // Gera (ou reusa) a cobrança PIX do pedido. trackingToken autoriza o cliente
   // anônimo a cobrar o PRÓPRIO pedido.
   async function createPixCharge(order: CreatedOrder): Promise<PixCharge> {
+    // SEM X-Idempotency-Key: a dedup é responsabilidade da rota (mint-lock +
+    // reuso transacional de PIX ainda válido). Uma chave fixa `pix-${orderId}`
+    // faria o withIdempotency replicar a 1ª resposta por 24h — após a expiração
+    // o re-mint seria curto-circuitado e o cliente ficaria com um QR morto.
     const res = await fetch(`/api/orders/${order.orderId}/pay-pix`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Estável por pedido: retry replica a mesma cobrança (PIX válido é reusado).
-        'X-Idempotency-Key': `pix-${order.orderId}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ trackingToken: order.trackingToken }),
     });
     const data = await res.json();
@@ -1151,6 +1155,16 @@ export default function CatalogClient({ business, products, categories }: Props)
                             <p className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 mb-1.5">
                               <Sparkles className="w-3 h-3" /> Pagar agora · confirmação na hora
                             </p>
+                            {mpTestMode && (
+                              <div className="flex items-start gap-2 p-2.5 mb-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+                                <AlertCircle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-px" />
+                                <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-tight">
+                                  <span className="font-bold">Ambiente de testes.</span>{' '}
+                                  Os pagamentos online aqui são de sandbox e não cobram de verdade —
+                                  prefira pagar na {form.deliveryType === 'entrega' ? 'entrega' : 'retirada'}.
+                                </p>
+                              </div>
+                            )}
                             <div className="grid grid-cols-2 gap-2">
                               {([
                                 { value: 'pix' as const, label: 'PIX', icon: QrCode },

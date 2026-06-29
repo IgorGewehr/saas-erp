@@ -4,15 +4,29 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 
+// Generate a key with: openssl rand -base64 32
+// TECH DEBT: derivation is a raw padEnd(32,'0').slice(0,32). A future hardening
+// should move to HKDF with a versioned salt (e.g. prefix ciphertext with a key
+// version byte) so keys can be rotated/derived properly. Do NOT change the
+// derivation or ciphertext format here without a migration — it would break
+// tokens already encrypted in production (Mercado Pago and other channels).
 function getEncryptionKey(): Buffer {
   const key = process.env.ENCRYPTION_KEY;
   if (!key) {
     throw new Error(
       '[Encryption] ENCRYPTION_KEY env var is required. ' +
-      'Set a 32-character random string in your environment.'
+      'Generate one with `openssl rand -base64 32` and set it in your environment.'
     );
   }
-  // Ensure key is exactly 32 bytes
+  if (key.length < 32) {
+    throw new Error(
+      `[Encryption] ENCRYPTION_KEY must be at least 32 characters (got ${key.length}). ` +
+      'Generate a strong key with `openssl rand -base64 32`. ' +
+      'Refusing to pad a short key, which would silently weaken encryption.'
+    );
+  }
+  // Ensure key is exactly 32 bytes (padEnd is a no-op for valid >=32-char keys;
+  // kept only to preserve the existing ciphertext format — see note above).
   return Buffer.from(key.padEnd(32, '0').slice(0, 32), 'utf-8');
 }
 

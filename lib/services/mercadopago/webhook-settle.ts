@@ -50,6 +50,26 @@ interface MpPaymentDetail {
   payment_method_id?: string;
   payment_type_id?: string;
   live_mode?: boolean;
+  /** Total já estornado deste pagamento (R$). MP mantém o payment 'approved' num
+   *  refund PARCIAL e expõe o valor estornado aqui (fallback: soma de refunds[]). */
+  transaction_amount_refunded?: number;
+  refunds?: Array<{ amount?: number }>;
+}
+
+/** Total estornado: campo agregado do MP, com fallback na soma de refunds[]. */
+function computeRefundedAmount(payment: MpPaymentDetail): number {
+  if (typeof payment.transaction_amount_refunded === 'number') {
+    return payment.transaction_amount_refunded;
+  }
+  return (payment.refunds ?? []).reduce((sum, r) => sum + (r.amount ?? 0), 0);
+}
+
+/** Refund PARCIAL: estornou ALGO, mas menos que o valor cheio (fora da tolerância). */
+function isPartialRefund(refundedAmount: number, fullAmount: number): boolean {
+  return (
+    refundedAmount > AMOUNT_TOLERANCE &&
+    refundedAmount < fullAmount - AMOUNT_TOLERANCE
+  );
 }
 
 export interface SettleResult {
@@ -63,6 +83,9 @@ export interface SettleResult {
   alert?: boolean;
   /** Valor pago divergente do esperado → não marcado como pago. */
   mismatch?: boolean;
+  /** Pedido marcado para revisão manual (refund parcial, valor/transição
+   *  divergente) — o cron NÃO deve re-tentar cegamente. */
+  needsManualReview?: boolean;
   /** No-op idempotente (já estava no estado final). */
   noop?: boolean;
   /** Pagamento de outro ambiente (sandbox×prod) → ignorado, não liquida. */
@@ -152,6 +175,7 @@ async function settleOnce(args: {
 
   const paidAmount =
     payment.transaction_details?.total_paid_amount ?? payment.transaction_amount ?? 0;
+  const refundedAmount = computeRefundedAmount(payment);
   const mpStatus = payment.status;
 
   const orderRef = adminDb.collection('deliveryOrders').doc(orderId);
@@ -172,6 +196,32 @@ async function settleOnce(args: {
     const from: PaymentFsmStatus = current.paymentFsmStatus ?? 'pending';
     const nowIso = new Date().toISOString();
 
+    // M2: settleMismatch com doc id DETERMINÍSTICO (orderId_externalPaymentId) →
+    // dedup (re-entrega sobrescreve em vez de empilhar). Marca needsManualReview
+    // no pedido pro cron de reconciliação NÃO re-tentar cegamente em loop.
+    const mismatchDocId = `${orderId}_${String(payment.id)}`;
+    const recordMismatch = (reason: string, extra?: Record<string, unknown>) => {
+      tx.set(
+        adminDb.collection('settleMismatch').doc(mismatchDocId),
+        {
+          businessId,
+          orderId,
+          externalPaymentId: String(payment.id),
+          reason,
+          ...(extra ?? {}),
+          mpStatus,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        },
+        { merge: true },
+      );
+      tx.update(orderRef, {
+        needsManualReview: true,
+        needsManualReviewReason: reason,
+        updatedAt: nowIso,
+      });
+    };
+
     // ── Aprovação ──────────────────────────────────────────────────────────
     if (mpStatus === 'approved') {
       // Guard de pedido JÁ pago — só relevante para aprovações (refund/cancel
@@ -183,6 +233,25 @@ async function settleOnce(args: {
       // cenário cairia em unmatched na resolução, não nesta branch). Por isso o
       // único desfecho possível é o no-op idempotente de reentrega do MP.
       if (from === 'paid') {
+        // M3: MP mantém status 'approved' num refund PARCIAL, sinalizando-o só
+        // via transaction_amount_refunded/refunds[]. Refund parcial NÃO vira
+        // 'refunded' cheio (perderia receita parcial) — registra settleMismatch
+        // + needsManualReview para tratamento manual.
+        const fullAmount = current.paymentAmount ?? current.total ?? 0;
+        if (isPartialRefund(refundedAmount, fullAmount)) {
+          recordMismatch('refund parcial — requer revisão manual', {
+            refundedAmount,
+            fullAmount,
+          });
+          return {
+            mismatch: true,
+            needsManualReview: true,
+            businessId,
+            orderId,
+            externalPaymentId: dataId,
+            paymentFsmStatus: 'paid',
+          };
+        }
         return { noop: true, businessId, orderId, externalPaymentId: dataId, paymentFsmStatus: 'paid' };
       }
 
@@ -191,16 +260,11 @@ async function settleOnce(args: {
       // por uma liquidação anterior com o valor pago).
       const expected = current.total ?? 0;
       if (Math.abs(paidAmount - expected) > AMOUNT_TOLERANCE) {
-        tx.set(adminDb.collection('settleMismatch').doc(), {
-          businessId,
-          orderId,
-          externalPaymentId: String(payment.id),
+        recordMismatch('valor pago diverge do esperado', {
           expectedAmount: expected,
           paidAmount,
-          reason: 'valor pago diverge do esperado',
-          createdAt: nowIso,
         });
-        return { mismatch: true, businessId, orderId, externalPaymentId: dataId };
+        return { mismatch: true, needsManualReview: true, businessId, orderId, externalPaymentId: dataId };
       }
 
       // Guard FSM como CAS (espelha a branch de reversão): transição inválida
@@ -208,15 +272,8 @@ async function settleOnce(args: {
       // settleMismatch em vez de throw — um throw aqui viraria 500 e o MP
       // reentregaria pra sempre um estado impossível.
       if (!canTransitionPayment(from, 'paid')) {
-        tx.set(adminDb.collection('settleMismatch').doc(), {
-          businessId,
-          orderId,
-          externalPaymentId: String(payment.id),
-          reason: `transição inválida ${from} → paid`,
-          mpStatus,
-          createdAt: nowIso,
-        });
-        return { mismatch: true, businessId, orderId, externalPaymentId: dataId };
+        recordMismatch(`transição inválida ${from} → paid`);
+        return { mismatch: true, needsManualReview: true, businessId, orderId, externalPaymentId: dataId };
       }
       assertTransitionPayment(from, 'paid');
       tx.update(orderRef, {
@@ -245,18 +302,26 @@ async function settleOnce(args: {
       if (from === target) {
         return { noop: true, businessId, orderId, externalPaymentId: dataId, paymentFsmStatus: from };
       }
+
+      // M3: refund PARCIAL (estornou parte do valor) não pode marcar 'refunded'
+      // cheio — isso restauraria estoque e estornaria a receita TOTAL. Registra
+      // settleMismatch + needsManualReview e mantém o estado atual.
+      if (target === 'refunded') {
+        const fullAmount = current.paymentAmount ?? current.total ?? 0;
+        if (isPartialRefund(refundedAmount, fullAmount)) {
+          recordMismatch('refund parcial — requer revisão manual', {
+            refundedAmount,
+            fullAmount,
+          });
+          return { mismatch: true, needsManualReview: true, businessId, orderId, externalPaymentId: dataId };
+        }
+      }
+
       if (!canTransitionPayment(from, target)) {
         // Reversão impossível pela FSM (ex: refund de pedido nunca pago) →
         // registra e não muda dinheiro.
-        tx.set(adminDb.collection('settleMismatch').doc(), {
-          businessId,
-          orderId,
-          externalPaymentId: String(payment.id),
-          reason: `reversão inválida ${from} → ${target}`,
-          mpStatus,
-          createdAt: nowIso,
-        });
-        return { mismatch: true, businessId, orderId, externalPaymentId: dataId };
+        recordMismatch(`reversão inválida ${from} → ${target}`);
+        return { mismatch: true, needsManualReview: true, businessId, orderId, externalPaymentId: dataId };
       }
       assertTransitionPayment(from, target);
       tx.update(orderRef, {
@@ -312,8 +377,9 @@ async function settleOnce(args: {
   });
 
   // Side-effects cross-módulo FORA da transação (R5 — via eventos).
-  // Gate em !outcome.noop: a reentrega do MP (from === target) retorna noop com
-  // o MESMO paymentFsmStatus e NÃO deve re-disparar evento/estorno/restauro.
+  //
+  // Aprovação: gate em !outcome.noop — payment.approved NÃO é re-disparado na
+  // reentrega (from === target já 'paid' retorna noop).
   if (!outcome.noop && outcome.paymentFsmStatus === 'paid') {
     await dispatchDomainEvent(adminDb, {
       type: 'payment.approved',
@@ -327,15 +393,22 @@ async function settleOnce(args: {
     }).catch((err) => {
       console.error('[mp-settle] dispatch payment.approved falhou (não-fatal):', err);
     });
-  } else if (!outcome.noop && (outcome.paymentFsmStatus === 'refunded' || outcome.paymentFsmStatus === 'failed')) {
-    // EFEITO DIRETO (sem depender de handler de evento registrado), cross-coleção,
-    // FORA da tx de FSM e idempotente — tolera reentrega do webhook:
-    //   (a) restaura o estoque debitado na criação (guard stockRestoredAt, mesmo
-    //       padrão do cron expire-pix);
-    //   (b) só quando há receita lançada (pedido entregue → transactionId),
-    //       reverte a Transaction via contra-lançamento (guard
-    //       transactionReversedAt). 'failed' nunca chegou a 'paid', logo não há
-    //       receita a estornar — só estoque.
+  }
+
+  // Reversão: efeitos re-executáveis por ESTADO-DESEJADO. Rodam tanto na
+  // transição fresca QUANTO na reentrega/recuperação (outcome.noop) — basta o
+  // estado-alvo ser refunded/failed. Os guards CAS (stockRestoredAt /
+  // transactionReversedAt) garantem idempotência, então re-aplicar é seguro e
+  // RECUPERA efeitos de um webhook de estorno perdido (o cron reconcile reentrega
+  // por este mesmo caminho quando detecta efeitos pendentes). EFEITO DIRETO (sem
+  // depender de handler de evento registrado), cross-coleção, FORA da tx de FSM:
+  //   (a) restaura o estoque debitado na criação (guard stockRestoredAt, mesmo
+  //       padrão do cron expire-pix);
+  //   (b) só quando há receita lançada (pedido entregue → transactionId), reverte
+  //       a Transaction via contra-lançamento (guard transactionReversedAt).
+  //       'failed' nunca chegou a 'paid', logo não há receita a estornar — só
+  //       estoque.
+  if (outcome.paymentFsmStatus === 'refunded' || outcome.paymentFsmStatus === 'failed') {
     await restoreOrderStockOnReversal(orderId, businessId).catch((err) => {
       console.error('[mp-settle] restauro de estoque no estorno falhou (não-fatal):', err);
     });
@@ -349,18 +422,22 @@ async function settleOnce(args: {
         console.error('[mp-settle] estorno da Transaction falhou (não-fatal):', err);
       });
 
-      // Mantido APENAS para auditoria (não há subscriber do qual dependamos).
-      await dispatchDomainEvent(adminDb, {
-        type: 'payment.refunded',
-        businessId,
-        occurredAt: new Date().toISOString(),
-        actorType: 'system',
-        orderId,
-        externalPaymentId: String(payment.id),
-        amount: paidAmount,
-      }).catch((err) => {
-        console.error('[mp-settle] dispatch payment.refunded falhou (não-fatal):', err);
-      });
+      // Evento de auditoria só na transição FRESCA (não na reentrega/recuperação),
+      // pra não duplicar a trilha. Os efeitos de dinheiro acima são idempotentes;
+      // o evento aqui é só registro (não há subscriber do qual dependamos).
+      if (!outcome.noop) {
+        await dispatchDomainEvent(adminDb, {
+          type: 'payment.refunded',
+          businessId,
+          occurredAt: new Date().toISOString(),
+          actorType: 'system',
+          orderId,
+          externalPaymentId: String(payment.id),
+          amount: paidAmount,
+        }).catch((err) => {
+          console.error('[mp-settle] dispatch payment.refunded falhou (não-fatal):', err);
+        });
+      }
     }
   }
 
@@ -369,32 +446,41 @@ async function settleOnce(args: {
 
 /**
  * Restaura, idempotentemente, o estoque debitado na criação do pedido (PIX
- * público debita na criação). Espelha restoreOrderStock do cron expire-pix:
- * guard de re-leitura fresca (stockDeductedAt setado E stockRestoredAt vazio),
- * reconstrói as mesmas linhas (itens + modificadores com linkedProductId, BOM
- * expandido por restoreStockAdmin) e grava stockRestoredAt SÓ APÓS concluir
- * (ordem recuperável: falha deixa o pedido elegível a retry no próximo webhook).
+ * público debita na criação). Espelha restoreOrderStock do cron expire-pix
+ * (ordem RECUPERÁVEL):
+ *   1. CAS claim DENTRO da tx ANTES de restaurar: grava stockRestoredAt=null
+ *      (claim explícito, queryável) só se ainda não há timestamp.
+ *   2. Reconstrói as mesmas linhas (itens + modificadores com linkedProductId,
+ *      BOM expandido por restoreStockAdmin) e restaura.
+ *   3. Grava o timestamp em stockRestoredAt SÓ APÓS concluir.
+ * Se restoreStockAdmin falhar (passo 2), stockRestoredAt fica null e a varredura
+ * de recuperação do cron reconcile (refunded + restore pendente) reprocessa no
+ * próximo run — sem vazamento de estoque por webhook/restore perdido.
  */
 async function restoreOrderStockOnReversal(
   orderId: string,
   businessId: string,
 ): Promise<boolean> {
   const orderRef = adminDb.collection('deliveryOrders').doc(orderId);
-  // CAS claim: reivindica o restauro atomicamente (grava stockRestoredAt DENTRO
-  // da tx) ANTES de restaurar, pra dois webhooks de refund concorrentes não
-  // restaurarem o estoque em dobro (restoreStockAdmin não é idempotente).
-  // Tradeoff: se restoreStockAdmin falhar após o claim, o estoque não é
-  // restaurado e não há retry automático (cenário raro — MP reentrega não
-  // re-reivindica o claim já gravado).
+  // Claim recuperável: marca stockRestoredAt=null DENTRO da tx ANTES de restaurar.
+  // Guard de já-restaurado = timestamp string (null/undefined ainda são elegíveis).
   const order = await adminDb.runTransaction(async (tx) => {
     const s = await tx.get(orderRef);
     if (!s.exists) return null;
     const o = s.data() as DeliveryOrder;
     if (o.businessId !== businessId) return null; // R1 re-check
-    if (!o.stockDeductedAt || o.stockRestoredAt) return null;
+    if (!o.stockDeductedAt) return null; // nada debitado a restaurar
+    if (typeof o.stockRestoredAt === 'string') return null; // já restaurado
+    // Claim distinguível com janela de obsolescência (~5min): outro run em
+    // progresso (claim recente) não restaura de novo; claim antigo (run que
+    // crashou) volta a ser elegível — recupera sem duplo-restauro concorrente.
+    const claimedAt = o.stockRestoreClaimedAt;
+    if (typeof claimedAt === 'string' && Date.now() - Date.parse(claimedAt) < 5 * 60 * 1000) return null;
+    const nowIso = new Date().toISOString();
     tx.update(orderRef, {
-      stockRestoredAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      stockRestoreClaimedAt: nowIso,
+      stockRestoredAt: null,
+      updatedAt: nowIso,
     });
     return o;
   });
@@ -431,7 +517,14 @@ async function restoreOrderStockOnReversal(
     productIndex,
   });
 
-  // stockRestoredAt já foi gravado no claim transacional acima.
+  // Timestamp gravado SÓ APÓS o restauro concluir (ordem recuperável): se
+  // restoreStockAdmin acima lançar, stockRestoredAt continua null e a varredura
+  // do reconcile reprocessa no próximo run.
+  await orderRef.update({
+    stockRestoredAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
   return adjustments.length > 0;
 }
 

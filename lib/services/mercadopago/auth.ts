@@ -23,7 +23,7 @@ import {
   type PaymentAccount,
   type PaymentAccountPublic,
 } from '@/contracts/domain/paymentAccount';
-import { mpFetch } from './client';
+import { mpFetch, MercadoPagoApiError } from './client';
 
 // ─── Config do APP (env) ────────────────────────────────────────────────────
 
@@ -56,6 +56,11 @@ const mpAuthRef = (businessId: string) =>
   adminDb.collection('businesses').doc(businessId).collection('private').doc('mpAuth');
 const mpLockRef = (businessId: string) =>
   adminDb.collection('businesses').doc(businessId).collection('private').doc('mpTokenLock');
+// Saúde do refresh: contador de falhas TRANSIENTES consecutivas. Doc server-only,
+// fora do contrato PaymentAccount de propósito (não vaza pra UI; é telemetria de
+// resiliência, não estado da conexão). Zerado em qualquer refresh bem-sucedido.
+const mpRefreshHealthRef = (businessId: string) =>
+  adminDb.collection('businesses').doc(businessId).collection('private').doc('mpRefreshHealth');
 const businessRef = (businessId: string) =>
   adminDb.collection('businesses').doc(businessId);
 
@@ -148,6 +153,61 @@ class MpReauthRequiredError extends Error {
   }
 }
 
+/**
+ * Falha TRANSIENTE no refresh (timeout, 429, 5xx, rede). A conexão do tenant
+ * permanece SÃ — NÃO desconectamos. O cron/próxima chamada re-tenta. Só após
+ * MAX_CONSECUTIVE_TRANSIENT_FAILURES falhas seguidas escalamos para reauth.
+ */
+export class MpRefreshRetryableError extends Error {
+  readonly retryable = true as const;
+  constructor(
+    businessId: string,
+    public readonly consecutiveFailures: number,
+    cause?: string,
+  ) {
+    super(
+      `[MercadoPago] refresh transiente para ${businessId} ` +
+        `(falha ${consecutiveFailures}, re-tentável)${cause ? `: ${cause}` : ''}`,
+    );
+    this.name = 'MpRefreshRetryableError';
+  }
+}
+
+// Quantas falhas TRANSIENTES consecutivas toleramos antes de assumir que a
+// degradação não é passageira e desconectar definitivamente. Com o cron diário
+// rodando a partir de 15 dias antes da expiração, 6 falhas seguidas significam
+// vários dias de indisponibilidade real — não um soluço de rede na janela do cron.
+const MAX_CONSECUTIVE_TRANSIENT_FAILURES = 6;
+
+type RefreshFailureKind = 'permanent' | 'transient';
+
+/**
+ * Classifica a falha do POST /oauth/token.
+ *  - PERMANENTE: refresh_token/credenciais inválidos (HTTP 400/401, ex.
+ *    invalid_grant/invalid_client). Reconectar é a única saída → markNeedsReauth.
+ *  - TRANSIENTE: timeout/rede (status 0), 408/429/5xx e demais respostas
+ *    inesperadas. Re-tentável; NUNCA desconecta em massa por instabilidade.
+ */
+function classifyRefreshFailure(err: unknown): RefreshFailureKind {
+  if (err instanceof MercadoPagoApiError) {
+    const { status } = err;
+    // client.ts usa status 0 para rede/timeout (sem resposta HTTP).
+    if (status === 0 || status === 408 || status === 429 || status >= 500) {
+      return 'transient';
+    }
+    // 400/401 no /oauth/token = refresh_token expirado/revogado ou client_secret
+    // inválido (invalid_grant/invalid_client). Reconexão obrigatória.
+    if (status === 400 || status === 401) {
+      return 'permanent';
+    }
+    // Outros 4xx (403/404/...) são inesperados aqui; não disparam desconexão em
+    // massa — tratamos como transiente e deixamos o backoff decidir.
+    return 'transient';
+  }
+  // Zod parse de resposta malformada ou erro inesperado: não é prova de revogação.
+  return 'transient';
+}
+
 function readAccount(snap: FirebaseFirestore.DocumentSnapshot): PaymentAccount | null {
   if (!snap.exists) return null;
   return snap.data() as PaymentAccount;
@@ -235,10 +295,51 @@ async function releaseLock(businessId: string, lockId: string): Promise<void> {
   }).catch(() => undefined); // soltar lock nunca pode derrubar o fluxo principal
 }
 
+/**
+ * Re-lê a conta e detecta ROTAÇÃO CONCORRENTE: se outro processo (lock
+ * reivindicado como órfão, relógio dessincronizado) já rotacionou os tokens —
+ * lastRefreshAt mudou, conta sã e token fresco — devolve o access token vigente.
+ * Caso contrário, null. Usado tanto no caminho de sucesso (não sobrescrever o
+ * refresh_token recém-rotacionado) quanto no de erro (L6: invalid_grant que é só
+ * o nosso refresh_token já obsoleto, não revogação da conta).
+ */
+async function readRotatedToken(
+  businessId: string,
+  baselineRefreshAt: string | undefined,
+): Promise<string | null> {
+  const latest = readAccount(await mpAuthRef(businessId).get());
+  if (
+    latest &&
+    latest.lastRefreshAt !== baselineRefreshAt &&
+    !latest.mpNeedsReauth &&
+    tokenStillFresh(latest)
+  ) {
+    return decryptToken(latest.accessTokenEncrypted);
+  }
+  return null;
+}
+
+/** Incrementa (e devolve) o contador de falhas transientes consecutivas. */
+async function recordTransientFailure(businessId: string): Promise<number> {
+  const snap = await mpRefreshHealthRef(businessId).get();
+  const prev =
+    snap.exists ? Number((snap.data() as { consecutiveFailures?: number }).consecutiveFailures) || 0 : 0;
+  const next = prev + 1;
+  await mpRefreshHealthRef(businessId)
+    .set({ consecutiveFailures: next, lastFailureAt: new Date().toISOString() }, { merge: true })
+    .catch(() => undefined);
+  return next;
+}
+
+/** Zera o contador de falhas (qualquer sucesso/recuperação reinicia o backoff). */
+async function clearRefreshFailures(businessId: string): Promise<void> {
+  await mpRefreshHealthRef(businessId).delete().catch(() => undefined);
+}
+
 async function doRefresh(businessId: string, account: PaymentAccount): Promise<string> {
   const { clientId, clientSecret } = getAppCredentials();
-  // Baseline pra detectar rotação concorrente antes de persistir (defesa em
-  // profundidade — ver re-leitura mais abaixo).
+  // Baseline pra detectar rotação concorrente antes de persistir / antes de
+  // desconectar (defesa em profundidade — ver readRotatedToken).
   const baselineRefreshAt = account.lastRefreshAt;
   let refreshToken: string;
   try {
@@ -261,26 +362,47 @@ async function doRefresh(businessId: string, account: PaymentAccount): Promise<s
     });
     parsed = MpTokenResponseSchema.parse(raw);
   } catch (err) {
+    // L6 — ROTAÇÃO CONCORRENTE: se outro processo já rotacionou sob o lock, o
+    // nosso refresh_token virou obsoleto e o MP responde invalid_grant, mas a
+    // CONTA ESTÁ SÃ. Re-leia: token vigente fresco ⇒ devolve, NÃO desconecta.
+    const rotated = await readRotatedToken(businessId, baselineRefreshAt);
+    if (rotated) {
+      await clearRefreshFailures(businessId);
+      return rotated;
+    }
+
+    const detail = err instanceof Error ? err.message : String(err);
+
+    if (classifyRefreshFailure(err) === 'transient') {
+      // BLOCKER — instabilidade transiente (timeout/429/5xx/rede) NÃO pode
+      // desconectar o lojista. Conta a falha e re-tenta na próxima passagem.
+      const failures = await recordTransientFailure(businessId);
+      if (failures >= MAX_CONSECUTIVE_TRANSIENT_FAILURES) {
+        // Degradação persistente (dias de outage ou revogação disfarçada de 5xx):
+        // só AGORA escalamos para reconexão manual.
+        await markNeedsReauth(businessId);
+        throw new MpReauthRequiredError(
+          businessId,
+          `refresh falhou ${failures}x consecutivas (transiente persistente): ${detail}`,
+        );
+      }
+      throw new MpRefreshRetryableError(businessId, failures, detail);
+    }
+
+    // PERMANENTE (invalid_grant/invalid_client, HTTP 400/401): reconexão é a
+    // única saída — desconecta.
+    await clearRefreshFailures(businessId);
     await markNeedsReauth(businessId);
-    throw new MpReauthRequiredError(
-      businessId,
-      `refresh falhou: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    throw new MpReauthRequiredError(businessId, `refresh falhou: ${detail}`);
   }
 
   // Defesa em profundidade: mesmo sob lock, re-leia antes de persistir. Se outro
-  // processo (lock reivindicado como órfão, relógio dessincronizado, etc.) já
-  // rotacionou — lastRefreshAt mudou e o token está fresco — NÃO sobrescreve:
-  // sobrescrever invalidaria o refresh_token recém-rotacionado pelo outro
-  // processo. Devolve o access token vigente já persistido.
-  const latest = readAccount(await mpAuthRef(businessId).get());
-  if (
-    latest &&
-    latest.lastRefreshAt !== baselineRefreshAt &&
-    !latest.mpNeedsReauth &&
-    tokenStillFresh(latest)
-  ) {
-    return decryptToken(latest.accessTokenEncrypted);
+  // processo já rotacionou, NÃO sobrescreve (invalidaria o refresh_token novo do
+  // outro) — devolve o access token vigente já persistido.
+  const rotated = await readRotatedToken(businessId, baselineRefreshAt);
+  if (rotated) {
+    await clearRefreshFailures(businessId);
+    return rotated;
   }
 
   // Persiste tokens ROTACIONADOS (refresh_token novo é obrigatório).
@@ -303,6 +425,7 @@ async function doRefresh(businessId: string, account: PaymentAccount): Promise<s
     { merge: true },
   );
 
+  await clearRefreshFailures(businessId);
   return parsed.access_token;
 }
 
@@ -318,7 +441,9 @@ export interface ProactiveRefreshOutcome {
     | 'no-account'
     | 'needs-reauth'
     | 'still-fresh'
-    | 'locked';
+    | 'locked'
+    // Falha TRANSIENTE: conta intacta, será re-tentada na próxima passagem do cron.
+    | 'transient-retry';
 }
 
 /**
@@ -328,9 +453,12 @@ export interface ProactiveRefreshOutcome {
  * fluxo on-demand (a rotação do refresh_token do MP exige serialização — dois
  * refreshes concorrentes invalidam a conexão).
  *
- * NÃO lança em falha de rede/refresh: o `doRefresh` já marca `mpNeedsReauth` e
- * lança MpReauthRequiredError; o cron isola por-tenant. Aqui só propagamos pra
- * o caller contabilizar; falha de UM tenant nunca derruba a varredura.
+ * Falha TRANSIENTE (timeout/429/5xx) NÃO desconecta nem lança: vira o no-op
+ * `transient-retry` e o cron re-tenta amanhã (backoff por contador consecutivo).
+ * Falha PERMANENTE (invalid_grant/invalid_client, 400/401) ou degradação
+ * persistente: `doRefresh` marca `mpNeedsReauth` e lança MpReauthRequiredError,
+ * que propagamos pro caller contabilizar; falha de UM tenant nunca derruba a
+ * varredura (o cron isola por-tenant).
  */
 export async function refreshMpTokenProactively(
   businessId: string,
@@ -360,6 +488,12 @@ export async function refreshMpTokenProactively(
     }
     await doRefresh(businessId, fresh);
     return { refreshed: true };
+  } catch (err) {
+    // Transiente: conta intacta, re-tenta na próxima varredura (não é erro do cron).
+    if (err instanceof MpRefreshRetryableError) {
+      return { refreshed: false, skipped: 'transient-retry' };
+    }
+    throw err; // permanente/needs-reauth → caller contabiliza
   } finally {
     await releaseLock(businessId, lockId);
   }

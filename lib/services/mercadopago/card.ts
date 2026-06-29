@@ -38,6 +38,9 @@ export interface CreateCardPaymentParams {
 export interface CreateCardPaymentResult {
   externalPaymentId: string;
   status: PaymentFsmStatus;
+  /** status_detail do MP em recusa síncrona — pro pedido persistir o motivo real
+   *  (a UI mostra em vez da mensagem genérica). */
+  declineReason?: string;
 }
 
 interface MpPaymentResponse {
@@ -89,5 +92,6 @@ export async function createCardPayment(
   return {
     externalPaymentId: String(payment.id),
     status: mapMpStatusToFsm(payment.status ?? 'pending'),
+    declineReason: payment.status_detail,
   };
 }

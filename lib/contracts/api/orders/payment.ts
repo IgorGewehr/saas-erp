@@ -7,8 +7,9 @@
  *
  * v1: PIX (QR + copia e cola) e Cartão (token via Bricks no front).
  *
- * COMISSÃO DA PLATAFORMA = 0% por decisão de negócio. `applicationFee` existe
- * como ponto de extensão TIPADO (default 0); não cobramos split na v1.
+ * COMISSÃO DA PLATAFORMA = 0% por decisão de negócio. `applicationFee` (split)
+ * é DERIVADO server-side (sempre 0 na v1) — NUNCA vem do body do cliente
+ * anônimo, senão um pagador poderia se auto-atribuir um split arbitrário.
  *
  * Fundação — nenhuma rota implementada ainda.
  */
@@ -17,15 +18,17 @@ import { z } from 'zod';
 import { ErrorEnvelopeSchema, IdempotencyHeaderSchema, successEnvelope } from '../_envelope';
 import { PaymentFsmStatusSchema } from '../../fsm/payment';
 
-/** Ponto de extensão tipado p/ split. Default 0 (plataforma não cobra). */
+/**
+ * Ponto de extensão tipado p/ split, resolvido SERVER-SIDE (default 0).
+ * Não faz parte de nenhum BodySchema público — o valor é derivado na rota,
+ * nunca confiado do client.
+ */
 export const ApplicationFeeSchema = z.number().nonnegative().default(0);
 
 // ─── POST /api/orders/payment/create-pix ────────────────────────────────────
 export const CreatePixChargeHeadersSchema = IdempotencyHeaderSchema;
 export const CreatePixChargeBodySchema = z.object({
   orderId: z.string().min(1),
-  /** Comissão da plataforma (R$). v1 sempre 0. */
-  applicationFee: ApplicationFeeSchema.optional(),
 });
 export const CreatePixChargeResponseSchema = z.union([
   successEnvelope(z.object({
@@ -48,7 +51,6 @@ export const CreateCardChargeBodySchema = z.object({
   cardToken: z.string().min(1),
   installments: z.number().int().min(1).max(24),
   payerEmail: z.string().email().optional(),
-  applicationFee: ApplicationFeeSchema.optional(),
 });
 export const CreateCardChargeResponseSchema = z.union([
   successEnvelope(z.object({

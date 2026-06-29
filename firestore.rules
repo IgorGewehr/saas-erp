@@ -1083,6 +1083,14 @@ service cloud.firestore {
                    'paymentFsmStatus', 'externalPaymentId', 'paidAt',
                    // defesa em profundidade: client nunca edita estes
                    'paymentAmount', 'pixMintAt', 'pixMintBy',
+                   // M8: 'paymentProvider' precisa ser imutavel pelo client. Sem isso
+                   // o operador removia/alterava paymentProvider num 1o update (saindo
+                   // de 'mercadopago'), desarmava paymentStatusLocked() — que depende
+                   // de resource.data.paymentProvider — e num 2o update marcava o
+                   // pedido MP como 'pago' sem confirmacao do provedor. Travar via
+                   // diff() NAO afeta pedido manual (dinheiro/voucher): o staff so
+                   // muda paymentStatus, nunca toca paymentProvider/refundedAt.
+                   'paymentProvider', 'paymentMethodKind', 'refundedAt',
                    // stockDeductedAt NÃO entra: o staff grava esse campo no fluxo
                    // de fabricação manual (preparando/cancelar/excluir via SDK web).
                    // Só stockRestoredAt é server-only (cron expire-pix + webhook).

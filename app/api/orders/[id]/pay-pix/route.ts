@@ -37,7 +37,8 @@ const REUSE_BUFFER_MS = 30_000;    // só reusa PIX com >30s de validade restant
 
 /**
  * orderId vem do path. businessId é DERIVADO do doc (R1); se vier no body,
- * vale só como cross-check opcional. applicationFee (split) no body.
+ * vale só como cross-check opcional. applicationFee (split) NÃO vem do client —
+ * é derivado server-side (0 na v1).
  */
 const PixBodySchema = CreatePixChargeBodySchema.omit({ orderId: true }).extend({
   businessId: z.string().min(1).optional(),
@@ -83,7 +84,7 @@ export async function POST(
   if (!parsed.success) {
     return errorResponse(400, 'VALIDATION_ERROR', 'Corpo inválido', parsed.error.flatten());
   }
-  const { businessId: bodyBusinessId, applicationFee } = parsed.data;
+  const { businessId: bodyBusinessId } = parsed.data;
   const trackingToken = parsed.data.trackingToken ?? req.headers.get('x-tracking-token') ?? undefined;
 
   const orderRef = adminDb.collection('deliveryOrders').doc(orderId);
@@ -169,7 +170,7 @@ export async function POST(
           const pix = await createPixPayment({
             businessId,
             order: { id: orderId, total: decision.total, description: `Pedido ${decision.number}` },
-            applicationFee,
+            // applicationFee derivado server-side: 0 na v1 (default do service).
           });
 
           const nowIso = new Date().toISOString();

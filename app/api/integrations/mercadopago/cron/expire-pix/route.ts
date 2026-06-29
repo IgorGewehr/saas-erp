@@ -10,7 +10,16 @@
  * Auth: Authorization: Bearer ${CRON_SECRET}.
  *
  * Invariantes:
- *   - R1: query filtra businessId; só toca pedidos do próprio tenant.
+ *   - R1: cada pedido é tocado SÓ com seu próprio businessId — re-conferido dentro
+ *     de cada transação (cur.businessId !== order.businessId → aborta).
+ *   - M6 (órfãos): a varredura NÃO depende de mpConnected. O flip pending→expired
+ *     e o restauro de estoque são operações LOCAIS (não precisam de token MP), logo
+ *     selecionamos pedidos PIX pending vencidos GLOBALMENTE (cross-tenant, query
+ *     indexada — nunca full-scan), inclusive de tenants que desconectaram o MP.
+ *     Sem isto, pedidos pendentes viravam órfãos eternos ao desconectar a conta.
+ *   - M7 (starvation): as duas varreduras ordenam asc (paymentExpiresAt / updatedAt)
+ *     e têm teto GLOBAL por execução. Servindo sempre o pedido que espera há mais
+ *     tempo primeiro, nenhum tenant fica permanentemente atrás do cap.
  *   - FSM: CAS atômica pending→expired (assertTransitionPayment) dentro de tx —
  *     só UM run flipa cada pedido; depois ele sai da query (não é mais pending).
  *   - Estoque RECUPERÁVEL: o flip pending→expired NÃO terminaliza o restauro.
@@ -19,13 +28,19 @@
  *     logo após. Se o restauro falhar, o campo fica null e uma VARREDURA de
  *     recuperação (paymentFsmStatus=='expired' && stockRestoredAt==null) o
  *     reprocessa no próximo run — não há vazamento de estoque por webhook/restore
- *     perdido. Idempotência: restoreStockAdmin grava timestamp em stockRestoredAt
- *     ao concluir; assim o pedido some da varredura (null → string) e nunca é
- *     restaurado duas vezes. Ordem das operações: restaurar estoque PRIMEIRO,
- *     gravar o timestamp DEPOIS — falha deixa o pedido elegível pra retry.
+ *     perdido.
+ *   - M4 (TOCTOU): o restauro REIVINDICA o claim DENTRO de runTransaction (CAS)
+ *     ANTES de chamar restoreStockAdmin (que NÃO é idempotente) — espelha
+ *     restoreOrderStockOnReversal do webhook-settle. O guard `typeof
+ *     stockRestoredAt === 'string'` rejeita o pedido se outro run já concluiu o
+ *     restauro entre a query e o claim, evitando duplo-incremento de estoque.
+ *     Idempotência: restoreStockAdmin grava timestamp em stockRestoredAt ao
+ *     concluir; o pedido some da varredura (null → string). Ordem das operações:
+ *     restaurar estoque PRIMEIRO, gravar o timestamp DEPOIS — falha deixa o
+ *     pedido elegível pra retry.
  *   - Estoque: reconstrói as MESMAS linhas debitadas na criação (itens +
  *     modificadores com linkedProductId), via restoreStockAdmin (BOM expandido).
- *   - try/catch POR PEDIDO e POR TENANT.
+ *   - try/catch POR PEDIDO; índices ausentes reportados em `errors[]`.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -37,12 +52,14 @@ import {
   type StockDeductionLine,
 } from '@/lib/services/stock-admin';
 import { assertTransitionPayment, type PaymentFsmStatus } from '@/contracts/fsm/payment';
-import { isCronAuthorized, unauthorized, listConnectedBusinessIds } from '../_shared';
+import { isCronAuthorized, unauthorized } from '../_shared';
 
 export const maxDuration = 60;
 
-/** Máximo de pedidos vencidos processados por tenant por execução. */
-const MAX_ORDERS_PER_TENANT = 100;
+/** Teto GLOBAL de pedidos vencidos flipados por execução (cross-tenant, justo). */
+const MAX_EXPIRE_PER_RUN = 300;
+/** Teto GLOBAL de restauros residuais reprocessados por execução. */
+const MAX_RECOVER_PER_RUN = 300;
 
 interface TenantSummary {
   businessId: string;
@@ -52,7 +69,6 @@ interface TenantSummary {
    *  anteriores cujo restauro falhou após o flip→expired). */
   stockRecovered: number;
   failed: number;
-  error?: string;
 }
 
 /**
@@ -86,24 +102,51 @@ function buildStockLines(
   return lines;
 }
 
-async function restoreOrderStock(order: DeliveryOrder, orderId: string): Promise<boolean> {
+/**
+ * Restaura, idempotentemente, o estoque debitado na criação do pedido. Espelha
+ * restoreOrderStockOnReversal do webhook-settle (ordem RECUPERÁVEL):
+ *   1. M4 — CAS claim DENTRO da tx ANTES de restaurar: lê o estado FRESCO e grava
+ *      stockRestoredAt=null (claim queryável) só se ainda não há timestamp string.
+ *      restoreStockAdmin NÃO é idempotente, então a exclusão tem de acontecer aqui.
+ *   2. Reconstrói as mesmas linhas (itens + modificadores com linkedProductId,
+ *      BOM expandido por restoreStockAdmin) e restaura.
+ *   3. Grava o timestamp em stockRestoredAt SÓ APÓS concluir.
+ * Se restoreStockAdmin falhar (passo 2), stockRestoredAt fica null e a varredura
+ * de recuperação reprocessa no próximo run — sem vazamento de estoque.
+ */
+async function restoreOrderStock(orderId: string, businessId: string): Promise<boolean> {
   const orderRef = adminDb.collection('deliveryOrders').doc(orderId);
 
-  // Guard de idempotência (re-leitura fresca): só restaura se o estoque foi
-  // debitado e ainda NÃO restaurado. Cobre corridas com o webhook ou com um run
-  // anterior que já tenha gravado stockRestoredAt entre a query e este ponto.
-  const fresh = await orderRef.get();
-  if (!fresh.exists) return false;
-  const cur = fresh.data() as DeliveryOrder;
-  if (cur.businessId !== order.businessId) return false; // R1 re-check
-  if (!cur.stockDeductedAt || cur.stockRestoredAt) return false;
+  // Claim recuperável: marca stockRestoredAt=null DENTRO da tx ANTES de restaurar.
+  // Guard de já-restaurado = timestamp string (null/undefined ainda são elegíveis).
+  const order = await adminDb.runTransaction(async (tx) => {
+    const s = await tx.get(orderRef);
+    if (!s.exists) return null;
+    const o = s.data() as DeliveryOrder;
+    if (o.businessId !== businessId) return null; // R1 re-check
+    if (!o.stockDeductedAt) return null; // nada debitado a restaurar
+    if (typeof o.stockRestoredAt === 'string') return null; // já restaurado
+    // Claim distinguível com janela de obsolescência (~5min): outro run em
+    // progresso (claim recente) não restaura de novo; claim antigo (run que
+    // crashou) volta a ser elegível — recupera sem duplo-restauro concorrente.
+    const claimedAt = o.stockRestoreClaimedAt;
+    if (typeof claimedAt === 'string' && Date.now() - Date.parse(claimedAt) < 5 * 60 * 1000) return null;
+    const nowIso = new Date().toISOString();
+    tx.update(orderRef, {
+      stockRestoreClaimedAt: nowIso,
+      stockRestoredAt: null,
+      updatedAt: nowIso,
+    });
+    return o;
+  });
+  if (!order) return false;
 
   const itemIds = (order.items ?? []).map((i) => i.productId);
   if (itemIds.length === 0) return false;
 
   // 1º passe: carrega os produtos dos itens p/ descobrir linkedProductIds dos
   // modificadores; 2º passe: índice completo (itens + insumos) p/ a restauração.
-  const itemIndex = await loadProductIndex(adminDb, itemIds, order.businessId);
+  const itemIndex = await loadProductIndex(adminDb, itemIds, businessId);
   const linkedIds: string[] = [];
   for (const item of order.items ?? []) {
     const product = itemIndex.get(item.productId);
@@ -117,15 +160,11 @@ async function restoreOrderStock(order: DeliveryOrder, orderId: string): Promise
     }
   }
 
-  const productIndex = await loadProductIndex(
-    adminDb,
-    [...itemIds, ...linkedIds],
-    order.businessId,
-  );
+  const productIndex = await loadProductIndex(adminDb, [...itemIds, ...linkedIds], businessId);
   const lines = buildStockLines(order, productIndex);
 
   const adjustments = await restoreStockAdmin(adminDb, lines, {
-    businessId: order.businessId,
+    businessId,
     operatorId: 'system',
     operatorName: 'Cron PIX expirado',
     sourceId: orderId,
@@ -145,91 +184,97 @@ async function restoreOrderStock(order: DeliveryOrder, orderId: string): Promise
 }
 
 /**
- * Varredura de recuperação: pedidos JÁ expirados cujo restauro de estoque ficou
- * pendente (stockRestoredAt==null gravado no flip, mas restoreStockAdmin não
- * concluiu num run anterior). Idempotente via o guard stockRestoredAt — pedidos
- * já restaurados têm timestamp (string), não null, e não entram nesta query.
+ * Varredura de recuperação GLOBAL (cross-tenant): pedidos JÁ expirados cujo
+ * restauro de estoque ficou pendente (stockRestoredAt==null gravado no flip, mas
+ * restoreStockAdmin não concluiu num run anterior). Independente de mpConnected
+ * (M6 — é operação local). Ordenada por updatedAt asc (M7 — pendência mais antiga
+ * primeiro). Idempotente via o guard stockRestoredAt — pedidos já restaurados têm
+ * timestamp (string), não null, e não entram nesta query.
  */
 async function recoverPendingRestores(
-  businessId: string,
-  summary: TenantSummary,
+  getSummary: (businessId: string) => TenantSummary,
+  errors: string[],
 ): Promise<void> {
   let snap;
   try {
     snap = await adminDb
       .collection('deliveryOrders')
-      .where('businessId', '==', businessId)
       .where('paymentFsmStatus', '==', 'expired')
       .where('stockRestoredAt', '==', null)
-      .limit(MAX_ORDERS_PER_TENANT)
+      .orderBy('updatedAt', 'asc')
+      .limit(MAX_RECOVER_PER_RUN)
       .get();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.toLowerCase().includes('index')) {
-      summary.error =
-        'Composite index ausente para deliveryOrders(businessId, paymentFsmStatus, stockRestoredAt). Crie via firestore.indexes.json.';
+      errors.push(
+        'Composite index ausente para deliveryOrders(paymentFsmStatus, stockRestoredAt, updatedAt). Crie via firestore.indexes.json.',
+      );
       return;
     }
-    summary.error = msg;
+    errors.push(msg);
     return;
   }
 
   for (const doc of snap.docs) {
     const order = doc.data() as DeliveryOrder;
+    if (!order.businessId) continue; // doc inconsistente — não toca
     if (!order.stockDeductedAt) continue; // nada a restaurar
+    const summary = getSummary(order.businessId);
     try {
-      const restored = await restoreOrderStock(order, doc.id);
+      const restored = await restoreOrderStock(doc.id, order.businessId);
       if (restored) summary.stockRecovered++;
     } catch (err) {
       summary.failed++;
       console.error(
-        `[mp-cron/expire-pix] recover tenant ${businessId} pedido ${doc.id} falhou:`,
+        `[mp-cron/expire-pix] recover tenant ${order.businessId} pedido ${doc.id} falhou:`,
         err instanceof Error ? err.message : err,
       );
     }
   }
 }
 
-async function expireTenant(businessId: string, nowIso: string): Promise<TenantSummary> {
-  const summary: TenantSummary = {
-    businessId,
-    expired: 0,
-    stockRestored: 0,
-    stockRecovered: 0,
-    failed: 0,
-  };
-
-  // 1) Recupera restauros pendentes de runs anteriores (residual). Roda ANTES da
-  //    fase de expiração pra não competir, no mesmo ciclo, com pedidos recém
-  //    flipados (esses, se o restauro falhar, viram residual do PRÓXIMO run).
-  await recoverPendingRestores(businessId, summary);
-
+/**
+ * Varredura de expiração GLOBAL (cross-tenant): pedidos PIX pending cujo
+ * paymentExpiresAt já passou. Independente de mpConnected (M6) e ordenada por
+ * paymentExpiresAt asc (M7 — vencidos há mais tempo primeiro). Query indexada
+ * (nunca full-scan), teto global MAX_EXPIRE_PER_RUN.
+ */
+async function expirePendingPix(
+  nowIso: string,
+  getSummary: (businessId: string) => TenantSummary,
+  errors: string[],
+): Promise<void> {
   let snap;
   try {
     snap = await adminDb
       .collection('deliveryOrders')
-      .where('businessId', '==', businessId)
       .where('paymentFsmStatus', '==', 'pending')
       .where('paymentExpiresAt', '<=', nowIso)
-      .limit(MAX_ORDERS_PER_TENANT)
+      .orderBy('paymentExpiresAt', 'asc')
+      .limit(MAX_EXPIRE_PER_RUN)
       .get();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.toLowerCase().includes('index')) {
-      summary.error =
-        'Composite index ausente para deliveryOrders(businessId, paymentFsmStatus, paymentExpiresAt). Crie via firestore.indexes.json.';
-      return summary;
+      errors.push(
+        'Composite index ausente para deliveryOrders(paymentFsmStatus, paymentExpiresAt). Crie via firestore.indexes.json.',
+      );
+      return;
     }
-    summary.error = msg;
-    return summary;
+    errors.push(msg);
+    return;
   }
 
   for (const doc of snap.docs) {
     const order = doc.data() as DeliveryOrder;
+    if (!order.businessId) continue; // doc inconsistente — não toca
     // Só PIX — cartão pendente não "expira" por QR. (Filtro em código p/ manter
-    // o index com 3 campos; pedidos não-PIX no estado pending são raros.)
+    // o index com 2 campos; pedidos não-PIX no estado pending são raros.)
     if (order.paymentMethodKind && order.paymentMethodKind !== 'pix') continue;
 
+    const businessId = order.businessId;
+    const summary = getSummary(businessId);
     const orderRef = doc.ref;
     try {
       // CAS atômica: só flipa se ainda está pending (single-shot).
@@ -242,7 +287,7 @@ async function expireTenant(businessId: string, nowIso: string): Promise<TenantS
           const from: PaymentFsmStatus = cur.paymentFsmStatus ?? 'pending';
           if (from !== 'pending') return null; // já decidido por webhook/outro run
           assertTransitionPayment(from, 'expired');
-          const shouldRestore = !!cur.stockDeductedAt && !cur.stockRestoredAt;
+          const shouldRestore = !!cur.stockDeductedAt && typeof cur.stockRestoredAt !== 'string';
           const update: Record<string, unknown> = {
             paymentFsmStatus: 'expired',
             updatedAt: nowIso,
@@ -260,7 +305,7 @@ async function expireTenant(businessId: string, nowIso: string): Promise<TenantS
       summary.expired++;
 
       if (flipped.shouldRestore) {
-        const restored = await restoreOrderStock(order, doc.id);
+        const restored = await restoreOrderStock(doc.id, businessId);
         if (restored) summary.stockRestored++;
       }
     } catch (err) {
@@ -271,8 +316,6 @@ async function expireTenant(businessId: string, nowIso: string): Promise<TenantS
       );
     }
   }
-
-  return summary;
 }
 
 async function handle(req: NextRequest) {
@@ -280,33 +323,32 @@ async function handle(req: NextRequest) {
 
   try {
     const nowIso = new Date().toISOString();
-    const businessIds = await listConnectedBusinessIds();
-    const tenants: TenantSummary[] = [];
-
-    for (const businessId of businessIds) {
-      try {
-        tenants.push(await expireTenant(businessId, nowIso));
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[mp-cron/expire-pix] tenant ${businessId} falhou:`, msg);
-        tenants.push({
-          businessId,
-          expired: 0,
-          stockRestored: 0,
-          stockRecovered: 0,
-          failed: 0,
-          error: msg,
-        });
+    const tenants = new Map<string, TenantSummary>();
+    const getSummary = (businessId: string): TenantSummary => {
+      let s = tenants.get(businessId);
+      if (!s) {
+        s = { businessId, expired: 0, stockRestored: 0, stockRecovered: 0, failed: 0 };
+        tenants.set(businessId, s);
       }
-    }
+      return s;
+    };
+    const errors: string[] = [];
 
+    // 1) Recupera restauros pendentes de runs anteriores (residual). Roda ANTES da
+    //    fase de expiração pra não competir, no mesmo ciclo, com pedidos recém
+    //    flipados (esses, se o restauro falhar, viram residual do PRÓXIMO run).
+    await recoverPendingRestores(getSummary, errors);
+    await expirePendingPix(nowIso, getSummary, errors);
+
+    const tenantList = [...tenants.values()];
     const summary = {
-      scannedTenants: tenants.length,
-      expired: tenants.reduce((s, t) => s + t.expired, 0),
-      stockRestored: tenants.reduce((s, t) => s + t.stockRestored, 0),
-      stockRecovered: tenants.reduce((s, t) => s + t.stockRecovered, 0),
-      failed: tenants.reduce((s, t) => s + t.failed, 0),
-      tenants,
+      scannedTenants: tenantList.length,
+      expired: tenantList.reduce((s, t) => s + t.expired, 0),
+      stockRestored: tenantList.reduce((s, t) => s + t.stockRestored, 0),
+      stockRecovered: tenantList.reduce((s, t) => s + t.stockRecovered, 0),
+      failed: tenantList.reduce((s, t) => s + t.failed, 0),
+      tenants: tenantList,
+      ...(errors.length ? { errors } : {}),
     };
     console.log('[mp-cron/expire-pix] resumo:', JSON.stringify({ ...summary, tenants: undefined }));
     return NextResponse.json(summary);

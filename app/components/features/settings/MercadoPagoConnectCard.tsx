@@ -90,14 +90,23 @@ export default function MercadoPagoConnectCard() {
   });
 
   const isConnected = Boolean(data?.mpConnected);
+  const needsReauth = Boolean(data?.mpNeedsReauth);
+  // Estado combinado (L4): reauth tem PRIORIDADE sobre connected/disconnected,
+  // pra que o banner de reconexão seja sempre alcançável.
+  const mpState: 'disconnected' | 'connected' | 'needs_reauth' = needsReauth
+    ? 'needs_reauth'
+    : isConnected
+      ? 'connected'
+      : 'disconnected';
 
-  // Quando o polling/refetch confirma a conexão, encerra o estado 'connecting'.
+  // Quando o polling/refetch confirma a conexão (sem pendência de reauth),
+  // encerra o estado 'connecting'.
   useEffect(() => {
-    if (connecting && isConnected) {
+    if (connecting && isConnected && !needsReauth) {
       setConnecting(false);
       toast.success('Mercado Pago conectado com sucesso!');
     }
-  }, [connecting, isConnected]);
+  }, [connecting, isConnected, needsReauth]);
 
   // Listener do popup do callback (window.opener.postMessage).
   useEffect(() => {
@@ -117,6 +126,40 @@ export default function MercadoPagoConnectCard() {
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [refetch]);
+
+  // Watchdog do estado 'connecting' (L5): se o popup é fechado/abandonado ou o
+  // OAuth nunca conclui, reseta 'connecting' pra reabilitar o botão Conectar.
+  // O sucesso continua sendo tratado pelo efeito acima (refetch → mpConnected).
+  useEffect(() => {
+    if (!connecting) return;
+    const startedAt = Date.now();
+    let closedSince: number | null = null;
+    const interval = setInterval(() => {
+      // Timeout duro (~3min) pra não travar 'connecting' indefinidamente.
+      if (Date.now() - startedAt > 180_000) {
+        popupRef.current?.close();
+        setConnecting(false);
+        toast.info('Tempo esgotado para conectar. Tente novamente.');
+        return;
+      }
+      const popup = popupRef.current;
+      // `popup.closed` é legível mesmo com o popup em domínio do MP (cross-origin).
+      if (popup && popup.closed) {
+        if (closedSince === null) {
+          closedSince = Date.now();
+          // Confirma via status: pode ter conectado e fechado sozinho.
+          void refetch();
+        } else if (Date.now() - closedSince > 4000) {
+          // Fechou e, passados ~4s, segue sem conectar → o usuário desistiu.
+          setConnecting(false);
+          toast.info('Conexão não concluída. Você pode tentar novamente.');
+        }
+      } else {
+        closedSince = null;
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [connecting, refetch]);
 
   const handleConnect = useCallback(async () => {
     if (!canManage) return;
@@ -184,8 +227,6 @@ export default function MercadoPagoConnectCard() {
     );
   }
 
-  const needsReauth = Boolean(data?.mpNeedsReauth);
-
   return (
     <motion.section
       initial={{ opacity: 0, y: 12 }}
@@ -229,7 +270,7 @@ export default function MercadoPagoConnectCard() {
 
       {/* Reauth banner */}
       <AnimatePresence initial={false}>
-        {isConnected && needsReauth && (
+        {mpState === 'needs_reauth' && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
@@ -275,10 +316,26 @@ export default function MercadoPagoConnectCard() {
               transition={{ duration: 0.2 }}
             >
               {/* Connected state */}
-              <div className="rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/60 dark:bg-emerald-500/5 p-4">
-                <div className="flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-300">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span className="font-medium">Conta conectada e pronta para receber.</span>
+              <div
+                className={
+                  needsReauth
+                    ? 'rounded-xl border border-amber-200 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/5 p-4'
+                    : 'rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/60 dark:bg-emerald-500/5 p-4'
+                }
+              >
+                <div
+                  className={
+                    needsReauth
+                      ? 'flex items-center gap-2 text-sm text-amber-800 dark:text-amber-300'
+                      : 'flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-300'
+                  }
+                >
+                  {needsReauth ? <AlertTriangle className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
+                  <span className="font-medium">
+                    {needsReauth
+                      ? 'Conta conectada, mas a autorização precisa ser renovada.'
+                      : 'Conta conectada e pronta para receber.'}
+                  </span>
                 </div>
                 {data?.mpPublicKey && (
                   <div className="mt-3 flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">

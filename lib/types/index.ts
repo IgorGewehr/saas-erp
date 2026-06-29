@@ -1847,6 +1847,10 @@ export interface DeliveryOrder {
   /** Último motivo de recusa de pagamento (status_detail do MP). Exibido ao
    *  cliente anônimo no acompanhamento; não-sensível. */
   lastPaymentDeclineReason?: string;
+  /** Recusas de cartão acumuladas NESTE pedido. Teto anti card-testing: após
+   *  N recusas, pay-card bloqueia e exige um novo pedido. Incrementado de forma
+   *  atômica em transação a cada recusa terminal do MP. */
+  paymentAttempts?: number;
 
   // ── Lock de "mint" do PIX (anti-corrida entre 2 aparelhos) ──
   // Dois dispositivos pagando o mesmo pedido não podem gerar 2 QRs pagáveis.
@@ -1865,6 +1869,10 @@ export interface DeliveryOrder {
   /** Setado quando o estoque debitado foi RESTAURADO (ex: PIX expirado /
    *  estorno). Guard de idempotência: a restauração só roda se vazio. */
   stockRestoredAt?: string;
+  /** Lock de claim do restauro de estoque (ISO). Distingue "restauro em progresso"
+   *  de "ainda não reivindicado" — evita restauro duplo concorrente (webhook de
+   *  refund reentregue / cron concorrente). Stale após ~5min → re-elegível. */
+  stockRestoreClaimedAt?: string;
 
   /** FK para a Transaction de receita gerada ao entregar/pagar. Guard de
    *  idempotência: Transaction só é criada se este campo estiver vazio. */
