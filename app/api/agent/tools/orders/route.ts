@@ -10,6 +10,8 @@ import { isBusinessOpenNow } from '@/lib/utils/businessHours';
 import { Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { deductStockAdmin } from '@/lib/services/stock-admin';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
+import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
+import { restoreOrderStockRecoverable } from '@/lib/services/order-stock-restore';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -175,15 +177,10 @@ async function createOrder(businessId: string, params: CreateParams) {
   const subtotal = resolvedItems.reduce((s, i) => s + i.total, 0);
   const total = Math.max(0, subtotal + (params.deliveryFee || 0) - (params.discount || 0));
 
-  // Sequential order number per business
-  const counterRef = adminDb.collection('businesses').doc(businessId).collection('counters').doc('deliveryOrder');
-  const number = await adminDb.runTransaction(async (t) => {
-    const snap = await t.get(counterRef);
-    const current = (snap.data()?.lastNumber as number | undefined) || 0;
-    const next = current + 1;
-    t.set(counterRef, { lastNumber: next }, { merge: true });
-    return next;
-  });
+  // Numeração: fonte ÚNICA (business.lastOrderNumber), compartilhada com a UI
+  // (OrdersModule) e o cardápio público (orders/public). Antes este canal usava
+  // um contador SEPARADO (counters/deliveryOrder) → números colidiam entre canais.
+  const number = await allocateOrderNumberAdmin(adminDb, businessId);
 
   const now = new Date().toISOString();
   const estimatedDeliveryAt = new Date(Date.now() + (params.estimatedMinutes || 45) * 60000).toISOString();
@@ -274,34 +271,70 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
   assertTransitionDeliveryOrder(data.status, status);
 
   const now = new Date().toISOString();
-  const patch: Record<string, unknown> = { status, updatedAt: now };
+
   if (status === 'entregue') {
-    patch.deliveredAt = now;
-    // Receita de delivery → Transaction (idempotente via data.transactionId).
-    // Mantém consistência com OrdersModule.handleStatusChange + PDV (saleId).
-    if (!data.transactionId) {
-      const txRef = adminDb.collection('transactions').doc();
-      await txRef.set({
-        businessId,
-        type: 'receita',
-        category: 'Vendas',
-        description: `Pedido #${data.number}${data.clientName ? ` - ${data.clientName}` : ''}`,
-        amount: data.total,
-        dueDate: now.split('T')[0],
-        paymentDate: now.split('T')[0],
-        status: 'pago',
-        clientId: data.clientId || null,
-        contactId: data.clientId || null,
-        clientName: data.clientName || null,
-        deliveryOrderId: orderId,
-        paymentMethod: data.paymentMethod || null,
-        createdAt: now,
-        updatedAt: now,
+    // Receita de delivery → Transaction com ID DETERMINÍSTICO {orderId}_revenue,
+    // gravada de forma idempotente numa runTransaction com CAS em transactionId
+    // (mesmo padrão de sales-server `${saleId}_revenue`). O ID estável + o guard
+    // CAS garantem que entregar pela tool do agente, pela UI (OrdersModule) ou
+    // pelo fluxo de pagamento online aprovado NUNCA duplica a receita: todos
+    // convergem para o mesmo doc. status/deliveredAt e a FK transactionId são
+    // escritos na MESMA transação (atômico).
+    //
+    // X1-gate: pagamento online (paymentProvider definido — dinheiro regido pela
+    // FSM de pagamento) só vira receita 'pago' quando a FSM confirma
+    // (paymentFsmStatus === 'paid'). Entregar um pedido online ainda não pago NÃO
+    // lança receita aqui — o dinheiro não entrou; a receita será lançada pelo
+    // fluxo de aprovação do pagamento usando o MESMO ID determinístico.
+    const txRef = adminDb.collection('transactions').doc(`${orderId}_revenue`);
+    await adminDb.runTransaction(async (t) => {
+      const cur = await t.get(ref);
+      if (!cur.exists) throw new Error('Order not found');
+      const curData = cur.data() as DeliveryOrder;
+      const orderPatch: Record<string, unknown> = { status, deliveredAt: now, updatedAt: now };
+
+      const isOnlinePayment = !!curData.paymentProvider;
+      const onlineUnpaid = isOnlinePayment && curData.paymentFsmStatus !== 'paid';
+
+      // CAS em transactionId: só lança se ainda não houver receita E o gate online passar.
+      if (!curData.transactionId && !onlineUnpaid) {
+        t.set(txRef, {
+          businessId,
+          type: 'receita',
+          category: 'Vendas',
+          description: `Pedido #${curData.number}${curData.clientName ? ` - ${curData.clientName}` : ''}`,
+          amount: curData.total,
+          dueDate: now.split('T')[0],
+          paymentDate: now.split('T')[0],
+          status: 'pago',
+          clientId: curData.clientId || null,
+          contactId: curData.clientId || null,
+          clientName: curData.clientName || null,
+          deliveryOrderId: orderId,
+          paymentMethod: curData.paymentMethod || null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        orderPatch.transactionId = txRef.id;
+      }
+      t.update(ref, orderPatch);
+    });
+    return { id: orderId, status };
+  }
+
+  // Cancelamento via updateStatus também restaura estoque (mesmo helper único do
+  // cancelOrder) — antes este catch-all marcava 'cancelado' sem devolver estoque.
+  if (status === 'cancelado' && data.stockDeductedAt) {
+    try {
+      await restoreOrderStockRecoverable(orderId, businessId, {
+        operatorName: 'Agente (cancelamento)',
+        context: 'pedido cancelado',
       });
-      patch.transactionId = txRef.id;
+    } catch (stockErr) {
+      console.error('[orders/updateStatus] stock restore failed:', stockErr);
     }
   }
-  await ref.update(patch);
+  await ref.update({ status, updatedAt: now });
   return { id: orderId, status };
 }
 
@@ -377,18 +410,16 @@ async function cancelOrder(businessId: string, orderId: string, reason?: string)
     updatedAt: now,
   });
 
-  // Restore stock if it had been deducted when the order was created
-  if ((data as DeliveryOrder & { stockDeductedAt?: string }).stockDeductedAt) {
+  // Restaura estoque (se debitado na criação) via helper ÚNICO recuperável: claim
+  // distinguível anti duplo-restauro + linhas COM insumos de modificadores. O
+  // buildStockBucket antigo ignorava modificadores (subcontagem) e não tinha guard
+  // de claim (duplo-restauro após cron/webhook).
+  if (data.stockDeductedAt) {
     try {
-      const restoreBucket = await buildStockBucket(data.items);
-      const batch = adminDb.batch();
-      for (const [pid, qty] of restoreBucket.entries()) {
-        batch.update(adminDb.collection('products').doc(pid), {
-          currentStock: FieldValue.increment(qty),
-          updatedAt: now,
-        });
-      }
-      await batch.commit();
+      await restoreOrderStockRecoverable(orderId, businessId, {
+        operatorName: 'Agente (cancelamento)',
+        context: 'pedido cancelado',
+      });
     } catch (stockErr) {
       console.error('[orders/cancel] stock restore failed:', stockErr);
     }

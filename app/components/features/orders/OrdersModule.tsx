@@ -12,8 +12,7 @@ import {
 } from 'lucide-react';
 import {
   collection, query, where, orderBy, onSnapshot, addDoc, updateDoc,
-  doc, deleteDoc, getDocs, runTransaction, serverTimestamp, increment,
-  limit as firestoreLimit,
+  doc, runTransaction,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -22,11 +21,13 @@ import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { buildOrderStockLines } from '@/lib/services/stock-lines';
+import { allocateOrderNumber } from '@/lib/services/orderNumber';
 import { notifyLowStock } from '@/lib/services/notifications';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
-  Product, Client, DeliveryOrderAddress, StockAlert,
+  Product, Client, DeliveryOrderAddress, StockAlert, PaymentFsmStatus,
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
@@ -108,6 +109,38 @@ const PAYMENT_METHOD_LABELS: Record<OrderPaymentMethod, string> = {
   pix_online: 'Pix (online)',
   cartao_online: 'Cartão (online)',
 };
+
+const PAYMENT_FSM_LABELS: Record<PaymentFsmStatus, string> = {
+  pending: 'Pendente',
+  authorized: 'Autorizado',
+  paid: 'Pago',
+  failed: 'Falhou',
+  refunded: 'Estornado',
+  expired: 'Expirado',
+};
+
+// ─── Payment state derivation ────────────────────────────────────────────────
+// A FSM de pagamento online (paymentFsmStatus) é a fonte da verdade quando
+// existe; paymentStatus (fabricação manual / dinheiro-na-entrega) é o fallback.
+
+/** Pedido cobrado online (Mercado Pago checkout ou método *_online). */
+function isOnlineOrder(order: Order): boolean {
+  return order.paymentProvider === 'mercadopago'
+    || (typeof order.paymentMethod === 'string' && order.paymentMethod.endsWith('_online'));
+}
+
+/** Pagamento confirmado? Lê paymentFsmStatus (online), cai pra paymentStatus. */
+function isOrderPaid(order: Order): boolean {
+  return order.paymentFsmStatus
+    ? order.paymentFsmStatus === 'paid'
+    : order.paymentStatus === 'pago';
+}
+
+/** Rótulo do estado de pagamento pra UI (FSM tem prioridade). */
+function orderPaymentLabel(order: Order): string {
+  if (order.paymentFsmStatus) return PAYMENT_FSM_LABELS[order.paymentFsmStatus];
+  return order.paymentStatus === 'pago' ? 'Pago' : 'A pagar';
+}
 
 function timeSince(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -209,11 +242,11 @@ function OrderCard({
           </span>
           <span className={cn(
             'ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold',
-            order.paymentStatus === 'pago'
+            isOrderPaid(order)
               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
               : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
           )}>
-            {order.paymentStatus === 'pago' ? 'Pago' : 'A pagar'}
+            {orderPaymentLabel(order)}
           </span>
         </div>
         <span className="text-sm font-bold text-gray-900 dark:text-gray-100">
@@ -333,7 +366,7 @@ function emptyOrderForm(): OrderFormData {
 }
 
 function OrderFormDialog({
-  open, onClose, onSave, initial, clients, products, isEditing,
+  open, onClose, onSave, initial, clients, products, isEditing, lockPayment,
 }: {
   open: boolean;
   onClose: () => void;
@@ -342,6 +375,9 @@ function OrderFormDialog({
   clients: Client[];
   products: Product[];
   isEditing: boolean;
+  /** Pedido pago via Mercado Pago: status/método de pagamento são geridos pelo
+   *  webhook (paymentFsmStatus), edição manual é proibida (grupo 9). */
+  lockPayment: boolean;
 }) {
   const [form, setForm] = useState<OrderFormData>(initial);
   const [saving, setSaving] = useState(false);
@@ -704,7 +740,8 @@ function OrderFormDialog({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Pagamento</label>
-                <select className={inputCls}
+                <select className={cn(inputCls, lockPayment && 'opacity-60 cursor-not-allowed')}
+                  disabled={lockPayment}
                   value={form.paymentMethod}
                   onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value as OrderPaymentMethod }))}>
                   {Object.entries(PAYMENT_METHOD_LABELS)
@@ -714,7 +751,8 @@ function OrderFormDialog({
               </div>
               <div>
                 <label className={labelCls}>Status do Pagamento</label>
-                <select className={inputCls}
+                <select className={cn(inputCls, lockPayment && 'opacity-60 cursor-not-allowed')}
+                  disabled={lockPayment}
                   value={form.paymentStatus}
                   onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value as OrderPaymentStatus }))}>
                   <option value="pendente">Pendente</option>
@@ -723,6 +761,12 @@ function OrderFormDialog({
                 </select>
               </div>
             </div>
+            {lockPayment && (
+              <p className="-mt-3 text-[11px] text-gray-500 dark:text-gray-400">
+                Pagamento online (Mercado Pago): status e método são controlados
+                automaticamente pelo gateway e não podem ser editados manualmente.
+              </p>
+            )}
 
             {form.paymentMethod === 'dinheiro' && form.paymentStatus !== 'pago' && (
               <div>
@@ -893,11 +937,11 @@ function OrderDetailDrawer({
           </div>
           <span className={cn(
             'px-2 py-0.5 rounded-full text-[10px] font-bold',
-            order.paymentStatus === 'pago'
+            isOrderPaid(order)
               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
               : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
           )}>
-            {order.paymentStatus.toUpperCase()}
+            {orderPaymentLabel(order).toUpperCase()}
           </span>
         </div>
 
@@ -1147,20 +1191,6 @@ export default function OrdersModule() {
     return { todayCount: todayOrders.length, todayRevenue, active, urgent, avgTime: Math.round(avgTime) };
   }, [orders]);
 
-  // Get next sequential order number
-  const getNextOrderNumber = useCallback(async (): Promise<number> => {
-    if (!business?.id) return 1;
-    const q = query(
-      collection(db, 'deliveryOrders'),
-      where('businessId', '==', business.id),
-      orderBy('number', 'desc'),
-      firestoreLimit(1),
-    );
-    const snap = await getDocs(q);
-    if (snap.empty) return 1;
-    return (snap.docs[0].data().number || 0) + 1;
-  }, [business?.id]);
-
   // Persist new/edit
   const persistOrder = async (data: OrderFormData) => {
     if (!business?.id || !user) return;
@@ -1171,6 +1201,10 @@ export default function OrdersModule() {
 
     try {
       if (editingOrder) {
+        // Grupo 9: pedido Mercado Pago tem status/método controlados pelo webhook
+        // (paymentFsmStatus). Edição manual desses campos é proibida — não os
+        // incluímos no payload mesmo que a UI venha adulterada.
+        const lockPayment = editingOrder.paymentProvider === 'mercadopago';
         const payload: Partial<Order> = {
           clientId: data.clientId || undefined,
           clientName: data.clientName.trim(),
@@ -1182,8 +1216,7 @@ export default function OrdersModule() {
           total,
           deliveryType: data.deliveryType,
           deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
-          paymentMethod: data.paymentMethod,
-          paymentStatus: data.paymentStatus,
+          ...(lockPayment ? {} : { paymentMethod: data.paymentMethod, paymentStatus: data.paymentStatus }),
           changeFor: data.changeFor || undefined,
           customerNotes: data.customerNotes || undefined,
           internalNotes: data.internalNotes || undefined,
@@ -1194,7 +1227,10 @@ export default function OrdersModule() {
         await updateDoc(doc(db, 'deliveryOrders',editingOrder.id), cleaned);
         toast.success('Pedido atualizado');
       } else {
-        const number = await getNextOrderNumber();
+        // X1: numeração atômica via contador monotônico do business
+        // (allocateOrderNumber, runTransaction). Substitui o max()+1 lido em
+        // memória, que colidia com o canal público (orders/public) sob concorrência.
+        const number = await allocateOrderNumber(db, business.id);
         const payload: Omit<Order, 'id'> = {
           businessId: business.id,
           number,
@@ -1223,9 +1259,15 @@ export default function OrdersModule() {
         };
         const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined)) as Omit<Order, 'id'>;
 
-        // Non-blocking stock pre-check — warns operator but doesn't block creation
+        // Non-blocking stock pre-check — warns operator but doesn't block creation.
+        // Reconstrói as MESMAS linhas que a baixa/restauro (buildOrderStockLines):
+        // itens + insumos de modificadores (linkedProductId), pra alertar também
+        // quando o que falta é um insumo, não só o produto base.
         const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = data.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
+        const stockLines = buildOrderStockLines(
+          { ...cleaned, id: 'preview' } as Order,
+          productIndex,
+        );
         const shortages = checkStockAvailability(stockLines, productIndex);
         if (shortages.length > 0) {
           const names = shortages.map(s => `${s.productName} (pediu ${s.requested}, tem ${s.available})`).join(' · ');
@@ -1245,6 +1287,98 @@ export default function OrdersModule() {
     }
   };
 
+  // Restaura, idempotentemente, o estoque debitado de um pedido (caminho MANUAL,
+  // client SDK). Espelha restoreOrderStockOnReversal (admin/webhook) com a MESMA
+  // ordem RECUPERÁVEL e os mesmos guards CAS:
+  //   1. claim DENTRO da runTransaction ANTES de restaurar: grava
+  //      stockRestoreClaimedAt + stockRestoredAt=null, só se ainda NÃO há
+  //      timestamp de restauro e nenhum claim recente (<5min). Após o restauro
+  //      automático (cron/webhook) ou de outro atendente, este caminho vira no-op
+  //      (STK-01 — guard por stockRestoredAt, não só por stockDeductedAt).
+  //   2. reconstrói as MESMAS linhas (itens + insumos de modificadores via
+  //      linkedProductId) com buildOrderStockLines e restaura (STK-02).
+  //   3. grava stockRestoredAt=timestamp SÓ APÓS concluir — se restoreStock
+  //      lançar, o claim antigo expira e a recuperação (cron) reprocessa.
+  const restoreOrderStockOnce = useCallback(async (order: Order): Promise<boolean> => {
+    const businessId = business?.id;
+    if (!businessId || !user) return false;
+    const orderRef = doc(db, 'deliveryOrders', order.id);
+    const claimedOrder = await runTransaction(db, async (trx) => {
+      const snap = await trx.get(orderRef);
+      const data = snap.data() as Order | undefined;
+      if (!data) return null;
+      if (data.businessId !== businessId) return null;            // R1 re-check
+      if (!data.stockDeductedAt) return null;                     // nada debitado
+      if (typeof data.stockRestoredAt === 'string') return null;  // já restaurado
+      const claimedAt = data.stockRestoreClaimedAt;
+      if (typeof claimedAt === 'string' && Date.now() - Date.parse(claimedAt) < 5 * 60 * 1000) {
+        return null; // claim recente em progresso — não restaura de novo
+      }
+      const nowIso = new Date().toISOString();
+      trx.update(orderRef, { stockRestoreClaimedAt: nowIso, stockRestoredAt: null, updatedAt: nowIso });
+      return data;
+    });
+    if (!claimedOrder) return false;
+
+    const productIndex = new Map(products.map(p => [p.id, p]));
+    const stockLines = buildOrderStockLines(claimedOrder, productIndex);
+    await restoreStock(db, stockLines, {
+      businessId,
+      operatorId: user.uid,
+      operatorName: user.name,
+      sourceId: order.id,
+      reason: `Cancelamento pedido #${order.number}`,
+      productIndex,
+    });
+    // Timestamp gravado SÓ APÓS concluir (ordem recuperável).
+    await updateDoc(orderRef, { stockRestoredAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    return true;
+  }, [business?.id, user, products]);
+
+  // Lança a receita de entrega como Transaction idempotente e marca o pedido como
+  // entregue numa única runTransaction (F1/F3). Espelha o estorno:
+  //   - ID DETERMINÍSTICO transactions/{orderId}_revenue ⇒ no máximo UM doc de
+  //     receita por pedido, mesmo sob reentrada/concorrência (set idempotente);
+  //   - CAS em order.transactionId ⇒ não relança se já houve receita.
+  // Gate X1 (revalidado contra a versão fresca do doc): pedido ONLINE só lança
+  // receita 'pago' quando paymentFsmStatus==='paid'.
+  const bookDeliveryRevenue = useCallback(async (order: Order, now: string): Promise<void> => {
+    const businessId = business?.id;
+    if (!businessId) return;
+    const orderRef = doc(db, 'deliveryOrders', order.id);
+    const txRef = doc(db, 'transactions', `${order.id}_revenue`);
+    await runTransaction(db, async (trx) => {
+      const snap = await trx.get(orderRef);
+      const data = snap.data() as Order | undefined;
+      if (!data) throw new Error('Pedido não encontrado');
+      if (isOnlineOrder(data) && data.paymentFsmStatus !== 'paid') {
+        throw new Error('ONLINE_UNPAID: pagamento online não confirmado');
+      }
+      const patch: Record<string, unknown> = { status: 'entregue', deliveredAt: now, updatedAt: now };
+      if (!data.transactionId) {
+        trx.set(txRef, {
+          businessId,
+          type: 'receita',
+          category: 'Vendas',
+          description: `Pedido #${order.number}${order.clientName ? ` - ${order.clientName}` : ''}`,
+          amount: order.total,
+          dueDate: now.split('T')[0],
+          paymentDate: now.split('T')[0],
+          status: 'pago',
+          clientId: order.clientId || null,
+          contactId: order.clientId || null,
+          clientName: order.clientName || null,
+          deliveryOrderId: order.id,
+          paymentMethod: order.paymentMethod || null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        patch.transactionId = txRef.id;
+      }
+      trx.update(orderRef, patch);
+    });
+  }, [business?.id]);
+
   // Status change — deducts stock on transition into "preparando" (idempotent).
   const handleStatusChange = async (order: Order, newStatus: OrderStatus) => {
     if (!business?.id || !user) return;
@@ -1255,68 +1389,45 @@ export default function OrdersModule() {
       if (newStatus !== order.status) {
         assertTransitionDeliveryOrder(order.status, newStatus);
       }
-      const patch: Record<string, unknown> = { status: newStatus, updatedAt: now };
 
-      // Deduct stock when entering 'preparando' for the first time
+      // X1-gate (UX, pré-write): pedido ONLINE só pode ser entregue — e ter
+      // receita 'pago' lançada — com pagamento confirmado. Dinheiro-na-entrega
+      // não entra aqui (isOnlineOrder=false) e segue bookando normalmente.
+      if (newStatus === 'entregue' && isOnlineOrder(order) && order.paymentFsmStatus !== 'paid') {
+        toast.error('Pedido online ainda não foi pago — não é possível entregar.');
+        return;
+      }
+
+      let appliedPatch: Record<string, unknown> = { status: newStatus, updatedAt: now };
       let stockAlertsFromOrder: StockAlert[] = [];
-      if (newStatus === 'preparando' && !order.stockDeductedAt) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
-        const adjustments = await deductStock(db, stockLines, {
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name,
-          sourceId: order.id,
-          reason: `Pedido #${order.number}`,
-          productIndex,
-        });
-        stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
-        patch.stockDeductedAt = now;
-      }
-      // Restaura estoque quando vai pra 'cancelado' e tinha sido deduzido.
-      // Idempotente via stockDeductedAt: se ja restaurado (campo limpo) nao
-      // restaura duas vezes. Pattern espelha sales.handleCancelSale.
-      if (newStatus === 'cancelado' && order.stockDeductedAt) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
-        await restoreStock(db, stockLines, {
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name,
-          sourceId: order.id,
-          reason: `Cancelamento pedido #${order.number}`,
-          productIndex,
-        });
-        patch.stockDeductedAt = null;
-      }
+
       if (newStatus === 'entregue') {
-        patch.deliveredAt = now;
-        // Receita de delivery → Transaction (idempotente via order.transactionId).
-        // Espelha o padrão do PDV (Transaction com saleId em PDVModule.tsx).
-        if (!order.transactionId) {
-          const txRef = await addDoc(collection(db, 'transactions'), {
+        await bookDeliveryRevenue(order, now);
+        appliedPatch = { status: 'entregue', deliveredAt: now, updatedAt: now };
+      } else if (newStatus === 'cancelado') {
+        // STK-01/STK-02: restauro idempotente com guard CAS por stockRestoredAt.
+        await restoreOrderStockOnce(order);
+        await updateDoc(doc(db, 'deliveryOrders', order.id), appliedPatch);
+      } else {
+        // Deduct stock when entering 'preparando' for the first time.
+        if (newStatus === 'preparando' && !order.stockDeductedAt) {
+          const productIndex = new Map(products.map(p => [p.id, p]));
+          const stockLines = buildOrderStockLines(order, productIndex);
+          const adjustments = await deductStock(db, stockLines, {
             businessId: business.id,
-            type: 'receita',
-            category: 'Vendas',
-            description: `Pedido #${order.number}${order.clientName ? ` - ${order.clientName}` : ''}`,
-            amount: order.total,
-            dueDate: now.split('T')[0],
-            paymentDate: now.split('T')[0],
-            status: 'pago',
-            clientId: order.clientId || null,
-            contactId: order.clientId || null,
-            clientName: order.clientName || null,
-            deliveryOrderId: order.id,
-            paymentMethod: order.paymentMethod || null,
-            createdAt: now,
-            updatedAt: now,
+            operatorId: user.uid,
+            operatorName: user.name,
+            sourceId: order.id,
+            reason: `Pedido #${order.number}`,
+            productIndex,
           });
-          patch.transactionId = txRef.id;
+          stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
+          appliedPatch.stockDeductedAt = now;
         }
+        await updateDoc(doc(db, 'deliveryOrders', order.id), appliedPatch);
       }
 
-      await updateDoc(doc(db, 'deliveryOrders',order.id), patch);
-      setSelectedOrder(prev => prev && prev.id === order.id ? { ...prev, ...patch, status: newStatus } as Order : prev);
+      setSelectedOrder(prev => prev && prev.id === order.id ? { ...prev, ...appliedPatch, status: newStatus } as Order : prev);
       toast.success(`Pedido #${order.number}: ${STATUS_CONFIG[newStatus].label}`);
 
       // Estoque baixo após dedução do pedido: toast + notif (best-effort).
@@ -1345,7 +1456,9 @@ export default function OrdersModule() {
       console.error('[Orders] Status change failed:', err);
       const msg = err instanceof Error && err.message.startsWith('DeliveryOrder FSM:')
         ? 'Transição de status inválida'
-        : 'Erro ao alterar status';
+        : err instanceof Error && err.message.startsWith('ONLINE_UNPAID')
+          ? 'Pedido online ainda não foi pago'
+          : 'Erro ao alterar status';
       toast.error(msg);
     }
   };
@@ -1379,6 +1492,10 @@ export default function OrdersModule() {
         return;
       }
       const now = new Date().toISOString();
+      // Restaura estoque se foi deduzido — MESMO guard CAS que handleStatusChange
+      // (restoreOrderStockOnce): guard por stockRestoredAt, não só stockDeductedAt,
+      // pra não duplicar o restauro após o automático (cron/webhook). STK-01/STK-02.
+      await restoreOrderStockOnce(order);
       const patch: Record<string, unknown> = {
         status: 'cancelado',
         cancelledAt: now,
@@ -1386,22 +1503,6 @@ export default function OrdersModule() {
         cancelledByName: user.name || user.uid,
         updatedAt: now,
       };
-      // Restaura estoque se foi deduzido (Item 2 backlog). Mesma logica que
-      // handleStatusChange — operador pode usar qualquer fluxo (mover pra
-      // cancelado ou clicar Excluir).
-      if (order.stockDeductedAt) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
-        await restoreStock(db, stockLines, {
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name,
-          sourceId: order.id,
-          reason: `Cancelamento pedido #${order.number}`,
-          productIndex,
-        });
-        patch.stockDeductedAt = null;
-      }
       await updateDoc(doc(db, 'deliveryOrders', order.id), patch);
       setSelectedOrder(null);
       toast.info('Pedido cancelado');
@@ -1630,6 +1731,7 @@ export default function OrdersModule() {
         clients={clients}
         products={products}
         isEditing={!!editingOrder}
+        lockPayment={editingOrder?.paymentProvider === 'mercadopago'}
       />
 
       {/* Detail drawer */}

@@ -217,8 +217,12 @@ export async function restoreStock(
     const previousStock = product.currentStock || 0;
     const newStock = previousStock + line.quantity;
 
+    // P1.6: increment atômico evita lost-update sob concorrência (mesmo
+    // racional do deductStock). previousStock/newStock no movimento são
+    // best-effort vindos do snapshot pré-carregado; o saldo real fica
+    // sempre correto via increment.
     batch.update(doc(db, 'products', product.id), {
-      currentStock: newStock,
+      currentStock: increment(line.quantity),
       updatedAt: now,
     });
 
@@ -282,8 +286,11 @@ export async function addStock(
     const previousStock = product.currentStock || 0;
     const newStock = previousStock + line.quantity;
 
+    // P1.6: increment atômico evita lost-update sob concorrência. Entradas
+    // de compra concorrentes (ou com deduções simultâneas) não se sobrescrevem;
+    // previousStock/newStock no movimento são best-effort do snapshot.
     batch.update(doc(db, 'products', product.id), {
-      currentStock: newStock,
+      currentStock: increment(line.quantity),
       updatedAt: now,
     });
 

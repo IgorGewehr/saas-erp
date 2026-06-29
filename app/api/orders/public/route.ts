@@ -6,8 +6,9 @@ import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateL
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 import {
   deductStockAdmin, loadProductIndex, checkStockAvailability, InsufficientStockError,
-  type StockDeductionLine,
 } from '@/lib/services/stock-admin';
+import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
+import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import type {
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
   DeliveryOrderPaymentMethod, DeliveryType, Client, SelectedModifier,
@@ -134,10 +135,6 @@ export async function POST(req: NextRequest) {
     }
 
     const validatedItems: DeliveryOrderItem[] = [];
-    // P2.6: linhas de estoque a debitar. Itens base entram como linhas top-level
-    // (deductStockAdmin expande BOM 1 nível internamente); modificadores com
-    // linkedProductId entram como linhas próprias já multiplicadas pela qty do item.
-    const stockLines: StockDeductionLine[] = [];
     // P2.7: IDs que NÃO podem ficar negativos. Espelha a regra "Esgotado" da UI
     // (CatalogClient): só item simples (sem BOM, sem modificadores) com estoque
     // definido é bloqueado. Combos/insumos seguem o comportamento legado (debitam
@@ -184,15 +181,20 @@ export async function POST(req: NextRequest) {
       if (mods.clean.length) item.selectedModifiers = mods.clean;
       validatedItems.push(item);
 
-      // Estoque: linha base do produto (BOM expandido pelo serviço) + modifiers.
-      stockLines.push({ productId: product.id, quantity: raw.quantity });
       if (!product.components?.length && !product.hasModifiers && product.currentStock !== undefined) {
         guardedStockIds.add(product.id);
       }
-      for (const ml of mods.modifierStockLines) {
-        stockLines.push({ productId: ml.productId, quantity: ml.quantity * raw.quantity });
-      }
     }
+
+    // ── Linhas de estoque (fonte ÚNICA, simétrica ao restauro) ───────────────
+    // buildOrderStockLines reconstrói AS MESMAS linhas que o estorno (admin SDK)
+    // a partir dos itens validados: linha base por item (BOM expandido depois
+    // pelo serviço de estoque) + insumos de modificadores com linkedProductId já
+    // multiplicados por consumeQty × qty da opção × qty do item.
+    const stockLines = buildOrderStockLines(
+      { items: validatedItems } as unknown as DeliveryOrder,
+      productMap,
+    );
 
     // ── 3. Upsert client by phone ────────────────────────────────────────────
     let clientId: string | undefined;
@@ -255,14 +257,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── 5. Sequential order number (transaction-safe) ────────────────────────
-    const orderNumber = await adminDb.runTransaction(async (tx) => {
-      const snap = await tx.get(bizRef);
-      const last = (snap.data()?.lastOrderNumber as number) || 0;
-      const next = last + 1;
-      tx.update(bizRef, { lastOrderNumber: next, updatedAt: now });
-      return next;
-    });
+    // ── 5. Sequential order number (fonte ÚNICA, transaction-safe) ───────────
+    const orderNumber = await allocateOrderNumberAdmin(adminDb, businessId);
 
     // ── 5b. Dedução atômica de estoque (P2.6) ────────────────────────────────
     // Antes este caminho público não debitava estoque algum. Agora reusa o
@@ -388,7 +384,7 @@ function applyStrategy(strategy: ModifierPriceStrategy, prices: number[]): numbe
 }
 
 type ModifierValidation =
-  | { clean: SelectedModifier[]; modifierStockLines: StockDeductionLine[] }
+  | { clean: SelectedModifier[] }
   | { error: string };
 
 /**
@@ -396,9 +392,9 @@ type ModifierValidation =
  * modifierGroups definition, rebuilding each SelectedModifier from the
  * server-side source of truth (group name, strategy, option prices).
  *
- * P2.6: também coleta as linhas de estoque dos modificadores que têm
- * `linkedProductId` — quantidade = consumeQty × quantidade da opção (a
- * multiplicação pela quantidade do item fica a cargo do caller).
+ * As linhas de estoque dos modificadores (linkedProductId) NÃO são montadas
+ * aqui: a reconstrução é centralizada em buildOrderStockLines a partir dos itens
+ * validados, garantindo simetria baixa↔restauro.
  */
 function validateAndCleanModifiers(
   product: Product,
@@ -420,7 +416,6 @@ function validateAndCleanModifiers(
   }
 
   const clean: SelectedModifier[] = [];
-  const modifierStockLines: StockDeductionLine[] = [];
   for (const chosen of sel) {
     const group = groups.find(g => g.id === chosen.groupId);
     if (!group) continue; // silently drop unknown groups
@@ -435,12 +430,6 @@ function validateAndCleanModifiers(
         additionalPrice: srcOpt.additionalPrice,
         quantity: qty,
       });
-      if (srcOpt.linkedProductId) {
-        modifierStockLines.push({
-          productId: srcOpt.linkedProductId,
-          quantity: (srcOpt.consumeQty ?? 1) * qty,
-        });
-      }
     }
     if (cleanedOptions.length === 0) continue;
     clean.push({
@@ -451,7 +440,7 @@ function validateAndCleanModifiers(
     });
   }
 
-  return { clean, modifierStockLines };
+  return { clean };
 }
 
 async function notifyBusiness(
