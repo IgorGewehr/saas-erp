@@ -1838,6 +1838,15 @@ export interface DeliveryOrder {
   ticketUrl?: string;
   /** Valor cobrado online (R$). */
   paymentAmount?: number;
+  /** Taxa retida pelo provedor (MP) na liquidação (R$). Capturada do payment
+   *  (fee_details / net_received_amount) quando aprovado. Vira despesa "Taxas de
+   *  pagamento" no financeiro pra não inflar o lucro. */
+  mpFee?: number;
+  /** Valor líquido efetivamente recebido = paymentAmount - mpFee (R$). */
+  netAmount?: number;
+  /** FK para a Transaction de despesa da taxa do provedor (guard de idempotência
+   *  do lançamento de taxa; doc id determinístico {orderId}_mpfee). */
+  feeTransactionId?: string;
   paidAt?: string;
   refundedAt?: string;
   /** Expiração da cobrança PIX (ISO). */
@@ -3927,7 +3936,7 @@ export interface LoyaltyTransaction {
   description: string;
   /** ID da venda ou agendamento que originou o movimento */
   sourceId?: string;
-  sourceType?: 'sale' | 'appointment';
+  sourceType?: 'sale' | 'appointment' | 'order';
   expiresAt?: string;
   createdAt: string;
 }

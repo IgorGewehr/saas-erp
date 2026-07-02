@@ -149,8 +149,8 @@ import ProjetosTab from './ProjetosTab';
 // CONSTANTS
 // ==========================================
 
-const INCOME_CATEGORIES = ['Assinaturas', 'Implantacao', 'Consultoria', 'Servicos', 'Vendas', 'Comissoes', 'Juros', 'Outros'];
-const EXPENSE_CATEGORIES = ['Escritorio', 'Infraestrutura', 'Folha', 'Beneficios', 'Marketing', 'Software', 'Contabilidade', 'Impostos', 'Pro-labore', 'Energia', 'Juridico', 'Aluguel', 'Transporte', 'Outros'];
+const INCOME_CATEGORIES = ['Assinaturas', 'Implantacao', 'Consultoria', 'Servicos', 'Vendas', 'Juros', 'Outros'];
+const EXPENSE_CATEGORIES = ['Escritorio', 'Infraestrutura', 'Folha', 'Beneficios', 'Marketing', 'Software', 'Contabilidade', 'Impostos', 'Pro-labore', 'Energia', 'Juridico', 'Aluguel', 'Transporte', 'Estornos', 'Taxas de pagamento', 'Outros'];
 
 
 const PRESET_COLORS = [
@@ -3407,11 +3407,17 @@ const CHANNEL_LABELS: Record<string, string> = {
   whatsapp: 'WhatsApp',
   facebook: 'Facebook',
   instagram: 'Instagram',
+  site: 'Site',
+  manual: 'Manual',
+  pdv: 'PDV',
 };
 const CHANNEL_COLORS: Record<string, string> = {
   whatsapp: '#25D366',
   facebook: '#1877F2',
   instagram: '#E4405F',
+  site: '#6366F1',
+  manual: '#64748B',
+  pdv: '#F59E0B',
 };
 
 function EnterpriseFinancialCards({

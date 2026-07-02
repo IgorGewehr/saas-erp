@@ -29,7 +29,7 @@ import {
   PAYMENT_TERMINAL_STATUSES,
   type PaymentFsmStatus,
 } from '@/contracts/fsm/payment';
-import type { DeliveryOrder } from '@/lib/types';
+import type { DeliveryOrder, Transaction } from '@/lib/types';
 import { restoreOrderStockRecoverable } from '@/lib/services/order-stock-restore';
 import { reverseDeliveryOrderRevenue } from '@/lib/services/transaction-reversal';
 import { getMpAccessToken } from './auth';
@@ -43,7 +43,13 @@ interface MpPaymentDetail {
   status_detail?: string;
   external_reference?: string;
   transaction_amount?: number;
-  transaction_details?: { total_paid_amount?: number };
+  transaction_details?: {
+    total_paid_amount?: number;
+    /** Valor líquido creditado ao vendedor (bruto − taxas do MP), autoritativo. */
+    net_received_amount?: number;
+  };
+  /** Detalhamento das taxas retidas pelo MP (mercadopago_fee, financing, etc.). */
+  fee_details?: Array<{ type?: string; amount?: number; fee_payer?: string }>;
   payment_method_id?: string;
   payment_type_id?: string;
   live_mode?: boolean;
@@ -59,6 +65,27 @@ function computeRefundedAmount(payment: MpPaymentDetail): number {
     return payment.transaction_amount_refunded;
   }
   return (payment.refunds ?? []).reduce((sum, r) => sum + (r.amount ?? 0), 0);
+}
+
+/**
+ * Taxa do MP retida na liquidação. Fonte autoritativa é
+ * transaction_details.net_received_amount (bruto − líquido); fallback na soma de
+ * fee_details[]. Nunca negativa. netAmount = paidAmount − fee.
+ */
+function computeMpFee(
+  payment: MpPaymentDetail,
+  paidAmount: number,
+): { mpFee: number; netAmount: number } {
+  const net = payment.transaction_details?.net_received_amount;
+  if (typeof net === 'number') {
+    const mpFee = Math.max(0, paidAmount - net);
+    return { mpFee, netAmount: net };
+  }
+  const mpFee = Math.max(
+    0,
+    (payment.fee_details ?? []).reduce((sum, f) => sum + (f.amount ?? 0), 0),
+  );
+  return { mpFee, netAmount: paidAmount - mpFee };
 }
 
 /** Refund PARCIAL: estornou ALGO, mas menos que o valor cheio (fora da tolerância). */
@@ -173,6 +200,7 @@ async function settleOnce(args: {
   const paidAmount =
     payment.transaction_details?.total_paid_amount ?? payment.transaction_amount ?? 0;
   const refundedAmount = computeRefundedAmount(payment);
+  const { mpFee, netAmount } = computeMpFee(payment, paidAmount);
   const mpStatus = payment.status;
 
   const orderRef = adminDb.collection('deliveryOrders').doc(orderId);
@@ -283,6 +311,34 @@ async function settleOnce(args: {
         return { mismatch: true, needsManualReview: true, businessId, orderId, externalPaymentId: dataId };
       }
       assertTransitionPayment(from, 'paid');
+
+      // FIN-DEL-01: a taxa do MP é uma DESPESA real. Sem capturá-la, o lucro
+      // infla e a conciliação quebra pelo bruto. Lança a taxa como Transaction de
+      // despesa "Taxas de pagamento" com doc id DETERMINÍSTICO ({orderId}_mpfee):
+      // como esta branch só roda na transição FRESCA (from !== 'paid', garantido
+      // pelo CAS da FSM) E o id é determinístico, a reentrega do MP não duplica.
+      const feeTransactionId = `${orderId}_mpfee`;
+      if (mpFee > AMOUNT_TOLERANCE) {
+        const feeDate = nowIso.split('T')[0];
+        const feeTx: Omit<Transaction, 'id'> = {
+          businessId,
+          type: 'despesa',
+          category: 'Taxas de pagamento',
+          description: `Taxa Mercado Pago — pedido #${current.number ?? orderId}`,
+          amount: mpFee,
+          dueDate: feeDate,
+          paymentDate: feeDate,
+          status: 'pago',
+          deliveryOrderId: orderId,
+          notes: `Taxa retida na liquidação do payment ${String(payment.id)} (bruto ${paidAmount.toFixed(2)}, líquido ${netAmount.toFixed(2)})`,
+          ...(current.clientId ? { clientId: current.clientId, contactId: current.clientId } : {}),
+          ...(current.clientName ? { clientName: current.clientName } : {}),
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        tx.set(adminDb.collection('transactions').doc(feeTransactionId), feeTx);
+      }
+
       tx.update(orderRef, {
         paymentFsmStatus: 'paid',
         paymentStatus: 'pago',
@@ -290,6 +346,9 @@ async function settleOnce(args: {
         externalPaymentId: String(payment.id),
         paymentMethodKind: payment.payment_method_id === 'pix' ? 'pix' : 'card',
         paymentAmount: paidAmount,
+        mpFee,
+        netAmount,
+        ...(mpFee > AMOUNT_TOLERANCE ? { feeTransactionId } : {}),
         paidAt: nowIso,
         updatedAt: nowIso,
       });

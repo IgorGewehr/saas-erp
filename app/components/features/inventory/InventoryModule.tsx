@@ -72,8 +72,9 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Product, StockMovement, StockAlert, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
+import type { Product, StockMovement, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
 import { notifyLowStock } from '@/lib/services/notifications';
+import { addStock, deductStock, restoreStock, type StockAdjustment } from '@/lib/services/stock';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -2278,66 +2279,61 @@ export default function InventoryModule() {
     if (!product) return;
 
     const qty = parseInt(data.quantity) || 0;
-    const previousStock = product.currentStock;
-    let newStock: number;
+    if (qty < 0) return;
 
-    if (data.type === 'entrada') {
-      newStock = previousStock + qty;
-    } else if (data.type === 'saida') {
-      newStock = Math.max(0, previousStock - qty);
-    } else {
-      // ajuste - set to exact value
-      newStock = qty;
-    }
-
-    // Create stock movement record
-    const movementData = {
+    // Roteia TODA movimentação manual por stock.ts: increment atômico + batch
+    // único (produto + stockMovement no mesmo writeBatch). Nada de write direto
+    // não-atômico aqui. Simetria com PDV/Pedidos.
+    const productIndex = new Map(products.map((p) => [p.id, p]));
+    const ctxBase = {
       businessId: business.id,
-      productId: product.id,
-      productName: product.name,
-      type: data.type,
-      quantity: qty,
-      previousStock,
-      newStock,
-      reason: data.reason,
       operatorId: user.uid,
       operatorName: user.name,
-      createdAt: new Date().toISOString(),
+      reason: data.reason || data.type,
+      productIndex,
     };
 
-    await addDoc(collection(db, 'stockMovements'), movementData);
-
-    // Update product stock
-    await updateDoc(doc(db, 'products', product.id), {
-      currentStock: newStock,
-      updatedAt: new Date().toISOString(),
-    });
+    // saída/ajuste-abaixo passam por deductStock, que expande BOM
+    // (expandComponents) e debita os insumos de produtos compostos — mesma
+    // regra da venda. entrada credita o SKU pai (igual à nota de compra);
+    // ajuste-acima usa restoreStock (inverso simétrico, também expande BOM).
+    let adjustments: StockAdjustment[] = [];
+    if (data.type === 'entrada') {
+      adjustments = await addStock(db, [{ productId: product.id, quantity: qty }], ctxBase);
+    } else if (data.type === 'saida') {
+      adjustments = await deductStock(db, [{ productId: product.id, quantity: qty }], ctxBase);
+    } else {
+      // ajuste: seta o estoque do PRÓPRIO SKU para o valor exato (qty). expandBom:false
+      // → em produto COMPOSTO mexe no saldo daquele doc, NÃO nos insumos (o ajuste
+      // manual visa o balanço daquele produto). Atômico via os mesmos helpers.
+      const ajusteCtx = { ...ctxBase, expandBom: false };
+      const delta = qty - (product.currentStock || 0);
+      if (delta > 0) {
+        adjustments = await restoreStock(db, [{ productId: product.id, quantity: delta }], ajusteCtx);
+      } else if (delta < 0) {
+        adjustments = await deductStock(db, [{ productId: product.id, quantity: -delta }], ajusteCtx);
+      }
+    }
 
     toast.success(t('inventory.toast.movementCreated', 'Movimentação registrada com sucesso!'));
     // products via onSnapshot. stockMovements continua em useQuery local.
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
 
-    // Cruzou minStock pra baixo? Movimentação manual também alerta. Detecção
-    // inline (este path não passa pelo deductStock — escreve direto). Reusa
-    // a mesma logica do helper: só dispara em transição.
-    const minStock = product.minStock ?? 0;
-    if (minStock > 0 && previousStock > minStock && newStock <= minStock) {
-      const alert: StockAlert = {
-        productId: product.id,
-        productName: product.name,
-        previousStock,
-        newStock,
-        minStock,
-        severity: newStock <= 0 ? 'zeroed' : 'min',
-      };
-      const icon = alert.severity === 'zeroed' ? '🚨' : '⚠️';
-      const msg = alert.severity === 'zeroed'
-        ? `${icon} ${product.name} esgotou`
-        : `${icon} ${product.name} no estoque mínimo (${newStock}/${minStock})`;
-      toast.warning(msg, { autoClose: 6000 });
+    // Estoque baixo: reusa os alerts que o deductStock já calcula em memória
+    // (por insumo, em produto composto). Só o deductStock popula `alert` —
+    // entrada/restore sobem estoque e não geram alerta.
+    const stockAlerts = adjustments.flatMap((a) => (a.alert ? [a.alert] : []));
+    if (stockAlerts.length > 0) {
+      stockAlerts.forEach((alert) => {
+        const icon = alert.severity === 'zeroed' ? '🚨' : '⚠️';
+        const msg = alert.severity === 'zeroed'
+          ? `${icon} ${alert.productName} esgotou`
+          : `${icon} ${alert.productName} no estoque mínimo (${alert.newStock}/${alert.minStock})`;
+        toast.warning(msg, { autoClose: 6000 });
+      });
       void notifyLowStock(db, {
         businessId: business.id,
-        alerts: [alert],
+        alerts: stockAlerts,
         actorId: user.uid,
         actorName: user.name,
         sourceLabel: `Ajuste manual: ${data.reason || data.type}`,

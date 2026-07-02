@@ -10,7 +10,9 @@ import {
 import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
+import { assertOrdersAcceptedNow, OrdersClosedError } from '@/lib/services/orders/acceptance';
 import type {
+  Business,
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
   DeliveryOrderPaymentMethod, DeliveryType, SelectedModifier,
   Product, ProductModifierGroup, ModifierPriceStrategy,
@@ -119,6 +121,13 @@ export async function POST(req: NextRequest) {
     if (!bizSnap.exists) {
       throw new PublicOrderError(404, 'Negócio não encontrado');
     }
+
+    // ── 1b. Guard de horário (COER-01) ───────────────────────────────────────
+    // A regra de "aceita pedido fora do horário?" vivia só no prompt do agente;
+    // um POST forjado aqui criava pedido com a loja FECHADA. Impomos server-side
+    // ANTES de queimar número sequencial / debitar estoque. Reusa o MESMO
+    // algoritmo (isBusinessOpenNow) do tool de status do agente.
+    assertOrdersAcceptedNow(bizSnap.data() as Business, new Date(now));
 
     // ── 2. Validate items + recompute prices server-side ─────────────────────
     const productIds = [...new Set(items.map(i => i.productId))];
@@ -341,7 +350,7 @@ export async function POST(req: NextRequest) {
     );
 
   } catch (err) {
-    if (err instanceof PublicOrderError) {
+    if (err instanceof PublicOrderError || err instanceof OrdersClosedError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
     if (err instanceof IdempotencyConflictError) {

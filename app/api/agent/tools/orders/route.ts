@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { createHash } from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { withIdempotency } from '@/lib/contracts/_runtime/idempotency';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type {
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderStatus,
@@ -14,6 +16,7 @@ import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
 import { restoreOrderStockRecoverable } from '@/lib/services/order-stock-restore';
 import { recordClientPurchaseAdmin } from '@/lib/services/clients/recordPurchase';
 import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
+import { assertOrdersAcceptedNow } from '@/lib/services/orders/acceptance';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -99,19 +102,45 @@ async function createOrder(businessId: string, params: CreateParams) {
   if (!params.clientName) throw new Error('clientName required');
   if (!params.items?.length) throw new Error('items required');
 
+  // COER-02/R3 — Idempotência: a reentrega da mesma mensagem/tool-call (retry do
+  // agente, replay do webhook, timeout+retry) criava um pedido DUPLICADO — novo
+  // número sequencial + nova dedução de estoque. Envolvemos a criação em
+  // `withIdempotency` (mesmo runtime do cardápio público) com uma chave
+  // DETERMINÍSTICA por (businessId, conversação, carrinho): replays devolvem o
+  // MESMO pedido sem realocar número nem debitar estoque de novo. Sem messageId
+  // nos params, derivamos um hash estável do carrinho (productId+qtd+notes) — dois
+  // pedidos idênticos na MESMA conversa dentro do TTL (24h) convergem, tradeoff
+  // aceito para eliminar a duplicação por reentrega. `businessId` já é prefixado
+  // pelo próprio withIdempotency no docId.
+  const cartHash = createHash('sha256')
+    .update(JSON.stringify(
+      params.items
+        .map((i) => [i.productId, i.quantity, i.notes ?? ''] as const)
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])),
+    ))
+    .digest('hex')
+    .slice(0, 16);
+  const convScope = params.conversationId ?? params.contactExternalId ?? 'noconv';
+  const idempotencyKey = `agent-order_${convScope}_${cartHash}`;
+
+  const { result } = await withIdempotency(
+    adminDb,
+    { businessId, key: idempotencyKey, endpoint: 'POST /api/agent/tools/orders#create' },
+    () => createOrderInner(businessId, params),
+  );
+  return result;
+}
+
+async function createOrderInner(businessId: string, params: CreateParams) {
   // Guardrail off-hours (M13): se o business NÃO aceita pedidos fora do horário
   // e está fechado agora, recusa no servidor. Antes o flag só "torcia" pro LLM
   // recusar (prompt) — a tool criava o pedido a qualquer hora. `open===null`
   // (sem grade de 7 dias) = indeterminado → não bloqueia.
   const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
   const biz = bizSnap.exists ? (bizSnap.data() as Business) : null;
-  const acceptOffHours = biz?.settings?.aiAgent?.pedidos?.acceptOrdersOffHours ?? false;
-  if (!acceptOffHours) {
-    const open = isBusinessOpenNow(biz?.settings?.openingHours, biz?.settings?.timezone);
-    if (open === false) {
-      throw new Error('Estabelecimento fechado no momento e não aceita pedidos fora do horário de funcionamento.');
-    }
-  }
+  // COER-01: fonte ÚNICA do guard de horário — o MESMO helper do cardápio público
+  // (lib/services/orders/acceptance), evitando drift entre os dois caminhos.
+  if (biz) assertOrdersAcceptedNow(biz);
 
   // Validate products exist & are deliverable, compute prices, pre-check stock (incl BOM)
   const productRefs = await Promise.all(
@@ -164,6 +193,8 @@ async function createOrder(businessId: string, params: CreateParams) {
     if (!snap.exists) throw new Error(`Product ${line.productId} not found`);
     const p = snap.data() as Product;
     if (p.businessId !== businessId) throw new Error('Cross-tenant product access denied');
+    // Alinha ao cardápio público (orders/public): produto desativado não vende.
+    if (p.isActive === false) throw new Error(`Produto "${p.name}" está desativado`);
     if (!p.isDeliverable) throw new Error(`Product "${p.name}" is not on the menu`);
     resolvedItems.push({
       productId: snap.id,

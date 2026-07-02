@@ -59,7 +59,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
 import { notifyLowStock } from '@/lib/services/notifications';
@@ -248,17 +248,16 @@ export default function PDVModule() {
   }, [mainView]);
 
   // --- Firestore Queries ---
-  // Products + clients via onSnapshot (refactor sync multi-user):
+  // Products via onSnapshot (refactor sync multi-user):
   //
   // ANTES: useQuery + getDocs sem staleTime explícito (caía no global,
   // antes 5min, agora 30s). Cenário multi-PDV: caixa A vende produto X
   // (estoque cai), caixa B só via novo estoque após refetch — risco de
   // vender unidades já consumidas.
   //
-  // AGORA: onSnapshot pra products e clients. Estoque/disponibilidade
-  // refletem em todos os PDVs em tempo real. services e salesHistory
-  // continuam em useQuery (volume baixo, mudança rara, ou histórico que
-  // não exige real-time).
+  // AGORA: onSnapshot pra products. Estoque/disponibilidade refletem em
+  // todos os PDVs em tempo real. services, clients e salesHistory ficam em
+  // useQuery (volume baixo, mudança rara, ou lista que não exige real-time).
   const [products, setProducts] = useState<Product[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   useEffect(() => {
@@ -297,20 +296,27 @@ export default function PDVModule() {
     enabled: !!business?.id,
   });
 
-  const [clients, setClients] = useState<CRMContact[]>([]);
-  const [loadingClients, setLoadingClients] = useState(true);
-  useEffect(() => {
-    if (!business?.id) { setLoadingClients(false); return; }
-    setLoadingClients(true);
-    // Single-field filter (businessId apenas). isActive + sort por name
-    // aplicados client-side pra evitar composite index (clients/businessId+
-    // isActive+name) que exigiria criação manual no Firebase console.
-    const q = query(
-      collection(db, 'clients'),
-      where('businessId', '==', business.id),
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs
+  // Autocomplete de cliente: busca LIMITADA sob demanda, sem listener real-time.
+  //
+  // ANTES (EF-02): onSnapshot de TODA a coleção clients só pra popular o
+  // autocomplete — baixava a coleção inteira e mantinha um listener aberto por
+  // sessão de PDV, mesmo que a seleção de cliente seja opcional.
+  //
+  // AGORA: React Query + getDocs limitado (200 clientes mais recentes, usa o
+  // índice businessId+createdAt já existente). A filtragem por nome roda
+  // client-side no próprio Autocomplete (typeahead). Sem real-time: o cliente
+  // é só um vínculo da venda, não precisa refletir edições concorrentes.
+  const { data: clients = [], isLoading: loadingClients } = useQuery({
+    queryKey: ['pdv-clients', business?.id],
+    queryFn: async () => {
+      const q = query(
+        collection(db, 'clients'),
+        where('businessId', '==', business!.id),
+        orderBy('createdAt', 'desc'),
+        limit(200),
+      );
+      const snap = await getDocs(q);
+      return snap.docs
         .map(d => {
           const data = d.data();
           // Normalize legacy `nome` field to `name` (migration from old CRM schema)
@@ -319,11 +325,9 @@ export default function PDVModule() {
         })
         .filter(isActiveClient)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-      setClients(list);
-      setLoadingClients(false);
-    }, (err) => { console.error('[PDV] clients snapshot error:', err); setLoadingClients(false); });
-    return () => unsub();
-  }, [business?.id]);
+    },
+    enabled: !!business?.id,
+  });
 
   const { data: salesHistory = [], isLoading: loadingSales } = useQuery({
     queryKey: ['sales', business?.id],
@@ -345,16 +349,10 @@ export default function PDVModule() {
 
   const isLoading = loadingProducts || loadingServices || loadingClients;
 
-  // Sync selectedClient com snapshot — se o cliente associado à venda em
-  // progresso é editado por outro user, refresca dados (nome, telefone) na
-  // tela do PDV. Se for desativado/deletado externamente, desassocia da
-  // venda (operador continua o checkout sem cliente, last-write-wins).
-  useEffect(() => {
-    if (!selectedClient) return;
-    const fresh = clients.find(c => c.id === selectedClient.id);
-    if (!fresh) { setSelectedClient(null); return; }
-    if (fresh.updatedAt !== selectedClient.updatedAt) setSelectedClient(fresh);
-  }, [clients, selectedClient]);
+  // (Removido) Sync real-time de selectedClient contra o snapshot da coleção:
+  // a lista de clientes agora é uma busca limitada (EF-02), então o cliente
+  // selecionado pode não estar na fatia carregada — mantê-lo é o correto. O
+  // vínculo canônico é reresolvido no confirmSale via resolveClientIdentity.
 
   // --- Derived Data ---
   const categories = useMemo(() => {
@@ -1053,6 +1051,7 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['sales'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['pdv-clients'] });
 
       setLastSaleId(docRef.id);
 
@@ -1169,12 +1168,12 @@ export default function PDVModule() {
       // e usa o createdAt da mais recente como novo lastVisit (ou remove).
       if (sale.clientId) {
         try {
-          const clientDoc = await getDocs(
-            query(collection(db, 'clients'), where('businessId', '==', business.id)),
-          );
-          const client = clientDoc.docs.find(d => d.id === sale.clientId);
-          if (client) {
-            const data = client.data();
+          // EF-04: lookup direto por id (O(1)) em vez de full-scan + .find sobre
+          // toda a coleção. Confere businessId no retorno pra não reverter stats
+          // de cliente de outro tenant (R1).
+          const clientSnap = await getDoc(doc(db, 'clients', sale.clientId));
+          const data = clientSnap.exists() ? clientSnap.data() : null;
+          if (data && data.businessId === business.id) {
             // Recalcula lastVisit consultando demais sales válidas
             let newLastVisit: string | null | undefined = data.lastVisit;
             try {
@@ -1201,7 +1200,7 @@ export default function PDVModule() {
             };
             if (newLastVisit) updates.lastVisit = newLastVisit;
             else updates.lastVisit = deleteField();
-            await updateDoc(doc(db, 'clients', client.id), updates);
+            await updateDoc(doc(db, 'clients', sale.clientId), updates);
           }
         } catch (err) {
           console.warn('Failed to reverse client stats:', err);
@@ -1213,6 +1212,7 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['sales'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['pdv-clients'] });
 
       setSelectedSale(null);
       setCancelConfirmSaleId(null);

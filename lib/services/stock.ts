@@ -40,6 +40,10 @@ export interface StockDeductionContext {
   reason: string;
   /** If provided, skips reads and uses this map instead */
   productIndex?: Map<string, Product>;
+  /** Default true (venda/pedido): produto composto expande em insumos (BOM).
+   *  false = trata o produto como FOLHA e mexe no SEU PRÓPRIO SKU — usado no
+   *  AJUSTE manual de estoque, que visa o saldo daquele doc, não dos insumos. */
+  expandBom?: boolean;
 }
 
 export interface StockAdjustment {
@@ -126,7 +130,7 @@ export async function deductStock(
     throw new Error('[stock.deductStock] productIndex is required. Pass a Map<productId, Product>.');
   }
 
-  const expanded = expandComponents(lines, ctx.productIndex);
+  const expanded = ctx.expandBom === false ? lines : expandComponents(lines, ctx.productIndex);
   if (expanded.length === 0) return [];
 
   const batch = externalBatch ?? writeBatch(db);
@@ -203,7 +207,7 @@ export async function restoreStock(
     throw new Error('[stock.restoreStock] productIndex is required.');
   }
 
-  const expanded = expandComponents(lines, ctx.productIndex);
+  const expanded = ctx.expandBom === false ? lines : expandComponents(lines, ctx.productIndex);
   if (expanded.length === 0) return [];
 
   const batch = externalBatch ?? writeBatch(db);

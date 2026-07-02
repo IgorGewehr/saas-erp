@@ -51,7 +51,7 @@ export async function addLoyaltyPoints(
     pointsEarned: number;
     config: LoyaltyConfig;
     sourceId: string;
-    sourceType: 'sale' | 'appointment';
+    sourceType: 'sale' | 'appointment' | 'order';
     description: string;
   }
 ): Promise<void> {

@@ -11,11 +11,12 @@ import {
   LayoutGrid, List, Filter, Home,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, onSnapshot, setDoc, getDoc, updateDoc,
+  collection, query, where, orderBy, onSnapshot, setDoc, getDoc, getDocs, updateDoc,
   doc, runTransaction,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
+import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
@@ -29,6 +30,7 @@ import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
   Product, Client, DeliveryOrderAddress, StockAlert, PaymentFsmStatus,
+  ConversationChannel,
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
@@ -43,6 +45,20 @@ type OrderPaymentStatus = DeliveryOrderPaymentStatus;
 type OrderAddress = DeliveryOrderAddress;
 const ORDER_STATUS_ORDER = DELIVERY_ORDER_STATUS_FLOW;
 const ORDER_STATUS_LABELS = DELIVERY_ORDER_STATUS_LABELS;
+
+// EF-01: janela do onSnapshot de pedidos. ANTES a subscription lia o HISTÓRICO
+// INTEIRO sem limit ⇒ custo/latência O(idade do tenant). AGORA limita a uma
+// janela recente (createdAt >= início do dia − N dias), usando o índice
+// businessId+createdAt já existente. Ativos são sempre recentes; board oculta
+// entregue/cancelado > 24h; KPIs de hoje ficam dentro da janela.
+const ORDERS_WINDOW_DAYS = 30;
+
+function ordersWindowStartIso(): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ORDERS_WINDOW_DAYS);
+  return d.toISOString();
+}
 
 // ─── Status visuals ──────────────────────────────────────────────────────────
 
@@ -1100,6 +1116,7 @@ export default function OrdersModule() {
     const q = query(
       collection(db, 'deliveryOrders'),
       where('businessId', '==', business.id),
+      where('createdAt', '>=', ordersWindowStartIso()),
       orderBy('createdAt', 'desc'),
     );
     const unsub = onSnapshot(q, (snap) => {
@@ -1112,25 +1129,32 @@ export default function OrdersModule() {
     return unsub;
   }, [business?.id]);
 
-  // Related data — onSnapshot (refactor sync multi-user):
+  // Products — onSnapshot (refactor sync multi-user): em ambiente delivery
+  // multi-atendente o preço/disponibilidade muda o tempo todo (Estoque), então
+  // o cardápio no formulário precisa ser tempo real.
   //
-  // Em ambiente delivery multi-atendente, lookups de clients/products
-  // mudam o tempo todo: cliente novo via Conversas é cadastrado, produto
-  // tem preço atualizado em Estoque. ANTES: staleTime 2-3min mostrava
-  // dados antigos no formulário de pedido. AGORA: real-time.
+  // EF-02: clients, ao contrário, alimentam APENAS o autocomplete do formulário.
+  // ANTES: onSnapshot da coleção INTEIRA ⇒ listener persistente re-disparava a
+  // cada escrita em qualquer cliente do tenant. AGORA: getDocs one-shot por
+  // business (sem tempo real). Single-field query + sort client-side (evita
+  // composite index). Refetch ao reabrir o módulo/trocar de business cobre o
+  // caso de cliente novo cadastrado via Conversas.
   const [clients, setClients] = useState<Client[]>([]);
   useEffect(() => {
     if (!business?.id) return;
-    // Single-field query — sort por name client-side (evita composite index).
+    let cancelled = false;
     const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs
-        .map(d => ({ ...d.data(), id: d.id } as Client))
-        .filter(isActiveClient)
-        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-      setClients(list);
-    }, (err) => console.error('[Orders] clients snapshot error:', err));
-    return () => unsub();
+    getDocs(q)
+      .then((snap) => {
+        if (cancelled) return;
+        const list = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as Client))
+          .filter(isActiveClient)
+          .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        setClients(list);
+      })
+      .catch((err) => console.error('[Orders] clients load error:', err));
+    return () => { cancelled = true; };
   }, [business?.id]);
 
   const [products, setProducts] = useState<Product[]>([]);
@@ -1374,8 +1398,13 @@ export default function OrdersModule() {
     // Capturados FRESCOS dentro da transação (não do closure, que pode estar
     // stale se o pedido mutou concorrentemente) pra alimentar o recordClientPurchase.
     let freshClientId: string | undefined;
+    let freshClientName: string | undefined;
     let freshTotal = 0;
     let freshChannel: Order['channel'] | undefined;
+    // COE-01: fidelidade só acumula na PRIMEIRA reconciliação (mesmo CAS de
+    // order.transactionId que garante uma única receita) ⇒ idempotente por
+    // sourceId=order.id sob reentrada/concorrência.
+    let bookedNow = false;
     await runTransaction(db, async (trx) => {
       const snap = await trx.get(orderRef);
       const data = snap.data() as Order | undefined;
@@ -1384,6 +1413,7 @@ export default function OrdersModule() {
         throw new Error('ONLINE_UNPAID: pagamento online não confirmado');
       }
       freshClientId = data.clientId || undefined;
+      freshClientName = data.clientName || undefined;
       freshTotal = data.total;
       freshChannel = data.channel;
       const patch: Record<string, unknown> = { status: 'entregue', deliveredAt: now, updatedAt: now };
@@ -1402,10 +1432,18 @@ export default function OrdersModule() {
           clientName: data.clientName || null,
           deliveryOrderId: order.id,
           paymentMethod: data.paymentMethod || null,
+          // FIN-DEL-03: propaga a origem do pedido pra receita — channelType só
+          // aceita canais de conversa (whatsapp/facebook/instagram); manual/site
+          // ficam sem canal. sectorId herda o setor responsável do pedido.
+          ...(data.channel && (['whatsapp', 'facebook', 'instagram'] as string[]).includes(data.channel)
+            ? { channelType: data.channel as ConversationChannel }
+            : {}),
+          ...(data.sectorId ? { sectorId: data.sectorId } : {}),
           createdAt: now,
           updatedAt: now,
         });
         patch.transactionId = txRef.id;
+        bookedNow = true;
       }
       trx.update(orderRef, patch);
     });
@@ -1429,7 +1467,36 @@ export default function OrdersModule() {
         console.warn('[Orders] recordClientPurchase failed:', err);
       }
     }
-  }, [business?.id]);
+
+    // COE-02: acúmulo de pontos de fidelidade no reconhecimento da receita —
+    // espelha PDV (sale) e Agenda (appointment). A idempotência vem do gate
+    // `bookedNow` (só true quando o CAS em order.transactionId lançou a receita
+    // ÚNICA nesta execução) — reentrega/reconciliação repetida não re-acumula.
+    // (addLoyaltyPoints em si grava com doc id aleatório; a garantia é o CAS.)
+    // Best-effort: não derruba a entrega já efetivada se a fidelidade falhar.
+    if (bookedNow && freshClientId) {
+      const lc = business?.settings?.loyalty;
+      if (lc?.isEnabled) {
+        const earned = calculateEarnedPoints(freshTotal, lc);
+        if (earned > 0) {
+          try {
+            await addLoyaltyPoints(db, {
+              businessId,
+              clientId: freshClientId,
+              clientName: freshClientName || '',
+              pointsEarned: earned,
+              config: lc,
+              sourceId: order.id,
+              sourceType: 'order',
+              description: `Pedido #${order.number}`,
+            });
+          } catch (err) {
+            console.warn('[Orders] loyalty accrual failed:', err);
+          }
+        }
+      }
+    }
+  }, [business?.id, business?.settings?.loyalty]);
 
   // Status change — deducts stock on transition into "preparando" (idempotent).
   const handleStatusChange = async (order: Order, newStatus: OrderStatus) => {
