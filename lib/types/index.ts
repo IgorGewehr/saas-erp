@@ -1062,6 +1062,11 @@ export interface SaleItem {
   unitPrice: number;
   discount: number;
   total: number;
+  /** Modificadores escolhidos p/ item configurável (mesmo shape do DeliveryOrderItem).
+   *  Denormalizado; usado por buildOrderStockLines pra debitar insumos (linkedProductId). */
+  selectedModifiers?: SelectedModifier[];
+  /** Preço base do produto antes dos modificadores (unitPrice = basePrice + delta). */
+  basePrice?: number;
 }
 
 export type PaymentMethod =

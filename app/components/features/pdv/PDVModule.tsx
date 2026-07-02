@@ -62,13 +62,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { buildOrderStockLines } from '@/lib/services/stock-lines';
+import PDVModifierPicker from './PDVModifierPicker';
 import { notifyLowStock } from '@/lib/services/notifications';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { resolveClientIdentityClient } from '@/lib/services/clients/resolveIdentity';
 import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
 import { db } from '@/lib/config/firebase';
-import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
+import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod, SelectedModifier, DeliveryOrder } from '@/lib/types';
 
 // ==========================================
 // TYPES & CONSTANTS
@@ -133,6 +135,8 @@ function getItemIcon(item: CatalogItem) {
 
 interface CartItem extends SaleItem {
   itemType: 'product' | 'service';
+  /** Assinatura estável da seleção de modificadores (UI-only, dedup de carrinho). */
+  modifierSignature?: string;
 }
 
 export default function PDVModule() {
@@ -179,6 +183,8 @@ export default function PDVModule() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState(t('pdv.catalog.all', 'Todos'));
   const [cart, setCart] = useState<CartItem[]>([]);
+  // Produto configurável aguardando escolha de modificadores (abre PDVModifierPicker).
+  const [modifierProduct, setModifierProduct] = useState<Product | null>(null);
   const [selectedClient, setSelectedClient] = useState<CRMContact | null>(null);
   const [discountValue, setDiscountValue] = useState('');
   const [discountType, setDiscountType] = useState<'reais' | 'percent'>('reais');
@@ -468,6 +474,56 @@ export default function PDVModule() {
       return [...prev, newItem];
     });
   }, []);
+
+  // Roteia o clique do catálogo: produto configurável (hasModifiers) abre o
+  // seletor de modificadores; o resto cai no addToCart direto de sempre.
+  const handleCatalogClick = useCallback((item: CatalogItem) => {
+    if (item.type === 'product') {
+      const product = item as Product;
+      if (product.hasModifiers && (product.modifierGroups?.length ?? 0) > 0) {
+        setModifierProduct(product);
+        return;
+      }
+    }
+    addToCart(item);
+  }, [addToCart]);
+
+  // Adiciona um produto JÁ configurado (com modificadores). unitPrice já vem com
+  // o delta aplicado (computeModifierDelta, mesma fonte do público). Deduplica por
+  // assinatura da seleção: mesma config incrementa a linha existente.
+  const addConfiguredProduct = useCallback(
+    (product: Product, selectedModifiers: SelectedModifier[], unitPrice: number, basePrice: number) => {
+      const signature = selectedModifiers
+        .map(m => `${m.groupId}:${m.selectedOptions.map(o => `${o.optionId}x${o.quantity}`).sort().join('|')}`)
+        .sort().join('||');
+      setCart(prev => {
+        const existing = prev.find(c => c.productId === product.id && (c.modifierSignature || '') === signature);
+        if (existing) {
+          return prev.map(c =>
+            c.id === existing.id
+              ? { ...c, quantity: c.quantity + 1, total: (c.quantity + 1) * c.unitPrice }
+              : c,
+          );
+        }
+        const newItem: CartItem = {
+          id: `cart-${Date.now()}`,
+          productId: product.id,
+          serviceId: undefined,
+          description: product.name,
+          quantity: 1,
+          unitPrice,
+          discount: 0,
+          total: unitPrice,
+          itemType: 'product',
+          basePrice,
+          selectedModifiers: selectedModifiers.length ? selectedModifiers : undefined,
+          modifierSignature: signature,
+        };
+        return [...prev, newItem];
+      });
+    },
+    [],
+  );
 
   const updateQuantity = useCallback((cartItemId: string, delta: number) => {
     setCart((prev) =>
@@ -821,6 +877,10 @@ export default function PDVModule() {
           unitPrice: item.unitPrice,
           discount: item.discount || 0,
           total: item.quantity * item.unitPrice - (item.discount || 0),
+          // Modificadores denormalizados p/ item configurável — dedução de insumos
+          // (buildOrderStockLines) e reimpressão. Guarded: Firestore rejeita undefined.
+          ...(item.selectedModifiers?.length ? { selectedModifiers: item.selectedModifiers } : {}),
+          ...(item.basePrice !== undefined ? { basePrice: item.basePrice } : {}),
         })),
         payments: payments,
         subtotal,
@@ -841,9 +901,21 @@ export default function PDVModule() {
 
       // Deduct stock into the same batch (supports composite products/BOM).
       const productIndex = new Map(products.map(p => [p.id, p]));
-      const stockLines = cart
-        .filter(item => item.productId)
-        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+      // Fonte ÚNICA de linhas de estoque (mesma do cardápio público): linha base
+      // por item + insumos de modificadores (linkedProductId × consumeQty × qty da
+      // opção × qty do item). deductStock expande BOM das linhas base internamente.
+      const stockLines = buildOrderStockLines(
+        {
+          items: cart
+            .filter(item => item.productId)
+            .map(item => ({
+              productId: item.productId!,
+              quantity: item.quantity,
+              selectedModifiers: item.selectedModifiers,
+            })),
+        } as unknown as DeliveryOrder,
+        productIndex,
+      );
 
       // Validate stock availability before committing
       if (stockLines.length > 0) {
@@ -1131,12 +1203,15 @@ export default function PDVModule() {
         updatedAt: now,
       });
 
-      // 2. Restore stock for product items
-      const productLines = sale.items
-        .filter(item => item.productId)
-        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+      // 2. Restore stock for product items — SIMÉTRICO à baixa (mesma
+      // buildOrderStockLines): reverte tanto a linha base quanto os insumos de
+      // modificadores (linkedProductId) debitados na venda.
+      const productIndex = new Map(products.map(p => [p.id, p]));
+      const productLines = buildOrderStockLines(
+        { items: sale.items } as unknown as DeliveryOrder,
+        productIndex,
+      );
       if (productLines.length > 0) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
         await restoreStock(db, productLines, {
           businessId: business.id,
           operatorId: user.uid,
@@ -1755,7 +1830,13 @@ export default function PDVModule() {
                   ? (item as Product).salePrice
                   : (item as Service).price;
                 const inCartQty = cartItemCount(item.id);
-                const outOfStock = item.type === 'product' && (item as Product).currentStock <= 0;
+                // Espelha o público/cardápio: item configurável (modificadores) ou
+                // composto (BOM) NÃO é bloqueado pelo estoque-base — é montado sob
+                // demanda a partir dos insumos. Só produto simples com estoque 0 bloqueia.
+                const outOfStock = item.type === 'product'
+                  && !(item as Product).hasModifiers
+                  && !((item as Product).components?.length)
+                  && (item as Product).currentStock <= 0;
                 const productImageUrl = item.type === 'product' ? (item as Product).imageUrl : undefined;
                 return (
                   <motion.button
@@ -1767,7 +1848,7 @@ export default function PDVModule() {
                     transition={{ duration: 0.15, delay: index * 0.02 }}
                     whileHover={outOfStock ? {} : { y: -3, boxShadow: '0 12px 32px -8px rgba(0,0,0,0.12)' }}
                     whileTap={outOfStock ? {} : { scale: 0.97 }}
-                    onClick={() => !outOfStock && addToCart(item)}
+                    onClick={() => !outOfStock && handleCatalogClick(item)}
                     disabled={outOfStock}
                     className={cn(
                       'relative flex flex-col rounded-xl border transition-all duration-200 text-left group',
@@ -1841,7 +1922,7 @@ export default function PDVModule() {
                           >
                             <Minus size={13} />
                           </button>
-                        ) : item.type === 'product' ? (
+                        ) : item.type === 'product' && !(item as Product).hasModifiers && !((item as Product).components?.length) ? (
                           <span className={cn(
                             'text-[10px] font-medium rounded-md px-1.5 py-0.5',
                             (item as Product).currentStock <= (item as Product).minStock
@@ -3061,6 +3142,21 @@ export default function PDVModule() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Seletor de modificadores (produto configurável) */}
+      <AnimatePresence>
+        {modifierProduct && (
+          <PDVModifierPicker
+            key={modifierProduct.id}
+            product={modifierProduct}
+            onClose={() => setModifierProduct(null)}
+            onConfirm={({ selectedModifiers, unitPrice, basePrice }) => {
+              addConfiguredProduct(modifierProduct, selectedModifiers, unitPrice, basePrice);
+              setModifierProduct(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

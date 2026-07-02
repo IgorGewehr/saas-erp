@@ -11,11 +11,12 @@ import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
 import { assertOrdersAcceptedNow, OrdersClosedError } from '@/lib/services/orders/acceptance';
+import { validateAndCleanModifiers, computeModifierDelta, round2 } from '@/lib/services/orders/pricing';
 import type {
   Business,
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
   DeliveryOrderPaymentMethod, DeliveryType, SelectedModifier,
-  Product, ProductModifierGroup, ModifierPriceStrategy,
+  Product,
 } from '@/lib/types';
 
 interface PublicOrderPayload {
@@ -368,87 +369,6 @@ export async function POST(req: NextRequest) {
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-function computeModifierDelta(selected: SelectedModifier[]): number {
-  let delta = 0;
-  for (const group of selected) {
-    const prices = group.selectedOptions.map(o => o.additionalPrice * Math.max(1, o.quantity || 1));
-    if (!prices.length) continue;
-    delta += applyStrategy(group.priceStrategy, prices);
-  }
-  return delta;
-}
-
-function applyStrategy(strategy: ModifierPriceStrategy, prices: number[]): number {
-  if (!prices.length) return 0;
-  if (strategy === 'max') return Math.max(...prices);
-  if (strategy === 'avg') return prices.reduce((s, p) => s + p, 0) / prices.length;
-  return prices.reduce((s, p) => s + p, 0); // sum (default)
-}
-
-type ModifierValidation =
-  | { clean: SelectedModifier[] }
-  | { error: string };
-
-/**
- * Validates client-provided modifier selections against the product's
- * modifierGroups definition, rebuilding each SelectedModifier from the
- * server-side source of truth (group name, strategy, option prices).
- *
- * As linhas de estoque dos modificadores (linkedProductId) NÃO são montadas
- * aqui: a reconstrução é centralizada em buildOrderStockLines a partir dos itens
- * validados, garantindo simetria baixa↔restauro.
- */
-function validateAndCleanModifiers(
-  product: Product,
-  incoming: SelectedModifier[] | undefined,
-): ModifierValidation {
-  const groups = product.modifierGroups || [];
-  const sel = incoming || [];
-
-  // Required groups must be present with valid selection counts
-  for (const group of groups) {
-    const chosen = sel.find(s => s.groupId === group.id);
-    const count = chosen?.selectedOptions.reduce((s, o) => s + Math.max(1, o.quantity || 1), 0) || 0;
-    if (group.required && count < Math.max(1, group.minSelections)) {
-      return { error: `Selecione ${group.name}` };
-    }
-    if (count > group.maxSelections && group.maxSelections > 0) {
-      return { error: `Máximo ${group.maxSelections} em ${group.name}` };
-    }
-  }
-
-  const clean: SelectedModifier[] = [];
-  for (const chosen of sel) {
-    const group = groups.find(g => g.id === chosen.groupId);
-    if (!group) continue; // silently drop unknown groups
-    const cleanedOptions = [];
-    for (const opt of chosen.selectedOptions) {
-      const srcOpt = group.options.find(o => o.id === opt.optionId);
-      if (!srcOpt || srcOpt.available === false) continue;
-      const qty = Math.max(1, Math.min(opt.quantity || 1, srcOpt.maxQuantity ?? 99));
-      cleanedOptions.push({
-        optionId: srcOpt.id,
-        optionName: srcOpt.name,
-        additionalPrice: srcOpt.additionalPrice,
-        quantity: qty,
-      });
-    }
-    if (cleanedOptions.length === 0) continue;
-    clean.push({
-      groupId: group.id,
-      groupName: group.name,
-      priceStrategy: group.priceStrategy,
-      selectedOptions: cleanedOptions,
-    });
-  }
-
-  return { clean };
-}
 
 async function notifyBusiness(
   businessId: string,
