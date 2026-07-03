@@ -1957,6 +1957,7 @@ function FiscalTab() {
   const [cscId, setCscId] = useState('');
   const [cscToken, setCscToken] = useState('');
   const [showCscToken, setShowCscToken] = useState(false);
+  const [autoEmitNfce, setAutoEmitNfce] = useState(false);
   const [isSavingNfce, setIsSavingNfce] = useState(false);
   const [isSavingCsc, setIsSavingCsc] = useState(false);
 
@@ -2017,6 +2018,7 @@ function FiscalTab() {
     if (f.nfceConfig) {
       setNfceSeries(f.nfceConfig.series || '1');
       setNfceNextNumber(String(f.nfceConfig.nextNumber || 1));
+      setAutoEmitNfce(!!f.nfceConfig.autoEmit);
       // CSC loaded via encrypted API route
       firebaseAuth.currentUser?.getIdToken().then(token => {
         if (!token || !business?.id) return;
@@ -2110,6 +2112,7 @@ function FiscalTab() {
           series: nfceSeries,
           nextNumber: Number(nfceNextNumber) || 1,
           environment,
+          autoEmit: autoEmitNfce,
         },
       });
       toast.success(t('settings.fiscal.nfceSaved', 'Configurações NFC-e salvas!'));
@@ -2583,6 +2586,23 @@ function FiscalTab() {
               <FormField label={t('settings.fiscal.nextNumber', 'Próximo Nº')} tooltip={t('settings.fiscal.nfceNextTooltip', 'Número da próxima NFC-e')}>
                 <input type="number" min={1} value={nfceNextNumber} onChange={(e) => setNfceNextNumber(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
+            </div>
+            <div className="flex items-start justify-between gap-4 rounded-xl border border-gray-100 dark:border-gray-800 p-4 mb-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                  {t('settings.fiscal.autoEmitNfce', 'Emitir NFC-e automaticamente nos pedidos')}
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {t(
+                    'settings.fiscal.autoEmitNfceHint',
+                    'Ao concluir um pedido de delivery, uma NFC-e é emitida automaticamente. Exige certificado digital e CSC configurados. A emissão é best-effort: se falhar, o pedido não é bloqueado. Você ainda pode emitir manualmente a qualquer momento. A nota cobre apenas a mercadoria (soma dos itens) — frete e desconto do pedido não compõem o total fiscal.',
+                  )}
+                </p>
+              </div>
+              <AgenteToggleSwitch
+                checked={autoEmitNfce}
+                onChange={canEditFiscal ? setAutoEmitNfce : () => {}}
+              />
             </div>
             {canEditFiscal && (
               <div className="flex justify-end">

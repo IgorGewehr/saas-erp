@@ -9,6 +9,7 @@ import {
   X, ChefHat, Package, Truck, XCircle, Edit3, Trash2, Phone, DollarSign,
   ChevronDown, ArrowRight, ArrowLeft, MessageSquare, Timer, Sparkles,
   LayoutGrid, List, Filter, Home, Volume2, VolumeX, Bell, Printer, Check, Ban,
+  Receipt, FileCheck2,
 } from 'lucide-react';
 import {
   collection, query, where, orderBy, onSnapshot, setDoc, getDoc, getDocs, updateDoc,
@@ -36,6 +37,8 @@ import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
 import { useNewOrderAlert } from '@/lib/hooks/useNewOrderAlert';
 import { printComanda } from './ComandaTermica';
+import EmitirNotaDialog from '@/app/components/features/fiscal/EmitirNotaDialog';
+import { buildDeliveryOrderNfceInput } from '@/lib/services/fiscal/deliveryOrderNfce';
 
 // Local aliases — keep JSX concise.
 type Order = DeliveryOrder;
@@ -882,13 +885,15 @@ function OrderFormDialog({
 // ─── Order Detail Drawer ─────────────────────────────────────────────────────
 
 function OrderDetailDrawer({
-  order, onClose, onStatusChange, onEdit, onDelete,
+  order, onClose, onStatusChange, onEdit, onDelete, onEmitNfce,
 }: {
   order: Order;
   onClose: () => void;
   onStatusChange: (status: OrderStatus) => Promise<void>;
   onEdit: () => void;
   onDelete: () => void;
+  /** Abre o EmitirNotaDialog pré-preenchido pra emitir a NFC-e deste pedido. */
+  onEmitNfce: () => void;
 }) {
   const cfg = STATUS_CONFIG[order.status];
   const statusFlow = statusFlowFor(order.deliveryType);
@@ -1055,6 +1060,30 @@ function OrderDetailDrawer({
             )}
           </div>
         )}
+        {/* NFC-e: emitida → badge (idempotência visual); senão, entregue/pago → botão.
+            Emissão real vive no EmitirNotaDialog + /api/fiscal/emit (não reimplementada aqui). */}
+        {order.fiscalDocumentId ? (
+          <a
+            href={order.fiscalAccessKey ? `https://www.nfce.fazenda.gov.br/portal/consultarNFCe.aspx?p=${order.fiscalAccessKey}` : undefined}
+            target={order.fiscalAccessKey ? '_blank' : undefined}
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-xs font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20"
+          >
+            <FileCheck2 className="w-3.5 h-3.5" />
+            NFC-e emitida
+            {order.fiscalAccessKey && (
+              <span className="font-mono text-[10px] text-emerald-600/70 dark:text-emerald-400/70 truncate max-w-[140px]">
+                {order.fiscalAccessKey.slice(0, 8)}…{order.fiscalAccessKey.slice(-4)}
+              </span>
+            )}
+          </a>
+        ) : (order.status === 'entregue' || isOrderPaid(order)) ? (
+          <button onClick={onEmitNfce}
+            className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-xs font-semibold text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20">
+            <Receipt className="w-3.5 h-3.5" />
+            Emitir NFC-e
+          </button>
+        ) : null}
         <div className="flex gap-2">
           <button onClick={onEdit}
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">
@@ -1291,6 +1320,9 @@ export default function OrdersModule() {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  // Pedido em emissão de NFC-e — quando setado, abre o EmitirNotaDialog
+  // pré-preenchido. Null = fechado.
+  const [nfceOrder, setNfceOrder] = useState<Order | null>(null);
 
   // Preferência local (por dispositivo) de imprimir a comanda ao aceitar.
   const [autoPrintOnAccept, setAutoPrintOnAccept] = useState(false);
@@ -1775,6 +1807,9 @@ export default function OrdersModule() {
       if (newStatus === 'entregue') {
         await bookDeliveryRevenue(order, now);
         appliedPatch = { status: 'entregue', deliveredAt: now, updatedAt: now };
+        // Fiscal: auto-emissão de NFC-e na conclusão (opt-in). Fire-and-forget —
+        // a receita/entrega já foi efetivada acima; a nota nunca bloqueia o pedido.
+        void autoEmitNfceIfEnabled(order);
       } else if (newStatus === 'cancelado') {
         // STK-01/STK-02: restauro idempotente com guard CAS por stockRestoredAt.
         await restoreOrderStockOnce(order);
@@ -1846,6 +1881,29 @@ export default function OrdersModule() {
       });
     } catch (err) {
       console.warn('[Orders] status-notify failed:', err);
+    }
+  }
+
+  // Auto-emissão de NFC-e na conclusão do pedido (opt-in via Settings → Fiscal).
+  // Best-effort: só dispara quando o flag está ligado e a nota ainda não existe
+  // (o route /api/fiscal/emit-order reforça a idempotência por fiscalDocumentId —
+  // o guard local só evita o round-trip). Nunca lança: a entrega já foi efetivada.
+  async function autoEmitNfceIfEnabled(order: Order) {
+    if (!business?.fiscal?.nfceConfig?.autoEmit) return;
+    if (order.fiscalDocumentId) return;
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) return;
+      const res = await fetch(`/api/fiscal/emit-order/${order.id}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        console.warn('[Orders] auto-emit NFC-e falhou:', res.status);
+      }
+    } catch (err) {
+      console.warn('[Orders] auto-emit NFC-e error:', err);
     }
   }
 
@@ -2188,10 +2246,22 @@ export default function OrdersModule() {
               onStatusChange={(s) => handleStatusChange(selectedOrder, s)}
               onEdit={() => { setEditingOrder(selectedOrder); setSelectedOrder(null); setFormOpen(true); }}
               onDelete={() => handleDelete(selectedOrder)}
+              onEmitNfce={() => { setNfceOrder(selectedOrder); setSelectedOrder(null); }}
             />
           </>
         )}
       </AnimatePresence>
+
+      {/* Emissão de NFC-e do pedido — reusa o dialog fiscal existente, pré-preenchido
+          via buildDeliveryOrderNfceInput. A emissão real (certificado + SEFAZ) e o
+          writeback fiscalDocumentId/accessKey vivem no /api/fiscal/emit. */}
+      <EmitirNotaDialog
+        open={!!nfceOrder}
+        onClose={() => setNfceOrder(null)}
+        type="nfce"
+        onSuccess={() => setNfceOrder(null)}
+        prefillNFCe={nfceOrder && business ? buildDeliveryOrderNfceInput(nfceOrder, business) : undefined}
+      />
     </div>
   );
 }

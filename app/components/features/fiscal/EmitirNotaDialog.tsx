@@ -32,6 +32,7 @@ import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocType, PaymentMethod, CRMContact, Product, Service } from '@/lib/types';
+import type { NfceRequest } from '@/lib/contracts/api/fiscal/emit';
 import { NfseServicoCombobox } from './NfseServicoCombobox';
 import NcmSelector from './NcmSelector';
 import { cn } from '@/lib/utils';
@@ -60,6 +61,29 @@ interface EmitirNotaDialogProps {
     clientName?: string;
     clientCpfCnpj?: string;
   };
+  /**
+   * Pré-preenche o form de NFC-e a partir de um pedido de delivery (módulo
+   * Pedidos). Recebe o mesmo shape que `buildDeliveryOrderNfceInput(order,
+   * business)` produz — itens (com `productId` p/ reativar o enrichment fiscal
+   * server-side), nome do consumidor, pagamento e o vínculo `orderId`/
+   * `sourceType`. O operador confere/edita antes de emitir; `orderId`/
+   * `sourceType` fluem pro emit route pra ancorar a idempotência POR PEDIDO
+   * (retry replaya a nota já emitida em vez de duplicar). Só tem efeito quando
+   * `type === 'nfce'`. Nenhuma lógica de SEFAZ é reimplementada aqui.
+   */
+  prefillNFCe?: NfceRequest;
+}
+
+// Coerce arbitrary payment label (vinda do pedido/contrato) pra PaymentMethod
+// aceito pelo form. O emit route entende 'credito'/'debito'/'pix'/'dinheiro';
+// rótulos fora do union (ex: 'voucher') caem em 'outros' (tPag 99).
+const VALID_PAYMENT_METHODS: PaymentMethod[] = [
+  'dinheiro', 'pix', 'credito', 'debito', 'boleto', 'creditoLoja', 'semPagamento', 'pontos', 'gift_card', 'outros',
+];
+function toPaymentMethod(method: string | undefined): PaymentMethod {
+  return method && (VALID_PAYMENT_METHODS as string[]).includes(method)
+    ? (method as PaymentMethod)
+    : 'outros';
 }
 
 interface NFSeFormData {
@@ -184,7 +208,7 @@ const createDefaultPayments = (): PaymentForm[] => [{ id: '1', method: 'dinheiro
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefillNFeDevolution }: EmitirNotaDialogProps) {
+export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefillNFeDevolution, prefillNFCe }: EmitirNotaDialogProps) {
   // Idempotência: chave estável durante a sessão do dialog — retry manual da
   // MESMA nota reusa a chave (replay/409 no servidor); nova nota = chave nova.
   const idemKeyRef = useRef<string>(crypto.randomUUID());
@@ -377,6 +401,29 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
     if (clientCpfCnpj) setNfeRecipientDoc(clientCpfCnpj);
     if (clientName) setNfeRecipientName(clientName);
   }, [open, type, prefillNFeDevolution]);
+
+  // Pré-preenche o form de NFC-e a partir de um pedido (buildDeliveryOrderNfceInput).
+  // Roda DEPOIS do resetForm (declarado antes) no mesmo commit. Só mapeia os
+  // campos que o pedido conhece — ncm/cfop/unit ficam no default e o enrichment
+  // fiscal server-side (via productId) resolve o resto. orderId/sourceType não
+  // vão pro state do form: fluem direto pro apiBody em handleEmitNFCe.
+  useEffect(() => {
+    if (!open || type !== 'nfce' || !prefillNFCe) return;
+    const items = (prefillNFCe.items ?? []).map((it) => ({
+      ...createEmptyNFCeItem(),
+      description: it.description ?? '',
+      quantity: Number(it.quantity) || 1,
+      unitPrice: Number(it.unitPrice) || 0,
+      productId: typeof it.productId === 'string' ? it.productId : undefined,
+    }));
+    if (items.length > 0) setNfceItems(items);
+    if (prefillNFCe.nomeConsumidor) setNfceConsumidorNome(prefillNFCe.nomeConsumidor);
+    if (prefillNFCe.cpfConsumidor) setNfceConsumidorCpf(prefillNFCe.cpfConsumidor);
+    const payments = (prefillNFCe.payments ?? [])
+      .filter((p) => Number(p?.amount) > 0)
+      .map((p, i) => ({ id: String(i + 1), method: toPaymentMethod(p.method), amount: Number(p.amount) || 0 }));
+    if (payments.length > 0) setNfcePayments(payments);
+  }, [open, type, prefillNFCe]);
 
   // ── NFSe Computed Values ──
   const nfseBaseCalculo = useMemo(() => {
@@ -710,6 +757,12 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
         informacoesAdicionais: nfceInfoAdicionais.trim() || undefined,
         forcarContingencia: nfceForcarContingencia || undefined,
         motivoContingencia: nfceForcarContingencia ? nfceMotivoContingencia.trim() : undefined,
+        // Vínculo com o pedido de origem (prefill de Pedidos). Ancora a
+        // idempotência POR PEDIDO no route e dispara o writeback
+        // (fiscalDocumentId/fiscalAccessKey) de volta no DeliveryOrder.
+        ...(prefillNFCe?.orderId
+          ? { orderId: prefillNFCe.orderId, sourceType: 'order' as const }
+          : {}),
       };
 
       const res = await fetch('/api/fiscal/emit', {

@@ -791,6 +791,15 @@ export interface NFCeConfig {
   cscId: string;
   cscToken: string;
   environment: 'producao' | 'homologacao';
+  /**
+   * Auto-emissão de NFC-e ao concluir um pedido de delivery (módulo Pedidos).
+   * OPT-IN: ausente/false = OFF (comportamento legado — nenhuma nota é emitida
+   * automaticamente). Quando true, a conclusão do pedido dispara emissão
+   * best-effort e idempotente (por orderId) via /api/fiscal/emit — falha NÃO
+   * bloqueia o pedido, só loga. Emissão manual pelo EmitirNotaDialog segue
+   * disponível independente deste flag.
+   */
+  autoEmit?: boolean;
 }
 
 export interface NFSeConfig {
@@ -1901,6 +1910,15 @@ export interface DeliveryOrder {
   /** FK para a Transaction de receita gerada ao entregar/pagar. Guard de
    *  idempotência: Transaction só é criada se este campo estiver vazio. */
   transactionId?: string;
+
+  // ── Vínculo fiscal (V3) — writeback de /api/fiscal/emit ──
+  /** FK para o fiscalDocument (NFC-e) emitido a partir deste pedido. Presença =
+   *  nota já emitida ⇒ idempotência visual (mostra "NFC-e emitida" em vez do
+   *  botão de emissão). Gravado pelo writeback best-effort do emit route. */
+  fiscalDocumentId?: string;
+  /** Chave de acesso (44 dígitos) da NFC-e vinculada. Null quando a nota ficou
+   *  pendente/contingência sem chave ainda. */
+  fiscalAccessKey?: string | null;
 
   /** FK opcional para o CRMDeal que originou este pedido (ROI por deal — P2.10). */
   dealId?: string;
