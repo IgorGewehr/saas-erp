@@ -8,7 +8,7 @@ import {
   ClipboardCheck, Plus, Search, Clock, MapPin, User as UserIcon, Bike, CheckCircle2,
   X, ChefHat, Package, Truck, XCircle, Edit3, Trash2, Phone, DollarSign,
   ChevronDown, ArrowRight, ArrowLeft, MessageSquare, Timer, Sparkles,
-  LayoutGrid, List, Filter, Home,
+  LayoutGrid, List, Filter, Home, Volume2, VolumeX, Bell, Printer, Check, Ban,
 } from 'lucide-react';
 import {
   collection, query, where, orderBy, onSnapshot, setDoc, getDoc, getDocs, updateDoc,
@@ -34,6 +34,8 @@ import type {
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
+import { useNewOrderAlert } from '@/lib/hooks/useNewOrderAlert';
+import { printComanda } from './ComandaTermica';
 
 // Local aliases — keep JSX concise.
 type Order = DeliveryOrder;
@@ -178,6 +180,19 @@ function timeSince(iso: string): string {
   if (hrs < 24) return `${hrs}h`;
   const days = Math.floor(hrs / 24);
   return `${days}d`;
+}
+
+/** Cronômetro ao vivo (mm:ss ou Hh mm) desde `iso` até `nowMs`, pra destacar há
+ *  quanto tempo um pedido novo espera aceite na cozinha. */
+function elapsedSince(iso: string, nowMs: number): string {
+  const diff = Math.max(0, nowMs - new Date(iso).getTime());
+  const totalSec = Math.floor(diff / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (h > 0) return `${h}h ${pad(m)}m`;
+  return `${pad(m)}:${pad(s)}`;
 }
 
 function isUrgent(order: Order): boolean {
@@ -1063,9 +1078,207 @@ function OrderDetailDrawer({
   );
 }
 
+// ─── New-order reception bar ─────────────────────────────────────────────────
+// Loop de recebimento da cozinha: destaca os pedidos aguardando ACEITE
+// (status 'recebido'), com cronômetro ao vivo, controles de alerta (som/notif)
+// e ações rápidas Aceitar / Recusar / Imprimir comanda por pedido.
+
+function NewOrderCard({
+  order, nowMs, onAccept, onReject, onPrint, onOpen,
+}: {
+  order: Order;
+  nowMs: number;
+  onAccept: (o: Order) => void;
+  onReject: (o: Order) => void;
+  onPrint: (o: Order) => void;
+  onOpen: (o: Order) => void;
+}) {
+  const waitedMin = (nowMs - new Date(order.createdAt).getTime()) / 60000;
+  const timerTone = waitedMin >= 15
+    ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
+    : waitedMin >= 7
+      ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+      : 'bg-white/70 text-gray-700 dark:bg-black/30 dark:text-gray-200';
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, scale: 0.92, y: 8 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.92, y: -8 }}
+      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+      className="min-w-[260px] w-[260px] flex-shrink-0 rounded-2xl bg-white dark:bg-gray-900 border-2 border-amber-300 dark:border-amber-500/40 shadow-md shadow-amber-500/10 p-3 flex flex-col gap-2"
+    >
+      <button onClick={() => onOpen(order)} className="text-left">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {order.channel && (
+              <span className={cn('text-[11px]', CHANNEL_ICONS[order.channel].color)}>
+                {CHANNEL_ICONS[order.channel].icon}
+              </span>
+            )}
+            <span className="text-[11px] font-mono font-bold text-gray-400 dark:text-gray-500">#{order.number}</span>
+          </div>
+          <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold tabular-nums', timerTone)}>
+            <Clock className="w-3 h-3" />
+            {elapsedSince(order.createdAt, nowMs)}
+          </span>
+        </div>
+        <p className="mt-1.5 text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{order.clientName}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+          {order.items.slice(0, 2).map(i => `${i.quantity}× ${i.productName}`).join(', ')}
+          {order.items.length > 2 ? ` +${order.items.length - 2}` : ''}
+        </p>
+        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+          {order.deliveryType === 'entrega' ? <Bike className="w-3 h-3" /> : <Home className="w-3 h-3" />}
+          <span>{order.deliveryType === 'entrega' ? 'Entrega' : 'Retirada'}</span>
+          <span className="text-gray-300 dark:text-gray-600">·</span>
+          <span className="font-semibold text-gray-700 dark:text-gray-300">{formatCurrency(order.total)}</span>
+        </div>
+      </button>
+
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={() => onAccept(order)}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm shadow-emerald-600/20"
+        >
+          <Check className="w-3.5 h-3.5" />
+          Aceitar
+        </button>
+        <button
+          onClick={() => onPrint(order)}
+          title="Imprimir comanda"
+          className="p-2 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+        >
+          <Printer className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={() => onReject(order)}
+          title="Recusar pedido"
+          className="p-2 rounded-xl border border-red-200 dark:border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
+        >
+          <Ban className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+function NewOrderReceptionBar({
+  orders, onAccept, onReject, onPrint, onOpen,
+  soundOn, toggleSound, notifPermission, onRequestNotif,
+  autoPrint, onToggleAutoPrint,
+}: {
+  orders: Order[];
+  onAccept: (o: Order) => void;
+  onReject: (o: Order) => void;
+  onPrint: (o: Order) => void;
+  onOpen: (o: Order) => void;
+  soundOn: boolean;
+  toggleSound: () => void;
+  notifPermission: 'default' | 'granted' | 'denied' | 'unsupported';
+  onRequestNotif: () => void;
+  autoPrint: boolean;
+  onToggleAutoPrint: () => void;
+}) {
+  // Cronômetro ao vivo: um único tick de 1s re-renderiza todos os cards.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.25 }}
+      className="overflow-hidden rounded-2xl border-2 border-amber-300 dark:border-amber-500/40 bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-500/10 dark:to-orange-500/10"
+    >
+      <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <motion.span
+            animate={{ scale: [1, 1.15, 1] }}
+            transition={{ repeat: Infinity, duration: 1.4, ease: 'easeInOut' }}
+            className="relative flex items-center justify-center w-8 h-8 rounded-xl bg-amber-500 text-white shadow-sm"
+          >
+            <Bell className="w-4 h-4" />
+          </motion.span>
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-amber-800 dark:text-amber-300 font-display leading-tight">
+              Novos Pedidos · {orders.length}
+            </p>
+            <p className="text-[11px] text-amber-700/80 dark:text-amber-400/80 truncate">
+              Aguardando aceite da cozinha
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <button
+            onClick={onToggleAutoPrint}
+            title="Imprimir comanda automaticamente ao aceitar"
+            className={cn(
+              'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors',
+              autoPrint
+                ? 'bg-amber-600 border-amber-600 text-white'
+                : 'bg-white/70 dark:bg-black/20 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300',
+            )}
+          >
+            <Printer className="w-3.5 h-3.5" />
+            Auto-imprimir
+          </button>
+          {notifPermission !== 'granted' && notifPermission !== 'unsupported' && (
+            <button
+              onClick={onRequestNotif}
+              title="Permitir notificações no desktop"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border bg-white/70 dark:bg-black/20 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-white"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              Notificar
+            </button>
+          )}
+          <button
+            onClick={toggleSound}
+            title={soundOn ? 'Silenciar alerta sonoro' : 'Ativar alerta sonoro'}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors',
+              soundOn
+                ? 'bg-emerald-600 border-emerald-600 text-white'
+                : 'bg-white/70 dark:bg-black/20 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300',
+            )}
+          >
+            {soundOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+            {soundOn ? 'Som on' : 'Som off'}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-2.5 overflow-x-auto px-4 pb-3 pt-1">
+        <AnimatePresence mode="popLayout" initial={false}>
+          {orders.map(o => (
+            <NewOrderCard
+              key={o.id}
+              order={o}
+              nowMs={nowMs}
+              onAccept={onAccept}
+              onReject={onReject}
+              onPrint={onPrint}
+              onOpen={onOpen}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Main Module ─────────────────────────────────────────────────────────────
 
 type ViewMode = 'board' | 'list';
+
+const AUTO_PRINT_PREF_KEY = 'orders:autoPrintOnAccept';
 
 export default function OrdersModule() {
   const { user, business } = useAuth();
@@ -1078,6 +1291,22 @@ export default function OrdersModule() {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Preferência local (por dispositivo) de imprimir a comanda ao aceitar.
+  const [autoPrintOnAccept, setAutoPrintOnAccept] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setAutoPrintOnAccept(window.localStorage.getItem(AUTO_PRINT_PREF_KEY) === '1');
+  }, []);
+  const toggleAutoPrint = useCallback(() => {
+    setAutoPrintOnAccept(prev => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(AUTO_PRINT_PREF_KEY, next ? '1' : '0');
+      }
+      return next;
+    });
+  }, []);
   const [prefillFromConversation, setPrefillFromConversation] = useState<{
     clientId: string;
     clientName: string;
@@ -1215,6 +1444,18 @@ export default function OrdersModule() {
     }
     return groups;
   }, [filteredOrders, viewMode]);
+
+  // Loop de recebimento: pedidos aguardando aceite ('recebido'). Não passa pelo
+  // filtro de busca — a cozinha precisa ver TODO pedido novo até dar aceite.
+  const newOrders = useMemo(
+    () => orders.filter(o => o.status === 'recebido'),
+    [orders],
+  );
+
+  const businessName = business?.nomeFantasia || business?.razaoSocial || 'Estabelecimento';
+
+  // Alerta sonoro em loop + notificação desktop enquanto houver pedido não-aceito.
+  const { soundOn, toggleSound, notifPermission, requestNotif } = useNewOrderAlert(newOrders.length);
 
   // KPIs
   const kpis = useMemo(() => {
@@ -1642,6 +1883,51 @@ export default function OrdersModule() {
     }
   };
 
+  // Aceite do pedido novo: recebido→preparando (reusa handleStatusChange, que já
+  // valida a FSM e faz a baixa de estoque). Opcionalmente imprime a comanda.
+  const handleAccept = useCallback(async (order: Order) => {
+    await handleStatusChange(order, 'preparando');
+    if (autoPrintOnAccept) printComanda(order, businessName);
+  }, [handleStatusChange, autoPrintOnAccept, businessName]);
+
+  // Recusa do pedido novo: recebido→cancelado com motivo. Reusa o MESMO caminho
+  // de cancelamento (restoreOrderStockOnce restaura estoque idempotente).
+  const handleReject = useCallback(async (order: Order) => {
+    if (!business?.id || !user) return;
+    if (order.status === 'cancelado') return;
+    const reason = (typeof window !== 'undefined'
+      ? window.prompt(`Recusar o pedido #${order.number}? Informe o motivo:`, '')
+      : '') ?? undefined;
+    if (reason === undefined) return; // cancelou o prompt
+    try {
+      const now = new Date().toISOString();
+      // Valida a transição pela FSM antes de qualquer write/side-effect.
+      assertTransitionDeliveryOrder(order.status, 'cancelado');
+      await restoreOrderStockOnce(order);
+      const patch: Record<string, unknown> = {
+        status: 'cancelado',
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name || user.uid,
+        updatedAt: now,
+      };
+      const trimmed = reason.trim();
+      if (trimmed) patch.cancelReason = trimmed;
+      await updateDoc(doc(db, 'deliveryOrders', order.id), patch);
+      setSelectedOrder(prev => prev && prev.id === order.id ? null : prev);
+      toast.info(`Pedido #${order.number} recusado`);
+      if (business.settings?.aiAgent?.enabled && business.settings?.aiAgent?.pedidos?.notifyOnStatusChange) {
+        void notifyStatusChange('order', order.id, 'cancelado', business.id);
+      }
+    } catch (err) {
+      console.error('[Orders] Reject failed:', err);
+      const msg = err instanceof Error && err.message.startsWith('DeliveryOrder FSM:')
+        ? 'Transição de status inválida'
+        : 'Erro ao recusar pedido';
+      toast.error(msg);
+    }
+  }, [business?.id, business?.settings?.aiAgent?.enabled, business?.settings?.aiAgent?.pedidos?.notifyOnStatusChange, user, restoreOrderStockOnce]);
+
   const formInitial = useMemo<OrderFormData>(() => {
     if (editingOrder) {
       return {
@@ -1763,6 +2049,27 @@ export default function OrdersModule() {
           />
         </div>
       </div>
+
+      {/* Loop de recebimento — pedidos aguardando aceite */}
+      <AnimatePresence initial={false}>
+        {newOrders.length > 0 && (
+          <div key="new-orders-bar" className="flex-shrink-0 px-4 md:px-6 pt-3">
+            <NewOrderReceptionBar
+              orders={newOrders}
+              onAccept={handleAccept}
+              onReject={handleReject}
+              onPrint={(o) => printComanda(o, businessName)}
+              onOpen={setSelectedOrder}
+              soundOn={soundOn}
+              toggleSound={toggleSound}
+              notifPermission={notifPermission}
+              onRequestNotif={() => { void requestNotif(); }}
+              autoPrint={autoPrintOnAccept}
+              onToggleAutoPrint={toggleAutoPrint}
+            />
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
