@@ -26,6 +26,14 @@
       ]
     },
     {
+      "collectionGroup": "giftCards",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "code", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "aiChatMessages",
       "queryScope": "COLLECTION",
       "fields": [

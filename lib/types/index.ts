@@ -1837,6 +1837,11 @@ export interface DeliveryOrder {
   couponId?: string;
   couponCode?: string;
   couponDiscount?: number;
+  /** Gift card resgatado no checkout (bearer). `giftCardAmount` reduz o total como
+   *  dinheiro, APÓS o cupom — não entra em `discount` (que é desconto comercial). */
+  giftCardId?: string;
+  giftCardCode?: string;
+  giftCardAmount?: number;
   total: number;
 
   deliveryType: DeliveryType;
@@ -3998,8 +4003,10 @@ export interface GiftCard {
   recipientPhone?: string;
   /** ID da venda de compra do gift card */
   purchasedBySaleId?: string;
-  /** ID da venda de resgate */
+  /** ID da venda de resgate (PDV) */
   usedBySaleId?: string;
+  /** ID do último pedido (delivery) que resgatou saldo deste gift card. */
+  usedByOrderId?: string;
   expiresAt?: string;
   purchasedAt: string;
   usedAt?: string;

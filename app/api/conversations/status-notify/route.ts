@@ -83,6 +83,8 @@ export async function POST(req: NextRequest) {
   let conversationId: string | undefined;
   let channel: Conversation['channel'] | undefined;
   let recipientId: string | undefined;
+  // Telefone do pedido — usado no fallback Baileys quando não há conversa achada.
+  let orderClientPhone: string | undefined;
 
   if (body.kind === 'order') {
     const snap = await adminDb.collection('deliveryOrders').doc(body.id).get();
@@ -94,8 +96,14 @@ export async function POST(req: NextRequest) {
     const tpl = ORDER_TEMPLATES[body.newStatus as DeliveryOrderStatus];
     if (!tpl) return NextResponse.json({ ok: true, data: { skipped: 'no template for status' } });
     message = tpl(o);
+    // Anexa link público de acompanhamento (capability URL) só para pedidos, quando
+    // o negócio tem slug e o pedido tem trackingToken. Appointment nunca leva link.
+    if (business.slug && o.trackingToken) {
+      message += `\n\nAcompanhe: ${req.nextUrl.origin}/p/${business.slug}/pedido/${body.id}?t=${o.trackingToken}`;
+    }
     conversationId = o.conversationId;
     recipientId = o.contactExternalId || o.clientPhone;
+    orderClientPhone = o.clientPhone;
   } else {
     const snap = await adminDb.collection('appointments').doc(body.id).get();
     if (!snap.exists) return NextResponse.json({ ok: false, error: 'Appointment not found' }, { status: 404 });
@@ -134,18 +142,64 @@ export async function POST(req: NextRequest) {
     if (convSnap.exists) channel = (convSnap.data() as Conversation).channel;
   }
 
+  // Dispatch via /api/conversations/send com chamada interna ASSINADA por HMAC
+  // (essa rota exige x-agent-signature OU Bearer; não temos o ID token aqui).
+  // Reusado pelo caminho principal (com conversationId) e pelo fallback Baileys.
+  async function dispatchSend(payload: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+    const { default: crypto } = await import('crypto');
+    const secret = process.env.AGENT_SHARED_SECRET;
+    if (!secret) return { ok: false, error: 'Notifier not configured' };
+    const sendBody = JSON.stringify(payload);
+    const ts = Date.now();
+    const sig = crypto.createHmac('sha256', secret).update(`${ts}.${body.businessId}.${sendBody}`).digest('hex');
+    try {
+      const resp = await fetch(`${req.nextUrl.origin}/api/conversations/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-agent-signature': sig,
+          'x-agent-timestamp': String(ts),
+          'x-business-id': body.businessId,
+        },
+        body: sendBody,
+      });
+      if (!resp.ok) return { ok: false, error: `send failed: ${await resp.text()}` };
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  }
+
   if (!conversationId || !channel || !recipientId) {
+    // Fallback Baileys: cobre o cliente do cardápio web que nunca teve conversa
+    // registrada. Se for pedido com telefone e o negócio tem Baileys conectado,
+    // envia direto pelo telefone (recipientId) — a MESMA rota assinada resolve o
+    // transporte whatsapp por businesses.channels e cria/resolve a conversa. O
+    // campo legado channels.baileys.phoneNumber fica fora de ChannelCredentials,
+    // lido via cast estreito (sem `any`). Reporta o resultado REAL (não mascara).
+    if (body.kind === 'order' && orderClientPhone && message) {
+      const baileysPhone = (business.channels as { baileys?: { phoneNumber?: string } } | undefined)
+        ?.baileys?.phoneNumber;
+      if (baileysPhone) {
+        const r = await dispatchSend({
+          businessId: body.businessId,
+          channel: 'whatsapp',
+          recipientId: orderClientPhone.replace(/\D/g, ''),
+          content: message,
+          type: 'text',
+        });
+        return NextResponse.json(
+          r.ok
+            ? { ok: true, data: { sent: true, via: 'baileys-fallback' } }
+            : { ok: false, error: r.error },
+          { status: r.ok ? 200 : 502 },
+        );
+      }
+    }
     return NextResponse.json({ ok: true, data: { skipped: 'no conversation to notify' } });
   }
 
-  // Dispatch via the existing send endpoint — we construct an internal HMAC-signed call
-  // because we don't have the user's Firebase ID token at this layer easily.
-  const { default: crypto } = await import('crypto');
-  const secret = process.env.AGENT_SHARED_SECRET;
-  if (!secret) {
-    return NextResponse.json({ ok: false, error: 'Notifier not configured' }, { status: 500 });
-  }
-  const sendBody = JSON.stringify({
+  const sent = await dispatchSend({
     businessId: body.businessId,
     conversationId,
     channel,
@@ -153,27 +207,8 @@ export async function POST(req: NextRequest) {
     content: message,
     type: 'text',
   });
-  const ts = Date.now();
-  const sig = crypto.createHmac('sha256', secret).update(`${ts}.${body.businessId}.${sendBody}`).digest('hex');
-
-  const origin = req.nextUrl.origin;
-  try {
-    const resp = await fetch(`${origin}/api/conversations/send`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-agent-signature': sig,
-        'x-agent-timestamp': String(ts),
-        'x-business-id': body.businessId,
-      },
-      body: sendBody,
-    });
-    if (!resp.ok) {
-      const err = await resp.text();
-      return NextResponse.json({ ok: false, error: `send failed: ${err}` }, { status: 502 });
-    }
-    return NextResponse.json({ ok: true, data: { sent: true, message } });
-  } catch (err) {
-    return NextResponse.json({ ok: false, error: String(err) }, { status: 502 });
-  }
+  return NextResponse.json(
+    sent.ok ? { ok: true, data: { sent: true, message } } : { ok: false, error: sent.error },
+    { status: sent.ok ? 200 : 502 },
+  );
 }

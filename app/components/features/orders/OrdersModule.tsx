@@ -1891,13 +1891,14 @@ export default function OrdersModule() {
   async function autoEmitNfceIfEnabled(order: Order) {
     if (!business?.fiscal?.nfceConfig?.autoEmit) return;
     if (order.fiscalDocumentId) return;
-    // Fiscal: a NFC-e é montada sobre a MERCADORIA cheia (soma dos itens); o
-    // desconto de cupom ainda não é modelado como vDesc. Auto-emitir um pedido
-    // com cupom sobredeclararia a base tributária — então pulamos a auto-emissão
-    // e deixamos o operador emitir manualmente (ciente do valor). Follow-up:
-    // modelar couponDiscount como vDesc no /api/fiscal/emit.
-    if ((order.couponDiscount ?? order.discount ?? 0) > 0) {
-      console.info('[Orders] auto-emit NFC-e pulada: pedido com desconto de cupom (emitir manual).');
+    // Fiscal: a NFC-e é montada sobre a MERCADORIA cheia (soma dos itens) e um
+    // único tender no método do pedido. Ainda não modelamos (a) desconto de cupom
+    // como vDesc nem (b) gift card como pagamento em voucher (tPag 12). Auto-emitir
+    // um pedido com cupom OU gift card distorceria base/tender — então pulamos a
+    // auto-emissão e deixamos o operador emitir manualmente (ciente dos valores).
+    // Follow-up: modelar couponDiscount (vDesc) e giftCardAmount (voucher) no emit.
+    if ((order.couponDiscount ?? order.discount ?? 0) > 0 || (order.giftCardAmount ?? 0) > 0) {
+      console.info('[Orders] auto-emit NFC-e pulada: pedido com cupom/gift card (emitir manual).');
       return;
     }
     try {

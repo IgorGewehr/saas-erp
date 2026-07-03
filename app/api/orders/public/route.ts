@@ -15,6 +15,7 @@ import { validateAndCleanModifiers, computeModifierDelta, round2 } from '@/lib/s
 import { resolveDeliveryZone } from '@/lib/services/orders/deliveryZones';
 import { reserveCouponAdmin } from '@/lib/services/orders/couponRedeem';
 import { COUPON_REJECT_MESSAGE } from '@/lib/services/orders/coupons';
+import { redeemGiftCardAdmin, loadGiftCardByCode, checkGiftCardEligibility } from '@/lib/services/orders/checkoutRedemptions';
 import type {
   Business,
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
@@ -44,6 +45,7 @@ interface PublicOrderPayload {
   changeFor?: number;
   customerNotes?: string;
   couponCode?: string;
+  giftCardCode?: string;
 }
 
 const PRICE_TOLERANCE = 0.01;
@@ -85,7 +87,7 @@ export async function POST(req: NextRequest) {
   // `deliveryFee` do payload é IGNORADO de propósito: a taxa é recomputada
   // server-side contra a zona de entrega resolvida (não se confia no client).
   const { businessId, clientName, clientPhone, items, deliveryType, deliveryAddress,
-    paymentMethod, changeFor, customerNotes, couponCode } = body;
+    paymentMethod, changeFor, customerNotes, couponCode, giftCardCode } = body;
 
   if (!businessId || !clientName?.trim() || !items?.length || !deliveryType) {
     return NextResponse.json({ error: 'Campos obrigatórios ausentes' }, { status: 400 });
@@ -116,7 +118,7 @@ export async function POST(req: NextRequest) {
     const { result } = await withIdempotency(
       adminDb,
       { businessId, key: idempotencyKey, endpoint: 'POST /api/orders/public' },
-      async (): Promise<{ orderId: string; orderNumber: number; trackingToken: string; total: number }> => {
+      async (): Promise<{ orderId: string; orderNumber: number; trackingToken: string; total: number; discount: number; giftCardAmount: number }> => {
     const now = new Date().toISOString();
     // Token OPACO de acompanhamento: capability URL pro cliente anônimo pagar e
     // acompanhar SÓ o próprio pedido, sem abrir leitura pública de deliveryOrders.
@@ -283,11 +285,14 @@ export async function POST(req: NextRequest) {
         ? round2(resolution.fee)
         : round2(Math.max(0, biz.settings?.aiAgent?.pedidos?.deliveryFee ?? 0));
     }
-    // Cupom (aplicado abaixo, após o pre-check de estoque). `total` é computado
-    // só depois de resolver desconto/frete-grátis.
+    // Cupom + gift card (aplicados abaixo, após o pre-check de estoque). `total`
+    // é computado só depois de resolver desconto/frete-grátis/gift card.
     let discount = 0;
     let couponId: string | undefined;
     let appliedCouponCode: string | undefined;
+    let giftCardId: string | undefined;
+    let appliedGiftCardCode: string | undefined;
+    let giftCardAmount = 0;
 
     // ── 4b. Pré-check de estoque (evita queimar número sequencial) ───────────
     // Checa os itens guardados (simples + estoque definido) contra o productMap
@@ -337,8 +342,30 @@ export async function POST(req: NextRequest) {
       couponId = reserve.couponId;
       appliedCouponCode = reserve.code;
     }
-    // Total AUTORITATIVO: mercadoria + frete − desconto, nunca negativo.
-    const total = round2(Math.max(0, subtotal + fee - discount));
+
+    // Valor a pagar após cupom — base sobre a qual o gift card (dinheiro) incide.
+    const payableBeforeCash = round2(Math.max(0, subtotal + fee - discount));
+
+    // ── 4d. Gift card — PRÉ-CHECK de elegibilidade (SEM debitar) ─────────────
+    // Débito de saldo (dinheiro) é irreversível sem estorno; por isso só o
+    // COMMITAMOS DEPOIS que o estoque foi deduzido (passo 5c) — fecha a janela em
+    // que um 409 de estoque deixaria o saldo consumido num pedido inexistente.
+    // Aqui apenas rejeitamos cedo um cartão claramente inválido, sem side-effect.
+    // Exigimos X-Idempotency-Key para pedidos com gift card (o front sempre envia):
+    // sem ela um retry re-debitaria o saldo, pois o ledger é ancorado nessa chave.
+    if (giftCardCode?.trim()) {
+      if (!idempotencyKey) {
+        throw new PublicOrderError(400, 'Recarregue a página e tente novamente.');
+      }
+      const preGc = await loadGiftCardByCode(adminDb, businessId, giftCardCode);
+      const reason = preGc ? checkGiftCardEligibility(preGc, now) : 'not_found';
+      if (reason) {
+        // Mensagem GENÉRICA (anti-oráculo p/ instrumento ao portador): não
+        // distingue inexistente/inativo/expirado/sem-saldo na resposta pública.
+        console.warn('[PublicOrder] gift card inelegível (pré-check):', reason);
+        throw new PublicOrderError(400, 'Gift card inválido ou sem saldo disponível.');
+      }
+    }
 
     // ── 5. Sequential order number (fonte ÚNICA, transaction-safe) ───────────
     const orderNumber = await allocateOrderNumberAdmin(adminDb, businessId);
@@ -392,6 +419,33 @@ export async function POST(req: NextRequest) {
       stockDeductedAt = now;
     }
 
+    // ── 5c. Gift card — DÉBITO autoritativo (estoque já garantido) ───────────
+    // Só agora, com o estoque deduzido, debitamos o saldo. Idempotente pela chave
+    // do carrinho (ledger giftCardRedemptions/{id}_{key}): se o order.set falhar e
+    // houver retry com a mesma chave, o replay devolve o valor sem re-debitar.
+    if (giftCardCode?.trim()) {
+      const gc = await redeemGiftCardAdmin(adminDb, {
+        businessId,
+        code: giftCardCode,
+        amountToRedeem: payableBeforeCash,
+        redemptionKey: idempotencyKey!, // garantido não-nulo pelo pré-check (4d)
+        orderId: orderRef.id,
+        nowIso: now,
+      });
+      if (gc.ok && gc.amountRedeemed > 0) {
+        giftCardAmount = gc.amountRedeemed;
+        giftCardId = gc.giftCardId;
+        appliedGiftCardCode = gc.code;
+      } else if (!gc.ok) {
+        // Concorrência: cartão drenado/expirado entre o pré-check e aqui. NÃO
+        // derruba o pedido (estoque já foi deduzido) — segue sem desconto do gift.
+        console.warn('[PublicOrder] gift card inelegível no débito:', gc.reason);
+      }
+    }
+
+    // Total AUTORITATIVO: (mercadoria + frete − cupom) − gift card, nunca negativo.
+    const total = round2(Math.max(0, payableBeforeCash - giftCardAmount));
+
     // ── 6. Create order ──────────────────────────────────────────────────────
     const order: Omit<DeliveryOrder, 'id'> = {
       businessId,
@@ -406,6 +460,9 @@ export async function POST(req: NextRequest) {
       deliveryFee: fee,
       ...(discount > 0 ? { discount } : {}),
       ...(couponId ? { couponId, couponCode: appliedCouponCode, couponDiscount: discount } : {}),
+      ...(giftCardId && giftCardAmount > 0
+        ? { giftCardId, giftCardCode: appliedGiftCardCode, giftCardAmount }
+        : {}),
       total,
       deliveryType,
       deliveryAddress: deliveryType === 'entrega' ? deliveryAddress : undefined,
@@ -436,7 +493,7 @@ export async function POST(req: NextRequest) {
         // `total` AUTORITATIVO (recomputado server-side, = subtotal + fee) devolvido
         // ao cliente: é exatamente o valor que será cobrado, fechando a janela em
         // que o front exibia o total local em vez do efetivamente persistido.
-        return { orderId: orderRef.id, orderNumber, trackingToken, total };
+        return { orderId: orderRef.id, orderNumber, trackingToken, total, discount, giftCardAmount };
       },
     );
 

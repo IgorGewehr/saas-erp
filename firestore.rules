@@ -1683,6 +1683,14 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // giftCardRedemptions: LEDGER de resgates de gift card no delivery, escrito SÓ
+    // pelo Admin SDK (redeemGiftCardAdmin) na transação de débito de saldo. Cliente
+    // jamais escreve — protege o saldo contra fraude. Operator+ lê para relatório.
+    match /giftCardRedemptions/{redemptionId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create, update, delete: if false;
+    }
+
     // ============================================
     // RECONCILIATION RULES (regras de auto-categorização bancária)
     // ============================================

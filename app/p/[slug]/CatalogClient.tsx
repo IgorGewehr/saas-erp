@@ -6,7 +6,7 @@ import {
   ShoppingCart, Plus, Minus, X, ChevronRight, MapPin, Phone,
   CreditCard, Wallet, Banknote, QrCode, Truck, Store,
   CheckCircle2, Clock, Star, Search, ArrowLeft, AlertCircle,
-  ChevronDown, Loader2, Package, Sparkles, Tag,
+  ChevronDown, Loader2, Package, Sparkles, Tag, RotateCcw,
 } from 'lucide-react';
 import type {
   Business, Product, DeliveryOrderPaymentMethod, DeliveryType,
@@ -43,6 +43,10 @@ interface CreatedOrder {
   /** Total AUTORITATIVO recomputado server-side (subtotal + fee). Garante que o
    *  valor exibido/cobrado == o persistido. Fallback pro previewTotal se ausente. */
   total?: number;
+  /** Desconto de cupom AUTORITATIVO devolvido pelo POST /api/orders/public. */
+  discount?: number;
+  /** Saldo de gift card resgatado AUTORITATIVO (bearer, sem preview prévio). */
+  giftCardAmount?: number;
 }
 
 /** Cupom validado no preview (POST /api/coupons/validate). É só otimista: o
@@ -192,6 +196,49 @@ function checkoutStorageKey(businessId: string) {
   return `sp:checkout:${businessId}`;
 }
 
+// Snapshot compacto dos últimos pedidos para "pedir de novo" (client-only).
+function lastOrdersStorageKey(businessId: string) {
+  return `sp:lastOrders:${businessId}`;
+}
+
+interface SavedOrderItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  selectedModifiers?: SelectedModifier[];
+}
+interface SavedOrder {
+  at: string;                 // ISO — quando o pedido foi concluído
+  deliveryType: DeliveryType;
+  items: SavedOrderItem[];
+}
+
+// Recalcula o preço unitário a partir dos modificadores salvos — espelha o
+// cálculo do ProductDetailSheet. Best-effort: o server revalida no submit.
+function unitPriceFromModifiers(basePrice: number, mods?: SelectedModifier[]): number {
+  let total = basePrice;
+  for (const m of mods ?? []) {
+    const prices: number[] = [];
+    for (const o of m.selectedOptions) {
+      for (let i = 0; i < o.quantity; i++) prices.push(o.additionalPrice);
+    }
+    if (prices.length === 0) continue;
+    if (m.priceStrategy === 'max') total += Math.max(...prices);
+    else if (m.priceStrategy === 'avg') total += prices.reduce((a, b) => a + b, 0) / prices.length;
+    else total += prices.reduce((a, b) => a + b, 0);
+  }
+  return total;
+}
+
+// Assinatura estável para dedup no carrinho — espelha ProductDetailSheet.
+function cartItemIdFromModifiers(productId: string, mods?: SelectedModifier[]): string {
+  if (!mods || mods.length === 0) return `${productId}:plain`;
+  const signature = mods
+    .map(m => `${m.groupId}:${m.selectedOptions.map(o => `${o.optionId}x${o.quantity}`).sort().join('|')}`)
+    .sort().join('||');
+  return `${productId}:${signature || 'plain'}:`;
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function ProductImage({ src, name }: { src?: string; name: string }) {
@@ -244,6 +291,13 @@ export default function CatalogClient({ business, products, categories }: Props)
   const [appliedCoupon, setAppliedCoupon] = useState<AppliedCoupon | null>(null);
   const [couponLoading, setCouponLoading] = useState(false);
   const [couponError, setCouponError] = useState<string | null>(null);
+
+  // ── Gift card (bearer, SEM preview — só coleta o código e envia no submit) ────
+  const [giftCardInput, setGiftCardInput] = useState('');
+
+  // ── Pedir de novo (snapshot local do último pedido) ──────────────────────────
+  const [lastOrder, setLastOrder] = useState<SavedOrder | null>(null);
+  const [repeatNotice, setRepeatNotice] = useState<string | null>(null);
 
   const { scrollY } = useScroll();
   const headerOpacity = useTransform(scrollY, [0, 120], [1, 0]);
@@ -384,6 +438,13 @@ export default function CatalogClient({ business, products, categories }: Props)
   const cartCount = useMemo(() => cart.reduce((s, i) => s + i.quantity, 0), [cart]);
   const cartSubtotal = useMemo(() => cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0), [cart]);
 
+  // Resumo curto do último pedido salvo: nº de itens + primeiro item.
+  const lastOrderSummary = useMemo(() => {
+    if (!lastOrder?.items.length) return '';
+    const totalItems = lastOrder.items.reduce((s, i) => s + i.quantity, 0);
+    return `${totalItems} ${totalItems === 1 ? 'item' : 'itens'} · ${lastOrder.items[0].productName}`;
+  }, [lastOrder]);
+
   // ── Cupom: preview local do total ────────────────────────────────────────────
   // Só feedback visual. O total AUTORITATIVO é o `createdOrder.total` devolvido
   // pelo POST /api/orders/public (que reserva o cupom e reconfirma os limites).
@@ -452,7 +513,8 @@ export default function CatalogClient({ business, products, categories }: Props)
   // DOM (AnimatePresence mode="wait"), mas evita qualquer instância compartilhada.
   function renderCouponBlock() {
     return (
-      <div>
+      <div className="space-y-3">
+        <div>
         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
           Cupom de desconto
         </label>
@@ -498,6 +560,23 @@ export default function CatalogClient({ business, products, categories }: Props)
             <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {couponError}
           </p>
         )}
+        </div>
+
+        {/* Gift card — BEARER, sem preview de saldo (evita enumeração). Só coleta
+            o código; o server resgata atomicamente no submit e devolve o valor
+            aplicado em giftCardAmount na resposta 201. */}
+        <div>
+          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+            Gift card (opcional)
+          </label>
+          <input
+            value={giftCardInput}
+            onChange={e => setGiftCardInput(e.target.value.toUpperCase())}
+            placeholder="Digite o código"
+            className="w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight uppercase tracking-wide outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
+          />
+          <p className="mt-1.5 px-1 text-[11px] text-gray-400">O saldo é aplicado ao finalizar o pedido.</p>
+        </div>
       </div>
     );
   }
@@ -557,6 +636,42 @@ export default function CatalogClient({ business, products, categories }: Props)
   const getQtyForProduct = useCallback((productId: string) => {
     return cart.filter(i => i.product.id === productId).reduce((s, i) => s + i.quantity, 0);
   }, [cart]);
+
+  // ── Pedir de novo ────────────────────────────────────────────────────────────
+  // Repovoa o carrinho com o último pedido salvo, mantendo só os itens que ainda
+  // existem e estão disponíveis no cardápio atual (cruza productId). O server
+  // revalida tudo no submit — isto é best-effort.
+  function repeatLastOrder() {
+    if (!lastOrder) return;
+    const byId = new Map(products.map(p => [p.id, p]));
+    const rebuilt: CartItem[] = [];
+    let skipped = 0;
+    for (const it of lastOrder.items) {
+      const product = byId.get(it.productId);
+      if (!product || isOutOfStock(product)) { skipped++; continue; }
+      const mods = it.selectedModifiers && it.selectedModifiers.length > 0 ? it.selectedModifiers : undefined;
+      rebuilt.push({
+        id: cartItemIdFromModifiers(product.id, mods),
+        product,
+        quantity: it.quantity > 0 ? it.quantity : 1,
+        notes: '',
+        selectedModifiers: mods,
+        unitPrice: unitPriceFromModifiers(product.salePrice, mods),
+        basePrice: product.salePrice,
+      });
+    }
+    if (rebuilt.length === 0) {
+      setRepeatNotice('Os itens do último pedido não estão mais disponíveis no cardápio.');
+      return;
+    }
+    setForm(f => ({ ...f, deliveryType: lastOrder.deliveryType }));
+    setCart(rebuilt);
+    setRepeatNotice(
+      skipped > 0
+        ? `${skipped} ${skipped === 1 ? 'item foi removido' : 'itens foram removidos'} do cardápio e não entrou no carrinho.`
+        : null,
+    );
+  }
 
   // ── Scroll spy for category pills ──────────────────────────────────────────
   useEffect(() => {
@@ -631,6 +746,19 @@ export default function CatalogClient({ business, products, categories }: Props)
     }
   }, [business.id]);
 
+  // Carrega o snapshot do último pedido para o card "pedir de novo" (client-only).
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(lastOrdersStorageKey(business.id));
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as SavedOrder[];
+      const first = Array.isArray(parsed) ? parsed[0] : null;
+      if (first && Array.isArray(first.items) && first.items.length > 0) setLastOrder(first);
+    } catch {
+      // localStorage indisponível — segue sem oferecer "pedir de novo"
+    }
+  }, [business.id]);
+
   // Corrige o método selecionado se cair fora da whitelist (ex.: pix default,
   // mas a loja não aceita pix).
   useEffect(() => {
@@ -701,6 +829,9 @@ export default function CatalogClient({ business, products, categories }: Props)
         // Server revalida e reserva (reserveCouponAdmin). Se rejeitar, 400 { error }
         // → handleSubmit exibe e o cliente pode remover o cupom e reenviar.
         couponCode: appliedCoupon ? appliedCoupon.code : undefined,
+        // Gift card BEARER: sem preview. O server resgata atomicamente e devolve
+        // giftCardAmount na 201. Se inválido → 400 { error }, cliente corrige e reenvia.
+        giftCardCode: giftCardInput.trim() || undefined,
       }),
     });
 
@@ -716,11 +847,33 @@ export default function CatalogClient({ business, products, categories }: Props)
       }));
     } catch { /* persistência best-effort */ }
 
+    // Snapshot p/ "pedir de novo" — guarda os 3 últimos (mais recente primeiro).
+    try {
+      const snapshot: SavedOrder = {
+        at: new Date().toISOString(),
+        deliveryType: form.deliveryType,
+        items: cart.map(i => ({
+          productId: i.product.id,
+          productName: i.product.name,
+          quantity: i.quantity,
+          selectedModifiers: i.selectedModifiers,
+        })),
+      };
+      const key = lastOrdersStorageKey(business.id);
+      const rawPrev = localStorage.getItem(key);
+      const prev = rawPrev ? (JSON.parse(rawPrev) as SavedOrder[]) : [];
+      const next = [snapshot, ...(Array.isArray(prev) ? prev : [])].slice(0, 3);
+      localStorage.setItem(key, JSON.stringify(next));
+      setLastOrder(snapshot);
+    } catch { /* persistência best-effort */ }
+
     const created: CreatedOrder = {
       orderId: data.orderId,
       orderNumber: data.orderNumber,
       trackingToken: data.trackingToken,
       total: typeof data.total === 'number' ? data.total : undefined,
+      discount: typeof data.discount === 'number' ? data.discount : undefined,
+      giftCardAmount: typeof data.giftCardAmount === 'number' ? data.giftCardAmount : undefined,
     };
     setCreatedOrder(created);
     setOrderId(created.orderId);
@@ -754,7 +907,12 @@ export default function CatalogClient({ business, products, categories }: Props)
     try {
       const order = await ensureOrder();
 
-      if (onlineMethod === 'pix') {
+      // Pedido 100% quitado por gift card (total 0): não há o que cobrar online —
+      // pay-pix/pay-card rejeitam total<=0. Vai direto pro sucesso, sem cobrança.
+      if (onlineMethod && (order.total ?? 0) <= 0) {
+        idempotencyKey.current = null;
+        setStep('success');
+      } else if (onlineMethod === 'pix') {
         const pix = await createPixCharge(order);
         setPixData(pix);
         setStep('pix');
@@ -782,6 +940,8 @@ export default function CatalogClient({ business, products, categories }: Props)
     setPixData(null);
     setOrderId(null);
     setOrderNumber(null);
+    setGiftCardInput('');
+    setRepeatNotice(null);
     idempotencyKey.current = null;
   }
 
@@ -925,6 +1085,37 @@ export default function CatalogClient({ business, products, categories }: Props)
 
       {/* ── Product List by Category ───────────────────────────────────────── */}
       <div className="max-w-2xl mx-auto px-4 pb-[calc(8rem+env(safe-area-inset-bottom,0px))] pt-4">
+
+        {/* Aviso de itens removidos do último pedido (best-effort) */}
+        {repeatNotice && (
+          <div className="mb-4 flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <p className="flex-1 text-xs text-amber-600 dark:text-amber-400">{repeatNotice}</p>
+            <button onClick={() => setRepeatNotice(null)} aria-label="Fechar aviso" className="p-0.5 flex-shrink-0">
+              <X className="w-3.5 h-3.5 text-amber-500" />
+            </button>
+          </div>
+        )}
+
+        {/* Pedir de novo — só na landing (carrinho vazio, sem busca ativa) */}
+        {cart.length === 0 && !search.trim() && lastOrder && (
+          <motion.button
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            onClick={repeatLastOrder}
+            className="w-full text-left mb-4 flex items-center gap-3 bg-white dark:bg-gray-900 rounded-2xl p-3.5 shadow-sm border border-gray-100 dark:border-gray-800 hover:border-red-200 dark:hover:border-red-900/50 active:scale-[0.99] transition-all"
+          >
+            <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center flex-shrink-0">
+              <RotateCcw className="w-4 h-4 text-red-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-gray-900 dark:text-white">Pedir de novo</p>
+              <p className="text-xs text-gray-400 truncate">{lastOrderSummary}</p>
+            </div>
+            <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+          </motion.button>
+        )}
+
         {visibleCategories.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4">
@@ -1597,6 +1788,28 @@ export default function CatalogClient({ business, products, categories }: Props)
                             </p>
                           </div>
                         </div>
+
+                        {/* Breakdown AUTORITATIVO (server): cupom + gift card + total pago */}
+                        {((createdOrder?.discount ?? 0) > 0 || (createdOrder?.giftCardAmount ?? 0) > 0) && (
+                          <div className="p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl text-left space-y-1">
+                            {(createdOrder?.discount ?? 0) > 0 && (
+                              <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                                <span>Desconto cupom</span>
+                                <span>−{formatBRL(createdOrder!.discount!)}</span>
+                              </div>
+                            )}
+                            {(createdOrder?.giftCardAmount ?? 0) > 0 && (
+                              <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                                <span>Gift card</span>
+                                <span>−{formatBRL(createdOrder!.giftCardAmount!)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between text-sm font-bold pt-1 border-t border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white">
+                              <span>Total pago</span>
+                              <span>{formatBRL(createdOrder?.total ?? previewTotal)}</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
                       {createdOrder && (
                         <a
