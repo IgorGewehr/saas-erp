@@ -13,6 +13,7 @@ import type {
   MenuCategory, SelectedModifier,
 } from '@/lib/types';
 import { resolveDeliveryZone, type DeliveryZone } from '@/lib/services/orders/deliveryZones';
+import { isOutOfStock } from '@/lib/utils/menu-availability';
 import ProductDetailSheet from './ProductDetailSheet';
 import PixPaymentPanel, { type PixCharge } from './PixPaymentPanel';
 import CardPaymentBrick from './CardPaymentBrick';
@@ -1480,7 +1481,9 @@ function ProductCard({
   onClick: () => void;
   delay: number;
 }) {
-  const outOfStock = product.currentStock <= 0 && product.currentStock !== undefined && !product.hasModifiers && !product.components?.length;
+  // Fonte única (menu-availability): honra menuAvailable ("esgotado hoje") e
+  // trackStock ("não controlar estoque"), além de modificadores/BOM/estoque.
+  const outOfStock = isOutOfStock(product);
   const hasModifiers = !!product.hasModifiers && !!product.modifierGroups?.length;
   const price = hasModifiers ? startingPrice(product) : product.salePrice;
 

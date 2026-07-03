@@ -158,6 +158,8 @@ async function createOrderInner(businessId: string, params: CreateParams) {
     const line = params.items[i];
     const product = productIndex.get(line.productId);
     if (!product) throw new Error(`Produto não encontrado: ${line.productId}`);
+    // "Não controlar estoque" (trackStock===false): fora do pré-check e da dedução.
+    if (product.trackStock === false) continue;
     if (product.components && product.components.length > 0) {
       for (const comp of product.components) {
         stockBucket.set(comp.productId, (stockBucket.get(comp.productId) || 0) + comp.quantity * line.quantity);
@@ -196,6 +198,7 @@ async function createOrderInner(businessId: string, params: CreateParams) {
     // Alinha ao cardápio público (orders/public): produto desativado não vende.
     if (p.isActive === false) throw new Error(`Produto "${p.name}" está desativado`);
     if (!p.isDeliverable) throw new Error(`Product "${p.name}" is not on the menu`);
+    if (p.menuAvailable === false) throw new Error(`Produto "${p.name}" está indisponível hoje`);
     resolvedItems.push({
       productId: snap.id,
       productName: p.name,
@@ -225,7 +228,9 @@ async function createOrderInner(businessId: string, params: CreateParams) {
   // comportamento antigo de salvar o pedido e só logar a falha. O productIndex já tem
   // os produtos top-level + folhas de BOM; passamos as linhas top-level e o serviço
   // expande o BOM internamente (mesma expansão usada na pré-checagem acima).
-  const stockLines = params.items.map((line) => ({ productId: line.productId, quantity: line.quantity }));
+  const stockLines = params.items
+    .filter((line) => productIndex.get(line.productId)?.trackStock !== false)
+    .map((line) => ({ productId: line.productId, quantity: line.quantity }));
   await deductStockAdmin(adminDb, stockLines, {
     businessId,
     operatorId: 'agent',

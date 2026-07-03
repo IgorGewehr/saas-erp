@@ -19,6 +19,10 @@ import type { Product } from '@/lib/types';
  *     quando não consegue resolver o insumo).
  *  3. `currentStock` indefinido → disponível (produto sem controle de estoque).
  *  4. Produto simples → esgotado quando `currentStock <= 0`.
+ *  5. `menuAvailable === false` ("esgotado hoje" manual) → esgotado SEMPRE,
+ *     independentemente do estoque (tem prioridade sobre todo o resto).
+ *  6. `trackStock === false` ("não controlar estoque") → NUNCA esgota por
+ *     estoque; só o toggle manual (regra 5) pode marcá-lo indisponível.
  */
 
 /** Resolve o estoque atual de um insumo pelo id; `undefined` quando desconhecido. */
@@ -55,6 +59,11 @@ export function composedAvailableQty(product: Product, resolve?: StockResolver):
 
 /** `true` quando o item NÃO pode ser pedido agora. */
 export function isOutOfStock(product: Product, resolve?: StockResolver): boolean {
+  // Toggle manual "esgotado hoje" — vence tudo, inclusive trackStock.
+  if (product.menuAvailable === false) return true;
+  // "Não controlar estoque" — nunca bloqueia por estoque (só o toggle manual).
+  if (product.trackStock === false) return false;
+
   if (hasModifiers(product)) return false;
 
   if (hasComponents(product)) {

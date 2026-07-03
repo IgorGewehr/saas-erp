@@ -8,6 +8,8 @@
  * de horário (isBusinessOpenNow) do tool de status do agente.
  *
  * Regra:
+ *  - Se aiAgent.pedidos.acceptingOrders === false → loja PAUSADA manualmente:
+ *    bloqueia SEMPRE, independente do horário (override manual sobrepõe grade).
  *  - Se aiAgent.pedidos.acceptOrdersOffHours === true → sempre aceita.
  *  - Senão, aceita apenas quando isBusinessOpenNow retorna true.
  *  - Quando a grade de horários é indeterminada (null: sem os 7 dias
@@ -32,6 +34,12 @@ export class OrdersClosedError extends Error {
  */
 export function assertOrdersAcceptedNow(biz: Pick<Business, 'settings'>, now: Date = new Date()): void {
   const settings = biz.settings;
+
+  // Pausa manual sobrepõe tudo: se a loja foi pausada, bloqueia antes do horário.
+  if (settings?.aiAgent?.pedidos?.acceptingOrders === false) {
+    throw new OrdersClosedError('Loja pausada no momento.');
+  }
+
   if (settings?.aiAgent?.pedidos?.acceptOrdersOffHours === true) return;
 
   const tz = settings?.timezone || 'America/Sao_Paulo';

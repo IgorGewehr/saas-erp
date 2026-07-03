@@ -649,6 +649,12 @@ export interface AiAgentSettings {
 
   /** === Modo: pedidos === */
   pedidos?: {
+    /**
+     * Pausa manual da loja. Ausente/true = aceitando pedidos normalmente.
+     * false = loja PAUSADA agora: para de aceitar pedidos independente do
+     * horário de funcionamento (override manual acima de openingHours).
+     */
+    acceptingOrders?: boolean;
     /** Notificar cliente automaticamente em cada mudança de status do pedido */
     notifyOnStatusChange?: boolean;
     /** Aceitar novos pedidos fora do horário (ou mostrar mensagem de fechado) */
@@ -1527,6 +1533,10 @@ export interface Product {
   menuCategoryId?: string;      // Referência formal para MenuCategory (prioridade sobre menuCategory)
   menuDescription?: string;     // Short description for the menu card
   preparationTime?: number;     // Minutes — for delivery ETA
+  /** Ausente/true = disponível. false = "esgotado hoje" manual (esconde/marca esgotado no cardápio, independe do currentStock). */
+  menuAvailable?: boolean;
+  /** Ausente/true = controla estoque. false = "não controlar estoque" (nunca bloqueia venda nem deduz por estoque). */
+  trackStock?: boolean;
   /** Dietary markers — usados no cardápio e pelo agente para filtrar */
   dietary?: Array<'vegan' | 'vegetarian' | 'glutenfree' | 'lactosefree' | 'organic' | 'picante' | 'alcool' | 'kids'>;
   /** Personalização / modificadores — quando presente, catálogo abre wizard de montagem */

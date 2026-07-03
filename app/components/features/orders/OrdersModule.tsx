@@ -46,6 +46,16 @@ type OrderAddress = DeliveryOrderAddress;
 const ORDER_STATUS_ORDER = DELIVERY_ORDER_STATUS_FLOW;
 const ORDER_STATUS_LABELS = DELIVERY_ORDER_STATUS_LABELS;
 
+// Fluxo de etapas por tipo: RETIRADA não passa por 'saiu_entrega' (pronto→entregue
+// direto, já permitido pela FSM). ENTREGA segue o fluxo completo. Sem deliveryType
+// (retrocompat) usa o fluxo completo. Filtro só remove a etapa de logística de rota.
+function statusFlowFor(deliveryType?: DeliveryType): OrderStatus[] {
+  if (deliveryType === 'retirada') {
+    return ORDER_STATUS_ORDER.filter(s => s !== 'saiu_entrega');
+  }
+  return ORDER_STATUS_ORDER;
+}
+
 // EF-01: janela do onSnapshot de pedidos. ANTES a subscription lia o HISTÓRICO
 // INTEIRO sem limit ⇒ custo/latência O(idade do tenant). AGORA limita a uma
 // janela recente (createdAt >= início do dia − N dias), usando o índice
@@ -866,11 +876,12 @@ function OrderDetailDrawer({
   onDelete: () => void;
 }) {
   const cfg = STATUS_CONFIG[order.status];
-  const statusIdx = ORDER_STATUS_ORDER.indexOf(order.status);
-  const nextStatus = statusIdx >= 0 && statusIdx < ORDER_STATUS_ORDER.length - 1
-    ? ORDER_STATUS_ORDER[statusIdx + 1]
+  const statusFlow = statusFlowFor(order.deliveryType);
+  const statusIdx = statusFlow.indexOf(order.status);
+  const nextStatus = statusIdx >= 0 && statusIdx < statusFlow.length - 1
+    ? statusFlow[statusIdx + 1]
     : null;
-  const prevStatus = statusIdx > 0 ? ORDER_STATUS_ORDER[statusIdx - 1] : null;
+  const prevStatus = statusIdx > 0 ? statusFlow[statusIdx - 1] : null;
 
   return (
     <motion.div

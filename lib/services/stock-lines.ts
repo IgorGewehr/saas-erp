@@ -61,5 +61,9 @@ export function buildOrderStockLines(
       }
     }
   }
-  return lines;
+  // "Não controlar estoque" (trackStock===false): a linha do produto é ignorada
+  // — não deduz nem restaura. Filtrar AQUI (fonte única) cobre TODOS os caminhos
+  // (cardápio público, PDV, Pedidos, webhook/estorno, expire-pix) simetricamente.
+  // Produto ausente do índice ou sem o flag (undefined/true) → mantém (padrão).
+  return lines.filter((l) => productIndex.get(l.productId)?.trackStock !== false);
 }

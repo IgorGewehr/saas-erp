@@ -3948,6 +3948,7 @@ function AgenteTab() {
   const [businessDescription, setBusinessDescription] = useState<string>(current?.businessDescription || '');
 
   // Pedidos-specific
+  const [acceptingOrders, setAcceptingOrders] = useState<boolean>(current?.pedidos?.acceptingOrders ?? true);
   const [notifyOnStatusChange, setNotifyOnStatusChange] = useState<boolean>(current?.pedidos?.notifyOnStatusChange ?? true);
   const [acceptOrdersOffHours, setAcceptOrdersOffHours] = useState<boolean>(current?.pedidos?.acceptOrdersOffHours ?? false);
   const [deliveryFee, setDeliveryFee] = useState<number>(current?.pedidos?.deliveryFee ?? 0);
@@ -3996,6 +3997,7 @@ function AgenteTab() {
     setTone(current?.tone || 'friendly');
     setSegment(current?.segment || 'generico');
     setBusinessDescription(current?.businessDescription || '');
+    setAcceptingOrders(current?.pedidos?.acceptingOrders ?? true);
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
     setDeliveryFee(current?.pedidos?.deliveryFee ?? 0);
@@ -4068,6 +4070,7 @@ function AgenteTab() {
       const pedidos = useCase === 'pedidos'
         ? {
             ...current?.pedidos,
+            acceptingOrders,
             notifyOnStatusChange,
             acceptOrdersOffHours,
             deliveryFee: deliveryFee > 0 ? deliveryFee : null,
@@ -4485,7 +4488,20 @@ function AgenteTab() {
           {useCase === 'pedidos' && (
             <SectionCard title="Automações de pedidos" icon={MessageCircle}>
               <div className="space-y-4">
-                <div className="flex items-start justify-between gap-4">
+                <div className={`flex items-start justify-between gap-4 -m-1 p-3 rounded-xl ${acceptingOrders ? '' : 'bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30'}`}>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      {acceptingOrders ? 'Aceitando pedidos agora' : 'Loja pausada'}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {acceptingOrders
+                        ? 'Desligue para pausar a loja imediatamente: novos pedidos são recusados independente do horário de funcionamento.'
+                        : 'A loja está pausada — nenhum pedido é aceito, mesmo dentro do horário. Ligue para voltar a aceitar.'}
+                    </p>
+                  </div>
+                  <AgenteToggleSwitch checked={acceptingOrders} onChange={setAcceptingOrders} />
+                </div>
+                <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
                   <div>
                     <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                       Avisar cliente em cada mudança de status

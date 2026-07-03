@@ -166,6 +166,11 @@ export async function POST(req: NextRequest) {
       if (product.isActive === false || product.isDeliverable === false) {
         throw new PublicOrderError(400, `Produto indisponível: ${product.name}`);
       }
+      // "Esgotado hoje" manual (menuAvailable === false): espelha a regra da UI/helper
+      // — rejeita independentemente do estoque. Ausente/true mantém comportamento atual.
+      if (product.menuAvailable === false) {
+        throw new PublicOrderError(400, `Produto indisponível: ${product.name}`);
+      }
 
       // Validate + recompute modifier pricing
       const mods = validateAndCleanModifiers(product, raw.selectedModifiers);
@@ -196,7 +201,14 @@ export async function POST(req: NextRequest) {
       if (mods.clean.length) item.selectedModifiers = mods.clean;
       validatedItems.push(item);
 
-      if (!product.components?.length && !product.hasModifiers && product.currentStock !== undefined) {
+      // "Não controlar estoque" (trackStock === false): fora do guard — nunca bloqueia
+      // por estoque (é debitado tolerando negativo, sem barrar o pedido). Ausente/true
+      // mantém o comportamento atual.
+      if (
+        product.trackStock !== false
+        && !product.components?.length && !product.hasModifiers
+        && product.currentStock !== undefined
+      ) {
         guardedStockIds.add(product.id);
       }
     }

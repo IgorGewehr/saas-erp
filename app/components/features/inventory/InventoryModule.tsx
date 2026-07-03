@@ -136,6 +136,9 @@ interface ProductFormData {
   existingImageUrl: string;
   // Delivery / Cardápio
   isDeliverable: boolean;
+  // Raw (semântica do type): true/ausente = disponível / controla estoque.
+  menuAvailable: boolean;
+  trackStock: boolean;
   menuCategory: string;
   menuCategoryId: string;
   menuDescription: string;
@@ -204,6 +207,8 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   imagePreview: '',
   existingImageUrl: '',
   isDeliverable: false,
+  menuAvailable: true,
+  trackStock: true,
   menuCategory: '',
   menuCategoryId: '',
   menuDescription: '',
@@ -1254,6 +1259,8 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
           imagePreview: '',
           existingImageUrl: product.imageUrl || '',
           isDeliverable: product.isDeliverable ?? false,
+          menuAvailable: product.menuAvailable !== false,
+          trackStock: product.trackStock !== false,
           menuCategory: product.menuCategory || '',
           menuCategoryId: product.menuCategoryId || '',
           menuDescription: product.menuDescription || '',
@@ -1665,6 +1672,67 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                       transition={{ duration: 0.22 }}
                       className="space-y-3 overflow-hidden"
                     >
+                      {/* Toggles operacionais do cardápio */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => updateField('menuAvailable', !form.menuAvailable)}
+                          className={cn(
+                            'flex items-center justify-between gap-3 p-3 rounded-xl border-2 transition-all text-left',
+                            !form.menuAvailable
+                              ? 'border-amber-400 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/40'
+                              : 'border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-950/30'
+                          )}
+                        >
+                          <div>
+                            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Esgotado hoje</p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {!form.menuAvailable
+                                ? 'Marcado como indisponível no cardápio'
+                                : 'Disponível (independe do estoque)'}
+                            </p>
+                          </div>
+                          <div className={cn(
+                            'w-11 h-6 rounded-full p-0.5 transition-colors shrink-0',
+                            !form.menuAvailable ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'
+                          )}>
+                            <div className={cn(
+                              'w-5 h-5 rounded-full bg-white shadow transition-transform',
+                              !form.menuAvailable ? 'translate-x-5' : 'translate-x-0'
+                            )} />
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => updateField('trackStock', !form.trackStock)}
+                          className={cn(
+                            'flex items-center justify-between gap-3 p-3 rounded-xl border-2 transition-all text-left',
+                            !form.trackStock
+                              ? 'border-sky-400 bg-sky-50 dark:bg-sky-500/10 dark:border-sky-500/40'
+                              : 'border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-950/30'
+                          )}
+                        >
+                          <div>
+                            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Não controlar estoque</p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {!form.trackStock
+                                ? 'Nunca esgota por estoque; não debita'
+                                : 'Estoque controlado normalmente'}
+                            </p>
+                          </div>
+                          <div className={cn(
+                            'w-11 h-6 rounded-full p-0.5 transition-colors shrink-0',
+                            !form.trackStock ? 'bg-sky-500' : 'bg-slate-300 dark:bg-slate-700'
+                          )}>
+                            <div className={cn(
+                              'w-5 h-5 rounded-full bg-white shadow transition-transform',
+                              !form.trackStock ? 'translate-x-5' : 'translate-x-0'
+                            )} />
+                          </div>
+                        </button>
+                      </div>
+
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
                           <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">
@@ -2200,6 +2268,8 @@ export default function InventoryModule() {
         isActive: data.isActive,
         imageUrl: imageUrl || null,
         isDeliverable: data.isDeliverable,
+        menuAvailable: data.menuAvailable,
+        trackStock: data.trackStock,
         menuCategory: data.isDeliverable ? (data.menuCategory.trim() || null) : null,
         menuCategoryId: data.isDeliverable && data.menuCategoryId ? data.menuCategoryId : null,
         menuDescription: data.isDeliverable ? (data.menuDescription.trim() || null) : null,
@@ -2243,6 +2313,8 @@ export default function InventoryModule() {
         isActive: data.isActive,
         imageUrl: '',
         isDeliverable: data.isDeliverable,
+        menuAvailable: data.menuAvailable,
+        trackStock: data.trackStock,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
