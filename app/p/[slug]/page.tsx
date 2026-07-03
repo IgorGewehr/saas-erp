@@ -94,6 +94,9 @@ export default async function PublicMenuPage({
           acceptOrdersOffHours: business.settings?.aiAgent?.pedidos?.acceptOrdersOffHours,
           deliveryFee: business.settings?.aiAgent?.pedidos?.deliveryFee,
         },
+        // Zonas de entrega são conteúdo público (bairros/taxas exibidos ao
+        // cliente) — seguro projetar; habilita a taxa por região no checkout.
+        deliveryZones: business.settings?.aiAgent?.deliveryZones,
       },
     },
   };

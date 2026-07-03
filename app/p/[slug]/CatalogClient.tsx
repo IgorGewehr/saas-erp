@@ -12,6 +12,7 @@ import type {
   Business, Product, DeliveryOrderPaymentMethod, DeliveryType,
   MenuCategory, SelectedModifier,
 } from '@/lib/types';
+import { resolveDeliveryZone, type DeliveryZone } from '@/lib/services/orders/deliveryZones';
 import ProductDetailSheet from './ProductDetailSheet';
 import PixPaymentPanel, { type PixCharge } from './PixPaymentPanel';
 import CardPaymentBrick from './CardPaymentBrick';
@@ -61,6 +62,8 @@ export interface PublicBusiness {
       acceptedPaymentMethods?: NonNullable<BizSettings['aiAgent']>['acceptedPaymentMethods'];
       businessDescription?: string;
       pedidos?: { acceptOrdersOffHours?: boolean; deliveryFee?: number };
+      /** Zonas de entrega (bairro/raio/polígono). A taxa plana só vale quando vazio. */
+      deliveryZones?: DeliveryZone[];
     };
   };
 }
@@ -252,7 +255,28 @@ export default function CatalogClient({ business, products, categories }: Props)
   // onlinePaymentEnabled já exige produção, então não há mais modo-teste exposto.
   const mpTestMode = false;
 
-  const deliveryFee = business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0;
+  // ── Zona de entrega ──────────────────────────────────────────────────────────
+  // A taxa exibida é resolvida contra as zonas configuradas a partir do
+  // CEP/bairro do checkout (mesma função pura que a rota valida server-side, p/
+  // garantir taxa exibida == cobrada). Sem zonas → taxa plana legada.
+  const deliveryZones = business.settings?.aiAgent?.deliveryZones;
+  const flatDeliveryFee = business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0;
+  const hasDeliveryZones = !!deliveryZones?.length;
+  const zoneResolution = useMemo(
+    () => resolveDeliveryZone(deliveryZones, { cep: form.cep, bairro: form.bairro }),
+    [deliveryZones, form.cep, form.bairro],
+  );
+  const deliveryFee = zoneResolution.status === 'matched' ? zoneResolution.fee : flatDeliveryFee;
+  const zoneName = zoneResolution.status === 'matched' ? zoneResolution.zone.name : undefined;
+  const zoneEtaMinutes = zoneResolution.status === 'matched' ? zoneResolution.estimatedMinutes : undefined;
+  const zoneEstimated = zoneResolution.status === 'matched' && zoneResolution.estimated;
+  // Bloqueio "fora de área" só depois que o cliente digitou um bairro — senão
+  // bloquearíamos antes de haver endereço.
+  const bairroEntered = form.bairro.trim().length > 1;
+  const outOfDeliveryArea =
+    form.deliveryType === 'entrega' && hasDeliveryZones && bairroEntered
+    && zoneResolution.status === 'out-of-area';
+
   const isOpen = isBusinessOpen(business.settings?.openingHours);
   const acceptOffHours = business.settings?.aiAgent?.pedidos?.acceptOrdersOffHours === true;
   const ordersBlocked = !isOpen && !acceptOffHours;
@@ -633,6 +657,7 @@ export default function CatalogClient({ business, products, categories }: Props)
     form.logradouro.trim().length > 2 && form.numero.trim().length > 0
     && form.bairro.trim().length > 0
     && form.municipio.trim().length > 0 && form.uf.trim().length === 2
+    && !outOfDeliveryArea
   );
   const contactValid = form.name.trim().length >= 2 && isValidPhoneBR(form.phone);
 
@@ -690,7 +715,11 @@ export default function CatalogClient({ business, products, categories }: Props)
 
           {/* Info chips row */}
           <div className="flex items-center gap-2 mt-3 flex-wrap">
-            {deliveryFee > 0 ? (
+            {hasDeliveryZones && zoneResolution.status !== 'matched' ? (
+              <span className="flex items-center gap-1.5 text-[11px] text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-full">
+                <Truck className="w-3 h-3" /> Entrega por região
+              </span>
+            ) : deliveryFee > 0 ? (
               <span className="flex items-center gap-1.5 text-[11px] text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-full">
                 <Truck className="w-3 h-3" /> Entrega {formatBRL(deliveryFee)}
               </span>
@@ -1013,7 +1042,12 @@ export default function CatalogClient({ business, products, categories }: Props)
                         </label>
                         <div className="grid grid-cols-2 gap-2">
                           {([
-                            { value: 'entrega', label: 'Entrega', sub: deliveryFee > 0 ? formatBRL(deliveryFee) : 'Grátis', icon: Truck },
+                            {
+                              value: 'entrega', label: 'Entrega', icon: Truck,
+                              sub: hasDeliveryZones && zoneResolution.status !== 'matched'
+                                ? 'Por região'
+                                : deliveryFee > 0 ? formatBRL(deliveryFee) : 'Grátis',
+                            },
                             { value: 'retirada', label: 'Retirada', sub: 'No local', icon: Store },
                           ] as const).map(opt => (
                             <button
@@ -1105,6 +1139,29 @@ export default function CatalogClient({ business, products, categories }: Props)
                                 <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
                               </div>
                             </div>
+
+                            {/* Feedback da zona de entrega resolvida pelo bairro/CEP */}
+                            {outOfDeliveryArea ? (
+                              <div className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+                                <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-amber-600 dark:text-amber-400">Fora da área de entrega</p>
+                                  <p className="text-xs text-amber-500/90 dark:text-amber-400/80 mt-0.5">
+                                    Não entregamos no bairro informado. Você ainda pode escolher retirada no local.
+                                  </p>
+                                </div>
+                              </div>
+                            ) : zoneResolution.status === 'matched' && bairroEntered ? (
+                              <div className="flex items-center gap-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl">
+                                <Truck className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                                <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                                  <span className="font-semibold">{zoneName}</span>
+                                  {' · '}{deliveryFee > 0 ? formatBRL(deliveryFee) : 'Frete grátis'}
+                                  {zoneEtaMinutes ? ` · ~${zoneEtaMinutes} min` : ''}
+                                  {zoneEstimated ? ' (estimado)' : ''}
+                                </p>
+                              </div>
+                            ) : null}
                           </motion.div>
                         )}
                       </AnimatePresence>
@@ -1289,7 +1346,7 @@ export default function CatalogClient({ business, products, categories }: Props)
 
                       <button
                         onClick={handleSubmit}
-                        disabled={!contactValid || isSubmitting || ordersBlocked}
+                        disabled={!contactValid || isSubmitting || ordersBlocked || outOfDeliveryArea}
                         className="w-full bg-red-500 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] text-white py-4 rounded-2xl font-bold text-base transition-all flex items-center justify-center gap-2"
                       >
                         {isSubmitting ? (

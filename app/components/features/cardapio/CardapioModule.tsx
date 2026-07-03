@@ -14,11 +14,14 @@ import { formatCurrency } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type {
   Product, ProductModifierGroup, ProductModifierOption,
-  SelectedModifier, SelectedModifierOption,
+  SelectedModifier, SelectedModifierOption, MenuCategory,
 } from '@/lib/types';
 import { computeModifierDelta, round2, validateAndCleanModifiers } from '@/lib/services/orders/pricing';
+import { isOutOfStock, type StockResolver } from '@/lib/utils/menu-availability';
 
 type DietaryTag = NonNullable<Product['dietary']>[number];
+
+const UNCATEGORIZED_ID = '__uncategorized__';
 
 // ─── Dietary config (mirrors agent catalog route) ─────────────────────────────
 const DIETARY_OPTIONS: { id: string; label: string; emoji: string; color: string }[] = [
@@ -58,16 +61,17 @@ function modifierSignature(selected: SelectedModifier[] | undefined): string {
 
 // ─── Product detail modal ──────────────────────────────────────────────────────
 function ProductDetailModal({
-  product, onClose, onAddToCart, cartQty,
+  product, onClose, onAddToCart, cartQty, resolveStock,
 }: {
   product: Product;
   onClose: () => void;
   onAddToCart: (p: Product, qty: number) => void;
   cartQty: number;
+  resolveStock: StockResolver;
 }) {
   const [qty, setQty] = useState(Math.max(1, cartQty));
   const hasComponents = !!(product.components && product.components.length > 0);
-  const outOfStock = !hasComponents && product.currentStock <= 0;
+  const outOfStock = isOutOfStock(product, resolveStock);
   const dietaryTags = DIETARY_OPTIONS.filter(d => product.dietary?.includes(d.id as DietaryTag));
 
   return (
@@ -530,16 +534,17 @@ function ModifierOptionRow({
 
 // ─── Product card ─────────────────────────────────────────────────────────────
 function ProductCard({
-  product, cartQty, onOpen, onAdd,
+  product, cartQty, onOpen, onAdd, resolveStock,
 }: {
   product: Product;
   cartQty: number;
   onOpen: (p: Product) => void;
   onAdd: (p: Product) => void;
+  resolveStock: StockResolver;
 }) {
   const hasComponents = !!(product.components && product.components.length > 0);
   const hasMods = hasModifierGroups(product);
-  const outOfStock = !hasComponents && !hasMods && product.currentStock <= 0;
+  const outOfStock = isOutOfStock(product, resolveStock);
   const dietaryTags = DIETARY_OPTIONS.filter(d => product.dietary?.includes(d.id as DietaryTag));
 
   return (
@@ -720,6 +725,7 @@ export default function CardapioModule() {
   // imediatamente no cardápio aberto (mesmo em outra aba/dispositivo).
   // Crítico pra "esgotou item" — evita pedido de produto indisponível.
   const [products, setProducts] = useState<Product[]>([]);
+  const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   useEffect(() => {
     if (!business?.id) { setIsLoading(false); return; }
@@ -743,6 +749,28 @@ export default function CardapioModule() {
         console.error('[Cardapio] products snapshot error:', err);
         setIsLoading(false);
       },
+    );
+    return () => unsub();
+  }, [business?.id]);
+
+  // Categorias formais do cardápio (coleção menuCategories) — mesmo padrão do
+  // InventoryModule. Dão ordem (sortOrder), cor e nome canônico; produtos legados
+  // sem menuCategoryId caem no fallback pela string `menuCategory`.
+  useEffect(() => {
+    if (!business?.id) { setMenuCategories([]); return; }
+    const q = query(
+      collection(db, 'menuCategories'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs
+          .map(d => ({ ...d.data(), id: d.id }) as MenuCategory)
+          .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+        setMenuCategories(list);
+      },
+      (err) => console.error('[Cardapio] menuCategories snapshot error:', err),
     );
     return () => unsub();
   }, [business?.id]);
@@ -773,44 +801,81 @@ export default function CardapioModule() {
     if (fresh.updatedAt !== modifierProduct.updatedAt) setModifierProduct(fresh);
   }, [products, modifierProduct]);
 
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    for (const p of products) if (p.menuCategory) set.add(p.menuCategory);
-    return Array.from(set).sort();
+  // Resolve o estoque de um insumo (produto composto) pelo snapshot visível.
+  // Insumo não presente → undefined → helper trata como não-bloqueante (igual
+  // ao público, que não esgota composto sem conseguir resolver o insumo).
+  const resolveStock = useMemo<StockResolver>(() => {
+    const byId = new Map(products.map(p => [p.id, p.currentStock]));
+    return (id: string) => byId.get(id);
   }, [products]);
 
-  const filtered = useMemo(() => {
+  // Categorias formais (menuCategories ativas, já ordenadas por sortOrder) +
+  // fallback pela string legada `menuCategory`/`category` — mesma lógica do
+  // cardápio público (CatalogClient.categoryList).
+  const categoryList = useMemo(() => {
+    const known = new Map<string, { id: string; name: string; color?: string }>();
+    for (const c of menuCategories) {
+      if (c.isActive) known.set(c.id, { id: c.id, name: c.name, color: c.color });
+    }
+    const stringCats = new Set<string>();
+    for (const p of products) {
+      if (p.menuCategoryId && known.has(p.menuCategoryId)) continue;
+      const cat = p.menuCategory || p.category;
+      if (cat && !known.has(cat) && !stringCats.has(cat)) {
+        stringCats.add(cat);
+        known.set(cat, { id: cat, name: cat });
+      }
+    }
+    return Array.from(known.values());
+  }, [menuCategories, products]);
+
+  // Produtos agrupados por id de categoria (menuCategoryId → fallback string →
+  // UNCATEGORIZED). Aplica busca + filtros dietéticos aqui; o filtro de pill de
+  // categoria é aplicado depois, em `visibleCategories`.
+  const productsByCategory = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return products.filter(p => {
-      if (categoryFilter !== 'all' && p.menuCategory !== categoryFilter) return false;
+    const map = new Map<string, Product[]>();
+    for (const p of products) {
       if (dietaryFilters.length > 0) {
         const have = new Set(p.dietary || []);
-        if (!dietaryFilters.every(f => have.has(f as DietaryTag))) return false;
+        if (!dietaryFilters.every(f => have.has(f as DietaryTag))) continue;
       }
-      if (!term) return true;
-      return (
-        p.name.toLowerCase().includes(term) ||
-        p.menuDescription?.toLowerCase().includes(term) ||
-        p.menuCategory?.toLowerCase().includes(term)
-      );
-    });
-  }, [products, search, categoryFilter, dietaryFilters]);
-
-  const grouped = useMemo(() => {
-    const groups = new Map<string, Product[]>();
-    const OTHER = 'Outros';
-    for (const p of filtered) {
-      const cat = p.menuCategory || OTHER;
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat)!.push(p);
+      if (term) {
+        const hay = `${p.name} ${p.menuDescription || ''} ${p.menuCategory || ''}`.toLowerCase();
+        if (!hay.includes(term)) continue;
+      }
+      const key = (p.menuCategoryId && categoryList.some(c => c.id === p.menuCategoryId))
+        ? p.menuCategoryId
+        : categoryList.find(c => c.name === (p.menuCategory || p.category))?.id
+        || UNCATEGORIZED_ID;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(p);
     }
-    for (const items of groups.values()) items.sort((a, b) => a.name.localeCompare(b.name));
-    return Array.from(groups.entries()).sort(([a], [b]) => {
-      if (a === OTHER) return 1;
-      if (b === OTHER) return -1;
-      return a.localeCompare(b);
-    });
-  }, [filtered]);
+    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    return map;
+  }, [products, categoryList, search, dietaryFilters]);
+
+  // Categorias com pelo menos 1 item (respeitando busca/dietético) + "Outros".
+  const availableCategories = useMemo(() => {
+    const list: { id: string; name: string; color?: string }[] =
+      categoryList.filter(c => (productsByCategory.get(c.id)?.length ?? 0) > 0);
+    if ((productsByCategory.get(UNCATEGORIZED_ID)?.length ?? 0) > 0) {
+      list.push({ id: UNCATEGORIZED_ID, name: 'Outros' });
+    }
+    return list;
+  }, [categoryList, productsByCategory]);
+
+  const visibleCategories = useMemo(
+    () => categoryFilter === 'all'
+      ? availableCategories
+      : availableCategories.filter(c => c.id === categoryFilter),
+    [availableCategories, categoryFilter],
+  );
+
+  const visibleCount = useMemo(
+    () => visibleCategories.reduce((s, c) => s + (productsByCategory.get(c.id)?.length ?? 0), 0),
+    [visibleCategories, productsByCategory],
+  );
 
   // Soma da quantidade de TODAS as configurações de um produto — badge do card.
   const productQtyInCart = (productId: string) =>
@@ -907,7 +972,7 @@ export default function CardapioModule() {
       </div>
 
       {/* Category filter */}
-      {categories.length > 0 && (
+      {availableCategories.length > 0 && (
         <div className="flex gap-1.5 overflow-x-auto pb-0.5 -mx-4 px-4 sm:mx-0 sm:px-0">
           <button
             onClick={() => setCategoryFilter('all')}
@@ -920,20 +985,24 @@ export default function CardapioModule() {
           >
             Todas
           </button>
-          {categories.map(cat => (
-            <button
-              key={cat}
-              onClick={() => setCategoryFilter(cat)}
-              className={cn(
-                'px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors flex-shrink-0',
-                categoryFilter === cat
-                  ? 'bg-red-600 text-white'
-                  : 'bg-white dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700',
-              )}
-            >
-              {cat}
-            </button>
-          ))}
+          {availableCategories.map(cat => {
+            const active = categoryFilter === cat.id;
+            return (
+              <button
+                key={cat.id}
+                onClick={() => setCategoryFilter(cat.id)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors flex-shrink-0',
+                  active
+                    ? 'bg-red-600 text-white'
+                    : 'bg-white dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700',
+                )}
+                style={active && cat.color ? { backgroundColor: cat.color } : undefined}
+              >
+                {cat.name}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -966,7 +1035,7 @@ export default function CardapioModule() {
             <div key={i} className="aspect-[4/5] rounded-2xl shimmer" />
           ))}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : visibleCount === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -1001,26 +1070,35 @@ export default function CardapioModule() {
       ) : (
         <AnimatePresence mode="popLayout">
           <div className="space-y-8">
-            {grouped.map(([cat, items]) => (
-              <motion.section key={cat} layout>
-                <h2 className="flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300 mb-3">
-                  <Tag className="w-3.5 h-3.5 text-red-500" />
-                  <span className="uppercase tracking-wider">{cat}</span>
-                  <span className="text-[10px] font-medium text-gray-400 ml-1">({items.length})</span>
-                </h2>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {items.map(p => (
-                    <ProductCard
-                      key={p.id}
-                      product={p}
-                      cartQty={productQtyInCart(p.id)}
-                      onOpen={openProduct}
-                      onAdd={quickAdd}
-                    />
-                  ))}
-                </div>
-              </motion.section>
-            ))}
+            {visibleCategories.map(cat => {
+              const items = productsByCategory.get(cat.id) || [];
+              if (items.length === 0) return null;
+              return (
+                <motion.section key={cat.id} layout>
+                  <h2 className="flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300 mb-3">
+                    {cat.color ? (
+                      <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
+                    ) : (
+                      <Tag className="w-3.5 h-3.5 text-red-500" />
+                    )}
+                    <span className="uppercase tracking-wider">{cat.name}</span>
+                    <span className="text-[10px] font-medium text-gray-400 ml-1">({items.length})</span>
+                  </h2>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {items.map(p => (
+                      <ProductCard
+                        key={p.id}
+                        product={p}
+                        cartQty={productQtyInCart(p.id)}
+                        onOpen={openProduct}
+                        onAdd={quickAdd}
+                        resolveStock={resolveStock}
+                      />
+                    ))}
+                  </div>
+                </motion.section>
+              );
+            })}
           </div>
         </AnimatePresence>
       )}
@@ -1033,6 +1111,7 @@ export default function CardapioModule() {
             onClose={() => setSelectedProduct(null)}
             onAddToCart={addPlain}
             cartQty={productQtyInCart(selectedProduct.id)}
+            resolveStock={resolveStock}
           />
         )}
       </AnimatePresence>

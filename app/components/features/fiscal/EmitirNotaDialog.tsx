@@ -687,6 +687,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
         type: 'nfce' as const,
         businessId: business.id,
         items: nfceItems.filter(i => i.description.trim()).map(item => ({
+          // productId reativa o enrichment fiscal server-side (CST/CSOSN/
+          // alíquotas/NCM do Product cadastrado). Sem ele, o cadastro fiscal do
+          // produto era letra morta — o emit caía só nos defaults do regime.
+          productId: item.productId || undefined,
           description: item.description,
           ncm: item.ncm || '00000000',
           cfop: item.cfop || '5102',
@@ -796,6 +800,10 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
         type: 'nfe' as const,
         businessId: business.id,
         items: nfeItems.filter(i => i.description.trim()).map(item => ({
+          // productId reativa o enrichment fiscal server-side (CST/CSOSN/
+          // alíquotas/NCM do Product cadastrado). Precedência item.X > product.X
+          // > default do regime é resolvida no emit route.
+          productId: item.productId || undefined,
           description: item.description,
           ncm: item.ncm || '00000000',
           cfop: item.cfop || '5102',

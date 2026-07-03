@@ -724,6 +724,10 @@ export default function PDVModule() {
         const prod = item.productId ? products.find(p => p.id === item.productId) : null;
         const discount = +((item.discount || 0) + saleDiscountShares[idx]).toFixed(2);
         return {
+          // productId reativa o enrichment fiscal server-side (CST/CSOSN/
+          // alíquotas/NCM cadastrados no Product). Sem ele o emit caía só nos
+          // defaults do regime, ignorando o perfil fiscal do produto.
+          productId: item.productId || undefined,
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -769,6 +773,11 @@ export default function PDVModule() {
       const nfcePayload = {
         type: 'nfce' as const,
         businessId: business.id,
+        // Vínculo com a venda: ancora a idempotência a `sale_${saleId}` (dedup
+        // por venda, não pela chave efêmera) e faz o emit gravar accessKey +
+        // documentId de volta em sales/{saleId}.
+        saleId,
+        sourceType: 'sale' as const,
         items: nfceItems,
         payments: fiscalPayments.filter(p => p.amount > 0),
         cpfConsumidor: cpf.replace(/\D/g, '') || undefined,

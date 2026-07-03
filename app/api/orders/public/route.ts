@@ -12,6 +12,7 @@ import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
 import { assertOrdersAcceptedNow, OrdersClosedError } from '@/lib/services/orders/acceptance';
 import { validateAndCleanModifiers, computeModifierDelta, round2 } from '@/lib/services/orders/pricing';
+import { resolveDeliveryZone } from '@/lib/services/orders/deliveryZones';
 import type {
   Business,
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
@@ -78,8 +79,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
+  // `deliveryFee` do payload é IGNORADO de propósito: a taxa é recomputada
+  // server-side contra a zona de entrega resolvida (não se confia no client).
   const { businessId, clientName, clientPhone, items, deliveryType, deliveryAddress,
-    deliveryFee, paymentMethod, changeFor, customerNotes } = body;
+    paymentMethod, changeFor, customerNotes } = body;
 
   if (!businessId || !clientName?.trim() || !items?.length || !deliveryType) {
     return NextResponse.json({ error: 'Campos obrigatórios ausentes' }, { status: 400 });
@@ -122,13 +125,14 @@ export async function POST(req: NextRequest) {
     if (!bizSnap.exists) {
       throw new PublicOrderError(404, 'Negócio não encontrado');
     }
+    const biz = bizSnap.data() as Business;
 
     // ── 1b. Guard de horário (COER-01) ───────────────────────────────────────
     // A regra de "aceita pedido fora do horário?" vivia só no prompt do agente;
     // um POST forjado aqui criava pedido com a loja FECHADA. Impomos server-side
     // ANTES de queimar número sequencial / debitar estoque. Reusa o MESMO
     // algoritmo (isBusinessOpenNow) do tool de status do agente.
-    assertOrdersAcceptedNow(bizSnap.data() as Business, new Date(now));
+    assertOrdersAcceptedNow(biz, new Date(now));
 
     // ── 2. Validate items + recompute prices server-side ─────────────────────
     const productIds = [...new Set(items.map(i => i.productId))];
@@ -238,8 +242,24 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 4. Compute totals server-side ────────────────────────────────────────
+    // Taxa de entrega AUTORITATIVA: resolvida contra as zonas configuradas
+    // (settings.aiAgent.deliveryZones) a partir do endereço — nunca do valor
+    // enviado pelo client (SOTA-05/COE). Sem zonas → cai na taxa plana
+    // (settings.aiAgent.pedidos.deliveryFee). Endereço fora de área → rejeita.
     const subtotal = round2(validatedItems.reduce((s, i) => s + i.total, 0));
-    const fee = deliveryType === 'entrega' ? round2(Math.max(0, deliveryFee ?? 0)) : 0;
+    let fee = 0;
+    if (deliveryType === 'entrega') {
+      const resolution = resolveDeliveryZone(biz.settings?.aiAgent?.deliveryZones, {
+        cep: deliveryAddress?.cep,
+        bairro: deliveryAddress?.bairro,
+      });
+      if (resolution.status === 'out-of-area') {
+        throw new PublicOrderError(400, 'Endereço fora da área de entrega desta loja.');
+      }
+      fee = resolution.status === 'matched'
+        ? round2(resolution.fee)
+        : round2(Math.max(0, biz.settings?.aiAgent?.pedidos?.deliveryFee ?? 0));
+    }
     const total = round2(subtotal + fee);
 
     // ── 4b. Pré-check de estoque (evita queimar número sequencial) ───────────
