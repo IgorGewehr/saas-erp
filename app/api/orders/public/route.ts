@@ -13,6 +13,8 @@ import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdenti
 import { assertOrdersAcceptedNow, OrdersClosedError } from '@/lib/services/orders/acceptance';
 import { validateAndCleanModifiers, computeModifierDelta, round2 } from '@/lib/services/orders/pricing';
 import { resolveDeliveryZone } from '@/lib/services/orders/deliveryZones';
+import { reserveCouponAdmin } from '@/lib/services/orders/couponRedeem';
+import { COUPON_REJECT_MESSAGE } from '@/lib/services/orders/coupons';
 import type {
   Business,
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
@@ -41,6 +43,7 @@ interface PublicOrderPayload {
   paymentMethod?: DeliveryOrderPaymentMethod;
   changeFor?: number;
   customerNotes?: string;
+  couponCode?: string;
 }
 
 const PRICE_TOLERANCE = 0.01;
@@ -82,7 +85,7 @@ export async function POST(req: NextRequest) {
   // `deliveryFee` do payload é IGNORADO de propósito: a taxa é recomputada
   // server-side contra a zona de entrega resolvida (não se confia no client).
   const { businessId, clientName, clientPhone, items, deliveryType, deliveryAddress,
-    paymentMethod, changeFor, customerNotes } = body;
+    paymentMethod, changeFor, customerNotes, couponCode } = body;
 
   if (!businessId || !clientName?.trim() || !items?.length || !deliveryType) {
     return NextResponse.json({ error: 'Campos obrigatórios ausentes' }, { status: 400 });
@@ -229,6 +232,9 @@ export async function POST(req: NextRequest) {
     // este caminho fazia match por phone exato (digitsOnly), criando uma
     // duplicata a cada pedido quando o número fora gravado em outra forma.
     let clientId: string | undefined;
+    // Primeiro pedido do cliente? (para cupons firstOrderOnly). Cliente sem
+    // telefone é sempre tratado como anônimo → primeiro pedido.
+    let isFirstOrder = true;
     if (clientPhone) {
       const phone = clientPhone.replace(/\D/g, '');
       if (phone.length < 8) {
@@ -245,9 +251,14 @@ export async function POST(req: NextRequest) {
       // preenche o nome só se ainda estiver vazio — não sobrescreve nome real.
       const clientRef = adminDb.collection('clients').doc(clientId!);
       const clientSnap = await clientRef.get();
+      // visitCount ANTES deste pedido: 0 ⇒ primeiro pedido (cliente novo ou sem
+      // compras). O INCREMENTO é adiado para DEPOIS da persistência do pedido
+      // (ver abaixo) — contar aqui envelheceria o cliente mesmo em pedido que
+      // falha adiante (estoque 409), invalidando cupom firstOrderOnly numa
+      // retentativa que é, de fato, a primeira compra concluída.
+      isFirstOrder = ((clientSnap.data()?.visitCount as number | undefined) ?? 0) === 0;
       await clientRef.update({
         name: clientSnap.data()?.name || clientName.trim(),
-        visitCount: FieldValue.increment(1),
         lastVisit: now,
         updatedAt: now,
       });
@@ -272,7 +283,11 @@ export async function POST(req: NextRequest) {
         ? round2(resolution.fee)
         : round2(Math.max(0, biz.settings?.aiAgent?.pedidos?.deliveryFee ?? 0));
     }
-    const total = round2(subtotal + fee);
+    // Cupom (aplicado abaixo, após o pre-check de estoque). `total` é computado
+    // só depois de resolver desconto/frete-grátis.
+    let discount = 0;
+    let couponId: string | undefined;
+    let appliedCouponCode: string | undefined;
 
     // ── 4b. Pré-check de estoque (evita queimar número sequencial) ───────────
     // Checa os itens guardados (simples + estoque definido) contra o productMap
@@ -287,6 +302,43 @@ export async function POST(req: NextRequest) {
         throw new PublicOrderError(409, `Sem estoque para: ${names}. Atualize o carrinho e tente novamente.`);
       }
     }
+
+    // ── 4c. Cupom (reserva ATÔMICA antes de queimar número/estoque) ──────────
+    // Reservado ANTES da alocação de número e da dedução de estoque: uma rejeição
+    // (400) ou falha de limite não deixa buraco na numeração nem toca o estoque.
+    // O resgate é idempotente pela chave do carrinho (X-Idempotency-Key) — retry
+    // do mesmo carrinho não re-consome. orderRef é pré-gerado só para ancorar o
+    // resgate/pedido; a persistência do pedido é o último passo (orderRef.set).
+    const orderRef = adminDb.collection('deliveryOrders').doc();
+    if (couponCode?.trim()) {
+      const reserve = await reserveCouponAdmin(adminDb, {
+        businessId,
+        code: couponCode,
+        redemptionKey: idempotencyKey || orderRef.id,
+        orderId: orderRef.id,
+        clientId,
+        channel: 'site',
+        ctx: {
+          subtotal,
+          deliveryFee: fee,
+          deliveryType,
+          now: new Date(now),
+          isFirstOrder,
+        },
+      });
+      if (!reserve.ok) {
+        const msg = reserve.reason === 'not_found'
+          ? 'Cupom inválido.'
+          : COUPON_REJECT_MESSAGE[reserve.reason];
+        throw new PublicOrderError(400, msg);
+      }
+      discount = reserve.discount;
+      if (reserve.freeDelivery) fee = reserve.finalFee; // frete grátis → 0
+      couponId = reserve.couponId;
+      appliedCouponCode = reserve.code;
+    }
+    // Total AUTORITATIVO: mercadoria + frete − desconto, nunca negativo.
+    const total = round2(Math.max(0, subtotal + fee - discount));
 
     // ── 5. Sequential order number (fonte ÚNICA, transaction-safe) ───────────
     const orderNumber = await allocateOrderNumberAdmin(adminDb, businessId);
@@ -352,6 +404,8 @@ export async function POST(req: NextRequest) {
       items: validatedItems,
       subtotal,
       deliveryFee: fee,
+      ...(discount > 0 ? { discount } : {}),
+      ...(couponId ? { couponId, couponCode: appliedCouponCode, couponDiscount: discount } : {}),
       total,
       deliveryType,
       deliveryAddress: deliveryType === 'entrega' ? deliveryAddress : undefined,
@@ -365,7 +419,16 @@ export async function POST(req: NextRequest) {
       updatedAt: now,
     };
 
-    const orderRef = await adminDb.collection('deliveryOrders').add(order);
+    await orderRef.set(order);
+
+    // ── 6b. Conta a visita só agora (pedido persistido) ──────────────────────
+    // Movido para depois do set: um pedido que falhe antes daqui NÃO envelhece o
+    // cliente (preserva isFirstOrder p/ cupons de 1ª compra numa retentativa).
+    if (clientId) {
+      await adminDb.collection('clients').doc(clientId)
+        .update({ visitCount: FieldValue.increment(1) })
+        .catch(() => {}); // best-effort: pedido já existe, não derruba por isso
+    }
 
     // ── 7. WhatsApp notification to business (best-effort) ───────────────────
     notifyBusiness(businessId, orderNumber, clientName.trim(), total, deliveryType, validatedItems).catch(() => {});

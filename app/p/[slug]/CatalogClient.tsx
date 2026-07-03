@@ -6,12 +6,13 @@ import {
   ShoppingCart, Plus, Minus, X, ChevronRight, MapPin, Phone,
   CreditCard, Wallet, Banknote, QrCode, Truck, Store,
   CheckCircle2, Clock, Star, Search, ArrowLeft, AlertCircle,
-  ChevronDown, Loader2, Package, Sparkles,
+  ChevronDown, Loader2, Package, Sparkles, Tag,
 } from 'lucide-react';
 import type {
   Business, Product, DeliveryOrderPaymentMethod, DeliveryType,
   MenuCategory, SelectedModifier,
 } from '@/lib/types';
+import type { CouponDiscountType } from '@/lib/contracts/domain/coupon';
 import { resolveDeliveryZone, type DeliveryZone } from '@/lib/services/orders/deliveryZones';
 import { isOutOfStock } from '@/lib/utils/menu-availability';
 import ProductDetailSheet from './ProductDetailSheet';
@@ -40,8 +41,18 @@ interface CreatedOrder {
   orderNumber: number;
   trackingToken: string;
   /** Total AUTORITATIVO recomputado server-side (subtotal + fee). Garante que o
-   *  valor exibido/cobrado == o persistido. Fallback pro cartTotal se ausente. */
+   *  valor exibido/cobrado == o persistido. Fallback pro previewTotal se ausente. */
   total?: number;
+}
+
+/** Cupom validado no preview (POST /api/coupons/validate). É só otimista: o
+ *  desconto AUTORITATIVO vem do server no POST /api/orders/public (reserva +
+ *  reconfirma limites/firstOrder). Aqui alimenta apenas o preview do total. */
+interface AppliedCoupon {
+  code: string;
+  discount: number;
+  freeDelivery: boolean;
+  discountType: CouponDiscountType;
 }
 
 /** Projeção PÚBLICA do business entregue ao cardápio anônimo. A page.tsx monta
@@ -228,6 +239,12 @@ export default function CatalogClient({ business, products, categories }: Props)
   const [createdOrder, setCreatedOrder] = useState<CreatedOrder | null>(null);
   const [pixData, setPixData] = useState<PixCharge | null>(null);
 
+  // ── Cupom de desconto (preview otimista) ─────────────────────────────────────
+  const [couponInput, setCouponInput] = useState('');
+  const [appliedCoupon, setAppliedCoupon] = useState<AppliedCoupon | null>(null);
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [couponError, setCouponError] = useState<string | null>(null);
+
   const { scrollY } = useScroll();
   const headerOpacity = useTransform(scrollY, [0, 120], [1, 0]);
   const headerScale = useTransform(scrollY, [0, 120], [1, 0.95]);
@@ -366,7 +383,124 @@ export default function CatalogClient({ business, products, categories }: Props)
   // ── Cart helpers ─────────────────────────────────────────────────────────────
   const cartCount = useMemo(() => cart.reduce((s, i) => s + i.quantity, 0), [cart]);
   const cartSubtotal = useMemo(() => cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0), [cart]);
-  const cartTotal = useMemo(() => cartSubtotal + (form.deliveryType === 'entrega' ? deliveryFee : 0), [cartSubtotal, deliveryFee, form.deliveryType]);
+
+  // ── Cupom: preview local do total ────────────────────────────────────────────
+  // Só feedback visual. O total AUTORITATIVO é o `createdOrder.total` devolvido
+  // pelo POST /api/orders/public (que reserva o cupom e reconfirma os limites).
+  const couponDiscount = appliedCoupon ? appliedCoupon.discount : 0;
+  const couponFreeDelivery = appliedCoupon?.freeDelivery === true;
+  const effectiveDeliveryFee = form.deliveryType === 'entrega'
+    ? (couponFreeDelivery ? 0 : deliveryFee)
+    : 0;
+  const previewTotal = Math.max(0, cartSubtotal + effectiveDeliveryFee - couponDiscount);
+
+  // Subtotal/modalidade mudou ⇒ o desconto avaliado pode não valer mais (mín. de
+  // pedido, appliesTo, frete grátis por tipo). Limpa e força reaplicar — o
+  // preview nunca mostra um desconto obsoleto. (Aplicar cupom não mexe nessas
+  // deps, então este effect não desfaz a própria aplicação.)
+  useEffect(() => {
+    setAppliedCoupon(null);
+    setCouponError(null);
+  }, [cartSubtotal, form.deliveryType]);
+
+  async function applyCoupon() {
+    const code = couponInput.trim();
+    if (!code || couponLoading) return;
+    setCouponLoading(true);
+    setCouponError(null);
+    try {
+      const res = await fetch('/api/coupons/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessId: business.id,
+          code,
+          subtotal: cartSubtotal,
+          deliveryFee: form.deliveryType === 'entrega' ? deliveryFee : 0,
+          deliveryType: form.deliveryType,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.valid) {
+        setAppliedCoupon({
+          code: data.code,
+          discount: typeof data.discount === 'number' ? data.discount : 0,
+          freeDelivery: data.freeDelivery === true,
+          discountType: data.discountType,
+        });
+        setCouponInput('');
+        setCouponError(null);
+      } else {
+        setAppliedCoupon(null);
+        setCouponError(data?.message || data?.error || 'Cupom inválido.');
+      }
+    } catch {
+      setCouponError('Não foi possível validar o cupom. Tente novamente.');
+    } finally {
+      setCouponLoading(false);
+    }
+  }
+
+  function removeCoupon() {
+    setAppliedCoupon(null);
+    setCouponError(null);
+    setCouponInput('');
+  }
+
+  // Bloco reutilizado no resumo do carrinho e na confirmação. Função (não
+  // constante JSX) p/ criar elementos frescos — os passos nunca coexistem no
+  // DOM (AnimatePresence mode="wait"), mas evita qualquer instância compartilhada.
+  function renderCouponBlock() {
+    return (
+      <div>
+        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+          Cupom de desconto
+        </label>
+        {appliedCoupon ? (
+          <div className="flex items-center justify-between gap-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl">
+            <div className="flex items-center gap-2 min-w-0">
+              <Tag className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-emerald-700 dark:text-emerald-400 truncate">{appliedCoupon.code}</p>
+                <p className="text-[11px] text-emerald-600/80 dark:text-emerald-400/80">
+                  {couponFreeDelivery ? 'Frete grátis' : `−${formatBRL(couponDiscount)}`}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={removeCoupon}
+              aria-label="Remover cupom"
+              className="p-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-800/40 transition-colors flex-shrink-0"
+            >
+              <X className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              value={couponInput}
+              onChange={e => setCouponInput(e.target.value.toUpperCase())}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); applyCoupon(); } }}
+              placeholder="Digite o cupom"
+              className="flex-1 px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight uppercase tracking-wide outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
+            />
+            <button
+              onClick={applyCoupon}
+              disabled={couponLoading || !couponInput.trim()}
+              className="px-4 py-2.5 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-xl font-bold text-sm disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 flex-shrink-0"
+            >
+              {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Aplicar'}
+            </button>
+          </div>
+        )}
+        {couponError && !appliedCoupon && (
+          <p className="mt-1.5 px-1 text-[11px] text-red-500 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {couponError}
+          </p>
+        )}
+      </div>
+    );
+  }
 
   const addSimpleToCart = useCallback((product: Product) => {
     setCart(prev => {
@@ -564,6 +698,9 @@ export default function CatalogClient({ business, products, categories }: Props)
         paymentMethod: recordedMethod,
         changeFor: !onlineMethod && form.paymentMethod === 'dinheiro' && form.changeFor ? parseFloat(form.changeFor) : undefined,
         customerNotes: form.notes || undefined,
+        // Server revalida e reserva (reserveCouponAdmin). Se rejeitar, 400 { error }
+        // → handleSubmit exibe e o cliente pode remover o cupom e reenviar.
+        couponCode: appliedCoupon ? appliedCoupon.code : undefined,
       }),
     });
 
@@ -1005,6 +1142,10 @@ export default function CatalogClient({ business, products, categories }: Props)
                         />
                       </div>
 
+                      <div className="mt-2">
+                        {renderCouponBlock()}
+                      </div>
+
                       <div className="bg-gray-50 dark:bg-gray-800/60 rounded-xl p-4 space-y-1.5 mt-2">
                         <div className="flex justify-between text-sm text-gray-500">
                           <span>Subtotal</span>
@@ -1013,12 +1154,18 @@ export default function CatalogClient({ business, products, categories }: Props)
                         {deliveryFee > 0 && form.deliveryType === 'entrega' && (
                           <div className="flex justify-between text-sm text-gray-500">
                             <span>Entrega</span>
-                            <span>{formatBRL(deliveryFee)}</span>
+                            <span className={couponFreeDelivery ? 'line-through' : undefined}>{formatBRL(deliveryFee)}</span>
+                          </div>
+                        )}
+                        {appliedCoupon && (couponDiscount > 0 || couponFreeDelivery) && (
+                          <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                            <span>Cupom {appliedCoupon.code}</span>
+                            <span>{couponFreeDelivery ? 'Frete grátis' : `−${formatBRL(couponDiscount)}`}</span>
                           </div>
                         )}
                         <div className="flex justify-between font-bold text-base pt-1.5 border-t border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white">
                           <span>Total</span>
-                          <span className="text-red-600 dark:text-red-400">{formatBRL(cartTotal)}</span>
+                          <span className="text-red-600 dark:text-red-400">{formatBRL(previewTotal)}</span>
                         </div>
                       </div>
 
@@ -1295,6 +1442,8 @@ export default function CatalogClient({ business, products, categories }: Props)
                         )}
                       </div>
 
+                      {renderCouponBlock()}
+
                       <div className="bg-gray-50 dark:bg-gray-800/60 rounded-xl p-4 space-y-1">
                         <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Resumo</p>
                         {cart.map(i => {
@@ -1315,12 +1464,18 @@ export default function CatalogClient({ business, products, categories }: Props)
                         })}
                         {deliveryFee > 0 && form.deliveryType === 'entrega' && (
                           <div className="flex justify-between text-sm text-gray-500 pt-1 border-t border-gray-200 dark:border-gray-700">
-                            <span>Entrega</span><span>{formatBRL(deliveryFee)}</span>
+                            <span>Entrega</span><span className={couponFreeDelivery ? 'line-through' : undefined}>{formatBRL(deliveryFee)}</span>
+                          </div>
+                        )}
+                        {appliedCoupon && (couponDiscount > 0 || couponFreeDelivery) && (
+                          <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                            <span>Cupom {appliedCoupon.code}</span>
+                            <span>{couponFreeDelivery ? 'Frete grátis' : `−${formatBRL(couponDiscount)}`}</span>
                           </div>
                         )}
                         <div className="flex justify-between font-black text-base pt-1.5 border-t border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white">
                           <span>Total</span>
-                          <span className="text-red-600 dark:text-red-400">{formatBRL(cartTotal)}</span>
+                          <span className="text-red-600 dark:text-red-400">{formatBRL(previewTotal)}</span>
                         </div>
                       </div>
 
@@ -1355,11 +1510,11 @@ export default function CatalogClient({ business, products, categories }: Props)
                         ) : ordersBlocked ? (
                           <>Loja fechada</>
                         ) : onlineMethod === 'pix' ? (
-                          <><QrCode className="w-4 h-4" /> Pagar com PIX · {formatBRL(cartTotal)}</>
+                          <><QrCode className="w-4 h-4" /> Pagar com PIX · {formatBRL(previewTotal)}</>
                         ) : onlineMethod === 'card' ? (
-                          <><CreditCard className="w-4 h-4" /> Pagar com cartão · {formatBRL(cartTotal)}</>
+                          <><CreditCard className="w-4 h-4" /> Pagar com cartão · {formatBRL(previewTotal)}</>
                         ) : (
-                          <>Confirmar Pedido · {formatBRL(cartTotal)}</>
+                          <>Confirmar Pedido · {formatBRL(previewTotal)}</>
                         )}
                       </button>
                     </motion.div>
@@ -1373,7 +1528,7 @@ export default function CatalogClient({ business, products, categories }: Props)
                         orderId={createdOrder.orderId}
                         trackingToken={createdOrder.trackingToken}
                         orderNumber={createdOrder.orderNumber}
-                        amount={createdOrder.total ?? cartTotal}
+                        amount={createdOrder.total ?? previewTotal}
                         pix={pixData}
                         businessName={businessName}
                         onConfirmed={clearIdempotencyKey}
@@ -1391,7 +1546,7 @@ export default function CatalogClient({ business, products, categories }: Props)
                         trackingToken={createdOrder.trackingToken}
                         orderNumber={createdOrder.orderNumber}
                         publicKey={mpPublicKey}
-                        amount={createdOrder.total ?? cartTotal}
+                        amount={createdOrder.total ?? previewTotal}
                         businessName={businessName}
                         onApproved={clearIdempotencyKey}
                         onBackToMenu={finishAndReset}
@@ -1438,7 +1593,7 @@ export default function CatalogClient({ business, products, categories }: Props)
                           <div>
                             <p className="text-xs text-gray-400">Pagamento</p>
                             <p className="text-sm font-semibold text-gray-900 dark:text-white">
-                              {paymentOptions.find(p => p.value === form.paymentMethod)?.label} · {formatBRL(cartTotal)}
+                              {paymentOptions.find(p => p.value === form.paymentMethod)?.label} · {formatBRL(createdOrder?.total ?? previewTotal)}
                             </p>
                           </div>
                         </div>

@@ -1891,6 +1891,15 @@ export default function OrdersModule() {
   async function autoEmitNfceIfEnabled(order: Order) {
     if (!business?.fiscal?.nfceConfig?.autoEmit) return;
     if (order.fiscalDocumentId) return;
+    // Fiscal: a NFC-e é montada sobre a MERCADORIA cheia (soma dos itens); o
+    // desconto de cupom ainda não é modelado como vDesc. Auto-emitir um pedido
+    // com cupom sobredeclararia a base tributária — então pulamos a auto-emissão
+    // e deixamos o operador emitir manualmente (ciente do valor). Follow-up:
+    // modelar couponDiscount como vDesc no /api/fiscal/emit.
+    if ((order.couponDiscount ?? order.discount ?? 0) > 0) {
+      console.info('[Orders] auto-emit NFC-e pulada: pedido com desconto de cupom (emitir manual).');
+      return;
+    }
     try {
       const { getAuth } = await import('firebase/auth');
       const token = await getAuth().currentUser?.getIdToken();

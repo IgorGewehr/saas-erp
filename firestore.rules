@@ -1662,6 +1662,28 @@ service cloud.firestore {
     }
 
     // ============================================
+    // COUPONS COLLECTION (motor de cupom / conversão)
+    // ============================================
+    // Cupons são configuração de marketing — manager+ cria/edita (espelha
+    // giftCards). O checkout público valida/reserva via Admin SDK (bypassa rules);
+    // aqui é o CRUD do lojista. O incremento REAL de consumo (usedCount) vem do
+    // servidor na transação de reserva; edições de membro são do cadastro do cupom.
+    match /coupons/{couponId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // couponRedemptions: LEDGER de resgates, escrito SÓ pelo Admin SDK na
+    // transação de reserva (reserveCouponAdmin). Cliente jamais cria/edita/apaga —
+    // protege o contador de uso contra fraude. Operator+ lê para relatório.
+    match /couponRedemptions/{redemptionId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create, update, delete: if false;
+    }
+
+    // ============================================
     // RECONCILIATION RULES (regras de auto-categorização bancária)
     // ============================================
     match /reconciliationRules/{ruleId} {

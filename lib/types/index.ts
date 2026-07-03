@@ -1832,6 +1832,11 @@ export interface DeliveryOrder {
   subtotal: number;
   deliveryFee?: number;
   discount?: number;
+  /** Cupom aplicado (motor de cupom). `couponDiscount` é a parcela de desconto
+   *  atribuída ao cupom — subconjunto de `discount`, para auditoria/relatório. */
+  couponId?: string;
+  couponCode?: string;
+  couponDiscount?: number;
   total: number;
 
   deliveryType: DeliveryType;

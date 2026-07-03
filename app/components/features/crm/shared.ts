@@ -254,7 +254,7 @@ export function formatDaysSince(isoStr?: string): string {
 // 'atividades' foi removida — log de interações agora vive dentro do
 // LeadDetailPanel. Coleção `crmActivities` + tipo `CRMActivityType` mantidos
 // no schema pra retrocompat com docs antigos.
-export type CRMTab = 'kanban' | 'campanhas' | 'segmentos' | 'metricas' | 'automacoes' | 'sequencias' | 'formularios' | 'planos';
+export type CRMTab = 'kanban' | 'campanhas' | 'segmentos' | 'metricas' | 'automacoes' | 'sequencias' | 'formularios' | 'planos' | 'cupons';
 
 // Helpers
 export function relativeTime(isoStr?: string): string {
