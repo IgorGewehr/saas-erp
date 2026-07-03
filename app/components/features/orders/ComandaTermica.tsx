@@ -200,7 +200,7 @@ function esc(s: string): string {
     .replace(/>/g, '&gt;');
 }
 
-function buildComandaHTML(order: DeliveryOrder, businessName: string): string {
+function buildComandaHTML(order: DeliveryOrder, businessName: string, paperWidth: 58 | 80 = 80): string {
   const isEntrega = order.deliveryType === 'entrega';
   const addr = addressLines(order);
 
@@ -234,7 +234,12 @@ function buildComandaHTML(order: DeliveryOrder, businessName: string): string {
     rows.push(row('Subtotal', formatCurrency(order.subtotal)));
   }
   if (order.deliveryFee) rows.push(row('Taxa entrega', formatCurrency(order.deliveryFee)));
-  if (order.discount) rows.push(row('Desconto', `-${formatCurrency(order.discount)}`));
+  if (order.couponDiscount) {
+    rows.push(row(`Cupom ${order.couponCode ?? ''}`.trim(), `-${formatCurrency(order.couponDiscount)}`));
+  } else if (order.discount) {
+    rows.push(row('Desconto', `-${formatCurrency(order.discount)}`));
+  }
+  if (order.giftCardAmount) rows.push(row('Gift card', `-${formatCurrency(order.giftCardAmount)}`));
   rows.push(
     `<div class="line b big"><span>TOTAL</span><span>${esc(
       formatCurrency(order.total),
@@ -257,11 +262,11 @@ function buildComandaHTML(order: DeliveryOrder, businessName: string): string {
 
   return `<!doctype html><html><head><meta charset="utf-8"><title>Comanda #${order.number}</title>
 <style>
-  @page { size: 80mm auto; margin: 0; }
+  @page { size: ${paperWidth}mm auto; margin: 0; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: #fff; }
   body {
-    width: 80mm; padding: 4mm;
+    width: ${paperWidth}mm; padding: ${paperWidth === 58 ? '2mm' : '4mm'};
     font-family: 'Courier New', ui-monospace, monospace;
     font-size: 11px; line-height: 1.25; color: #000;
   }
@@ -292,7 +297,7 @@ function buildComandaHTML(order: DeliveryOrder, businessName: string): string {
  * escreve o HTML auto-contido, chama print() e remove tudo depois —
  * não altera nada da tela atual.
  */
-export function printComanda(order: DeliveryOrder, businessName: string): void {
+export function printComanda(order: DeliveryOrder, businessName: string, paperWidth: 58 | 80 = 80): void {
   if (typeof window === 'undefined') return;
 
   const iframe = document.createElement('iframe');
@@ -317,7 +322,7 @@ export function printComanda(order: DeliveryOrder, businessName: string): void {
   }
 
   doc.open();
-  doc.write(buildComandaHTML(order, businessName));
+  doc.write(buildComandaHTML(order, businessName, paperWidth));
   doc.close();
 
   const trigger = () => {

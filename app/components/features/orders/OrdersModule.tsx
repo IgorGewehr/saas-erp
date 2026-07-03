@@ -36,7 +36,8 @@ import type {
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
 import { useNewOrderAlert } from '@/lib/hooks/useNewOrderAlert';
-import { printComanda } from './ComandaTermica';
+import { printOrder } from '@/lib/services/printing/printOrder';
+import PrinterSetupDialog from './PrinterSetupDialog';
 import EmitirNotaDialog from '@/app/components/features/fiscal/EmitirNotaDialog';
 import { buildDeliveryOrderNfceInput } from '@/lib/services/fiscal/deliveryOrderNfce';
 
@@ -1314,6 +1315,7 @@ export default function OrdersModule() {
 
   const [viewMode, setViewMode] = useState<ViewMode>('board');
   const [search, setSearch] = useState('');
+  const [printerSetupOpen, setPrinterSetupOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
@@ -1955,8 +1957,8 @@ export default function OrdersModule() {
   // valida a FSM e faz a baixa de estoque). Opcionalmente imprime a comanda.
   const handleAccept = useCallback(async (order: Order) => {
     await handleStatusChange(order, 'preparando');
-    if (autoPrintOnAccept) printComanda(order, businessName);
-  }, [handleStatusChange, autoPrintOnAccept, businessName]);
+    if (autoPrintOnAccept) void printOrder(order, businessName, business?.id || '');
+  }, [handleStatusChange, autoPrintOnAccept, businessName, business?.id]);
 
   // Recusa do pedido novo: recebido→cancelado com motivo. Reusa o MESMO caminho
   // de cancelamento (restoreOrderStockOnce restaura estoque idempotente).
@@ -2083,6 +2085,13 @@ export default function OrdersModule() {
               </button>
             </div>
             <button
+              onClick={() => setPrinterSetupOpen(true)}
+              title="Configurar impressora"
+              className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-gray-100 dark:bg-gray-800/60 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+            >
+              <Printer className="w-4 h-4" />
+            </button>
+            <button
               onClick={() => { setEditingOrder(null); setFormOpen(true); }}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold shadow-sm shadow-red-600/20"
             >
@@ -2126,7 +2135,7 @@ export default function OrdersModule() {
               orders={newOrders}
               onAccept={handleAccept}
               onReject={handleReject}
-              onPrint={(o) => printComanda(o, businessName)}
+              onPrint={(o) => { void printOrder(o, businessName, business?.id || '').then(r => { if (r.method === 'webusb') toast.success('Comanda enviada à impressora'); }); }}
               onOpen={setSelectedOrder}
               soundOn={soundOn}
               toggleSound={toggleSound}
@@ -2237,6 +2246,13 @@ export default function OrdersModule() {
         products={products}
         isEditing={!!editingOrder}
         lockPayment={editingOrder?.paymentProvider === 'mercadopago'}
+      />
+
+      <PrinterSetupDialog
+        open={printerSetupOpen}
+        onClose={() => setPrinterSetupOpen(false)}
+        businessId={business?.id || ''}
+        businessName={businessName}
       />
 
       {/* Detail drawer */}
