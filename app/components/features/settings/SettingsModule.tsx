@@ -3966,6 +3966,7 @@ function AgenteTab() {
   const [tone, setTone] = useState<'formal' | 'casual' | 'friendly'>(current?.tone || 'friendly');
   const [segment, setSegment] = useState<BusinessSegment>(current?.segment || 'generico');
   const [businessDescription, setBusinessDescription] = useState<string>(current?.businessDescription || '');
+  const [instructions, setInstructions] = useState<string>(current?.instructions || '');
 
   // Pedidos-specific
   const [acceptingOrders, setAcceptingOrders] = useState<boolean>(current?.pedidos?.acceptingOrders ?? true);
@@ -3989,6 +3990,14 @@ function AgenteTab() {
   const [approvedTemplates, setApprovedTemplates] = useState<ApprovedTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
+
+  // Reengajamento proativo (cliente some no meio da conversa)
+  const [reengageEnabled, setReengageEnabled] = useState<boolean>(current?.reengagement?.enabled ?? false);
+  const [reengageDelayHours, setReengageDelayHours] = useState<number>(current?.reengagement?.delayHours ?? 3);
+  const [reengageMaxAttempts, setReengageMaxAttempts] = useState<number>(current?.reengagement?.maxAttempts ?? 2);
+  const [reengageIntervalHours, setReengageIntervalHours] = useState<number>(current?.reengagement?.intervalHours ?? 20);
+  const [reengageQuietStart, setReengageQuietStart] = useState<number>(current?.reengagement?.quietStart ?? 8);
+  const [reengageQuietEnd, setReengageQuietEnd] = useState<number>(current?.reengagement?.quietEnd ?? 21);
 
   // Operator-specific (dashboard chat)
   const [autonomousMode, setAutonomousMode] = useState<boolean>(current?.operator?.autonomousMode ?? false);
@@ -4017,6 +4026,7 @@ function AgenteTab() {
     setTone(current?.tone || 'friendly');
     setSegment(current?.segment || 'generico');
     setBusinessDescription(current?.businessDescription || '');
+    setInstructions(current?.instructions || '');
     setAcceptingOrders(current?.pedidos?.acceptingOrders ?? true);
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
@@ -4026,6 +4036,12 @@ function AgenteTab() {
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
     setFollowUpAfter(current?.agenda?.followUpAfter ?? false);
+    setReengageEnabled(current?.reengagement?.enabled ?? false);
+    setReengageDelayHours(current?.reengagement?.delayHours ?? 3);
+    setReengageMaxAttempts(current?.reengagement?.maxAttempts ?? 2);
+    setReengageIntervalHours(current?.reengagement?.intervalHours ?? 20);
+    setReengageQuietStart(current?.reengagement?.quietStart ?? 8);
+    setReengageQuietEnd(current?.reengagement?.quietEnd ?? 21);
     setReminderTemplate(current?.agenda?.reminderTemplate ?? null);
     setConfirmationTemplate(current?.agenda?.confirmationTemplate ?? null);
     setFollowUpTemplate(current?.agenda?.followUpTemplate ?? null);
@@ -4110,6 +4126,16 @@ function AgenteTab() {
           }
         : (current?.agenda ?? null);
 
+      const reengagement = {
+        ...current?.reengagement,
+        enabled: reengageEnabled,
+        delayHours: reengageDelayHours,
+        maxAttempts: reengageMaxAttempts,
+        intervalHours: reengageIntervalHours,
+        quietStart: reengageQuietStart,
+        quietEnd: reengageQuietEnd,
+      };
+
       // Wave 7 — parse dynamic fields
       const holidays = holidaysStr.split(',').map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
       const validPayments = ['dinheiro', 'pix', 'credito', 'debito', 'boleto', 'pontos', 'gift_card', 'voucher', 'outros'];
@@ -4152,8 +4178,10 @@ function AgenteTab() {
           tone,
           segment,
           businessDescription: businessDescription.trim() || null,
+          instructions: instructions.trim() || null,
           pedidos,
           agenda,
+          reengagement,
           operator: {
             ...current?.operator,
             autonomousMode,
@@ -4395,6 +4423,50 @@ function AgenteTab() {
           transition={{ duration: 0.25 }}
           className="space-y-6"
         >
+          {/* Reengajamento proativo — retoma quando o cliente some no meio da conversa */}
+          <SectionCard title="Reengajamento proativo" icon={Bell}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Retomar quando o cliente some
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Se a IA responde e o cliente para de responder, ela reabre a conversa de forma
+                  natural após um tempo. Aplica a tag <strong>&quot;para prosseguir&quot;</strong> ao
+                  tentar e <strong>&quot;falhou contato&quot;</strong> ao esgotar. Respeita a janela de
+                  24h do WhatsApp (fora dela, só funciona no WhatsApp Web/Baileys).
+                </p>
+              </div>
+              <AgenteToggleSwitch checked={reengageEnabled} onChange={setReengageEnabled} />
+            </div>
+            {reengageEnabled && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+                {[
+                  { label: 'Silêncio antes (h)', value: reengageDelayHours, set: setReengageDelayHours, min: 1, max: 96 },
+                  { label: 'Máx. tentativas', value: reengageMaxAttempts, set: setReengageMaxAttempts, min: 1, max: 5 },
+                  { label: 'Intervalo (h)', value: reengageIntervalHours, set: setReengageIntervalHours, min: 1, max: 240 },
+                  { label: 'Não enviar antes das (h)', value: reengageQuietStart, set: setReengageQuietStart, min: 0, max: 23 },
+                  { label: 'Não enviar após as (h)', value: reengageQuietEnd, set: setReengageQuietEnd, min: 1, max: 24 },
+                ].map((f) => (
+                  <label key={f.label} className="flex flex-col gap-1">
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400">{f.label}</span>
+                    <input
+                      type="number"
+                      min={f.min}
+                      max={f.max}
+                      value={f.value}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        f.set(Number.isNaN(n) ? f.min : Math.min(Math.max(n, f.min), f.max));
+                      }}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
           {/* Tom */}
           <SectionCard title="Tom de voz" icon={MessageCircle}>
             <div className="flex gap-2 flex-wrap">
@@ -4502,6 +4574,30 @@ function AgenteTab() {
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
             />
             <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/2000</p>
+          </SectionCard>
+
+          {/* Instruções / regras de comportamento do agente */}
+          <SectionCard title="Instruções do agente" icon={Sparkles}>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Regras de <strong>como</strong> o agente deve atender: tom, o que dizer e o que
+              nunca fazer, ordem do atendimento, quando oferecer preços. Diferente do contexto
+              acima, estas instruções entram no prompt como <strong>regras vinculantes</strong> —
+              o agente obedece à risca (só as regras de segurança da plataforma têm prioridade).
+            </p>
+            <p className="text-[11px] text-amber-600 dark:text-amber-400 mb-2">
+              Não coloque a grade de horários aqui — configure os horários de cada modalidade na
+              Agenda (serviços). O agente confere disponibilidade real por lá, não por texto.
+            </p>
+            <textarea
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value.slice(0, 4000))}
+              rows={8}
+              placeholder={
+                'Ex.:\n1. Se o cliente só cumprimentar, responda "Olá! Como posso ajudar?" e aguarde. Nunca despeje informação.\n2. Responda curto e só o que foi perguntado. Não liste a grade inteira — pergunte qual modalidade interessa.\n3. Só fale de preços/planos se perguntarem explicitamente.\n4. Para agendar, confira disponibilidade real pela agenda antes de confirmar.'
+              }
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
+            />
+            <p className="text-[10px] text-gray-400 mt-1 text-right">{instructions.length}/4000</p>
           </SectionCard>
 
           {/* Automações de pedidos (modo pedidos) */}

@@ -34,7 +34,7 @@ import time
 import uuid
 from typing import Annotated
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -42,6 +42,7 @@ from ..config import get_settings
 from ..logging_config import get_logger
 from ..observability import build_run_config
 from ..schemas import ProcessRequest
+from . import prompts
 from .nodes import (
     executor_node,
     executor_routes_to,
@@ -170,7 +171,14 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
         elif role == "assistant":
             from langchain_core.messages import AIMessage
             initial_messages.append(AIMessage(content=content))
-    initial_messages.append(HumanMessage(content=req.message))
+    if req.trigger == "reengagement":
+        # No fresh customer turn — the scheduler nudged us because the customer
+        # went quiet. Append a system directive that tells the planner to resume
+        # proactively; the history above carries the context of where we stopped.
+        _ctx = req.reengagement_context or {}
+        initial_messages.append(SystemMessage(content=prompts.reengagement_directive(_ctx.get("hours_silent"))))
+    else:
+        initial_messages.append(HumanMessage(content=req.message))
 
     state: AgentState = {
         "run_id": run_id,
@@ -181,6 +189,8 @@ async def run_agent(*, run_id: str, business_id: str, req: ProcessRequest) -> Ag
         "business_context": {
             "name": req.business_name,
             "description": req.business_description,
+            # Owner-authored binding rules → rendered as <tenant_instructions>.
+            "instructions": req.agent_instructions or "",
             "tone": req.tone,
             "model": model,
             # Vertical/segment — drives vocabulary + few-shot selection in prompts.

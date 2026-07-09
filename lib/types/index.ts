@@ -639,8 +639,18 @@ export const SEGMENT_VOCAB: Record<BusinessSegment, SegmentVocabulary> = {
 
 export interface AiAgentSettings {
   enabled: boolean;
-  /** Contexto de negócio inserido no prompt do agente */
+  /** Contexto de negócio inserido no prompt do agente (identidade + conhecimento).
+   *  NÃO é o lugar para regras de comportamento nem para a grade de horários — use
+   *  `instructions` (regras) e a Agenda estruturada (`Service.sessions`) para isso. */
   businessDescription?: string;
+  /**
+   * Regras de comportamento do agente definidas pelo dono do negócio.
+   * Ao contrário de `businessDescription` (mero contexto), estas instruções entram
+   * no prompt como REGRAS VINCULANTES (bloco <tenant_instructions>), logo abaixo da
+   * constituição de segurança da plataforma — o agente deve segui-las à risca, e só
+   * a constituição as sobrepõe. É o "system prompt" editável do tenant.
+   */
+  instructions?: string;
   tone?: 'formal' | 'casual' | 'friendly';
   /** Ramo/vertical — ajusta vocabulário, exemplos e persona do /agent.
    *  Ausente → tratado como `generico` pelo agente (fallback neutro). */
@@ -687,6 +697,31 @@ export interface AiAgentSettings {
     reminderTemplate?: { name: string; language: string };
     confirmationTemplate?: { name: string; language: string };
     followUpTemplate?: { name: string; language: string };
+  };
+
+  /**
+   * === Reengajamento proativo ===
+   * Quando o cliente para de responder no MEIO da conversa (estado 'waiting'),
+   * o agente reabre o contato de forma contextual após um período. Opt-in.
+   * Respeita a janela de 24h da Meta: fora dela (Cloud API) o nudge é pulado;
+   * no Baileys sempre pode. Ver dispatchReengagementToAgent + o sweep no cron.
+   */
+  reengagement?: {
+    /** Liga/desliga. Ausente = desligado. */
+    enabled?: boolean;
+    /** Horas de silêncio (desde a nossa última mensagem) antes do 1º nudge. Padrão 3. */
+    delayHours?: number;
+    /** Máximo de nudges por "sumiço". Padrão 2. */
+    maxAttempts?: number;
+    /** Horas entre nudges subsequentes. Padrão 20. */
+    intervalHours?: number;
+    /** Só envia dentro desta janela local (hora 0–23). Padrão 8–21. */
+    quietStart?: number;
+    quietEnd?: number;
+    /** Tag aplicada ao INICIAR o reengajamento. Padrão 'para prosseguir'. */
+    activeTag?: string;
+    /** Tag aplicada ao ESGOTAR as tentativas sem resposta. Padrão 'falhou contato'. */
+    exhaustedTag?: string;
   };
 
   /** === Modo: operador (dashboard chat) === */
@@ -2633,6 +2668,18 @@ export interface Conversation {
    * a Cloud exige mensagem template, senão aceita texto livre.
    */
   lastInboundFromContactAt?: string;
+  /**
+   * === Reengajamento proativo (idempotência) ===
+   * Nudges já disparados neste "sumiço" do cliente. Zerado (na prática) quando
+   * o cliente responde de novo — o sweep compara lastInboundFromContactAt com
+   * lastReengageAt: se a última inbound é mais nova que o último nudge, começa
+   * um ciclo novo. Ver processStalledConversations no cron.
+   */
+  reengageAttempts?: number;
+  /** ISO — quando o último nudge de reengajamento foi disparado. */
+  lastReengageAt?: string;
+  /** ISO — quando o reengajamento foi encerrado (tentativas esgotadas sem resposta). */
+  reengageExhaustedAt?: string;
   /**
    * Quantas vezes esta conversa transitou de resolved → open. Métrica chave:
    * conv reaberta = problema mal resolvido. Setado quando o operador (ou

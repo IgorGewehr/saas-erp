@@ -19,10 +19,19 @@ class ProcessRequest(BaseModel):
     recipient_id: str  # Meta user id or phone for outbound send
     # Prior messages to ground the model (most recent last), optional
     history: list[dict[str, Any]] = Field(default_factory=list)
+    # What kicked off this run. "inbound" = the customer sent a message (default).
+    # "reengagement" = proactive nudge fired by the scheduler because the customer
+    # went silent mid-conversation — no fresh customer turn; the agent should
+    # resume the thread naturally. See reengagement_context for details.
+    trigger: Literal["inbound", "reengagement"] = "inbound"
+    reengagement_context: dict[str, Any] | None = None  # {hours_silent, attempt}
     # Business-level config — passed by the webhook so we don't re-fetch
     use_case: Literal["pedidos", "servicos", "simples", "operator", "analyst"] = "servicos"
     business_name: str | None = None
     business_description: str | None = None
+    # Owner-authored behavior rules. Injected into the prompt as a binding
+    # <tenant_instructions> block (subordinate only to the safety constitution).
+    agent_instructions: str | None = None
     tone: Literal["formal", "casual", "friendly"] = "friendly"
     # Business vertical — adjusts vocabulary, examples and persona of the agent.
     # Absent → treated as "generico". Wire field is snake_case (see business_context).

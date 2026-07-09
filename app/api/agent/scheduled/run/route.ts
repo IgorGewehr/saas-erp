@@ -25,6 +25,8 @@ import { sendFinancialNotifications } from '@/app/api/financial/notify/service';
 import { isOutsideMetaWindow } from '@/lib/utils/metaWindow';
 import { logPipelineFailure } from '@/lib/services/pipelineFailures';
 import { sendBaileysBroadcastMessage, getConnectedSession } from '@/app/api/whatsapp/baileys-manager';
+import { dispatchReengagementToAgent } from '@/lib/agent/dispatch';
+import { FieldValue } from 'firebase-admin/firestore';
 import type { Appointment, Business, Conversation } from '@/lib/types';
 
 type ReminderKind = 'reminder' | 'confirmation' | 'followup';
@@ -77,6 +79,8 @@ interface RunStats {
   followUpsSent: number;
   businessesProcessed: number;
   financialNotifsSent: number;
+  reengagementsSent: number;
+  reengagementsExhausted: number;
   errors: Array<{ appointmentId: string; phase: string; error: string }>;
 }
 
@@ -105,6 +109,8 @@ async function runSweep(req: NextRequest): Promise<NextResponse> {
     followUpsSent: 0,
     businessesProcessed: 0,
     financialNotifsSent: 0,
+    reengagementsSent: 0,
+    reengagementsExhausted: 0,
     errors: [],
   };
 
@@ -127,6 +133,13 @@ async function runSweep(req: NextRequest): Promise<NextResponse> {
 
     for (const business of targets) {
       await processBusiness(business, stats);
+      // Reengajamento proativo — conversas em que a IA falou por último e o
+      // cliente sumiu. Roda pra cron e trigger por-tenant (dono pode disparar).
+      try {
+        await processStalledConversations(business, stats);
+      } catch (err) {
+        console.warn('[scheduled] reengagement sweep failed:', err);
+      }
       stats.businessesProcessed++;
     }
 
@@ -251,6 +264,134 @@ async function checkKanbanDueDates(): Promise<number> {
   }
 
   return count;
+}
+
+// ─── Reengajamento proativo — cliente sumiu no meio da conversa ─────────────
+//
+// Varre conversas WhatsApp em que a IA falou por último e o cliente parou de
+// responder. Após `delayHours` de silêncio, reaciona o agente (contextual) e
+// aplica a tag `activeTag`. Repete até `maxAttempts`; ao esgotar, aplica
+// `exhaustedTag` e para. Idempotência via reengageAttempts/lastReengageAt no
+// doc da conversa. Respeita snooze, horário silencioso e a janela 24h da Meta.
+
+const REENGAGE_MAX_STALE_HOURS = 96; // não reengaja conversas mais velhas que isto
+
+function mergeTag(existing: string[] | undefined, tag: string): string[] {
+  const cur = Array.isArray(existing) ? existing : [];
+  return cur.includes(tag) ? cur : [...cur, tag];
+}
+
+async function tagLinkedClient(conv: Conversation, tag: string, nowIso: string): Promise<void> {
+  const clientId = conv.crmContactId;
+  if (!clientId || !tag) return;
+  try {
+    const ref = adminDb.collection('clients').doc(clientId);
+    const snap = await ref.get();
+    if (!snap.exists) return;
+    const tags = (snap.data()?.tags as string[]) || [];
+    if (!tags.includes(tag)) await ref.update({ tags: [...tags, tag], updatedAt: nowIso });
+  } catch { /* non-fatal */ }
+}
+
+async function processStalledConversations(
+  business: Business & { id: string },
+  stats: RunStats,
+): Promise<void> {
+  const cfg = business.settings?.aiAgent?.reengagement;
+  if (!cfg?.enabled) return;
+  if (!business.settings?.aiAgent?.enabled) return; // reengajamento exige agente ligado
+
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+  const now = Date.now();
+  const nowIso = new Date().toISOString();
+  const delayHours = clamp(Math.round(cfg.delayHours ?? 3), 1, REENGAGE_MAX_STALE_HOURS);
+  const maxAttempts = clamp(Math.round(cfg.maxAttempts ?? 2), 1, 5);
+  const intervalHours = clamp(Math.round(cfg.intervalHours ?? 20), 1, 240);
+  const quietStart = clamp(Math.round(cfg.quietStart ?? 8), 0, 23);
+  const quietEnd = clamp(Math.round(cfg.quietEnd ?? 21), 1, 24);
+  const activeTag = (cfg.activeTag || 'para prosseguir').trim();
+  const exhaustedTag = (cfg.exhaustedTag || 'falhou contato').trim();
+
+  // Horário silencioso no fuso do negócio (default SP, como no resto do agente).
+  let localHour: number;
+  try {
+    localHour = parseInt(new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false, hourCycle: 'h23',
+    }).format(new Date()), 10);
+  } catch {
+    localHour = new Date().getHours();
+  }
+  if (localHour < quietStart || localHour >= quietEnd) return;
+
+  const cutoffIso = new Date(now - REENGAGE_MAX_STALE_HOURS * 3600_000).toISOString();
+  const snap = await adminDb.collection('conversations')
+    .where('businessId', '==', business.id)
+    .where('channel', '==', 'whatsapp')
+    .where('lastMessageAt', '>=', cutoffIso)
+    .orderBy('lastMessageAt', 'desc')
+    .limit(400)
+    .get();
+
+  for (const doc of snap.docs) {
+    const conv = { ...(doc.data() as Conversation), id: doc.id };
+
+    if (conv.aiEnabled === false) continue;                 // operador desligou a IA nessa conversa
+    if (conv.status === 'resolved') continue;               // encerrada
+    if (conv.lastMessageDirection !== 'outbound') continue; // cliente falou por último → devemos resposta, não é sumiço dele
+    if (!conv.contactExternalId) continue;                  // sem destino
+    if (conv.snoozedUntil && conv.snoozedUntil > nowIso) continue; // em soneca
+
+    const lastMsgAt = conv.lastMessageAt ? Date.parse(conv.lastMessageAt) : 0;
+    if (!lastMsgAt || Number.isNaN(lastMsgAt)) continue;
+
+    // Reset: se o cliente respondeu DEPOIS do último nudge, começa um ciclo novo.
+    const lastReengageMs = conv.lastReengageAt ? Date.parse(conv.lastReengageAt) : 0;
+    const lastInboundMs = conv.lastInboundFromContactAt ? Date.parse(conv.lastInboundFromContactAt) : 0;
+    const repliedSinceNudge = lastReengageMs > 0 && lastInboundMs > lastReengageMs;
+    const priorAttempts = repliedSinceNudge ? 0 : (conv.reengageAttempts ?? 0);
+
+    // Tentativas esgotadas → aplica tag de falha UMA vez e para.
+    if (priorAttempts >= maxAttempts) {
+      if (!conv.reengageExhaustedAt) {
+        await doc.ref.update({ reengageExhaustedAt: nowIso, tags: mergeTag(conv.tags, exhaustedTag), updatedAt: nowIso });
+        await tagLinkedClient(conv, exhaustedTag, nowIso);
+        stats.reengagementsExhausted++;
+      }
+      continue;
+    }
+
+    // Gate de tempo: 1º nudge após delayHours de silêncio; próximos a cada intervalHours.
+    if (priorAttempts === 0) {
+      if (now - lastMsgAt < delayHours * 3600_000) continue;
+    } else if (now - lastReengageMs < intervalHours * 3600_000) {
+      continue;
+    }
+
+    // Janela 24h da Meta: texto livre só dentro dela (Baileys não tem janela).
+    const isBaileys = conv.connectedVia === 'baileys' || conv.channelOwnerType === 'user';
+    if (!isBaileys && isOutsideMetaWindow(conv.lastInboundFromContactAt)) continue;
+
+    const attempt = priorAttempts + 1;
+    const hoursSilent = Math.max(1, Math.round((now - lastMsgAt) / 3600_000));
+    const dispatched = await dispatchReengagementToAgent(adminDb, {
+      businessId: business.id,
+      conversationId: conv.id,
+      hoursSilent,
+      attempt,
+    });
+    if (!dispatched) continue;
+
+    const update: Record<string, unknown> = {
+      reengageAttempts: attempt,
+      lastReengageAt: nowIso,
+      updatedAt: nowIso,
+    };
+    if (repliedSinceNudge) update.reengageExhaustedAt = FieldValue.delete();
+    if (attempt === 1) update.tags = mergeTag(conv.tags, activeTag);
+    await doc.ref.update(update);
+    if (attempt === 1) await tagLinkedClient(conv, activeTag, nowIso);
+    stats.reengagementsSent++;
+  }
 }
 
 // ─── Per-business sweep ──────────────────────────────────────────────────────

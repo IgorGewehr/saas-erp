@@ -1090,6 +1090,22 @@ SERVICES_MGMT_TOOLS: list[dict[str, Any]] = [
     ),
     _simple_tool("services_update", "Patch a service.", required=["id", "patch"], id={"type": "string"}, patch={"type": "object"}),
     _simple_tool("services_set_active", "Toggle isActive.", required=["id", "isActive"], id={"type": "string"}, isActive={"type": "boolean"}),
+    _simple_tool(
+        "services_import_grade",
+        (
+            "Importa uma grade de horários em TEXTO (ex: a descrição do negócio, onde o dono "
+            "costuma colar os horários das aulas/turmas) para a Agenda — cria/atualiza serviços "
+            "com a grade semanal ESTRUTURADA (sessions), que é a fonte da verdade que o "
+            "agendamento usa. SEMPRE rode primeiro com apply=false, mostre o preview (quais "
+            "modalidades e quantos horários) e peça confirmação ao operador; só rode apply=true "
+            "depois do 'pode aplicar'. Se `text` for omitido, usa a descrição do negócio."
+        ),
+        text={"type": "string", "description": "Texto da grade. Omita para usar a descrição do negócio (businessDescription)."},
+        apply={"type": "boolean", "description": "false = só preview (padrão); true = grava os serviços."},
+        defaultCapacity={"type": "integer", "description": "Vagas por turma (padrão 20). Só aplica em serviço sem capacity."},
+        defaultDuration={"type": "integer", "description": "Duração em minutos ao criar uma modalidade nova (padrão 60)."},
+        matchOnly={"type": "boolean", "description": "true = só atualiza serviços existentes; não cria modalidade nova."},
+    ),
 ]
 
 SALES_TOOLS: list[dict[str, Any]] = [
