@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { setActiveConversation } from '@/lib/utils/active-conversation';
+import { markConversationRead, markConversationUnread } from '@/lib/utils/markConversationRead';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { softDeleteDoc } from '@/lib/services/softDelete';
@@ -6555,10 +6556,13 @@ export default function ConversasModule() {
       // audit (deletedBy / deletedByName). Reader (isActiveRecord) ainda
       // aceita o legado `isDeleted: true` durante a janela de backfill.
       const ref = doc(db, 'conversations', deleteConfirmConv.id);
+      // Decrementa o agregado unreadCounters ANTES de soft-deletar (rota canônica
+      // zera unreadCount + baixa o contador em lockstep). Sem isto, apagar uma
+      // conversa com não-lidas deixava o badge fantasma inflado pra sempre.
+      if ((deleteConfirmConv.unreadCount ?? 0) > 0) {
+        await markConversationRead(deleteConfirmConv.id, business.id);
+      }
       await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
-      // Zerar unreadCount junto: defesa em profundidade contra badge fantasma
-      // no sidebar (filtros poderiam falhar no futuro). Custo zero.
-      await updateDoc(ref, { unreadCount: 0 });
       setSelectedConversation(null);
       setShowMobileThread(false);
       setDeleteConfirmConv(null);
@@ -6591,11 +6595,11 @@ export default function ConversasModule() {
       next.add(conv.id);
       return next;
     });
+    // Rota canônica: sobe unreadCount da conversa E o contador denormalizado no
+    // MESMO delta/transação (o server calcula Math.max(1, prev)+1). ANTES fazia
+    // updateDoc direto → agregado ficava defasado.
     try {
-      await updateDoc(doc(db, 'conversations', conv.id), {
-        unreadCount: Math.max(1, conv.unreadCount || 0) + 1,
-        updatedAt: new Date().toISOString(),
-      });
+      await markConversationUnread(conv.id, business.id);
     } catch (err) {
       console.error('[Conversations] Mark unread failed:', err);
     }
@@ -7617,10 +7621,13 @@ export default function ConversasModule() {
 
   const handleBatchMarkRead = useCallback(async () => {
     if (!business?.id || batchSelectedIds.size === 0) return;
-    const now = new Date().toISOString();
-    const batch = writeBatch(db);
-    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { unreadCount: 0, updatedAt: now });
-    await batch.commit();
+    // Rota canônica por conversa: zera a conversa E decrementa o agregado em
+    // lockstep. ANTES era um writeBatch de updateDoc(unreadCount:0) direto →
+    // as conversas zeravam mas o badge (unreadCounters) não baixava.
+    const bid = business.id;
+    await Promise.all(
+      Array.from(batchSelectedIds).map((id) => markConversationRead(id, bid)),
+    );
     toast.success(`${batchSelectedIds.size} conversa(s) marcada(s) como lida(s)`);
     exitBatchMode();
   }, [business?.id, batchSelectedIds, exitBatchMode]);
@@ -8247,15 +8254,18 @@ export default function ConversasModule() {
   // ── Mark as read ───────────────────────────────────────────────────────────
 
   const markAsRead = useCallback(async (conversationId: string) => {
+    if (!business?.id) return;
+    // Rota canônica server-side: zera unreadCount da conversa E decrementa o
+    // contador denormalizado unreadCounters/{businessId} na MESMA transação.
+    // ANTES fazia updateDoc(unreadCount:0) direto no client — a conversa zerava
+    // mas o agregado NÃO baixava → badge fantasma (não limpava ao abrir a
+    // conversa). Ver lib/utils/markConversationRead + app/api/conversations/[id].
     try {
-      await updateDoc(doc(db, 'conversations', conversationId), {
-        unreadCount: 0,
-        updatedAt: new Date().toISOString(),
-      });
+      await markConversationRead(conversationId, business.id);
     } catch (err) {
       console.error('Error marking conversation as read:', err);
     }
-  }, []);
+  }, [business?.id]);
 
   // ── Signal de conversa ativa (consumido por useConversationsAlerts) ────────
   // Registra/desregistra o ID da conversa atualmente aberta. Hook global
