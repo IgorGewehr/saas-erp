@@ -7,6 +7,7 @@ import {
   resolveSessionsForDay,
   buildGroupSlots,
   resolveGroupBooking,
+  isBookingSlotOnGrade,
 } from '@/lib/services/groupSession';
 import { buildSessionKey } from '@/lib/utils/sessionKey';
 import type { Appointment, Service } from '@/lib/types';
@@ -215,5 +216,55 @@ describe('resolveGroupBooking — paridade manual/agente', () => {
     expect(r.capacity).toBe(8);
     expect(r.professionalId).toBe('profY');
     expect(r.sessionKey).toBe(buildSessionKey({ serviceId: 'svc1', date: MONDAY, startTime: '15:30', professionalId: 'profY' }));
+  });
+});
+
+// Guard de coerência de grade no boundary de escrita (bug Valhalla: IA confirmava
+// "jiu-jitsu kids sábado 17h" numa modalidade sem aula no sábado).
+describe('isBookingSlotOnGrade — coerência de grade no book', () => {
+  // 2026-06-06 é um sábado (weekday 6); a grade abaixo só tem seg/qua (1/3).
+  const SATURDAY = '2026-06-06';
+
+  it('serviço SEM grade (sessions vazio) → sempre permitido (ad-hoc/contínuo)', () => {
+    expect(isBookingSlotOnGrade(groupService({ sessions: undefined }), SATURDAY, '17:00')).toBe(true);
+    expect(isBookingSlotOnGrade(groupService({ sessions: [] }), MONDAY, '15:30')).toBe(true);
+  });
+
+  it('serviço COM grade: dia FORA da grade é recusado (sábado numa turma seg/qua)', () => {
+    const svc = groupService({
+      sessions: [
+        { weekday: 1, startTime: '17:00' },
+        { weekday: 3, startTime: '17:00' },
+      ],
+    });
+    expect(isBookingSlotOnGrade(svc, SATURDAY, '17:00')).toBe(false); // sábado não tem
+  });
+
+  it('serviço COM grade: dia certo mas HORÁRIO fora da grade é recusado', () => {
+    const svc = groupService({ sessions: [{ weekday: 1, startTime: '19:00' }] });
+    expect(isBookingSlotOnGrade(svc, MONDAY, '15:30')).toBe(false); // segunda só 19h
+  });
+
+  it('serviço COM grade: (weekday, startTime) exatos da grade são aceitos', () => {
+    const svc = groupService({ sessions: [{ weekday: 1, startTime: '19:00' }] });
+    expect(isBookingSlotOnGrade(svc, MONDAY, '19:00')).toBe(true);
+  });
+
+  // REGRESSÃO — caso real Valhalla: "Jiu-Jitsu (Kids)" roda Seg/Qua 08h e 17h,
+  // Ter/Qui 20h. NÃO há sábado. A IA confirmou "kids sábado 17h" (17h é horário
+  // REAL da grade, mas em Seg/Qua — não no sábado). O guard deve recusar.
+  it('caso Valhalla Kids: 17h é horário da grade em Seg/Qua, mas NÃO no sábado', () => {
+    const kids = groupService({
+      name: 'Jiu-Jitsu (Kids)',
+      capacity: 30,
+      sessions: [
+        { weekday: 1, startTime: '08:00' }, { weekday: 1, startTime: '17:00' },
+        { weekday: 2, startTime: '20:00' },
+        { weekday: 3, startTime: '08:00' }, { weekday: 3, startTime: '17:00' },
+        { weekday: 4, startTime: '20:00' },
+      ],
+    });
+    expect(isBookingSlotOnGrade(kids, SATURDAY, '17:00')).toBe(false); // o bug
+    expect(isBookingSlotOnGrade(kids, MONDAY, '17:00')).toBe(true);    // segunda 17h existe
   });
 });

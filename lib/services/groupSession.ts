@@ -69,6 +69,26 @@ export function resolveSessionsForDay(service: Service, dayOfWeek: number): Reso
 }
 
 /**
+ * Coerência de grade: a reserva pedida cai numa sessão real da grade?
+ *
+ *  - Serviço SEM sessions[] (grade vazia / ad-hoc / contínuo) → SEMPRE true.
+ *    Não há grade para violar; a disponibilidade é contínua (comportamento atual).
+ *  - Serviço COM sessions[] → true SÓ se existe uma sessão no (weekday, startTime)
+ *    pedido. false quando o horário está FORA da grade (ex.: turma que não roda
+ *    no sábado). O caller (boundary do agente) DEVE recusar nesse caso, em vez de
+ *    gravar um agendamento "ad-hoc" num dia que a modalidade não tem aula.
+ *
+ * Fonte única usada pelos dois caminhos de book (exclusivo e turma) na rota do
+ * agente. A reserva MANUAL (operador) não passa por aqui de propósito — o dono
+ * pode criar um encaixe fora da grade conscientemente.
+ */
+export function isBookingSlotOnGrade(service: Service, date: string, startTime: string): boolean {
+  if (!service.sessions || service.sessions.length === 0) return true;
+  const dayOfWeek = new Date(date + 'T12:00:00').getDay();
+  return resolveSessionsForDay(service, dayOfWeek).some((s) => s.startTime === startTime);
+}
+
+/**
  * Conta alunos já reservados (não-cancelados) numa turma identificada por
  * sessionKey, dentro de uma lista de appointments já carregada.
  */

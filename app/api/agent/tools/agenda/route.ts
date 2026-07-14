@@ -8,7 +8,7 @@ import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
 import { updateAppointmentSafeAdmin, AppointmentConflictError } from '@/lib/services/appointmentTxGuardAdmin';
 import { isGroupService } from '@/lib/contracts/domain/service';
 import { assertTransitionAppointment } from '@/lib/contracts/fsm/appointment';
-import { countSeatsTaken, findBlockingAppointment, buildGroupSlots, resolveGroupBooking } from '@/lib/services/groupSession';
+import { countSeatsTaken, findBlockingAppointment, buildGroupSlots, resolveGroupBooking, isBookingSlotOnGrade } from '@/lib/services/groupSession';
 
 type Action = AgendaToolAction;
 
@@ -540,6 +540,34 @@ async function bookAppointment(businessId: string, p: BookParams) {
 
   const endTime = addMinutes(p.startTime, p.durationMinutes);
   const now = new Date().toISOString();
+
+  // ── Coerência de grade (turmas/academia) ──────────────────────────────────
+  // Serviço com sessions[] só aceita dia+horário que EXISTE na grade. Sem isto,
+  // a IA (ou um race de prompt) consegue confirmar um horário fora da grade —
+  // ex.: "jiu-jitsu kids sábado 17h" numa modalidade que não roda no sábado — e
+  // o caminho de turma gravaria uma sessão ad-hoc silenciosamente. Recusa
+  // acionável (mesma forma de 'conflict') pra IA reofertar um horário real.
+  // Retrocompat: serviço SEM sessions[] (contínuo/ad-hoc) passa direto.
+  if (service && service.sessions && service.sessions.length > 0 &&
+      !isBookingSlotOnGrade(service, p.date, p.startTime)) {
+    let alternatives: AvailabilitySlot[] = [];
+    try {
+      const avail = await checkAvailability(businessId, p.date, p.professionalId, p.durationMinutes, p.serviceId);
+      alternatives = avail.slots.slice(0, 3);
+    } catch (altErr) {
+      console.warn('[agent/tools/agenda] book: off-grid alternatives load failed', altErr);
+    }
+    return {
+      status: 'conflict' as const,
+      date: p.date,
+      startTime: p.startTime,
+      endTime,
+      serviceName,
+      professionalName: p.professionalName,
+      conflictReason: `${serviceName || 'Esse serviço'} não tem horário na grade em ${p.date} às ${p.startTime}. Ofereça um horário real da grade.`,
+      alternatives,
+    };
+  }
 
   // ── Turma (capacity>1): caminho de vagas compartilhadas ───────────────────
   // Serviço exclusivo (capacity ausente/1) NÃO entra aqui — segue bit-a-bit.
