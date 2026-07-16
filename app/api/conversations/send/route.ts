@@ -731,12 +731,6 @@ async function sendWhatsAppBaileys(
             phoneNumber = ext;
           }
         }
-
-        console.log('[Baileys Send] Resolved phone from conversation:', {
-          contactPhone: convData.contactPhone,
-          contactExternalId: convData.contactExternalId,
-          resolved: phoneNumber,
-        });
       }
     } catch (err) {
       console.warn('[Baileys Send] Erro ao buscar conversa:', err);

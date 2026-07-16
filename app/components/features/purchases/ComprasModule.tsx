@@ -747,7 +747,7 @@ export default function ComprasModule() {
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         {[
-          { label: 'Total importado', value: formatCurrency(kpis.totalValue), icon: TrendingDown, color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-500/10', isStr: true },
+          { label: 'Total importado', value: formatCurrency(kpis.totalValue), icon: TrendingDown, color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-500/10' },
           { label: 'Notas', value: kpis.total, icon: FileText, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
           { label: 'Importadas', value: kpis.imported, icon: CheckCircle2, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
           { label: 'Pendentes', value: kpis.pending, icon: Clock, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10' },
@@ -758,7 +758,7 @@ export default function ComprasModule() {
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{kpi.label}</span>
               <div className={cn('p-1.5 rounded-lg', kpi.bg)}><kpi.icon className={cn('w-4 h-4', kpi.color)} /></div>
             </div>
-            <p className="text-2xl font-bold text-gray-900 dark:text-white">{kpi.isStr ? kpi.value : kpi.value}</p>
+            <p className="text-2xl font-bold text-gray-900 dark:text-white">{kpi.value}</p>
           </motion.div>
         ))}
       </div>

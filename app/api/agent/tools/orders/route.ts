@@ -8,7 +8,6 @@ import type {
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
   Product, DeliveryOrderAddress, Business,
 } from '@/lib/types';
-import { isBusinessOpenNow } from '@/lib/utils/businessHours';
 import { Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { deductStockAdmin } from '@/lib/services/stock-admin';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';

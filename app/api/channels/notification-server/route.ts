@@ -14,7 +14,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { encryptToken, decryptToken } from '@/lib/utils/encryption';
+import { encryptToken } from '@/lib/utils/encryption';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ROLE_HIERARCHY } from '@/lib/types';

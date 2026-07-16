@@ -811,8 +811,6 @@ export async function POST(req: NextRequest) {
       if (sanitizedThrottle) return pickDelay(sanitizedThrottle.delayMinMs, sanitizedThrottle.delayMaxMs);
       return fallbackDelayMs;
     }
-    const delayMs = fallbackDelayMs; // mantido pra compat com pause-check (TTL cap)
-
     // Idempotência: CAS draft/sent/failed → sending. Bloqueia duplo-clique e re-trigger.
     // Também resolve sessionIndex dentro da transação pra evitar race entre
     // múltiplos dispatches concorrentes que tentariam usar o mesmo index.

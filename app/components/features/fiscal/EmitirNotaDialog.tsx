@@ -28,7 +28,7 @@ import {
   MapPin,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, getDocs, query, where, limit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocType, PaymentMethod, CRMContact, Product, Service } from '@/lib/types';
@@ -348,7 +348,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
     if (!open || !business) return;
     const loadClients = async () => {
       try {
-        const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
+        const q = query(collection(db, 'clients'), where('businessId', '==', business.id), limit(2000));
         const snapshot = await getDocs(q);
         setClients(snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as CRMContact).filter(isActiveClient));
       } catch { /* silent */ }

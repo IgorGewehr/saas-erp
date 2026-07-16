@@ -2584,7 +2584,7 @@ export default function AgendaModule() {
             if (eventId) {
               updateDoc(doc(db, 'appointments', newDocRef.id), { googleCalendarEventId: eventId }).catch(() => {});
             }
-          });
+          }).catch(err => console.warn('[Agenda] GCal create sync failed:', err));
 
           setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
         }

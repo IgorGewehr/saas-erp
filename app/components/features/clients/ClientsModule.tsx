@@ -1372,8 +1372,8 @@ export default function ClientsModule() {
         {[
           { label: 'Total', value: kpis.total, icon: Users, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
           { label: 'Convertidos', value: kpis.won, icon: UserCheck, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
-          { label: 'Receita total', value: formatCurrency(kpis.totalSpent), icon: TrendingUp, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10', isStr: true },
-          { label: 'Ticket médio', value: formatCurrency(kpis.avgTicket), icon: ShoppingCart, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10', isStr: true },
+          { label: 'Receita total', value: formatCurrency(kpis.totalSpent), icon: TrendingUp, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10' },
+          { label: 'Ticket médio', value: formatCurrency(kpis.avgTicket), icon: ShoppingCart, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10' },
         ].map((kpi, i) => (
           <motion.div
             key={kpi.label}
@@ -1389,7 +1389,7 @@ export default function ClientsModule() {
               </div>
             </div>
             <p className="text-2xl font-bold text-gray-900 dark:text-white">
-              {kpi.isStr ? kpi.value : kpi.value}
+              {kpi.value}
             </p>
           </motion.div>
         ))}

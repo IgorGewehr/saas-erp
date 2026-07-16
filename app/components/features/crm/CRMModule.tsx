@@ -3718,7 +3718,7 @@ function PipelineSettingsModal({
 
               {/* Visibility toggle */}
               <button
-                onClick={() => update(i, { isVisible: stage.isVisible === false ? true : false })}
+                onClick={() => update(i, { isVisible: stage.isVisible === false })}
                 title={stage.isVisible === false ? 'Mostrar no kanban' : 'Ocultar do kanban'}
                 className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
               >
@@ -3920,7 +3920,7 @@ function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => vo
           setRawData(data); setHeaders(hdrs); setMapping(crmAutoMap(hdrs)); setStep(2);
         },
       });
-    });
+    }).catch(err => { console.error('[CRM] Falha ao carregar parser CSV:', err); });
   };
 
   const handleImport = async () => {

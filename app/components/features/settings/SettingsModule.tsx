@@ -2029,7 +2029,7 @@ function FiscalTab() {
         }).catch(() => {
           setCscId(f.nfceConfig?.cscId || '');
         });
-      });
+      }).catch(() => {});
     }
     const fAny = f as Record<string, unknown>;
     const nfseConfig = fAny.nfseConfig as Record<string, unknown> | undefined;
@@ -2941,7 +2941,7 @@ function UsersTab() {
   const [editingCommissionFor, setEditingCommissionFor] = useState<string | null>(null);
   const [commissionInput, setCommissionInput] = useState('');
   const [savingCommission, setSavingCommission] = useState<string | null>(null);
-  const isOwner = user?.role === 'founder' || user?.role === 'admin';
+  const isOwner = user ? ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['admin'] : false;
   const isFounder = user?.role === 'founder';
   const activeSectors = sectors.filter(s => s.isActive);
 

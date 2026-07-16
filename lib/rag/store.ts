@@ -170,15 +170,6 @@ export async function searchKnowledge(params: {
   return scored.slice(0, k);
 }
 
-export async function deleteBySource(businessId: string, source: KnowledgeSource, sourceId: string): Promise<boolean> {
-  const id = `${businessId}__${source}_${sourceId}`;
-  const ref = adminDb.collection('knowledgeChunks').doc(id);
-  const snap = await ref.get();
-  if (!snap.exists) return false;
-  await ref.delete();
-  return true;
-}
-
 function hashContent(text: string): string {
   return crypto.createHash('sha256').update(text).digest('hex').slice(0, 32);
 }
