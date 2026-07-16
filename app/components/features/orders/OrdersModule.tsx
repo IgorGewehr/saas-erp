@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import {
   collection, query, where, orderBy, onSnapshot, setDoc, getDoc, getDocs, updateDoc,
-  doc, runTransaction,
+  doc, runTransaction, limit,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
@@ -1417,7 +1417,7 @@ export default function OrdersModule() {
   useEffect(() => {
     if (!business?.id) return;
     let cancelled = false;
-    const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), limit(2000));
     getDocs(q)
       .then((snap) => {
         if (cancelled) return;

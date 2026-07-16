@@ -31,13 +31,6 @@ import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const RESTARTABLE_CODES = new Set([
-  DisconnectReason.restartRequired,
-  DisconnectReason.timedOut,
-  DisconnectReason.connectionClosed,
-  DisconnectReason.connectionReplaced,
-]);
-
 // Códigos que indicam logout real — a sessão foi revogada e NÃO deve ser reiniciada.
 // Qualquer outro código (incluindo undefined = rede caiu) deve tentar restart.
 const PERMANENT_DISCONNECT_CODES = new Set([

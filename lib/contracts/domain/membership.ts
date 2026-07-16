@@ -79,6 +79,14 @@ export const ClientMembershipSchema = z.object({
   cycle: z.number().int().positive().optional(),
   /** Data da última cobrança gerada com sucesso (auditoria/idempotência). */
   lastBilledDate: DateYmdSchema.optional(),
+  /**
+   * Quando o cancelamento aconteceu (financial-v2 gap g1 — Recorrentes/Assinaturas
+   * precisa disto pro drill "Novos × Churn"). Campo novo, retrocompatível: docs
+   * legados cancelados sem este campo existem hoje — read-models fazem fallback
+   * pra `updatedAt` (backfill honesto, não é invariante dura ainda; ver
+   * scratchpad/design/saas-erp-financeiro-plano.md §2.6-g1).
+   */
+  cancelledAt: DateYmdSchema.optional(),
   createdAt: IsoSchema,
   updatedAt: IsoSchema,
 }).superRefine((cm, ctx) => {

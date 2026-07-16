@@ -1726,6 +1726,14 @@
         { "fieldPath": "channelOwnerId", "order": "ASCENDING" },
         { "fieldPath": "unreadCount", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "cashSessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "openedAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

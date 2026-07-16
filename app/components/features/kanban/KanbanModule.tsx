@@ -318,6 +318,10 @@ function DueDateBadge({ date }: { date: string }) {
 // ═══════════════════════════════════════════════════════════
 // KANBAN CARD
 // ═══════════════════════════════════════════════════════════
+// Array vazio estável — evita novo `[]` por coluna sem cards a cada render
+// (que quebraria memoização downstream do KanbanColumnComponent).
+const EMPTY_KANBAN_CARDS: KanbanCard[] = [];
+
 function KanbanCardItem({
   card,
   members,
@@ -2852,7 +2856,13 @@ function ListView({
     else { setSortKey(key); setSortAsc(true); }
   };
 
-  const sorted = [...cards].sort((a, b) => {
+  const columnsById = useMemo(() => {
+    const m = new Map<string, KanbanColumn>();
+    for (const c of columns) m.set(c.id, c);
+    return m;
+  }, [columns]);
+
+  const sorted = useMemo(() => [...cards].sort((a, b) => {
     let cmp = 0;
     if (sortKey === 'priority') cmp = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
     else if (sortKey === 'dueDate') {
@@ -2863,12 +2873,14 @@ function ListView({
     } else if (sortKey === 'title') {
       cmp = a.title.localeCompare(b.title);
     } else if (sortKey === 'column') {
-      const colA = columns.find(c => c.id === a.columnId)?.title || '';
-      const colB = columns.find(c => c.id === b.columnId)?.title || '';
+      const colA = columnsById.get(a.columnId)?.title || '';
+      const colB = columnsById.get(b.columnId)?.title || '';
       cmp = colA.localeCompare(colB);
     }
     return sortAsc ? cmp : -cmp;
-  });
+  // PRIORITY_ORDER é literal local estável — fora das deps de propósito.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [cards, columnsById, sortKey, sortAsc]);
 
   const SortBtn = ({ label, k }: { label: string; k: SortKey }) => (
     <button
@@ -2907,7 +2919,7 @@ function ListView({
       <div className="divide-y divide-gray-100 dark:divide-gray-800">
         <AnimatePresence mode="popLayout">
           {sorted.map(card => {
-            const col = columns.find(c => c.id === card.columnId);
+            const col = columnsById.get(card.columnId);
             const checkDone = card.checklist?.filter(c => c.completed).length ?? 0;
             const checkTotal = card.checklist?.length ?? 0;
             return (
@@ -3384,7 +3396,24 @@ export default function KanbanModule() {
     });
   }, [boardCards, searchQuery, filterPriority, filterAssignee]);
 
-  const sortedColumns = activeBoard ? [...activeBoard.columns].sort((a, b) => a.order - b.order) : [];
+  const sortedColumns = useMemo(
+    () => activeBoard ? [...activeBoard.columns].sort((a, b) => a.order - b.order) : [],
+    [activeBoard],
+  );
+
+  // Pré-agrupa os cards por coluna em UMA passada, em vez de
+  // `filteredCards.filter().sort()` por coluna a cada render do board
+  // (era O(colunas × cards) toda vez que qualquer estado — inclusive
+  // hover de drag — re-renderizava o módulo).
+  const cardsByColumn = useMemo(() => {
+    const m = new Map<string, KanbanCard[]>();
+    for (const card of filteredCards) {
+      const arr = m.get(card.columnId);
+      if (arr) arr.push(card); else m.set(card.columnId, [card]);
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.order - b.order);
+    return m;
+  }, [filteredCards]);
 
   // ─── Drag handlers ────────────────────────────────────────
   const handleDragStart = useCallback((e: React.DragEvent, card: KanbanCard) => {
@@ -4113,9 +4142,7 @@ export default function KanbanModule() {
           className="flex gap-4 h-full"
         >
           {sortedColumns.map(column => {
-            const columnCards = filteredCards
-              .filter(c => c.columnId === column.id)
-              .sort((a, b) => a.order - b.order);
+            const columnCards = cardsByColumn.get(column.id) ?? EMPTY_KANBAN_CARDS;
 
             return (
               <KanbanColumnComponent

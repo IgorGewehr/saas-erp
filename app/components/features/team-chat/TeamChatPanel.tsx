@@ -737,6 +737,9 @@ function ChatView({
   }, [chat?.typing]);
 
   const { messages, loading } = useTeamChatMessages(businessId, chatId);
+  // Agrupamento por remetente memoizado — antes rodava o walk O(mensagens) a
+  // cada render do painel (digitação, typing indicator, etc.).
+  const messageGroups = useMemo(() => groupByConsecutiveSender(messages), [messages]);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<TeamChatAttachment[]>([]);
@@ -1049,7 +1052,7 @@ function ChatView({
             <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">{t('teamChat.emptySubtitle')}</p>
           </div>
         ) : (
-          groupByConsecutiveSender(messages).map((group, gi) => (
+          messageGroups.map((group, gi) => (
             <MessageGroup
               key={`${group[0].id}-${gi}`}
               group={group}

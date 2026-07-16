@@ -270,6 +270,27 @@ export const PaymentRefundedSchema = EventEnvelopeBase.extend({
   amount: z.number().nonnegative(),
 });
 
+/**
+ * Sessão de caixa (gaveta em espécie) fechada — financeiro v2, aba Fluxo de
+ * Caixa (`lib/contracts/domain/cashSession.ts`, FSM aberta→fechada).
+ *
+ * AUDIT-ONLY (sem subscriber registrado no bus): `FecharCaixaDialog` grava o
+ * fechamento (status, countedAmount, expectedAmount, difference) direto no
+ * doc `cashSessions/{id}` e loga em `financialAuditLog`, igual ao padrão do
+ * `BaixaDialog`. Este evento existe hoje só como DOCUMENTAÇÃO do gancho futuro
+ * (plano `saas-erp-financeiro-plano.md` §1.2/§2.6-g5): quando o vertical PDV
+ * ganhar sessão de caixa própria, o subscriber vai querer reagir a
+ * `difference !== 0` (alertar sobra/falta) sem duplicar a lógica de fechamento.
+ */
+export const CashSessionClosedSchema = EventEnvelopeBase.extend({
+  type: z.literal('caixa.fechado'),
+  cashSessionId: z.string().min(1),
+  bankAccountId: z.string().min(1),
+  expectedAmount: z.number(),
+  countedAmount: z.number().nonnegative(),
+  difference: z.number(),
+});
+
 // ============================================================================
 // Discriminated union — fonte da verdade dos eventos do sistema
 // ============================================================================
@@ -288,6 +309,7 @@ export const DomainEventSchema = z.discriminatedUnion('type', [
   ConversationReopenedSchema,
   PaymentApprovedSchema,
   PaymentRefundedSchema,
+  CashSessionClosedSchema,
 ]);
 
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
@@ -307,6 +329,7 @@ export const DOMAIN_EVENT_TYPES = [
   'conversation.reopened',
   'payment.approved',
   'payment.refunded',
+  'caixa.fechado',
 ] as const satisfies readonly DomainEventType[];
 
 /** Extrai o evento concreto de um tipo da union. */

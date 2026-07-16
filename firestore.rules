@@ -515,6 +515,31 @@ service cloud.firestore {
     }
 
     // ============================================
+    // CASH SESSIONS COLLECTION (Financeiro v2 — Fluxo de Caixa)
+    // ============================================
+    // Sessão de caixa/gaveta (abertura/sangria/fechamento) de uma BankAccount
+    // accountType='caixa'. Mesmo nível de acesso de transactions/bankAccounts
+    // (dado financeiro sensível). Tier 2 status-driven (FSM aberta->fechada):
+    // hard-delete proibido — histórico de sobra/falta precisa persistir.
+    match /cashSessions/{sessionId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isManager();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && request.resource.data.status in ['aberta', 'fechada'];
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if false;
+    }
+
+    // ============================================
     // KANBAN BOARDS COLLECTION
     // ============================================
     match /kanbanBoards/{boardId} {

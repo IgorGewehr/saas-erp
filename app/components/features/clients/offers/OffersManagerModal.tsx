@@ -25,7 +25,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   collection, query, where, getDocs, addDoc, updateDoc,
-  deleteDoc, doc, orderBy as fsOrderBy, deleteField,
+  deleteDoc, doc, orderBy as fsOrderBy, deleteField, limit,
 } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
@@ -103,8 +103,8 @@ export function OffersManagerModal({
     queryKey: ['offer-stats', businessId],
     queryFn: async () => {
       const [clientSnap, broadcastSnap] = await Promise.all([
-        getDocs(query(collection(db, 'clients'), where('businessId', '==', businessId))),
-        getDocs(query(collection(db, 'broadcasts'), where('businessId', '==', businessId))),
+        getDocs(query(collection(db, 'clients'), where('businessId', '==', businessId), limit(5000))),
+        getDocs(query(collection(db, 'broadcasts'), where('businessId', '==', businessId), limit(5000))),
       ]);
       const clients = new Map<string, number>();
       const broadcasts = new Map<string, number>();

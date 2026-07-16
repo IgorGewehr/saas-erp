@@ -275,6 +275,13 @@ const cardVariants = {
   },
 };
 
+// Grade de produtos: cascata curta e sutil. O problema antigo era
+// containerVariants.staggerChildren 0.08 (≈5s pra 60 cards, grade "travada").
+const productGridVariants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1, transition: { staggerChildren: 0.015 } },
+};
+
 const sectionVariants = {
   hidden: { opacity: 0, y: 24 },
   visible: {
@@ -444,7 +451,10 @@ interface ProductCardProps {
   onMovement: (product: Product, type: MovementType) => void;
 }
 
-function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps) {
+// Memoizado: handlers do parent são useCallback (estáveis), então cada card só
+// re-renderiza quando o próprio produto muda — não a cada estado do módulo.
+const ProductCard = React.memo(ProductCardBase);
+function ProductCardBase({ product, onEdit, onDelete, onMovement }: ProductCardProps) {
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const catIcon = CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto;
@@ -627,7 +637,8 @@ interface ProductRowProps {
   onMovement: (product: Product, type: MovementType) => void;
 }
 
-function ProductRow({ product, onEdit, onDelete, onMovement }: ProductRowProps) {
+const ProductRow = React.memo(ProductRowBase);
+function ProductRowBase({ product, onEdit, onDelete, onMovement }: ProductRowProps) {
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const low = isLowStock(product);
@@ -2772,7 +2783,7 @@ export default function InventoryModule() {
                 </div>
               ) : (
                 <motion.div
-                  variants={containerVariants}
+                  variants={productGridVariants}
                   initial="hidden"
                   animate="visible"
                   className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"

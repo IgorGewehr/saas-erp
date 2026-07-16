@@ -16,6 +16,7 @@ import { resolveDeliveryZone } from '@/lib/services/orders/deliveryZones';
 import { reserveCouponAdmin } from '@/lib/services/orders/couponRedeem';
 import { COUPON_REJECT_MESSAGE } from '@/lib/services/orders/coupons';
 import { redeemGiftCardAdmin, loadGiftCardByCode, checkGiftCardEligibility } from '@/lib/services/orders/checkoutRedemptions';
+import { formatCurrency } from '@/lib/utils/format';
 import type {
   Business,
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
@@ -535,7 +536,7 @@ async function notifyBusiness(
     const biz = bizSnap.data();
     if (!biz) return;
 
-    const totalStr = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(total);
+    const totalStr = formatCurrency(total);
     const modeStr = deliveryType === 'entrega' ? '🛵 Entrega' : '🏠 Retirada';
 
     const itemLines = items.slice(0, 8).map(i => {

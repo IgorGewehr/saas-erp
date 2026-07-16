@@ -756,10 +756,10 @@ export default function VendasModule() {
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         {[
-          { label: 'Receita entregue', value: formatCurrency(kpis.totalRevenue), icon: TrendingUp, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', isStr: true },
+          { label: 'Receita entregue', value: formatCurrency(kpis.totalRevenue), icon: TrendingUp, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
           { label: 'Pedidos pendentes', value: kpis.pending, icon: Clock, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10' },
           { label: 'Condicionais', value: kpis.conditional, icon: CalendarClock, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
-          { label: 'Ticket médio', value: formatCurrency(kpis.avgOrder), icon: DollarSign, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10', isStr: true },
+          { label: 'Ticket médio', value: formatCurrency(kpis.avgOrder), icon: DollarSign, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10' },
         ].map((kpi, i) => (
           <motion.div key={kpi.label} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}
             className="surface rounded-2xl p-4">
@@ -767,7 +767,7 @@ export default function VendasModule() {
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{kpi.label}</span>
               <div className={cn('p-1.5 rounded-lg', kpi.bg)}><kpi.icon className={cn('w-4 h-4', kpi.color)} /></div>
             </div>
-            <p className="text-2xl font-bold text-gray-900 dark:text-white">{kpi.isStr ? kpi.value : kpi.value}</p>
+            <p className="text-2xl font-bold text-gray-900 dark:text-white">{kpi.value}</p>
           </motion.div>
         ))}
       </div>

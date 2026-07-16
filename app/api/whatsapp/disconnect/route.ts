@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { ROLE_HIERARCHY, type UserRole } from '@/lib/types';
 import { destroySession } from '../baileys-manager';
 import { deleteFirestoreAuthState } from '@/lib/services/baileys/firestore-auth-state';
 
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
       const role = (authResult as { role?: string }).role;
       const ownerType = connSnap.data()?.ownerType;
       const ownerId = connSnap.data()?.ownerId;
-      const isAdmin = role === 'admin' || role === 'founder';
+      const isAdmin = (ROLE_HIERARCHY[role as UserRole] ?? 0) >= ROLE_HIERARCHY['admin'];
       const isOwnUser = ownerType === 'user' && ownerId === (authResult as { uid?: string }).uid;
       if (!isAdmin && !isOwnUser) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });

@@ -3,9 +3,7 @@ import QRCode from 'qrcode';
 import bwipjs from 'bwip-js/node';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { DanfeRequestSchema } from '@/lib/contracts/api/fiscal/danfe';
-
-const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
-const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
+import { formatCurrency } from '@/lib/utils/format';
 
 /**
  * Escapa valor dinâmico pra interpolação em HTML. Os campos vêm de regex
@@ -45,10 +43,6 @@ function formatCnpjCpf(doc: string): string {
 function formatChave(chave: string): string {
   if (!chave) return '';
   return chave.replace(/(.{4})/g, '$1 ').trim();
-}
-
-function formatCurrency(value: number): string {
-  return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
 interface DanfeData {
