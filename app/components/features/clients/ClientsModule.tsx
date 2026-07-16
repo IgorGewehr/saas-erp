@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Virtuoso } from 'react-virtuoso';
 import {
   Users, Plus, Search, Filter, X, Edit2, Trash2,
   Building2, CheckCircle2, Tag,
@@ -1830,18 +1831,19 @@ export default function ClientsModule() {
               onSort={handleSortToggle}
             />
           ) : (
-            <div className="space-y-1.5 overflow-y-auto pr-1">
-              {filtered.map((client, i) => {
+            <div className="flex-1 min-h-0 pr-1">
+              <Virtuoso
+                data={filtered}
+                style={{ height: '100%' }}
+                computeItemKey={(_i, client) => client.id}
+                increaseViewportBy={{ top: 300, bottom: 300 }}
+                itemContent={(_i, client) => {
                 const statusCfg = STATUS_CONFIG[client.status] || STATUS_CONFIG.ganho;
                 return (
-                  <motion.div
-                    key={client.id}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: Math.min(i * 0.03, 0.3) }}
+                  <div
                     onClick={() => setSelectedClient(client)}
                     className={cn(
-                      'group flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all border',
+                      'group flex items-center gap-3 p-3.5 mb-1.5 rounded-xl cursor-pointer transition-all border',
                       selectedClient?.id === client.id
                         ? 'border-red-200 dark:border-red-500/30 bg-red-50/50 dark:bg-red-500/5'
                         : 'border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/40'
@@ -1973,9 +1975,10 @@ export default function ClientsModule() {
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                  </motion.div>
+                  </div>
                 );
-              })}
+                }}
+              />
             </div>
           )}
         </div>

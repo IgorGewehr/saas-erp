@@ -2182,7 +2182,10 @@ function getOutboundBubbleClass(message: ConversationMessage): string {
   return `${base} bg-gradient-to-br from-red-600 to-red-500`;
 }
 
-function MessageBubble({
+// Memoizada: numa thread longa, ao chegar/enviar 1 mensagem só a bolha nova
+// (e vizinhas com isGrouped alterado) re-renderiza — não as N já visíveis.
+const MessageBubble = memo(MessageBubbleBase);
+function MessageBubbleBase({
   message,
   isGrouped,
   channel,
@@ -2435,25 +2438,29 @@ function MessageList({
     return map;
   }, [messages]);
 
-  const items: Array<
-    | { type: 'separator'; label: string }
-    | { type: 'message'; msg: ConversationMessage; isGrouped: boolean }
-  > = [];
-
-  messages.forEach((msg, idx) => {
-    // Date separator
-    const prev = messages[idx - 1];
-    if (!prev || !isSameDay(prev.sentAt, msg.sentAt)) {
-      items.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt, t) });
-    }
-    // Group with previous?
-    const isGrouped =
-      !!prev &&
-      prev.direction === msg.direction &&
-      isSameDay(prev.sentAt, msg.sentAt) &&
-      new Date(msg.sentAt).getTime() - new Date(prev.sentAt).getTime() < 5 * 60_000;
-    items.push({ type: 'message', msg, isGrouped });
-  });
+  // Build memoizado: separadores de data + flag de agrupamento. Antes rodava
+  // este loop O(mensagens) a CADA render da thread (inclusive digitação/hover).
+  const items = useMemo(() => {
+    const acc: Array<
+      | { type: 'separator'; label: string }
+      | { type: 'message'; msg: ConversationMessage; isGrouped: boolean }
+    > = [];
+    messages.forEach((msg, idx) => {
+      // Date separator
+      const prev = messages[idx - 1];
+      if (!prev || !isSameDay(prev.sentAt, msg.sentAt)) {
+        acc.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt, t) });
+      }
+      // Group with previous?
+      const isGrouped =
+        !!prev &&
+        prev.direction === msg.direction &&
+        isSameDay(prev.sentAt, msg.sentAt) &&
+        new Date(msg.sentAt).getTime() - new Date(prev.sentAt).getTime() < 5 * 60_000;
+      acc.push({ type: 'message', msg, isGrouped });
+    });
+    return acc;
+  }, [messages, t]);
 
   return (
     <>

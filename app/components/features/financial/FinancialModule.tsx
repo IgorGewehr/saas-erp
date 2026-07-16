@@ -80,6 +80,8 @@ import {
   Tag,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { TableVirtuoso } from 'react-virtuoso';
+import { useScrollParent } from '@/lib/hooks/useScrollParent';
 import {
   BarChart,
   Bar,
@@ -105,6 +107,7 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery as useTanstackQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { isActiveClient } from '@/lib/utils/clientFilters';
@@ -4046,6 +4049,139 @@ function InstallmentGroupDialog({
 
 type TxViewMode = 'lista' | 'semanal' | 'projecao';
 
+// ── Virtualização da tabela de transações (react-virtuoso) ────────────────────
+// Componentes de identidade estável (fora do render) — TableVirtuoso remonta se
+// a referência de `components` mudar. Preservam a semântica <table>/<thead>/
+// <tbody> e o header fica sticky automaticamente.
+const TxVTable = React.forwardRef<HTMLTableElement, React.HTMLProps<HTMLTableElement>>(
+  (props, ref) => <table {...props} ref={ref} className="w-full" />,
+);
+TxVTable.displayName = 'TxVTable';
+const TxVHead = React.forwardRef<HTMLTableSectionElement, React.HTMLProps<HTMLTableSectionElement>>(
+  (props, ref) => <thead {...props} ref={ref} className="bg-white dark:bg-gray-900 border-b border-slate-100 dark:border-gray-800" />,
+);
+TxVHead.displayName = 'TxVHead';
+const TxVBody = React.forwardRef<HTMLTableSectionElement, React.HTMLProps<HTMLTableSectionElement>>(
+  (props, ref) => <tbody {...props} ref={ref} />,
+);
+TxVBody.displayName = 'TxVBody';
+const TxVRow = ({ item, context, ...props }: any) => (
+  <tr {...props} className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group border-b border-slate-50 dark:border-gray-800" />
+);
+const TX_TABLE_COMPONENTS = { Table: TxVTable, TableHead: TxVHead, TableBody: TxVBody, TableRow: TxVRow } as const;
+
+interface TxRowCellsProps {
+  tx: Transaction;
+  proj?: Project;
+  locked: boolean;
+  statusChip: { bg: string; text: string; border: string };
+  statusText: string;
+  t: TFunction;
+  formatCurrency: (n: number) => string;
+  onMarkPaid: (id: string) => void;
+  onRevertPaid: (id: string) => void;
+  onEdit: (t: Transaction) => void;
+  onDelete: (id: string) => void;
+  onViewInstallments: (groupId: string) => void;
+}
+
+// Célula memoizada: só re-renderiza quando as props da própria linha mudam.
+const TransactionRowCells = React.memo(function TransactionRowCells({
+  tx, proj, locked, statusChip: sc, statusText, t, formatCurrency,
+  onMarkPaid, onRevertPaid, onEdit, onDelete, onViewInstallments,
+}: TxRowCellsProps) {
+  return (
+    <>
+      <td className="px-5 py-3 text-sm text-slate-500 dark:text-gray-400 whitespace-nowrap">{formatDate(tx.dueDate)}</td>
+      <td className="px-5 py-3">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[200px]">{tx.description}</p>
+          {proj && (
+            <Tooltip title={`Projeto: ${proj.name}`}>
+              <span
+                className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md border shrink-0"
+                style={{ color: proj.color, borderColor: `${proj.color}40`, backgroundColor: `${proj.color}15` }}
+              >
+                <Tag size={9} /> {proj.name}
+              </span>
+            </Tooltip>
+          )}
+          {!proj && tx.projectName && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md border border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 shrink-0">
+              <Tag size={9} /> {tx.projectName}
+            </span>
+          )}
+          {tx.installmentGroupId && (
+            <Tooltip title="Ver grupo de parcelas">
+              <button
+                onClick={(e) => { e.stopPropagation(); onViewInstallments(tx.installmentGroupId!); }}
+                className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-500/20 border border-violet-200/60 dark:border-violet-500/20 transition-colors shrink-0"
+              >
+                <Layers size={9} />
+                {tx.installmentNumber}/{tx.installmentTotal}
+              </button>
+            </Tooltip>
+          )}
+          {tx.attachments && tx.attachments.length > 0 && (
+            <Tooltip title={`${tx.attachments.length} anexo(s)`}>
+              <Paperclip size={14} className="text-slate-400 dark:text-gray-500 shrink-0" />
+            </Tooltip>
+          )}
+        </div>
+        {tx.clientName && <p className="text-xs text-slate-400 dark:text-gray-500 truncate">{tx.clientName}</p>}
+      </td>
+      <td className="px-5 py-3">
+        <span className="text-[11px] font-medium text-slate-500 dark:text-gray-400 bg-slate-100 dark:bg-gray-800 px-2.5 py-1 rounded-full">{tx.category}</span>
+      </td>
+      <td className="px-5 py-3">
+        <span className={cn('inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full',
+          tx.type === 'receita' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400'
+        )}>
+          {tx.type === 'receita' ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+          {tx.type === 'receita' ? t('financial.form.income', 'Receita') : t('financial.form.expense', 'Despesa')}
+        </span>
+      </td>
+      <td className="px-5 py-3">
+        <span className={cn('text-sm font-bold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
+          {tx.type === 'receita' ? '+' : '-'}{formatCurrency(tx.amount)}
+        </span>
+      </td>
+      <td className="px-5 py-3">
+        {(tx.status === 'pendente' || tx.status === 'atrasado') ? (
+          <Tooltip title={t('financial.txList.markAsPaid', 'Marcar como pago')}>
+            <button onClick={() => onMarkPaid(tx.id)} className="inline-flex">
+              <Chip label={statusText} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, border: `1px solid ${sc.border}`, fontWeight: 600, fontSize: '0.65rem', cursor: 'pointer', '&:hover': { opacity: 0.8 } }} />
+            </button>
+          </Tooltip>
+        ) : (
+          <Chip label={statusText} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, border: `1px solid ${sc.border}`, fontWeight: 600, fontSize: '0.65rem' }} />
+        )}
+      </td>
+      <td className="px-5 py-3">
+        {locked ? (
+          <Tooltip title="Vinculado a documento fiscal autorizado — não pode ser alterado">
+            <div className="flex items-center gap-1 opacity-50 group-hover:opacity-100 transition-opacity">
+              <Lock size={14} className="text-amber-500" />
+            </div>
+          </Tooltip>
+        ) : (
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            {tx.status === 'pago' && (
+              <Tooltip title={t('financial.txList.revertPaid', 'Reverter para pendente')}>
+                <IconButton size="small" onClick={() => onRevertPaid(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#F59E0B' } }}>
+                  <RotateCcw size={14} />
+                </IconButton>
+              </Tooltip>
+            )}
+            <Tooltip title={t('financial.txList.edit', 'Editar')}><IconButton size="small" onClick={() => onEdit(tx)} sx={{ color: '#64748B' }}><Edit3 size={14} /></IconButton></Tooltip>
+            <Tooltip title={t('financial.txList.delete', 'Excluir')}><IconButton size="small" onClick={() => onDelete(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}><Trash2 size={14} /></IconButton></Tooltip>
+          </div>
+        )}
+      </td>
+    </>
+  );
+});
+
 function TransactionsContent({
   transactions, allTransactions, filterTab, onFilterChange,
   search, onSearchChange, sortField, sortDir, onSort,
@@ -4108,6 +4244,49 @@ function TransactionsContent({
     projects.forEach(p => m.set(p.id, p));
     return m;
   }, [projects]);
+
+  // ── Virtualização da lista de transações ────────────────────────────────────
+  const [attachScrollRef, scrollParent] = useScrollParent();
+
+  const renderTxHeader = useCallback(() => (
+    <tr className="text-left">
+      {[
+        { key: 'dueDate', label: t('financial.txList.colDate', 'Data') },
+        { key: 'description', label: t('financial.txList.colDescription', 'Descrição') },
+        { key: 'category', label: t('financial.txList.colCategory', 'Categoria') },
+        { key: 'type', label: t('financial.txList.colType', 'Tipo') },
+        { key: 'amount', label: t('financial.txList.colAmount', 'Valor') },
+        { key: 'status', label: t('financial.txList.colStatus', 'Status') },
+        { key: 'actions', label: '' },
+      ].map((col) => (
+        <th key={col.key} onClick={() => col.key !== 'actions' && onSort(col.key)}
+          className={cn('px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider', col.key !== 'actions' && 'cursor-pointer hover:text-slate-600 dark:hover:text-gray-300')}
+        >
+          <div className="flex items-center gap-1">
+            {col.label}
+            {sortField === col.key && <ChevronDown size={11} className={cn('transition-transform', sortDir === 'asc' && 'rotate-180')} />}
+          </div>
+        </th>
+      ))}
+    </tr>
+  ), [t, onSort, sortField, sortDir]);
+
+  const renderTxRow = useCallback((_index: number, tx: Transaction) => (
+    <TransactionRowCells
+      tx={tx}
+      proj={tx.projectId ? projectsById.get(tx.projectId) : undefined}
+      locked={getIsLocked(tx)}
+      statusChip={getStatusChipColor(tx.status)}
+      statusText={statusLabel(tx.status)}
+      t={t}
+      formatCurrency={formatCurrency}
+      onMarkPaid={onMarkPaid}
+      onRevertPaid={onRevertPaid}
+      onEdit={onEdit}
+      onDelete={onDelete}
+      onViewInstallments={onViewInstallments}
+    />
+  ), [projectsById, getIsLocked, getStatusChipColor, statusLabel, t, formatCurrency, onMarkPaid, onRevertPaid, onEdit, onDelete, onViewInstallments]);
 
   // ── Projeção/semanal: usa allTransactions (sem o filtro tabular) para refletir
   //    o caixa real da empresa, não só o subset filtrado.
@@ -4616,133 +4795,20 @@ function TransactionsContent({
       )}
 
       {/* ===== VIEW: LISTA (tabela) ===== */}
-      {viewMode === 'lista' && (
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead>
-            <tr className="text-left">
-              {[
-                { key: 'dueDate', label: t('financial.txList.colDate', 'Data') },
-                { key: 'description', label: t('financial.txList.colDescription', 'Descrição') },
-                { key: 'category', label: t('financial.txList.colCategory', 'Categoria') },
-                { key: 'type', label: t('financial.txList.colType', 'Tipo') },
-                { key: 'amount', label: t('financial.txList.colAmount', 'Valor') },
-                { key: 'status', label: t('financial.txList.colStatus', 'Status') },
-                { key: 'actions', label: '' },
-              ].map((col) => (
-                <th key={col.key} onClick={() => col.key !== 'actions' && onSort(col.key)}
-                  className={cn('px-5 py-3 text-[11px] font-semibold text-slate-400 dark:text-gray-500 uppercase tracking-wider', col.key !== 'actions' && 'cursor-pointer hover:text-slate-600 dark:hover:text-gray-300')}
-                >
-                  <div className="flex items-center gap-1">
-                    {col.label}
-                    {sortField === col.key && <ChevronDown size={11} className={cn('transition-transform', sortDir === 'asc' && 'rotate-180')} />}
-                  </div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50 dark:divide-gray-800">
-            <AnimatePresence>
-              {transactions.map((tx, i) => {
-                const sc = getStatusChipColor(tx.status);
-                const locked = getIsLocked(tx);
-                const proj = tx.projectId ? projectsById.get(tx.projectId) : undefined;
-                return (
-                  <motion.tr key={tx.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ delay: i * 0.015 }}
-                    className="hover:bg-slate-50/50 dark:hover:bg-white/[0.02] transition-colors group"
-                  >
-                    <td className="px-5 py-3 text-sm text-slate-500 dark:text-gray-400 whitespace-nowrap">{formatDate(tx.dueDate)}</td>
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <p className="text-sm font-medium text-slate-800 dark:text-gray-200 truncate max-w-[200px]">{tx.description}</p>
-                        {proj && (
-                          <Tooltip title={`Projeto: ${proj.name}`}>
-                            <span
-                              className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md border shrink-0"
-                              style={{ color: proj.color, borderColor: `${proj.color}40`, backgroundColor: `${proj.color}15` }}
-                            >
-                              <Tag size={9} /> {proj.name}
-                            </span>
-                          </Tooltip>
-                        )}
-                        {!proj && tx.projectName && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md border border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 shrink-0">
-                            <Tag size={9} /> {tx.projectName}
-                          </span>
-                        )}
-                        {tx.installmentGroupId && (
-                          <Tooltip title="Ver grupo de parcelas">
-                            <button
-                              onClick={(e) => { e.stopPropagation(); onViewInstallments(tx.installmentGroupId!); }}
-                              className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-500/20 border border-violet-200/60 dark:border-violet-500/20 transition-colors shrink-0"
-                            >
-                              <Layers size={9} />
-                              {tx.installmentNumber}/{tx.installmentTotal}
-                            </button>
-                          </Tooltip>
-                        )}
-                        {tx.attachments && tx.attachments.length > 0 && (
-                          <Tooltip title={`${tx.attachments.length} anexo(s)`}>
-                            <Paperclip size={14} className="text-slate-400 dark:text-gray-500 shrink-0" />
-                          </Tooltip>
-                        )}
-                      </div>
-                      {tx.clientName && <p className="text-xs text-slate-400 dark:text-gray-500 truncate">{tx.clientName}</p>}
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className="text-[11px] font-medium text-slate-500 dark:text-gray-400 bg-slate-100 dark:bg-gray-800 px-2.5 py-1 rounded-full">{tx.category}</span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className={cn('inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full',
-                        tx.type === 'receita' ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : 'bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-400'
-                      )}>
-                        {tx.type === 'receita' ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
-                        {tx.type === 'receita' ? t('financial.form.income', 'Receita') : t('financial.form.expense', 'Despesa')}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className={cn('text-sm font-bold', tx.type === 'receita' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400')}>
-                        {tx.type === 'receita' ? '+' : '-'}{formatCurrency(tx.amount)}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3">
-                      {(tx.status === 'pendente' || tx.status === 'atrasado') ? (
-                        <Tooltip title={t('financial.txList.markAsPaid', 'Marcar como pago')}>
-                          <button onClick={() => onMarkPaid(tx.id)} className="inline-flex">
-                            <Chip label={statusLabel(tx.status)} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, border: `1px solid ${sc.border}`, fontWeight: 600, fontSize: '0.65rem', cursor: 'pointer', '&:hover': { opacity: 0.8 } }} />
-                          </button>
-                        </Tooltip>
-                      ) : (
-                        <Chip label={statusLabel(tx.status)} size="small" sx={{ backgroundColor: sc.bg, color: sc.text, border: `1px solid ${sc.border}`, fontWeight: 600, fontSize: '0.65rem' }} />
-                      )}
-                    </td>
-                    <td className="px-5 py-3">
-                      {locked ? (
-                        <Tooltip title="Vinculado a documento fiscal autorizado — não pode ser alterado">
-                          <div className="flex items-center gap-1 opacity-50 group-hover:opacity-100 transition-opacity">
-                            <Lock size={14} className="text-amber-500" />
-                          </div>
-                        </Tooltip>
-                      ) : (
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {tx.status === 'pago' && (
-                            <Tooltip title={t('financial.txList.revertPaid', 'Reverter para pendente')}>
-                              <IconButton size="small" onClick={() => onRevertPaid(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#F59E0B' } }}>
-                                <RotateCcw size={14} />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                          <Tooltip title={t('financial.txList.edit', 'Editar')}><IconButton size="small" onClick={() => onEdit(tx)} sx={{ color: '#64748B' }}><Edit3 size={14} /></IconButton></Tooltip>
-                          <Tooltip title={t('financial.txList.delete', 'Excluir')}><IconButton size="small" onClick={() => onDelete(tx.id)} sx={{ color: '#64748B', '&:hover': { color: '#EF4444' } }}><Trash2 size={14} /></IconButton></Tooltip>
-                        </div>
-                      )}
-                    </td>
-                  </motion.tr>
-                );
-              })}
-            </AnimatePresence>
-          </tbody>
-        </table>
+      {viewMode === 'lista' && transactions.length > 0 && (
+      <div ref={attachScrollRef} className="overflow-x-auto">
+        {scrollParent ? (
+          <TableVirtuoso
+            data={transactions}
+            customScrollParent={scrollParent}
+            components={TX_TABLE_COMPONENTS}
+            computeItemKey={(_i, tx) => tx.id}
+            fixedHeaderContent={renderTxHeader}
+            itemContent={renderTxRow}
+          />
+        ) : (
+          <div className="min-h-[240px]" aria-hidden />
+        )}
       </div>
       )}
 
