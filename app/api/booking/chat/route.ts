@@ -145,6 +145,12 @@ export async function POST(req: NextRequest) {
 
   // Compute today's effective opening hours (applies holidays + seasonal overrides)
   const todayIso = new Date().toISOString().slice(0, 10);
+  // Rótulo humano com dia da semana no fuso do business — o agente resolve
+  // "quinta" pela PRÓXIMA ocorrência em vez de adivinhar o weekday da ISO crua.
+  const agentTz = business.settings?.timezone || 'America/Sao_Paulo';
+  const currentDateLabel =
+    `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, weekday: 'long' }).format(new Date())} ` +
+    `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, day: '2-digit', month: '2-digit' }).format(new Date())}`;
   const holidays = business.settings?.aiAgent?.calendar?.holidays || [];
   const isClosedToday = holidays.includes(todayIso);
   const seasonalHours = business.settings?.aiAgent?.calendar?.seasonalHours || [];
@@ -175,7 +181,7 @@ export async function POST(req: NextRequest) {
     opening_hours: effectiveHours,
     address: business.endereco || null,
     services_list: servicesList.length > 0 ? servicesList : null,
-    current_date: todayIso,
+    current_date: currentDateLabel,
     policies: business.settings?.aiAgent?.policies || null,
     sla: business.settings?.aiAgent?.sla || null,
     is_closed_today: isClosedToday,

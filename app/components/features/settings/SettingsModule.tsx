@@ -4556,7 +4556,7 @@ function AgenteTab() {
             </p>
             <textarea
               value={businessDescription}
-              onChange={(e) => setBusinessDescription(e.target.value.slice(0, 2000))}
+              onChange={(e) => setBusinessDescription(e.target.value.slice(0, 12000))}
               rows={5}
               placeholder={
                 useCase === 'pedidos'
@@ -4573,7 +4573,7 @@ function AgenteTab() {
               }
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
             />
-            <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/2000</p>
+            <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/12000</p>
           </SectionCard>
 
           {/* Instruções / regras de comportamento do agente */}
