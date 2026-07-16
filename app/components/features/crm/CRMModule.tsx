@@ -12,7 +12,7 @@ import {
   UserPlus, Briefcase, Tag, Hash, AlertTriangle, Heart, Shield, Zap, Brain,
   Sparkles, Filter, Crown, Settings2, GripVertical, Eye, EyeOff, ChevronUp, ChevronDown,
   Download, Upload, GitBranch, LayoutList, LayoutDashboard, Megaphone, Radio, SlidersHorizontal,
-  Check, Link as LinkIcon, CheckSquare, Repeat, Cake, Info, Archive,
+  Check, Link as LinkIcon, CheckSquare, Repeat, Cake, Info, Archive, Ticket,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -73,6 +73,7 @@ import CreateKanbanTaskDialog from './CreateKanbanTaskDialog';
 import { ScheduleActionDialog } from './ScheduleActionDialog';
 import AutomacoesTab from './AutomacoesTab';
 import FormulariosTab from './FormulariosTab';
+import CuponsTab from './CuponsTab';
 import MembershipsTab from './MembershipsTab';
 import SequenciasTab from './SequenciasTab';
 import { SourceIcon } from './SourceIcon';
@@ -3717,7 +3718,7 @@ function PipelineSettingsModal({
 
               {/* Visibility toggle */}
               <button
-                onClick={() => update(i, { isVisible: stage.isVisible === false ? true : false })}
+                onClick={() => update(i, { isVisible: stage.isVisible === false })}
                 title={stage.isVisible === false ? 'Mostrar no kanban' : 'Ocultar do kanban'}
                 className="p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
               >
@@ -3919,7 +3920,7 @@ function CRMImportModal({ onClose, businessId, onImported }: { onClose: () => vo
           setRawData(data); setHeaders(hdrs); setMapping(crmAutoMap(hdrs)); setStep(2);
         },
       });
-    });
+    }).catch(err => { console.error('[CRM] Falha ao carregar parser CSV:', err); });
   };
 
   const handleImport = async () => {
@@ -4088,6 +4089,7 @@ export default function CRMModule() {
     { key: 'automacoes', label: t('crm.tab.automations', 'Automações'), icon: <Zap size={15} />, desc: t('crm.tab.automations_desc', 'Regras automáticas') },
     { key: 'sequencias', label: t('crm.tab.sequences', 'Sequências'), icon: <GitBranchIcon />, desc: t('crm.tab.sequences_desc', 'Follow-up multi-passo') },
     { key: 'formularios', label: t('crm.tab.forms', 'Formulários'), icon: <FileText size={15} />, desc: t('crm.tab.forms_desc', 'Fichas de anamnese') },
+    { key: 'cupons', label: t('crm.tab.coupons', 'Cupons'), icon: <Ticket size={15} />, desc: t('crm.tab.coupons_desc', 'Descontos e promoções') },
     { key: 'planos', label: t('crm.tab.plans', 'Planos'), icon: <Crown size={15} />, desc: t('crm.tab.plans_desc', 'Assinaturas recorrentes') },
   ], [t]);
   const { isDark } = useTheme();
@@ -4876,6 +4878,11 @@ export default function CRMModule() {
             {activeTab === 'formularios' && (
               <div className="flex-1 overflow-y-auto min-h-0">
                 <FormulariosTab businessId={business?.id || ''} userId={user?.uid || ''} userName={user?.name || ''} isDark={isDark} />
+              </div>
+            )}
+            {activeTab === 'cupons' && (
+              <div className="flex-1 overflow-y-auto min-h-0">
+                <CuponsTab businessId={business?.id || ''} />
               </div>
             )}
             {activeTab === 'planos' && (

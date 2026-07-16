@@ -5,11 +5,6 @@
 import {
   collection,
   doc,
-  query,
-  where,
-  orderBy,
-  limit,
-  getDocs,
   runTransaction,
   Firestore,
 } from 'firebase/firestore';
@@ -51,7 +46,7 @@ export async function addLoyaltyPoints(
     pointsEarned: number;
     config: LoyaltyConfig;
     sourceId: string;
-    sourceType: 'sale' | 'appointment';
+    sourceType: 'sale' | 'appointment' | 'order';
     description: string;
   }
 ): Promise<void> {
@@ -160,24 +155,4 @@ export async function redeemLoyaltyPoints(
     pointsRedeemed: pointsToRedeem,
     reaisValue: pointsToReais(pointsToRedeem, config),
   };
-}
-
-/**
- * Fetch recent loyalty transactions for a client.
- */
-export async function getClientLoyaltyHistory(
-  db: Firestore,
-  businessId: string,
-  clientId: string,
-  maxItems = 20
-): Promise<LoyaltyTransaction[]> {
-  const q = query(
-    collection(db, 'loyaltyTransactions'),
-    where('businessId', '==', businessId),
-    where('clientId', '==', clientId),
-    orderBy('createdAt', 'desc'),
-    limit(maxItems)
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map(d => ({ ...d.data(), id: d.id } as LoyaltyTransaction));
 }

@@ -1,14 +1,21 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { createHash } from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { withIdempotency } from '@/lib/contracts/_runtime/idempotency';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type {
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderStatus,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
-  Product, DeliveryOrderAddress,
+  Product, DeliveryOrderAddress, Business,
 } from '@/lib/types';
 import { Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { deductStockAdmin } from '@/lib/services/stock-admin';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
+import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
+import { restoreOrderStockRecoverable } from '@/lib/services/order-stock-restore';
+import { recordClientPurchaseAdmin } from '@/lib/services/clients/recordPurchase';
+import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
+import { assertOrdersAcceptedNow } from '@/lib/services/orders/acceptance';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -94,6 +101,46 @@ async function createOrder(businessId: string, params: CreateParams) {
   if (!params.clientName) throw new Error('clientName required');
   if (!params.items?.length) throw new Error('items required');
 
+  // COER-02/R3 — Idempotência: a reentrega da mesma mensagem/tool-call (retry do
+  // agente, replay do webhook, timeout+retry) criava um pedido DUPLICADO — novo
+  // número sequencial + nova dedução de estoque. Envolvemos a criação em
+  // `withIdempotency` (mesmo runtime do cardápio público) com uma chave
+  // DETERMINÍSTICA por (businessId, conversação, carrinho): replays devolvem o
+  // MESMO pedido sem realocar número nem debitar estoque de novo. Sem messageId
+  // nos params, derivamos um hash estável do carrinho (productId+qtd+notes) — dois
+  // pedidos idênticos na MESMA conversa dentro do TTL (24h) convergem, tradeoff
+  // aceito para eliminar a duplicação por reentrega. `businessId` já é prefixado
+  // pelo próprio withIdempotency no docId.
+  const cartHash = createHash('sha256')
+    .update(JSON.stringify(
+      params.items
+        .map((i) => [i.productId, i.quantity, i.notes ?? ''] as const)
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])),
+    ))
+    .digest('hex')
+    .slice(0, 16);
+  const convScope = params.conversationId ?? params.contactExternalId ?? 'noconv';
+  const idempotencyKey = `agent-order_${convScope}_${cartHash}`;
+
+  const { result } = await withIdempotency(
+    adminDb,
+    { businessId, key: idempotencyKey, endpoint: 'POST /api/agent/tools/orders#create' },
+    () => createOrderInner(businessId, params),
+  );
+  return result;
+}
+
+async function createOrderInner(businessId: string, params: CreateParams) {
+  // Guardrail off-hours (M13): se o business NÃO aceita pedidos fora do horário
+  // e está fechado agora, recusa no servidor. Antes o flag só "torcia" pro LLM
+  // recusar (prompt) — a tool criava o pedido a qualquer hora. `open===null`
+  // (sem grade de 7 dias) = indeterminado → não bloqueia.
+  const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
+  const biz = bizSnap.exists ? (bizSnap.data() as Business) : null;
+  // COER-01: fonte ÚNICA do guard de horário — o MESMO helper do cardápio público
+  // (lib/services/orders/acceptance), evitando drift entre os dois caminhos.
+  if (biz) assertOrdersAcceptedNow(biz);
+
   // Validate products exist & are deliverable, compute prices, pre-check stock (incl BOM)
   const productRefs = await Promise.all(
     params.items.map(i => adminDb.collection('products').doc(i.productId).get()),
@@ -110,6 +157,8 @@ async function createOrder(businessId: string, params: CreateParams) {
     const line = params.items[i];
     const product = productIndex.get(line.productId);
     if (!product) throw new Error(`Produto não encontrado: ${line.productId}`);
+    // "Não controlar estoque" (trackStock===false): fora do pré-check e da dedução.
+    if (product.trackStock === false) continue;
     if (product.components && product.components.length > 0) {
       for (const comp of product.components) {
         stockBucket.set(comp.productId, (stockBucket.get(comp.productId) || 0) + comp.quantity * line.quantity);
@@ -145,7 +194,10 @@ async function createOrder(businessId: string, params: CreateParams) {
     if (!snap.exists) throw new Error(`Product ${line.productId} not found`);
     const p = snap.data() as Product;
     if (p.businessId !== businessId) throw new Error('Cross-tenant product access denied');
+    // Alinha ao cardápio público (orders/public): produto desativado não vende.
+    if (p.isActive === false) throw new Error(`Produto "${p.name}" está desativado`);
     if (!p.isDeliverable) throw new Error(`Product "${p.name}" is not on the menu`);
+    if (p.menuAvailable === false) throw new Error(`Produto "${p.name}" está indisponível hoje`);
     resolvedItems.push({
       productId: snap.id,
       productName: p.name,
@@ -160,15 +212,10 @@ async function createOrder(businessId: string, params: CreateParams) {
   const subtotal = resolvedItems.reduce((s, i) => s + i.total, 0);
   const total = Math.max(0, subtotal + (params.deliveryFee || 0) - (params.discount || 0));
 
-  // Sequential order number per business
-  const counterRef = adminDb.collection('businesses').doc(businessId).collection('counters').doc('deliveryOrder');
-  const number = await adminDb.runTransaction(async (t) => {
-    const snap = await t.get(counterRef);
-    const current = (snap.data()?.lastNumber as number | undefined) || 0;
-    const next = current + 1;
-    t.set(counterRef, { lastNumber: next }, { merge: true });
-    return next;
-  });
+  // Numeração: fonte ÚNICA (business.lastOrderNumber), compartilhada com a UI
+  // (OrdersModule) e o cardápio público (orders/public). Antes este canal usava
+  // um contador SEPARADO (counters/deliveryOrder) → números colidiam entre canais.
+  const number = await allocateOrderNumberAdmin(adminDb, businessId);
 
   const now = new Date().toISOString();
   const estimatedDeliveryAt = new Date(Date.now() + (params.estimatedMinutes || 45) * 60000).toISOString();
@@ -180,7 +227,9 @@ async function createOrder(businessId: string, params: CreateParams) {
   // comportamento antigo de salvar o pedido e só logar a falha. O productIndex já tem
   // os produtos top-level + folhas de BOM; passamos as linhas top-level e o serviço
   // expande o BOM internamente (mesma expansão usada na pré-checagem acima).
-  const stockLines = params.items.map((line) => ({ productId: line.productId, quantity: line.quantity }));
+  const stockLines = params.items
+    .filter((line) => productIndex.get(line.productId)?.trackStock !== false)
+    .map((line) => ({ productId: line.productId, quantity: line.quantity }));
   await deductStockAdmin(adminDb, stockLines, {
     businessId,
     operatorId: 'agent',
@@ -189,11 +238,24 @@ async function createOrder(businessId: string, params: CreateParams) {
     productIndex,
   });
 
+  // Identidade canônica do cliente quando veio só o telefone (sem clientId):
+  // dedup compartilhado com cardápio/PDV + garante clientId no pedido pra a
+  // entrega registrar a compra (recordClientPurchase precisa dele). Best-effort.
+  let resolvedClientId = params.clientId;
+  if (!resolvedClientId && params.clientPhone) {
+    try {
+      const r = await resolveClientIdentityAdmin({ db: adminDb, businessId, phone: params.clientPhone, name: params.clientName });
+      resolvedClientId = r.clientId ?? undefined;
+    } catch (e) {
+      console.warn('[orders/create] resolveClientIdentity falhou:', e);
+    }
+  }
+
   const doc: Omit<DeliveryOrder, 'id'> = {
     businessId,
     number,
     status: 'recebido',
-    clientId: params.clientId,
+    clientId: resolvedClientId,
     clientName: params.clientName.trim(),
     clientPhone: params.clientPhone,
     channel: params.channel || 'manual',
@@ -259,34 +321,108 @@ async function updateStatus(businessId: string, orderId: string, status: Deliver
   assertTransitionDeliveryOrder(data.status, status);
 
   const now = new Date().toISOString();
-  const patch: Record<string, unknown> = { status, updatedAt: now };
+
   if (status === 'entregue') {
-    patch.deliveredAt = now;
-    // Receita de delivery → Transaction (idempotente via data.transactionId).
-    // Mantém consistência com OrdersModule.handleStatusChange + PDV (saleId).
-    if (!data.transactionId) {
-      const txRef = adminDb.collection('transactions').doc();
-      await txRef.set({
-        businessId,
-        type: 'receita',
-        category: 'Vendas',
-        description: `Pedido #${data.number}${data.clientName ? ` - ${data.clientName}` : ''}`,
-        amount: data.total,
-        dueDate: now.split('T')[0],
-        paymentDate: now.split('T')[0],
-        status: 'pago',
-        clientId: data.clientId || null,
-        contactId: data.clientId || null,
-        clientName: data.clientName || null,
-        deliveryOrderId: orderId,
-        paymentMethod: data.paymentMethod || null,
-        createdAt: now,
-        updatedAt: now,
+    // Receita de delivery → Transaction com ID DETERMINÍSTICO {orderId}_revenue,
+    // gravada de forma idempotente numa runTransaction com CAS em transactionId
+    // (mesmo padrão de sales-server `${saleId}_revenue`). O ID estável + o guard
+    // CAS garantem que entregar pela tool do agente, pela UI (OrdersModule) ou
+    // pelo fluxo de pagamento online aprovado NUNCA duplica a receita: todos
+    // convergem para o mesmo doc. status/deliveredAt e a FK transactionId são
+    // escritos na MESMA transação (atômico).
+    //
+    // X1-gate: pagamento online (paymentProvider definido — dinheiro regido pela
+    // FSM de pagamento) só vira receita 'pago' quando a FSM confirma
+    // (paymentFsmStatus === 'paid'). Entregar um pedido online ainda não pago NÃO
+    // lança receita aqui — o dinheiro não entrou; a receita será lançada pelo
+    // fluxo de aprovação do pagamento usando o MESMO ID determinístico.
+    const txRef = adminDb.collection('transactions').doc(`${orderId}_revenue`);
+    let revenueRecognized = false;
+    let purchaseClientId: string | undefined;
+    let purchaseAmount = 0;
+    let purchaseCountVisit = true;
+    await adminDb.runTransaction(async (t) => {
+      const cur = await t.get(ref);
+      if (!cur.exists) throw new Error('Order not found');
+      const curData = cur.data() as DeliveryOrder;
+      const orderPatch: Record<string, unknown> = { status, deliveredAt: now, updatedAt: now };
+
+      const isOnlinePayment = !!curData.paymentProvider;
+      const onlineUnpaid = isOnlinePayment && curData.paymentFsmStatus !== 'paid';
+
+      // F2 — gate pagamento→entrega (espelha a UI): pedido online ainda NÃO pago
+      // NÃO pode ser entregue — aborta antes de mudar o status (antes só pulava a
+      // receita mas marcava 'entregue', criando receita pendente fantasma/assimetria).
+      if (onlineUnpaid) {
+        throw new Error('Pedido com pagamento online ainda não confirmado — só pode ser entregue após o pagamento aprovar.');
+      }
+
+      revenueRecognized = true;
+      purchaseClientId = curData.clientId;
+      purchaseAmount = curData.total;
+      // CLI-1 — 'site' (cardápio público) já contou a visita na criação; não recontar.
+      purchaseCountVisit = curData.channel !== 'site';
+
+      // CAS em transactionId: só lança se ainda não houver receita E o gate online passar.
+      if (!curData.transactionId && !onlineUnpaid) {
+        t.set(txRef, {
+          businessId,
+          type: 'receita',
+          category: 'Vendas',
+          description: `Pedido #${curData.number}${curData.clientName ? ` - ${curData.clientName}` : ''}`,
+          amount: curData.total,
+          dueDate: now.split('T')[0],
+          paymentDate: now.split('T')[0],
+          status: 'pago',
+          clientId: curData.clientId || null,
+          contactId: curData.clientId || null,
+          clientName: curData.clientName || null,
+          deliveryOrderId: orderId,
+          paymentMethod: curData.paymentMethod || null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        orderPatch.transactionId = txRef.id;
+      }
+      t.update(ref, orderPatch);
+    });
+
+    // Atribui a compra à ficha do cliente — espelha a receita acima e o fluxo da UI
+    // (OrdersModule). Idempotente por clients/{clientId}/purchases/{orderId}, então
+    // entregar pela tool, pela UI ou pelo fluxo de pagamento converge num único
+    // registro. countVisit default (true): o createOrder do agente não conta visita
+    // na origem (≠ cardápio público, que conta na criação). Side-effect: falha aqui
+    // não reverte a entrega — apenas loga, como no estorno de estoque.
+    if (revenueRecognized && purchaseClientId) {
+      try {
+        await recordClientPurchaseAdmin({
+          db: adminDb,
+          businessId,
+          clientId: purchaseClientId,
+          sourceId: orderId,
+          amount: purchaseAmount,
+          countVisit: purchaseCountVisit,
+        });
+      } catch (purchaseErr) {
+        console.error('[orders/updateStatus] recordClientPurchase failed:', purchaseErr);
+      }
+    }
+    return { id: orderId, status };
+  }
+
+  // Cancelamento via updateStatus também restaura estoque (mesmo helper único do
+  // cancelOrder) — antes este catch-all marcava 'cancelado' sem devolver estoque.
+  if (status === 'cancelado' && data.stockDeductedAt) {
+    try {
+      await restoreOrderStockRecoverable(orderId, businessId, {
+        operatorName: 'Agente (cancelamento)',
+        context: 'pedido cancelado',
       });
-      patch.transactionId = txRef.id;
+    } catch (stockErr) {
+      console.error('[orders/updateStatus] stock restore failed:', stockErr);
     }
   }
-  await ref.update(patch);
+  await ref.update({ status, updatedAt: now });
   return { id: orderId, status };
 }
 
@@ -362,56 +498,22 @@ async function cancelOrder(businessId: string, orderId: string, reason?: string)
     updatedAt: now,
   });
 
-  // Restore stock if it had been deducted when the order was created
-  if ((data as DeliveryOrder & { stockDeductedAt?: string }).stockDeductedAt) {
+  // Restaura estoque (se debitado na criação) via helper ÚNICO recuperável: claim
+  // distinguível anti duplo-restauro + linhas COM insumos de modificadores. O
+  // buildStockBucket antigo ignorava modificadores (subcontagem) e não tinha guard
+  // de claim (duplo-restauro após cron/webhook).
+  if (data.stockDeductedAt) {
     try {
-      const restoreBucket = await buildStockBucket(data.items);
-      const batch = adminDb.batch();
-      for (const [pid, qty] of restoreBucket.entries()) {
-        batch.update(adminDb.collection('products').doc(pid), {
-          currentStock: FieldValue.increment(qty),
-          updatedAt: now,
-        });
-      }
-      await batch.commit();
+      await restoreOrderStockRecoverable(orderId, businessId, {
+        operatorName: 'Agente (cancelamento)',
+        context: 'pedido cancelado',
+      });
     } catch (stockErr) {
       console.error('[orders/cancel] stock restore failed:', stockErr);
     }
   }
 
   return { id: orderId, status: 'cancelado' };
-}
-
-async function buildStockBucket(items: DeliveryOrderItem[]): Promise<Map<string, number>> {
-  const bucket = new Map<string, number>();
-  const productSnaps = await Promise.all(items.map(i => adminDb.collection('products').doc(i.productId).get()));
-  const productIndex = new Map<string, Product>();
-  productSnaps.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
-
-  // Fetch any BOM leaf products not in the top-level set
-  const leafIds = new Set<string>();
-  for (const item of items) {
-    const p = productIndex.get(item.productId);
-    if (p?.components?.length) p.components.forEach(c => leafIds.add(c.productId));
-  }
-  const missing = Array.from(leafIds).filter(id => !productIndex.has(id));
-  if (missing.length > 0) {
-    const extra = await Promise.all(missing.map(id => adminDb.collection('products').doc(id).get()));
-    extra.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
-  }
-
-  for (const item of items) {
-    const p = productIndex.get(item.productId);
-    if (!p) continue;
-    if (p.components?.length) {
-      for (const comp of p.components) {
-        bucket.set(comp.productId, (bucket.get(comp.productId) || 0) + comp.quantity * item.quantity);
-      }
-    } else {
-      bucket.set(p.id, (bucket.get(p.id) || 0) + item.quantity);
-    }
-  }
-  return bucket;
 }
 
 async function listRecent(businessId: string, limit: number) {

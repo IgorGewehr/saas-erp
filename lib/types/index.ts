@@ -140,9 +140,20 @@ export interface Business {
   // Financial settings (notifications, etc.)
   financial?: {
     notificationSettings?: FinancialNotificationSettings;
+    /** Colchão mínimo que o hero "Você pode tirar até" (financial-v2/Visão
+     *  Geral) nunca oferece como livre — reserva de segurança configurável.
+     *  Default 0 (nenhum comportamento muda pra quem nunca configurou). */
+    cushionAmount?: number;
   };
   // Omnichannel (WhatsApp, Facebook, Instagram)
   channels?: ChannelCredentials;
+  // Mercado Pago — flags PÚBLICAS espelhadas (PaymentAccountPublic). Os tokens
+  // ficam só em businesses/{id}/private/mpAuth (Admin SDK); estas são seguras
+  // para o client e usadas pelo cardápio público para ofertar pagamento online.
+  mpConnected?: boolean;
+  mpPublicKey?: string;
+  mpLiveMode?: boolean;
+  mpNeedsReauth?: boolean;
   // Status
   isActive: boolean;
   createdAt: string;
@@ -457,6 +468,10 @@ export interface BusinessSettings {
   notificationServer?: NotificationServerConfig;
   /** Ativa a aba de Projetos no módulo financeiro */
   projectsEnabled?: boolean;
+  /** Liga o Financeiro v2 (app/components/features/financial-v2/) no lugar do
+   *  FinancialModule clássico. Aditivo/reversível — ver docs do módulo v2.
+   *  Default false: nenhum tenant existente muda de tela sem opt-in explícito. */
+  financialV2Enabled?: boolean;
 }
 
 /**
@@ -632,8 +647,18 @@ export const SEGMENT_VOCAB: Record<BusinessSegment, SegmentVocabulary> = {
 
 export interface AiAgentSettings {
   enabled: boolean;
-  /** Contexto de negócio inserido no prompt do agente */
+  /** Contexto de negócio inserido no prompt do agente (identidade + conhecimento).
+   *  NÃO é o lugar para regras de comportamento nem para a grade de horários — use
+   *  `instructions` (regras) e a Agenda estruturada (`Service.sessions`) para isso. */
   businessDescription?: string;
+  /**
+   * Regras de comportamento do agente definidas pelo dono do negócio.
+   * Ao contrário de `businessDescription` (mero contexto), estas instruções entram
+   * no prompt como REGRAS VINCULANTES (bloco <tenant_instructions>), logo abaixo da
+   * constituição de segurança da plataforma — o agente deve segui-las à risca, e só
+   * a constituição as sobrepõe. É o "system prompt" editável do tenant.
+   */
+  instructions?: string;
   tone?: 'formal' | 'casual' | 'friendly';
   /** Ramo/vertical — ajusta vocabulário, exemplos e persona do /agent.
    *  Ausente → tratado como `generico` pelo agente (fallback neutro). */
@@ -642,6 +667,12 @@ export interface AiAgentSettings {
 
   /** === Modo: pedidos === */
   pedidos?: {
+    /**
+     * Pausa manual da loja. Ausente/true = aceitando pedidos normalmente.
+     * false = loja PAUSADA agora: para de aceitar pedidos independente do
+     * horário de funcionamento (override manual acima de openingHours).
+     */
+    acceptingOrders?: boolean;
     /** Notificar cliente automaticamente em cada mudança de status do pedido */
     notifyOnStatusChange?: boolean;
     /** Aceitar novos pedidos fora do horário (ou mostrar mensagem de fechado) */
@@ -674,6 +705,31 @@ export interface AiAgentSettings {
     reminderTemplate?: { name: string; language: string };
     confirmationTemplate?: { name: string; language: string };
     followUpTemplate?: { name: string; language: string };
+  };
+
+  /**
+   * === Reengajamento proativo ===
+   * Quando o cliente para de responder no MEIO da conversa (estado 'waiting'),
+   * o agente reabre o contato de forma contextual após um período. Opt-in.
+   * Respeita a janela de 24h da Meta: fora dela (Cloud API) o nudge é pulado;
+   * no Baileys sempre pode. Ver dispatchReengagementToAgent + o sweep no cron.
+   */
+  reengagement?: {
+    /** Liga/desliga. Ausente = desligado. */
+    enabled?: boolean;
+    /** Horas de silêncio (desde a nossa última mensagem) antes do 1º nudge. Padrão 3. */
+    delayHours?: number;
+    /** Máximo de nudges por "sumiço". Padrão 2. */
+    maxAttempts?: number;
+    /** Horas entre nudges subsequentes. Padrão 20. */
+    intervalHours?: number;
+    /** Só envia dentro desta janela local (hora 0–23). Padrão 8–21. */
+    quietStart?: number;
+    quietEnd?: number;
+    /** Tag aplicada ao INICIAR o reengajamento. Padrão 'para prosseguir'. */
+    activeTag?: string;
+    /** Tag aplicada ao ESGOTAR as tentativas sem resposta. Padrão 'falhou contato'. */
+    exhaustedTag?: string;
   };
 
   /** === Modo: operador (dashboard chat) === */
@@ -778,6 +834,15 @@ export interface NFCeConfig {
   cscId: string;
   cscToken: string;
   environment: 'producao' | 'homologacao';
+  /**
+   * Auto-emissão de NFC-e ao concluir um pedido de delivery (módulo Pedidos).
+   * OPT-IN: ausente/false = OFF (comportamento legado — nenhuma nota é emitida
+   * automaticamente). Quando true, a conclusão do pedido dispara emissão
+   * best-effort e idempotente (por orderId) via /api/fiscal/emit — falha NÃO
+   * bloqueia o pedido, só loga. Emissão manual pelo EmitirNotaDialog segue
+   * disponível independente deste flag.
+   */
+  autoEmit?: boolean;
 }
 
 export interface NFSeConfig {
@@ -1055,6 +1120,11 @@ export interface SaleItem {
   unitPrice: number;
   discount: number;
   total: number;
+  /** Modificadores escolhidos p/ item configurável (mesmo shape do DeliveryOrderItem).
+   *  Denormalizado; usado por buildOrderStockLines pra debitar insumos (linkedProductId). */
+  selectedModifiers?: SelectedModifier[];
+  /** Preço base do produto antes dos modificadores (unitPrice = basePrice + delta). */
+  basePrice?: number;
 }
 
 export type PaymentMethod =
@@ -1139,6 +1209,11 @@ export interface TransactionRecurrence {
   interestPctMonth?: number; // FIN-R18: monthly interest % pro-rata (e.g. 1 = 1%/month)
   label?: string;            // user-friendly name (e.g. "Aluguel")
   history?: TransactionRecurrenceEntry[]; // log of past paid occurrences
+  /** Lembrete "a vencer" (sino/badge) dispensado manualmente para esta ocorrência.
+   *  Guarda o nextDueDate dispensado; quando === nextDueDate, o lembrete some do
+   *  sino e do badge do Financeiro. Volta sozinho no próximo ciclo (nextDueDate muda).
+   *  NÃO marca a transação como paga. */
+  reminderDismissedFor?: string;
 }
 
 export interface TransactionAttachment {
@@ -1181,6 +1256,12 @@ export interface Transaction {
   projectName?: string;
   appointmentId?: string; // Link back to the originating appointment (for commission transactions)
   deliveryOrderId?: string; // Link back to the originating delivery order (receita de delivery)
+  /** Vínculo com a assinatura que gerou esta cobrança (membershipBillingRunner).
+   *  Já era gravado no doc do Firestore — campo declarado aqui pra fechar R2
+   *  (financial-v2 usa isto pra derivar "assinatura em risco"). */
+  clientMembershipId?: string;
+  /** Plano cobrado (denormalizado, junto de clientMembershipId). */
+  membershipId?: string;
   // ── Cancellation audit (Fase 5c — Tier 2 status-driven) ──
   /** ISO timestamp do cancelamento. Setado quando `status` vira `cancelado`.
    *  Preserva doc pra historico financeiro/auditoria. */
@@ -1332,7 +1413,7 @@ export type AuditAction = 'create' | 'update' | 'delete' | 'pay' | 'cancel' | 'r
 export interface FinancialAuditLog {
   id: string;
   businessId: string;
-  entity: 'transaction' | 'bankAccount';
+  entity: 'transaction' | 'bankAccount' | 'cashSession';
   entityId: string;
   action: AuditAction;
   actorUid: string;
@@ -1510,6 +1591,10 @@ export interface Product {
   menuCategoryId?: string;      // Referência formal para MenuCategory (prioridade sobre menuCategory)
   menuDescription?: string;     // Short description for the menu card
   preparationTime?: number;     // Minutes — for delivery ETA
+  /** Ausente/true = disponível. false = "esgotado hoje" manual (esconde/marca esgotado no cardápio, independe do currentStock). */
+  menuAvailable?: boolean;
+  /** Ausente/true = controla estoque. false = "não controlar estoque" (nunca bloqueia venda nem deduz por estoque). */
+  trackStock?: boolean;
   /** Dietary markers — usados no cardápio e pelo agente para filtrar */
   dietary?: Array<'vegan' | 'vegetarian' | 'glutenfree' | 'lactosefree' | 'organic' | 'picante' | 'alcool' | 'kids'>;
   /** Personalização / modificadores — quando presente, catálogo abre wizard de montagem */
@@ -1727,7 +1812,25 @@ export type DeliveryOrderPaymentMethod =
   | 'cartao_debito'
   | 'pix'
   | 'voucher'
-  | 'outro';
+  | 'outro'
+  // ── pagamento online (Mercado Pago) — pago antes da entrega ──
+  | 'pix_online'
+  | 'cartao_online';
+
+/**
+ * Status da FSM de PAGAMENTO (dinheiro) — independente de DeliveryOrder.status
+ * (fabricação). Fonte da verdade em lib/contracts/fsm/payment.ts.
+ */
+export type PaymentFsmStatus =
+  | 'pending'
+  | 'authorized'
+  | 'paid'
+  | 'failed'
+  | 'refunded'
+  | 'expired';
+
+/** Método de pagamento online suportado na v1. */
+export type PaymentMethodKind = 'pix' | 'card';
 
 export interface DeliveryOrderItem {
   productId: string;
@@ -1778,6 +1881,16 @@ export interface DeliveryOrder {
   subtotal: number;
   deliveryFee?: number;
   discount?: number;
+  /** Cupom aplicado (motor de cupom). `couponDiscount` é a parcela de desconto
+   *  atribuída ao cupom — subconjunto de `discount`, para auditoria/relatório. */
+  couponId?: string;
+  couponCode?: string;
+  couponDiscount?: number;
+  /** Gift card resgatado no checkout (bearer). `giftCardAmount` reduz o total como
+   *  dinheiro, APÓS o cupom — não entra em `discount` (que é desconto comercial). */
+  giftCardId?: string;
+  giftCardCode?: string;
+  giftCardAmount?: number;
   total: number;
 
   deliveryType: DeliveryType;
@@ -1791,18 +1904,89 @@ export interface DeliveryOrder {
   paymentStatus: DeliveryOrderPaymentStatus;
   changeFor?: number;
 
+  // ── Pagamento online (Mercado Pago) — bloco INLINE, opcional ──
+  // Só preenchido quando o cliente paga online. Espelha
+  // lib/contracts/domain/payment.ts (PaymentBlockSchema). Pagamento na entrega
+  // não preenche nada disto — continua usando paymentStatus acima.
+  paymentProvider?: 'mercadopago';
+  /** ID do payment no MP — guard de idempotência do webhook. */
+  externalPaymentId?: string;
+  preferenceId?: string;
+  paymentMethodKind?: PaymentMethodKind;
+  /** PIX: conteúdo EMV do QR (== copia e cola). */
+  qrCode?: string;
+  /** PIX: PNG do QR em base64 (sem prefixo data:). */
+  qrCodeBase64?: string;
+  copiaECola?: string;
+  ticketUrl?: string;
+  /** Valor cobrado online (R$). */
+  paymentAmount?: number;
+  /** Taxa retida pelo provedor (MP) na liquidação (R$). Capturada do payment
+   *  (fee_details / net_received_amount) quando aprovado. Vira despesa "Taxas de
+   *  pagamento" no financeiro pra não inflar o lucro. */
+  mpFee?: number;
+  /** Valor líquido efetivamente recebido = paymentAmount - mpFee (R$). */
+  netAmount?: number;
+  /** FK para a Transaction de despesa da taxa do provedor (guard de idempotência
+   *  do lançamento de taxa; doc id determinístico {orderId}_mpfee). */
+  feeTransactionId?: string;
+  paidAt?: string;
+  refundedAt?: string;
+  /** Expiração da cobrança PIX (ISO). */
+  paymentExpiresAt?: string;
+  /** FSM de dinheiro — separada de status (fabricação). */
+  paymentFsmStatus?: PaymentFsmStatus;
+  /** Último motivo de recusa de pagamento (status_detail do MP). Exibido ao
+   *  cliente anônimo no acompanhamento; não-sensível. */
+  lastPaymentDeclineReason?: string;
+  /** Recusas de cartão acumuladas NESTE pedido. Teto anti card-testing: após
+   *  N recusas, pay-card bloqueia e exige um novo pedido. Incrementado de forma
+   *  atômica em transação a cada recusa terminal do MP. */
+  paymentAttempts?: number;
+
+  // ── Lock de "mint" do PIX (anti-corrida entre 2 aparelhos) ──
+  // Dois dispositivos pagando o mesmo pedido não podem gerar 2 QRs pagáveis.
+  // pay-pix adquire este lock (stale 60s) antes de chamar o MP; um PIX ainda
+  // válido é reusado em vez de gerar outro. Não fazem parte do PaymentBlock.
+  /** ISO do início da geração de um PIX em andamento. */
+  pixMintAt?: string;
+  /** Identificador (IP/sessão) de quem iniciou a geração. */
+  pixMintBy?: string;
+
   customerNotes?: string;
   internalNotes?: string;
 
   // Tracks when stock was deducted so transitions stay idempotent.
   stockDeductedAt?: string;
+  /** Setado quando o estoque debitado foi RESTAURADO (ex: PIX expirado /
+   *  estorno). Guard de idempotência: a restauração só roda se vazio. */
+  stockRestoredAt?: string;
+  /** Lock de claim do restauro de estoque (ISO). Distingue "restauro em progresso"
+   *  de "ainda não reivindicado" — evita restauro duplo concorrente (webhook de
+   *  refund reentregue / cron concorrente). Stale após ~5min → re-elegível. */
+  stockRestoreClaimedAt?: string;
 
   /** FK para a Transaction de receita gerada ao entregar/pagar. Guard de
    *  idempotência: Transaction só é criada se este campo estiver vazio. */
   transactionId?: string;
 
+  // ── Vínculo fiscal (V3) — writeback de /api/fiscal/emit ──
+  /** FK para o fiscalDocument (NFC-e) emitido a partir deste pedido. Presença =
+   *  nota já emitida ⇒ idempotência visual (mostra "NFC-e emitida" em vez do
+   *  botão de emissão). Gravado pelo writeback best-effort do emit route. */
+  fiscalDocumentId?: string;
+  /** Chave de acesso (44 dígitos) da NFC-e vinculada. Null quando a nota ficou
+   *  pendente/contingência sem chave ainda. */
+  fiscalAccessKey?: string | null;
+
   /** FK opcional para o CRMDeal que originou este pedido (ROI por deal — P2.10). */
   dealId?: string;
+
+  /** Token OPACO aleatório gerado na criação do pedido. Permite que o cliente
+   *  ANÔNIMO acompanhe e pague SOMENTE o próprio pedido (capability URL), sem
+   *  abrir leitura pública de deliveryOrders. Validado com timingSafeEqual nas
+   *  rotas /status, /pay-pix e /pay-card. Nunca exposto em projeções públicas. */
+  trackingToken?: string;
 
   createdAt: string;
   updatedAt: string;
@@ -2498,6 +2682,18 @@ export interface Conversation {
    * a Cloud exige mensagem template, senão aceita texto livre.
    */
   lastInboundFromContactAt?: string;
+  /**
+   * === Reengajamento proativo (idempotência) ===
+   * Nudges já disparados neste "sumiço" do cliente. Zerado (na prática) quando
+   * o cliente responde de novo — o sweep compara lastInboundFromContactAt com
+   * lastReengageAt: se a última inbound é mais nova que o último nudge, começa
+   * um ciclo novo. Ver processStalledConversations no cron.
+   */
+  reengageAttempts?: number;
+  /** ISO — quando o último nudge de reengajamento foi disparado. */
+  lastReengageAt?: string;
+  /** ISO — quando o reengajamento foi encerrado (tentativas esgotadas sem resposta). */
+  reengageExhaustedAt?: string;
   /**
    * Quantas vezes esta conversa transitou de resolved → open. Métrica chave:
    * conv reaberta = problema mal resolvido. Setado quando o operador (ou
@@ -3844,7 +4040,7 @@ export interface LoyaltyTransaction {
   description: string;
   /** ID da venda ou agendamento que originou o movimento */
   sourceId?: string;
-  sourceType?: 'sale' | 'appointment';
+  sourceType?: 'sale' | 'appointment' | 'order';
   expiresAt?: string;
   createdAt: string;
 }
@@ -3868,8 +4064,10 @@ export interface GiftCard {
   recipientPhone?: string;
   /** ID da venda de compra do gift card */
   purchasedBySaleId?: string;
-  /** ID da venda de resgate */
+  /** ID da venda de resgate (PDV) */
   usedBySaleId?: string;
+  /** ID do último pedido (delivery) que resgatou saldo deste gift card. */
+  usedByOrderId?: string;
   expiresAt?: string;
   purchasedAt: string;
   usedAt?: string;
@@ -4126,6 +4324,10 @@ export interface ClientMembership {
   startDate: string;
   nextBillingDate?: string;
   usesThisCycle: number;
+  /** Quando o cancelamento aconteceu (YYYY-MM-DD) — financial-v2 gap g1, ver
+   *  lib/contracts/domain/membership.ts. Ausente em docs legados cancelados;
+   *  read-models fazem fallback pra updatedAt. */
+  cancelledAt?: string;
   createdAt: string;
   updatedAt: string;
 }

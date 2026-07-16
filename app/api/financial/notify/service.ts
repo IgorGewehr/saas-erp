@@ -18,6 +18,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import type { Business, FinancialNotificationSettings } from '@/lib/types';
+import { formatCurrency } from '@/lib/utils/format';
 
 const DEFAULT_SETTINGS: FinancialNotificationSettings = {
   enabled: true,
@@ -175,7 +176,7 @@ export async function sendFinancialNotifications(
       (new Date(tx.dueDate + 'T00:00:00').getTime() - now.getTime()) / (24 * 60 * 60 * 1000),
     );
     const daysLabel = daysUntil <= 1 ? 'amanhã' : `em ${daysUntil} dias`;
-    const amount = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(tx.amount);
+    const amount = formatCurrency(tx.amount);
 
     let sent = false;
 
@@ -268,7 +269,7 @@ export async function sendFinancialNotifications(
       const daysOverdue = Math.floor(
         (now.getTime() - new Date(tx.dueDate + 'T00:00:00').getTime()) / (24 * 60 * 60 * 1000),
       );
-      const amount = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(tx.amount);
+      const amount = formatCurrency(tx.amount);
       let sent = false;
 
       if (settings.sendWhatsApp) {

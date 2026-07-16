@@ -144,6 +144,20 @@ interface MatchResult {
   confidence: number;   // 0-100
 }
 
+/**
+ * Valor líquido (netAmount) gravado pelo webhook do Mercado Pago na liquidação
+ * (receita/pedido) — o extrato do MP credita o líquido (bruto − taxa), então o
+ * `amount` bruto da Transaction não bate. O campo é opcional e não faz parte do
+ * contrato base de Transaction; lido defensivamente só onde presente.
+ */
+type SettledTransaction = Transaction & { netAmount?: number };
+
+/** Retorna o líquido (netAmount) da transação quando presente e válido. */
+function getNetAmount(tx: Transaction): number | undefined {
+  const net = (tx as SettledTransaction).netAmount;
+  return typeof net === 'number' && net > 0 ? net : undefined;
+}
+
 export interface AutoMatchConfig {
   /** Max R$ difference to still consider an amount match. Default: 0.01 */
   amountTolerance?: number;
@@ -157,6 +171,12 @@ export interface AutoMatchConfig {
  *   - Amount within tolerance: +50 (exact) or +40 (absolute)
  *   - Date within dateTolerance: up to +30
  *   - Description word overlap: up to +20
+ *
+ * FIN-DEL-06: recebíveis de cartão/PIX do Mercado Pago são creditados no extrato
+ * pelo valor LÍQUIDO (bruto − taxa). Quando a transação carrega `netAmount`
+ * (gravado pelo webhook na liquidação), o líquido é conferido primeiro; o bruto
+ * (`amount`) permanece como fallback pros demais meios (dinheiro, transferência,
+ * boleto), preservando a conciliação existente.
  */
 export function autoMatch(
   entries: BankStatementEntry[],
@@ -176,15 +196,32 @@ export function autoMatch(
 
       let score = 0;
 
-      // Amount match within configurable tolerance
-      const txAmount = tx.type === 'despesa' ? -tx.amount : tx.amount;
-      if (Math.abs(entry.amount - txAmount) <= amountTolerance) {
-        score += 50;
-      } else if (Math.abs(Math.abs(entry.amount) - tx.amount) <= amountTolerance) {
-        score += 40; // absolute match (sign agnostic)
-      } else {
-        continue; // skip — amount too far off
+      // Amount match within configurable tolerance.
+      // Confere o LÍQUIDO (netAmount) primeiro quando presente — o extrato do MP
+      // credita já descontada a taxa. Cai pro BRUTO (amount) como fallback, o que
+      // cobre os demais meios (sem netAmount) sem alterar seu comportamento.
+      const sign = tx.type === 'despesa' ? -1 : 1;
+      const txNet = getNetAmount(tx);
+      let amountScore = 0;
+      if (txNet !== undefined) {
+        if (Math.abs(entry.amount - sign * txNet) <= amountTolerance) {
+          amountScore = 50;
+        } else if (Math.abs(Math.abs(entry.amount) - txNet) <= amountTolerance) {
+          amountScore = 40; // absolute match (sign agnostic)
+        }
       }
+      if (amountScore === 0) {
+        const txAmount = sign * tx.amount;
+        if (Math.abs(entry.amount - txAmount) <= amountTolerance) {
+          amountScore = 50;
+        } else if (Math.abs(Math.abs(entry.amount) - tx.amount) <= amountTolerance) {
+          amountScore = 40; // absolute match (sign agnostic)
+        }
+      }
+      if (amountScore === 0) {
+        continue; // skip — amount too far off (nem líquido nem bruto batem)
+      }
+      score += amountScore;
 
       // Date proximity within configurable tolerance
       const txDate = tx.paymentDate || tx.dueDate;

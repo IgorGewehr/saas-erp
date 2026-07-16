@@ -25,6 +25,75 @@ function dlog(msg: string) {
 const AGENT_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:8080';
 const SECRET = process.env.AGENT_SHARED_SECRET;
 
+/**
+ * Static business-level fields shared by every /process payload (inbound and
+ * re-engagement). Keeps the two dispatch paths from drifting — notably the
+ * agent_instructions (tenant "system prompt") must always ride along.
+ */
+function businessContextPayload(business: Business): Record<string, unknown> {
+  const ai = business.settings?.aiAgent;
+  return {
+    business_name: business.nomeFantasia || business.razaoSocial,
+    business_description: ai?.businessDescription,
+    agent_instructions: ai?.instructions || null,
+    tone: ai?.tone || 'friendly',
+    pedidos_settings: ai?.pedidos || null,
+    agenda_settings: ai?.agenda || null,
+    address: business.endereco || null,
+    policies: ai?.policies || null,
+    sla: ai?.sla || null,
+    delivery_zones: ai?.deliveryZones || null,
+    accepted_payment_methods: ai?.acceptedPaymentMethods || null,
+    upsell_rules: (ai?.upsellRules || []).filter((r) => r.isActive),
+  };
+}
+
+/**
+ * HMAC-signs and POSTs a payload to the Python agent /process endpoint.
+ * Fire-and-forget: aborts the await after 3s (the agent keeps processing async
+ * and delivers the reply via /api/conversations/send), while recording
+ * success/failure for the tenant circuit breaker. Shared by inbound + re-engage.
+ */
+async function postToAgentProcess(businessId: string, payload: Record<string, unknown>, tag: string): Promise<void> {
+  const raw = JSON.stringify(payload);
+  const ts = Date.now();
+  const signature = crypto.createHmac('sha256', SECRET as string).update(`${ts}.${businessId}.${raw}`).digest('hex');
+  dlog(`${tag} POST → ${AGENT_URL}/process (payload ${raw.length} bytes, timeout 3s)`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`${AGENT_URL.replace(/\/$/, '')}/process`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-agent-signature': signature,
+        'x-agent-timestamp': String(ts),
+        'x-business-id': businessId,
+      },
+      body: raw,
+      signal: controller.signal,
+    }).catch((err) => {
+      const latency = Date.now() - t0;
+      if ((err as Error).name !== 'AbortError') dlog(`${tag} fetch failed (${latency}ms): ${String(err)}`);
+      else dlog(`${tag} 3s timeout — agent continues async (${latency}ms)`);
+      return null;
+    });
+    if (res && !res.ok) {
+      const body = await res.text().catch(() => '');
+      dlog(`${tag} ✗ agent HTTP ${res.status} (${Date.now() - t0}ms): ${body}`);
+      void recordFailure(businessId, `agent HTTP ${res.status}`).catch(() => {});
+    } else if (res?.ok) {
+      const data = await res.json().catch(() => ({}));
+      dlog(`${tag} ✓ agent responded (${Date.now() - t0}ms) — intent=${data.intent} status=${data.status} response="${String(data.final_response || '').slice(0, 80)}"`);
+      if (data.status === 'success') void recordSuccess(businessId).catch(() => {});
+      else if (data.status === 'error') void recordFailure(businessId, data.error || 'agent reported error').catch(() => {});
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface InboundDispatchInput {
   businessId: string;
   conversationId: string;
@@ -256,6 +325,12 @@ export async function dispatchInboundToAgent(
 
     // Compute today's effective opening hours (applies holidays + seasonal overrides)
     const todayIso = new Date().toISOString().slice(0, 10);
+    // Rótulo humano com dia da semana no fuso do business — o agente resolve
+    // "quinta" pela PRÓXIMA ocorrência em vez de adivinhar o weekday da ISO crua.
+    const agentTz = business.settings?.timezone || 'America/Sao_Paulo';
+    const currentDateLabel =
+      `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, weekday: 'long' }).format(new Date())} ` +
+      `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, day: '2-digit', month: '2-digit' }).format(new Date())}`;
     const holidays = business.settings?.aiAgent?.calendar?.holidays || [];
     const isClosedToday = holidays.includes(todayIso);
     const seasonalHours = business.settings?.aiAgent?.calendar?.seasonalHours || [];
@@ -272,84 +347,191 @@ export async function dispatchInboundToAgent(
       recipient_id: input.recipientId,
       history,
       use_case: useCase,
+      trigger: 'inbound',
       // Ramo/vertical (snake_case no fio) — ajusta vocabulário/persona do /agent.
       segment,
       segment_vocab: segmentVocab,
-      business_name: business.nomeFantasia || business.razaoSocial,
-      business_description: business.settings?.aiAgent?.businessDescription,
-      tone: business.settings?.aiAgent?.tone || 'friendly',
-      // Configurações específicas por modo — vão para o prompt do agente
-      pedidos_settings: business.settings?.aiAgent?.pedidos || null,
-      agenda_settings: business.settings?.aiAgent?.agenda || null,
+      // Static business context (name, description, instructions, tone, policies…)
+      ...businessContextPayload(business),
       // Long-term memory carried over from previous conversations
       client_memory: clientMemory || null,
       // Business operational context (profile / settings)
       opening_hours: effectiveHours,
-      address: business.endereco || null,
       services_list: servicesList.length > 0 ? servicesList : null,
       // Current date so the agent doesn't have to guess from training data
-      current_date: todayIso,
-      // ─── Wave 7 — policy-aware context ────────────────────────────────
-      policies: business.settings?.aiAgent?.policies || null,
-      sla: business.settings?.aiAgent?.sla || null,
+      current_date: currentDateLabel,
       is_closed_today: isClosedToday,
       seasonal_label: activeSeason?.label || null,
-      delivery_zones: business.settings?.aiAgent?.deliveryZones || null,
-      accepted_payment_methods: business.settings?.aiAgent?.acceptedPaymentMethods || null,
-      team_capacity: business.settings?.aiAgent?.teamCapacity || null,
-      upsell_rules: (business.settings?.aiAgent?.upsellRules || []).filter((r) => r.isActive),
     };
 
-    const raw = JSON.stringify(payload);
-    const ts = Date.now();
-    const message = `${ts}.${input.businessId}.${raw}`;
-    const signature = crypto.createHmac('sha256', SECRET).update(message).digest('hex');
-
-    // Fire and don't await — webhook response should stay fast.
-    // We await the *dispatch* but abort if it takes >3s; the agent itself will
-    // keep processing in the background. Next.js will get tool calls shortly.
-    dlog(`${tag} POST → ${AGENT_URL}/process (payload ${raw.length} bytes, timeout 3s)`);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3000);
-    const t0 = Date.now();
-    try {
-      const res = await fetch(`${AGENT_URL.replace(/\/$/, '')}/process`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-agent-signature': signature,
-          'x-agent-timestamp': String(ts),
-          'x-business-id': input.businessId,
-        },
-        body: raw,
-        signal: controller.signal,
-      }).catch((err) => {
-        const latency = Date.now() - t0;
-        if ((err as Error).name !== 'AbortError') {
-          dlog(`${tag} fetch failed (${latency}ms): ${String(err)}`);
-        } else {
-          dlog(`${tag} 3s timeout — agent continues async (${latency}ms)`);
-        }
-        return null;
-      });
-      if (res && !res.ok) {
-        const body = await res.text().catch(() => '');
-        dlog(`${tag} ✗ agent HTTP ${res.status} (${Date.now()-t0}ms): ${body}`);
-        void recordFailure(input.businessId, `agent HTTP ${res.status}`).catch(() => {});
-      } else if (res?.ok) {
-        const data = await res.json().catch(() => ({}));
-        dlog(`${tag} ✓ agent responded (${Date.now()-t0}ms) — intent=${data.intent} status=${data.status} response="${String(data.final_response || '').slice(0,80)}"`);
-        if (data.status === 'success') {
-          void recordSuccess(input.businessId).catch(() => {});
-        } else if (data.status === 'error') {
-          void recordFailure(input.businessId, data.error || 'agent reported error').catch(() => {});
-        }
-      }
-    } finally {
-      clearTimeout(timer);
-    }
+    // Fire and don't await for long — webhook response should stay fast. The
+    // agent keeps processing in the background and delivers via conversations/send.
+    await postToAgentProcess(input.businessId, payload, tag);
   } catch (err) {
     dlog(`${tag} ✗ fatal: ${String(err)}`);
     void recordFailure(input.businessId, String(err).slice(0, 200)).catch(() => {});
+  }
+}
+
+export interface ReengagementDispatchInput {
+  businessId: string;
+  conversationId: string;
+  /** Aproximadamente quantas horas o cliente está sem responder (vai pro prompt). */
+  hoursSilent?: number;
+  /** Número desta tentativa (1-based) — só para telemetria. */
+  attempt?: number;
+}
+
+/**
+ * Reingajamento proativo: o scheduler detectou que o cliente sumiu no meio da
+ * conversa e quer que o agente retome o contato. Reusa o mesmo pipeline /process
+ * do inbound, mas com trigger='reengagement' (sem uma mensagem nova do cliente —
+ * o agente gera a retomada a partir do histórico).
+ *
+ * O CHAMADOR (sweep do cron) é responsável por elegibilidade: estado 'waiting',
+ * janela de 24h da Meta, teto de tentativas, horário silencioso e idempotência.
+ * Aqui só revalidamos o gate de IA ligada e disparamos. Retorna true se o run
+ * foi disparado (para o cron marcar a tentativa).
+ */
+export async function dispatchReengagementToAgent(
+  db: Firestore,
+  input: ReengagementDispatchInput,
+): Promise<boolean> {
+  if (!SECRET) {
+    dlog('[agent/reengage] AGENT_SHARED_SECRET not set, skipping');
+    return false;
+  }
+  const tag = `[agent/reengage] conv=${input.conversationId.slice(-6)}`;
+  try {
+    const [bizSnap, convSnap] = await Promise.all([
+      db.collection('businesses').doc(input.businessId).get(),
+      db.collection('conversations').doc(input.conversationId).get(),
+    ]);
+    if (!bizSnap.exists || !convSnap.exists) {
+      dlog(`${tag} SKIP: business(${bizSnap.exists}) or conversation(${convSnap.exists}) not found`);
+      return false;
+    }
+    const business = bizSnap.data() as Business;
+    const conv = { ...(convSnap.data() as Conversation), id: convSnap.id };
+
+    // Mesmo gate de IA ligada do inbound (global + override por conversa).
+    const agentEnabledOnBusiness = !!business.settings?.aiAgent?.enabled;
+    const convOverrideOn = conv.aiEnabled === true;
+    if (!agentEnabledOnBusiness && !convOverrideOn) { dlog(`${tag} SKIP: agent off`); return false; }
+    if (agentEnabledOnBusiness && conv.aiEnabled === false) { dlog(`${tag} SKIP: aiEnabled=false on conv`); return false; }
+
+    const recipientId = conv.contactExternalId;
+    if (!recipientId) { dlog(`${tag} SKIP: sem contactExternalId (destino)`); return false; }
+
+    // Respeita o cool-down do circuit breaker do tenant.
+    if (!(await isCircuitAllowed(input.businessId))) { dlog(`${tag} SKIP: circuit open`); return false; }
+
+    // Histórico — últimas 10 trocas em ordem cronológica (sem mensagem gatilho).
+    const historySnap = await db.collection('conversationMessages')
+      .where('conversationId', '==', input.conversationId)
+      .where('businessId', '==', input.businessId)
+      .orderBy('sentAt', 'desc')
+      .limit(10)
+      .get();
+    const history = historySnap.docs
+      .map(d => d.data())
+      .reverse()
+      .map(m => ({
+        role: m.direction === 'inbound' ? 'user' : 'assistant',
+        content: typeof m.content === 'string' ? m.content : '',
+      }))
+      .filter(m => m.content);
+    if (history.length === 0) { dlog(`${tag} SKIP: sem histórico para retomar`); return false; }
+
+    // Memória persistente do contato (tier-2 + aiSummary) — igual ao inbound.
+    let clientMemory: string | undefined;
+    if (conv.crmContactId) {
+      try {
+        const { getMemorySummary } = await import('@/lib/rag/memory');
+        const factsBlock = await getMemorySummary(input.businessId, conv.crmContactId, { maxChars: 500, maxFacts: 12 });
+        const clientSnap = await db.collection('clients').doc(conv.crmContactId).get();
+        const aiSummary = clientSnap.exists ? ((clientSnap.data() as { aiSummary?: string }).aiSummary || '').trim() : '';
+        const parts: string[] = [];
+        if (factsBlock) parts.push(`Fatos lembrados:\n${factsBlock}`);
+        if (aiSummary) parts.push(`Histórico recente:\n${aiSummary.slice(0, 300)}`);
+        if (parts.length > 0) clientMemory = parts.join('\n\n').slice(0, 800);
+      } catch { /* non-fatal */ }
+    }
+
+    const useCase = business.settings?.useCase || 'servicos';
+    const segment: BusinessSegment = business.settings?.aiAgent?.segment || 'generico';
+    const segmentVocab = SEGMENT_VOCAB[segment];
+
+    // Pré-carrega serviços (mode agenda) — mesma forma do inbound.
+    type ServiceSnapshot = {
+      id: string; name: string; price: number; duration: number;
+      category?: string; description?: string; capacity?: number; sessions?: WeeklySession[];
+    };
+    let servicesList: ServiceSnapshot[] = [];
+    if (useCase === 'servicos') {
+      try {
+        const servicesSnap = await db.collection('services')
+          .where('businessId', '==', input.businessId)
+          .where('isActive', '==', true)
+          .get();
+        servicesList = servicesSnap.docs.map(d => {
+          const s = d.data();
+          const capacity = typeof s.capacity === 'number' ? (s.capacity as number) : undefined;
+          const sessions = Array.isArray(s.sessions) ? (s.sessions as WeeklySession[]) : undefined;
+          return {
+            id: d.id,
+            name: s.name as string,
+            price: (s.price as number) || 0,
+            duration: (s.duration as number) || 60,
+            ...(s.category ? { category: s.category as string } : {}),
+            ...(s.description ? { description: s.description as string } : {}),
+            ...(capacity !== undefined ? { capacity } : {}),
+            ...(sessions && sessions.length > 0 ? { sessions } : {}),
+          };
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    const todayIso = new Date().toISOString().slice(0, 10);
+    // Rótulo humano com dia da semana no fuso do business (display only). O
+    // todayIso cru continua sendo a chave de idempotência do message_id abaixo.
+    const agentTz = business.settings?.timezone || 'America/Sao_Paulo';
+    const currentDateLabel =
+      `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, weekday: 'long' }).format(new Date())} ` +
+      `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, day: '2-digit', month: '2-digit' }).format(new Date())}`;
+    const holidays = business.settings?.aiAgent?.calendar?.holidays || [];
+    const isClosedToday = holidays.includes(todayIso);
+    const seasonalHours = business.settings?.aiAgent?.calendar?.seasonalHours || [];
+    const activeSeason = seasonalHours.find((s) => todayIso >= s.fromDate && todayIso <= s.toDate);
+    const effectiveHours = activeSeason?.hours || business.settings?.openingHours || null;
+
+    const payload = {
+      message_id: `reengage_${input.conversationId}_${todayIso}_${input.attempt ?? 0}`,
+      conversation_id: input.conversationId,
+      message: '[reingajamento]',
+      contact_name: conv.contactName || '',
+      contact_phone: conv.contactPhone,
+      channel: conv.channel,
+      recipient_id: recipientId,
+      history,
+      use_case: useCase,
+      trigger: 'reengagement',
+      reengagement_context: { hours_silent: input.hoursSilent ?? null, attempt: input.attempt ?? null },
+      segment,
+      segment_vocab: segmentVocab,
+      ...businessContextPayload(business),
+      client_memory: clientMemory || null,
+      opening_hours: effectiveHours,
+      services_list: servicesList.length > 0 ? servicesList : null,
+      current_date: currentDateLabel,
+      is_closed_today: isClosedToday,
+      seasonal_label: activeSeason?.label || null,
+    };
+
+    await postToAgentProcess(input.businessId, payload, tag);
+    return true;
+  } catch (err) {
+    dlog(`${tag} ✗ fatal: ${String(err)}`);
+    return false;
   }
 }

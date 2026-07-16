@@ -2,9 +2,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import QRCode from 'qrcode';
 import bwipjs from 'bwip-js/node';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
+import { DanfeRequestSchema } from '@/lib/contracts/api/fiscal/danfe';
+import { formatCurrency } from '@/lib/utils/format';
 
-const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
-const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
+/**
+ * Escapa valor dinâmico pra interpolação em HTML. Os campos vêm de regex
+ * sobre XML client-supplied — sem escape, um <xProd> malicioso vira XSS
+ * quando o DANFE é aberto no browser. Aplicar em TODA interpolação de dado
+ * que não seja gerado pelo servidor (SVGs do QRCode/bwip-js são confiáveis).
+ */
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+const esc = escapeHtml;
 
 // Helper to extract data from XML using regex (same pattern as gestao-raiz)
 function tag(xml: string, tagName: string): string {
@@ -28,10 +43,6 @@ function formatCnpjCpf(doc: string): string {
 function formatChave(chave: string): string {
   if (!chave) return '';
   return chave.replace(/(.{4})/g, '$1 ').trim();
-}
-
-function formatCurrency(value: number): string {
-  return value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
 interface DanfeData {
@@ -244,7 +255,7 @@ async function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boole
   const qrSvg = isContingencia ? '' : await generateQRCodeSvg(data.qrCodeUrl, 180);
 
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>DANFE NFCe #${data.numero}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
+<html><head><meta charset="utf-8"><title>DANFE NFCe #${esc(data.numero)}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: 'Courier New', monospace; font-size: 10px; width: 80mm; margin: 0 auto; padding: 4mm; position: relative; }
@@ -266,22 +277,22 @@ async function generateDanfeNFCeHtml(data: DanfeData, opts: { isCancelled: boole
   @media print { body { width: 80mm; } }
 </style></head><body>
 ${opts.isCancelled ? '<div class="cancelled-watermark">CANCELADA</div>' : ''}
-${opts.isCancelled ? `<div class="cancelled-banner">NOTA FISCAL CANCELADA${cancelDate ? `<br>Em: ${cancelDate}` : ''}${opts.cancelReason ? `<br>Motivo: ${opts.cancelReason}` : ''}</div>` : ''}
-${isContingencia ? `<div class="contingencia-banner">EMITIDA EM CONTINGENCIA OFF-LINE<br><span style="font-weight: normal; font-size: 9px;">Aguardando transmissao a SEFAZ${opts.contingenciaMotivo ? `<br>Motivo: ${opts.contingenciaMotivo}` : ''}</span></div>` : ''}
+${opts.isCancelled ? `<div class="cancelled-banner">NOTA FISCAL CANCELADA${cancelDate ? `<br>Em: ${esc(cancelDate)}` : ''}${opts.cancelReason ? `<br>Motivo: ${esc(opts.cancelReason)}` : ''}</div>` : ''}
+${isContingencia ? `<div class="contingencia-banner">EMITIDA EM CONTINGENCIA OFF-LINE<br><span style="font-weight: normal; font-size: 9px;">Aguardando transmissao a SEFAZ${opts.contingenciaMotivo ? `<br>Motivo: ${esc(opts.contingenciaMotivo)}` : ''}</span></div>` : ''}
 ${isHomolog ? '<div class="homolog">EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</div>' : ''}
 <div class="header center">
-  <div class="bold">${data.emitente.fantasia || data.emitente.nome}</div>
-  <div>${data.emitente.endereco}</div>
-  <div>${data.emitente.cidade} - ${data.emitente.uf}</div>
-  <div>CNPJ: ${formatCnpjCpf(data.emitente.cnpj)}</div>
-  <div>IE: ${data.emitente.ie}</div>
+  <div class="bold">${esc(data.emitente.fantasia || data.emitente.nome)}</div>
+  <div>${esc(data.emitente.endereco)}</div>
+  <div>${esc(data.emitente.cidade)} - ${esc(data.emitente.uf)}</div>
+  <div>CNPJ: ${esc(formatCnpjCpf(data.emitente.cnpj))}</div>
+  <div>IE: ${esc(data.emitente.ie)}</div>
 </div>
 <div class="divider"></div>
 <div class="center bold">DANFE NFC-e</div>
 <div class="center">Doc Auxiliar da Nota Fiscal Eletronica p/ Consumidor Final</div>
 <div class="divider"></div>
 <div style="font-size: 9px;">
-${data.itens.map(i => `<div class="item"><span>${i.num}. ${i.descricao}</span></div><div class="item"><span>${i.qtd} ${i.un} x ${i.vUnit}</span><span>R$ ${i.vTotal}</span></div>`).join('')}
+${data.itens.map(i => `<div class="item"><span>${esc(i.num)}. ${esc(i.descricao)}</span></div><div class="item"><span>${esc(i.qtd)} ${esc(i.un)} x ${esc(i.vUnit)}</span><span>R$ ${esc(i.vTotal)}</span></div>`).join('')}
 </div>
 <div class="divider"></div>
 <div class="item"><span>Subtotal</span><span>R$ ${data.totais.vProd.toFixed(2)}</span></div>
@@ -289,24 +300,24 @@ ${data.totais.vDesc > 0 ? `<div class="item"><span>Desconto</span><span>-R$ ${da
 <div class="total center">TOTAL: R$ ${data.totais.vNF.toFixed(2)}</div>
 <div class="divider"></div>
 <div style="font-size: 9px;">
-${data.pagamentos.map(p => `<div class="item"><span>${p.tipo}</span><span>R$ ${p.valor}</span></div>`).join('')}
+${data.pagamentos.map(p => `<div class="item"><span>${esc(p.tipo)}</span><span>R$ ${esc(p.valor)}</span></div>`).join('')}
 </div>
 <div class="divider"></div>
-${data.destinatario ? `<div style="font-size: 9px;">Consumidor: ${data.destinatario.nome || ''} ${data.destinatario.cpf ? `CPF: ${formatCnpjCpf(data.destinatario.cpf)}` : ''}</div><div class="divider"></div>` : ''}
-<div class="center key">Chave de Acesso:<br>${formatChave(data.chaveAcesso)}</div>
+${data.destinatario ? `<div style="font-size: 9px;">Consumidor: ${esc(data.destinatario.nome || '')} ${data.destinatario.cpf ? `CPF: ${esc(formatCnpjCpf(data.destinatario.cpf))}` : ''}</div><div class="divider"></div>` : ''}
+<div class="center key">Chave de Acesso:<br>${esc(formatChave(data.chaveAcesso))}</div>
 <div class="divider"></div>
 ${qrSvg ? `
 <div class="center" style="margin: 6px auto;">
   <div style="width: 180px; height: 180px; margin: 0 auto;">${qrSvg}</div>
   <div style="font-size: 8px; margin-top: 2px;">Consulta pela chave de acesso em:</div>
-  ${data.urlChave ? `<div style="font-size: 8px; word-break: break-all;">${data.urlChave}</div>` : ''}
+  ${data.urlChave ? `<div style="font-size: 8px; word-break: break-all;">${esc(data.urlChave)}</div>` : ''}
 </div>
 <div class="divider"></div>
 ` : ''}
 <div class="center" style="font-size: 9px;">
-  NFC-e n. ${data.numero} Serie ${data.serie}<br>
-  Emissao: ${data.dataEmissao ? new Date(data.dataEmissao).toLocaleString('pt-BR') : '-'}<br>
-  ${data.protocolo ? `Protocolo: ${data.protocolo}` : ''}
+  NFC-e n. ${esc(data.numero)} Serie ${esc(data.serie)}<br>
+  Emissao: ${data.dataEmissao ? esc(new Date(data.dataEmissao).toLocaleString('pt-BR')) : '-'}<br>
+  ${data.protocolo ? `Protocolo: ${esc(data.protocolo)}` : ''}
 </div>
 </body></html>`;
 }
@@ -325,7 +336,7 @@ async function generateDanfeNFeHtml(data: DanfeData, opts: { isCancelled: boolea
   const qrSvg = await generateQRCodeSvg(qrCodeUrl, 90);
 
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>DANFE NFe #${data.numero}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
+<html><head><meta charset="utf-8"><title>DANFE NFe #${esc(data.numero)}${opts.isCancelled ? ' (CANCELADA)' : ''}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: Arial, sans-serif; font-size: 9px; max-width: 210mm; margin: 0 auto; padding: 10mm; position: relative; }
@@ -347,22 +358,22 @@ async function generateDanfeNFeHtml(data: DanfeData, opts: { isCancelled: boolea
   @media print { body { padding: 5mm; } @page { margin: 5mm; } }
 </style></head><body>
 ${opts.isCancelled ? '<div class="cancelled-watermark">CANCELADA</div>' : ''}
-${opts.isCancelled ? `<div class="cancelled-banner">NOTA FISCAL CANCELADA${cancelDate ? ` em ${cancelDate}` : ''}${opts.cancelReason ? `<br><span style="font-size: 10px; font-weight: normal;">Motivo: ${opts.cancelReason}</span>` : ''}</div>` : ''}
+${opts.isCancelled ? `<div class="cancelled-banner">NOTA FISCAL CANCELADA${cancelDate ? ` em ${esc(cancelDate)}` : ''}${opts.cancelReason ? `<br><span style="font-size: 10px; font-weight: normal;">Motivo: ${esc(opts.cancelReason)}</span>` : ''}</div>` : ''}
 ${isHomolog ? '<div class="homolog-banner">EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</div>' : ''}
 <div class="header">
   <div class="header-left">
-    <div style="font-size: 14px; font-weight: bold;">${data.emitente.fantasia || data.emitente.nome}</div>
-    <div>${data.emitente.nome}</div>
-    <div>${data.emitente.endereco}</div>
-    <div>${data.emitente.cidade} - ${data.emitente.uf} | CEP: ${data.emitente.cep}</div>
-    <div>CNPJ: ${formatCnpjCpf(data.emitente.cnpj)} | IE: ${data.emitente.ie}</div>
+    <div style="font-size: 14px; font-weight: bold;">${esc(data.emitente.fantasia || data.emitente.nome)}</div>
+    <div>${esc(data.emitente.nome)}</div>
+    <div>${esc(data.emitente.endereco)}</div>
+    <div>${esc(data.emitente.cidade)} - ${esc(data.emitente.uf)} | CEP: ${esc(data.emitente.cep)}</div>
+    <div>CNPJ: ${esc(formatCnpjCpf(data.emitente.cnpj))} | IE: ${esc(data.emitente.ie)}</div>
   </div>
   <div class="header-right">
     <div style="font-size: 16px; font-weight: bold;">DANFE</div>
     <div style="font-size: 8px;">Documento Auxiliar da<br>Nota Fiscal Eletronica</div>
-    <div style="margin-top: 4px; font-size: 11px; font-weight: bold;">N.: ${data.numero}</div>
-    <div>Serie: ${data.serie}</div>
-    <div style="font-size: 8px;">Nat. Op.: ${data.natOp}</div>
+    <div style="margin-top: 4px; font-size: 11px; font-weight: bold;">N.: ${esc(data.numero)}</div>
+    <div>Serie: ${esc(data.serie)}</div>
+    <div style="font-size: 8px;">Nat. Op.: ${esc(data.natOp)}</div>
   </div>
 </div>
 
@@ -370,22 +381,22 @@ ${isHomolog ? '<div class="homolog-banner">EMITIDA EM AMBIENTE DE HOMOLOGACAO - 
   <div style="border: 1px solid #333; padding: 4px; display: flex; align-items: center; gap: 10px;">
     <div style="flex: 1;">
       <div style="font-size: 8px; color: #555; margin-bottom: 2px;">CHAVE DE ACESSO</div>
-      <div class="key" style="font-size: 9px;">${formatChave(data.chaveAcesso)}</div>
+      <div class="key" style="font-size: 9px;">${esc(formatChave(data.chaveAcesso))}</div>
       ${code128Svg ? `<div style="margin-top: 4px;">${code128Svg}</div>` : ''}
     </div>
     ${qrSvg ? `<div style="width: 90px; height: 90px; flex-shrink: 0;">${qrSvg}</div>` : ''}
   </div>
 </div>
 
-${data.protocolo ? `<div class="section" style="font-size: 8px; border: 1px solid #333; padding: 2px 6px;">Protocolo: ${data.protocolo} | Emissao: ${data.dataEmissao ? new Date(data.dataEmissao).toLocaleString('pt-BR') : '-'}</div>` : ''}
+${data.protocolo ? `<div class="section" style="font-size: 8px; border: 1px solid #333; padding: 2px 6px;">Protocolo: ${esc(data.protocolo)} | Emissao: ${data.dataEmissao ? esc(new Date(data.dataEmissao).toLocaleString('pt-BR')) : '-'}</div>` : ''}
 
 ${data.destinatario ? `
 <div class="section">
   <div class="section-title">DESTINATARIO</div>
   <table>
     <tr>
-      <td><strong>Nome:</strong> ${data.destinatario.nome}</td>
-      <td><strong>${data.destinatario.cnpj ? 'CNPJ' : 'CPF'}:</strong> ${formatCnpjCpf(data.destinatario.cnpj || data.destinatario.cpf || '')}</td>
+      <td><strong>Nome:</strong> ${esc(data.destinatario.nome)}</td>
+      <td><strong>${data.destinatario.cnpj ? 'CNPJ' : 'CPF'}:</strong> ${esc(formatCnpjCpf(data.destinatario.cnpj || data.destinatario.cpf || ''))}</td>
     </tr>
   </table>
 </div>` : ''}
@@ -399,7 +410,7 @@ ${data.destinatario ? `
       </tr>
     </thead>
     <tbody>
-      ${data.itens.map(i => `<tr><td>${i.num}</td><td>${i.codigo}</td><td>${i.descricao}</td><td>${i.ncm}</td><td>${i.cfop}</td><td>${i.un}</td><td style="text-align:right">${i.qtd}</td><td style="text-align:right">${i.vUnit}</td><td style="text-align:right">${i.vTotal}</td></tr>`).join('')}
+      ${data.itens.map(i => `<tr><td>${esc(i.num)}</td><td>${esc(i.codigo)}</td><td>${esc(i.descricao)}</td><td>${esc(i.ncm)}</td><td>${esc(i.cfop)}</td><td>${esc(i.un)}</td><td style="text-align:right">${esc(i.qtd)}</td><td style="text-align:right">${esc(i.vUnit)}</td><td style="text-align:right">${esc(i.vTotal)}</td></tr>`).join('')}
     </tbody>
   </table>
 </div>
@@ -427,7 +438,7 @@ ${data.destinatario ? `
   <div class="section-title">PAGAMENTO</div>
   <table>
     <tr>
-      ${data.pagamentos.map(p => `<td>${p.tipo}: R$ ${p.valor}</td>`).join('')}
+      ${data.pagamentos.map(p => `<td>${esc(p.tipo)}: R$ ${esc(p.valor)}</td>`).join('')}
     </tr>
   </table>
 </div>
@@ -435,7 +446,7 @@ ${data.destinatario ? `
 ${data.infAdic ? `
 <div class="section">
   <div class="section-title">INFORMACOES ADICIONAIS</div>
-  <div style="border: 1px solid #333; padding: 4px; font-size: 8px; min-height: 20px;">${data.infAdic}</div>
+  <div style="border: 1px solid #333; padding: 4px; font-size: 8px; min-height: 20px;">${esc(data.infAdic)}</div>
 </div>` : ''}
 
 </body></html>`;
@@ -443,23 +454,21 @@ ${data.infAdic ? `
 
 export async function POST(request: NextRequest) {
   try {
-    // Auth: any authenticated user
-    const auth = await verifyAuth(request);
-    if (isAuthError(auth)) return auth;
-
     const body = await request.json();
-    const { xml, type, status, canceledAt, cancelReason, contingenciaMotivo } = body as {
-      xml?: string;
-      type?: string;
-      status?: string;
-      canceledAt?: string;
-      cancelReason?: string;
-      contingenciaMotivo?: string;
-    };
-
-    if (!xml) {
-      return NextResponse.json({ error: 'XML e obrigatorio para gerar DANFE.' }, { status: 400 });
+    const parsed = DanfeRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Payload inválido para gerar DANFE.', details: parsed.error.flatten() },
+        { status: 400 },
+      );
     }
+    const { businessId, xml, type, status, canceledAt, cancelReason, contingenciaMotivo } = parsed.data;
+
+    // Auth com binding de tenant: o XML é client-supplied, mas o caller precisa
+    // pertencer ao business que alega — evita uso da rota como gerador anônimo
+    // de DANFE cross-tenant.
+    const auth = await verifyAuth(request, businessId);
+    if (isAuthError(auth)) return auth;
 
     const data = extractDanfeData(xml);
     const isNFCe = (type === 'nfce') || data.modelo === '65';

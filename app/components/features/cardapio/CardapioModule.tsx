@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UtensilsCrossed, Search, Clock, Package, ImageOff, Plus, Tag, AlertCircle,
-  Sparkles, ShoppingCart, X, ChevronRight, Minus, Leaf,
+  Sparkles, ShoppingCart, X, ChevronRight, Minus, Leaf, Check,
 } from 'lucide-react';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -12,9 +12,16 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
 import { formatCurrency } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
-import type { Product } from '@/lib/types';
+import type {
+  Product, ProductModifierGroup, ProductModifierOption,
+  SelectedModifier, SelectedModifierOption, MenuCategory,
+} from '@/lib/types';
+import { computeModifierDelta, round2, validateAndCleanModifiers } from '@/lib/services/orders/pricing';
+import { isOutOfStock, type StockResolver } from '@/lib/utils/menu-availability';
 
 type DietaryTag = NonNullable<Product['dietary']>[number];
+
+const UNCATEGORIZED_ID = '__uncategorized__';
 
 // ─── Dietary config (mirrors agent catalog route) ─────────────────────────────
 const DIETARY_OPTIONS: { id: string; label: string; emoji: string; color: string }[] = [
@@ -29,21 +36,42 @@ const DIETARY_OPTIONS: { id: string; label: string; emoji: string; color: string
 ];
 
 // ─── Cart ─────────────────────────────────────────────────────────────────────
-interface CartItem { product: Product; qty: number }
-type CartMap = Map<string, CartItem>;
+// Cada linha é uma CONFIGURAÇÃO (produto + modificadores escolhidos), chaveada por
+// `product.id + assinatura dos modificadores`. Assim o mesmo produto com opções
+// diferentes vira linhas separadas — igual ao cardápio público (CatalogClient).
+interface CartLine {
+  product: Product;
+  qty: number;
+  unitPrice: number;                     // base + delta dos modificadores
+  selectedModifiers?: SelectedModifier[];
+}
+type CartMap = Map<string, CartLine>;
+
+function hasModifierGroups(p: Product): boolean {
+  return !!(p.hasModifiers && p.modifierGroups && p.modifierGroups.length > 0);
+}
+
+/** Assinatura estável da seleção — chaveia a linha do carrinho p/ dedupe. */
+function modifierSignature(selected: SelectedModifier[] | undefined): string {
+  if (!selected || selected.length === 0) return 'plain';
+  return selected
+    .map(m => `${m.groupId}:${m.selectedOptions.map(o => `${o.optionId}x${o.quantity}`).sort().join('|')}`)
+    .sort().join('||');
+}
 
 // ─── Product detail modal ──────────────────────────────────────────────────────
 function ProductDetailModal({
-  product, onClose, onAddToCart, cartQty,
+  product, onClose, onAddToCart, cartQty, resolveStock,
 }: {
   product: Product;
   onClose: () => void;
   onAddToCart: (p: Product, qty: number) => void;
   cartQty: number;
+  resolveStock: StockResolver;
 }) {
   const [qty, setQty] = useState(Math.max(1, cartQty));
   const hasComponents = !!(product.components && product.components.length > 0);
-  const outOfStock = !hasComponents && product.currentStock <= 0;
+  const outOfStock = isOutOfStock(product, resolveStock);
   const dietaryTags = DIETARY_OPTIONS.filter(d => product.dietary?.includes(d.id as DietaryTag));
 
   return (
@@ -180,17 +208,343 @@ function ProductDetailModal({
   );
 }
 
+// ─── Modifier picker ──────────────────────────────────────────────────────────
+// Espelha o seletor do cardápio público (ProductDetailSheet): grupos
+// single/multiple/quantity, min/max, isDefault, priceStrategy. O PREÇO passa pela
+// fonte única `computeModifierDelta` e o gate final por `validateAndCleanModifiers`
+// — exatamente o que o servidor (orders/public) aplica. Propaga `selectedModifiers`
+// pra que estoque (buildOrderStockLines) e preço fiquem corretos como no público.
+type SelectionState = Record<string, Record<string, number>>;
+
+function buildDefaultSelection(product: Product): SelectionState {
+  const state: SelectionState = {};
+  for (const group of product.modifierGroups || []) {
+    state[group.id] = {};
+    for (const opt of group.options) {
+      if (opt.isDefault && opt.available) state[group.id][opt.id] = 1;
+    }
+  }
+  return state;
+}
+
+function countSelections(picked: Record<string, number>): number {
+  return Object.values(picked).reduce((s, n) => s + n, 0);
+}
+
+function selectionToModifiers(groups: ProductModifierGroup[], selection: SelectionState): SelectedModifier[] {
+  const out: SelectedModifier[] = [];
+  for (const group of groups) {
+    const entries = Object.entries(selection[group.id] || {}).filter(([, q]) => q > 0);
+    if (entries.length === 0) continue;
+    const selectedOptions: SelectedModifierOption[] = entries.map(([optId, qty]) => {
+      const opt = group.options.find(o => o.id === optId)!;
+      return { optionId: opt.id, optionName: opt.name, additionalPrice: opt.additionalPrice, quantity: qty };
+    });
+    out.push({ groupId: group.id, groupName: group.name, priceStrategy: group.priceStrategy, selectedOptions });
+  }
+  return out;
+}
+
+function ModifierPicker({
+  product, onClose, onAdd,
+}: {
+  product: Product;
+  onClose: () => void;
+  onAdd: (product: Product, qty: number, selectedModifiers: SelectedModifier[], unitPrice: number) => void;
+}) {
+  const groups = useMemo(
+    () => (product.modifierGroups || []).slice().sort((a, b) => a.sortOrder - b.sortOrder),
+    [product.modifierGroups],
+  );
+  const [selection, setSelection] = useState<SelectionState>(() => buildDefaultSelection(product));
+  const [qty, setQty] = useState(1);
+  const [triedSubmit, setTriedSubmit] = useState(false);
+
+  const selectedModifiers = useMemo(() => selectionToModifiers(groups, selection), [groups, selection]);
+  const unitPrice = useMemo(
+    () => round2(product.salePrice + computeModifierDelta(selectedModifiers)),
+    [product.salePrice, selectedModifiers],
+  );
+  const validation = useMemo(
+    () => validateAndCleanModifiers(product, selectedModifiers),
+    [product, selectedModifiers],
+  );
+  const allValid = 'clean' in validation;
+
+  const groupValidation = useMemo(() => {
+    const result: Record<string, { valid: boolean; count: number; message?: string }> = {};
+    for (const group of groups) {
+      const count = countSelections(selection[group.id] || {});
+      const min = group.minSelections || (group.required ? 1 : 0);
+      const max = group.maxSelections || 99;
+      if (count < min) result[group.id] = { valid: false, count, message: min === 1 ? 'Escolha uma opção' : `Escolha ${min} opções` };
+      else if (count > max) result[group.id] = { valid: false, count, message: `Máximo ${max} opções` };
+      else result[group.id] = { valid: true, count };
+    }
+    return result;
+  }, [groups, selection]);
+
+  const toggleSingle = (groupId: string, optionId: string) =>
+    setSelection(prev => ({ ...prev, [groupId]: { [optionId]: 1 } }));
+
+  const toggleMultiple = (group: ProductModifierGroup, optionId: string) =>
+    setSelection(prev => {
+      const current = { ...(prev[group.id] || {}) };
+      if (current[optionId]) delete current[optionId];
+      else {
+        if (countSelections(current) >= group.maxSelections) return prev;
+        current[optionId] = 1;
+      }
+      return { ...prev, [group.id]: current };
+    });
+
+  const changeQty = (group: ProductModifierGroup, optionId: string, delta: number) =>
+    setSelection(prev => {
+      const current = { ...(prev[group.id] || {}) };
+      const option = group.options.find(o => o.id === optionId);
+      const newQty = (current[optionId] || 0) + delta;
+      if (newQty <= 0) delete current[optionId];
+      else {
+        const maxForOption = option?.maxQuantity || group.maxSelections;
+        if (newQty > maxForOption) return prev;
+        const otherTotal = Object.entries(current).filter(([id]) => id !== optionId).reduce((s, [, q]) => s + q, 0);
+        if (otherTotal + newQty > group.maxSelections) return prev;
+        current[optionId] = newQty;
+      }
+      return { ...prev, [group.id]: current };
+    });
+
+  const handleAdd = () => {
+    if (!allValid) { setTriedSubmit(true); return; }
+    onAdd(product, qty, selectedModifiers, unitPrice);
+    onClose();
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/60 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 60, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 60, opacity: 0 }}
+        transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+        onClick={e => e.stopPropagation()}
+        className="relative w-full sm:max-w-md bg-white dark:bg-gray-900 rounded-t-3xl sm:rounded-2xl shadow-2xl max-h-[92vh] flex flex-col"
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 p-5 pb-3 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold text-gray-900 dark:text-white leading-tight truncate">{product.name}</h2>
+            <p className="text-xs text-gray-500 mt-0.5">A partir de {formatCurrency(product.salePrice)}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors flex-shrink-0"
+          >
+            <X className="w-4 h-4 text-gray-500" />
+          </button>
+        </div>
+
+        {/* Groups */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {groups.map(group => {
+            const v = groupValidation[group.id];
+            const hasError = triedSubmit && v && !v.valid;
+            const options = group.options.filter(o => o.available).sort((a, b) => a.sortOrder - b.sortOrder);
+            return (
+              <div
+                key={group.id}
+                className={cn(
+                  'rounded-2xl border',
+                  hasError
+                    ? 'border-red-300 dark:border-red-800 bg-red-50/50 dark:bg-red-900/10'
+                    : 'border-gray-200 dark:border-gray-800',
+                )}
+              >
+                <div className="flex items-center justify-between p-3.5 pb-2.5">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-sm text-gray-900 dark:text-white">{group.name}</h3>
+                      {group.required && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 bg-red-500 text-white rounded-full">OBRIGATÓRIO</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      {group.selectionType === 'single'
+                        ? 'Escolha 1 opção'
+                        : group.minSelections > 0
+                          ? `Escolha de ${group.minSelections} até ${group.maxSelections}`
+                          : `Escolha até ${group.maxSelections}`}
+                    </p>
+                  </div>
+                  <span className={cn(
+                    'flex-shrink-0 px-2.5 py-1 rounded-full text-[10px] font-bold',
+                    hasError ? 'bg-red-500 text-white'
+                      : (v?.count || 0) > 0 ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-500',
+                  )}>
+                    {v?.count || 0} / {group.maxSelections}
+                  </span>
+                </div>
+                <div className="px-2 pb-2 space-y-1">
+                  {options.map(option => (
+                    <ModifierOptionRow
+                      key={option.id}
+                      option={option}
+                      group={group}
+                      quantity={selection[group.id]?.[option.id] || 0}
+                      disabled={
+                        (selection[group.id]?.[option.id] || 0) === 0 &&
+                        group.selectionType !== 'single' &&
+                        (v?.count || 0) >= group.maxSelections
+                      }
+                      onToggleSingle={() => toggleSingle(group.id, option.id)}
+                      onToggleMultiple={() => toggleMultiple(group, option.id)}
+                      onChangeQty={delta => changeQty(group, option.id, delta)}
+                    />
+                  ))}
+                </div>
+                {hasError && (
+                  <div className="flex items-center gap-1.5 px-4 pb-3">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-500" />
+                    <p className="text-xs text-red-600 dark:text-red-400 font-medium">{v?.message}</p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 border-t border-gray-100 dark:border-gray-800 p-4 flex items-center gap-3">
+          <div className="flex items-center bg-gray-100 dark:bg-gray-800 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setQty(q => Math.max(1, q - 1))}
+              className="px-3 py-2.5 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+            >
+              <Minus className="w-4 h-4" />
+            </button>
+            <span className="w-8 text-center font-bold text-gray-900 dark:text-white text-sm">{qty}</span>
+            <button
+              onClick={() => setQty(q => q + 1)}
+              className="px-3 py-2.5 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          </div>
+          <button
+            onClick={handleAdd}
+            className={cn(
+              'flex-1 flex items-center justify-between px-4 py-2.5 rounded-xl font-semibold text-sm transition-colors',
+              allValid ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+            )}
+          >
+            <span>{allValid ? 'Adicionar' : ('error' in validation ? validation.error : 'Complete as opções')}</span>
+            <span className="font-bold">{formatCurrency(unitPrice * qty)}</span>
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ModifierOptionRow({
+  option, group, quantity, disabled,
+  onToggleSingle, onToggleMultiple, onChangeQty,
+}: {
+  option: ProductModifierOption;
+  group: ProductModifierGroup;
+  quantity: number;
+  disabled: boolean;
+  onToggleSingle: () => void;
+  onToggleMultiple: () => void;
+  onChangeQty: (delta: number) => void;
+}) {
+  const selected = quantity > 0;
+  return (
+    <div className={cn(
+      'flex items-center gap-3 p-3 rounded-xl transition-all',
+      selected ? 'bg-red-50 dark:bg-red-500/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50',
+      disabled && 'opacity-50',
+    )}>
+      {group.selectionType === 'single' ? (
+        <button
+          onClick={onToggleSingle}
+          className={cn(
+            'w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all',
+            selected ? 'border-red-500 bg-red-500' : 'border-gray-300 dark:border-gray-600',
+          )}
+        >
+          {selected && <div className="w-2 h-2 rounded-full bg-white" />}
+        </button>
+      ) : group.selectionType === 'multiple' ? (
+        <button
+          onClick={onToggleMultiple}
+          disabled={disabled && !selected}
+          className={cn(
+            'w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-all',
+            selected ? 'border-red-500 bg-red-500' : 'border-gray-300 dark:border-gray-600',
+          )}
+        >
+          {selected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+        </button>
+      ) : null}
+
+      <button
+        onClick={group.selectionType === 'single' ? onToggleSingle : group.selectionType === 'multiple' ? onToggleMultiple : undefined}
+        disabled={disabled && !selected}
+        className="flex-1 min-w-0 text-left"
+      >
+        <p className={cn('text-sm font-semibold', selected ? 'text-red-700 dark:text-red-300' : 'text-gray-900 dark:text-white')}>
+          {option.name}
+        </p>
+        {option.description && <p className="text-[11px] text-gray-500 line-clamp-1">{option.description}</p>}
+      </button>
+
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {option.additionalPrice > 0 && (
+          <span className={cn('text-xs font-bold', selected ? 'text-red-600 dark:text-red-400' : 'text-gray-500')}>
+            +{formatCurrency(option.additionalPrice)}
+          </span>
+        )}
+        {group.selectionType === 'quantity' && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => onChangeQty(-1)}
+              disabled={quantity === 0}
+              className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 flex items-center justify-center disabled:opacity-40"
+            >
+              <Minus className="w-3.5 h-3.5 text-gray-600 dark:text-gray-300" />
+            </button>
+            <span className="w-5 text-center font-bold text-sm text-gray-900 dark:text-white">{quantity}</span>
+            <button
+              onClick={() => onChangeQty(1)}
+              disabled={disabled && quantity === 0}
+              className="w-8 h-8 rounded-lg bg-red-500 flex items-center justify-center disabled:opacity-40"
+            >
+              <Plus className="w-3.5 h-3.5 text-white" />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Product card ─────────────────────────────────────────────────────────────
 function ProductCard({
-  product, cartQty, onOpen, onAdd,
+  product, cartQty, onOpen, onAdd, resolveStock,
 }: {
   product: Product;
   cartQty: number;
   onOpen: (p: Product) => void;
   onAdd: (p: Product) => void;
+  resolveStock: StockResolver;
 }) {
   const hasComponents = !!(product.components && product.components.length > 0);
-  const outOfStock = !hasComponents && product.currentStock <= 0;
+  const hasMods = hasModifierGroups(product);
+  const outOfStock = isOutOfStock(product, resolveStock);
   const dietaryTags = DIETARY_OPTIONS.filter(d => product.dietary?.includes(d.id as DietaryTag));
 
   return (
@@ -278,7 +632,7 @@ function ProductCard({
                 {product.preparationTime}m
               </span>
             ) : null}
-            {!hasComponents && (
+            {!hasComponents && !hasMods && (
               <span className="inline-flex items-center gap-1">
                 <Package className="w-3 h-3" />
                 {product.currentStock}
@@ -296,7 +650,7 @@ function ProductCard({
               )}
             >
               <Plus className="w-3 h-3" />
-              {cartQty > 0 ? `+1 (${cartQty})` : 'Adicionar'}
+              {hasMods ? (cartQty > 0 ? `Escolher (${cartQty})` : 'Escolher') : cartQty > 0 ? `+1 (${cartQty})` : 'Adicionar'}
             </button>
           )}
         </div>
@@ -313,7 +667,7 @@ function CartBar({ cart, onClear, onCreateOrder }: {
 }) {
   const items = Array.from(cart.values());
   const count = items.reduce((s, i) => s + i.qty, 0);
-  const total = items.reduce((s, i) => s + i.product.salePrice * i.qty, 0);
+  const total = items.reduce((s, i) => s + i.unitPrice * i.qty, 0);
 
   return (
     <motion.div
@@ -358,6 +712,7 @@ export default function CardapioModule() {
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [dietaryFilters, setDietaryFilters] = useState<string[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [modifierProduct, setModifierProduct] = useState<Product | null>(null);
   const [cart, setCart] = useState<CartMap>(new Map());
 
   // Real-time listener (refactor sync multi-user):
@@ -370,6 +725,7 @@ export default function CardapioModule() {
   // imediatamente no cardápio aberto (mesmo em outra aba/dispositivo).
   // Crítico pra "esgotou item" — evita pedido de produto indisponível.
   const [products, setProducts] = useState<Product[]>([]);
+  const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   useEffect(() => {
     if (!business?.id) { setIsLoading(false); return; }
@@ -397,6 +753,28 @@ export default function CardapioModule() {
     return () => unsub();
   }, [business?.id]);
 
+  // Categorias formais do cardápio (coleção menuCategories) — mesmo padrão do
+  // InventoryModule. Dão ordem (sortOrder), cor e nome canônico; produtos legados
+  // sem menuCategoryId caem no fallback pela string `menuCategory`.
+  useEffect(() => {
+    if (!business?.id) { setMenuCategories([]); return; }
+    const q = query(
+      collection(db, 'menuCategories'),
+      where('businessId', '==', business.id),
+    );
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs
+          .map(d => ({ ...d.data(), id: d.id }) as MenuCategory)
+          .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+        setMenuCategories(list);
+      },
+      (err) => console.error('[Cardapio] menuCategories snapshot error:', err),
+    );
+    return () => unsub();
+  }, [business?.id]);
+
   // Sync selectedProduct com snapshot — fecha modal se produto foi
   // desativado/removido por outro user; refresca display se preço mudou.
   // Filtro do query já exclui isActive=false e isDeliverable=false, então
@@ -413,62 +791,145 @@ export default function CardapioModule() {
     }
   }, [products, selectedProduct]);
 
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    for (const p of products) if (p.menuCategory) set.add(p.menuCategory);
-    return Array.from(set).sort();
+  // Mesmo guard pro seletor de modificadores: se o produto sumiu do snapshot
+  // (desativado/removido) fecha; se mudou (preço/opções) reabre com a versão
+  // fresca — evita precificar/debitar por definição obsoleta.
+  useEffect(() => {
+    if (!modifierProduct) return;
+    const fresh = products.find(p => p.id === modifierProduct.id);
+    if (!fresh) { setModifierProduct(null); return; }
+    if (fresh.updatedAt !== modifierProduct.updatedAt) setModifierProduct(fresh);
+  }, [products, modifierProduct]);
+
+  // Resolve o estoque de um insumo (produto composto) pelo snapshot visível.
+  // Insumo não presente → undefined → helper trata como não-bloqueante (igual
+  // ao público, que não esgota composto sem conseguir resolver o insumo).
+  const resolveStock = useMemo<StockResolver>(() => {
+    const byId = new Map(products.map(p => [p.id, p.currentStock]));
+    return (id: string) => byId.get(id);
   }, [products]);
 
-  const filtered = useMemo(() => {
+  // Categorias formais (menuCategories ativas, já ordenadas por sortOrder) +
+  // fallback pela string legada `menuCategory`/`category` — mesma lógica do
+  // cardápio público (CatalogClient.categoryList).
+  const categoryList = useMemo(() => {
+    const known = new Map<string, { id: string; name: string; color?: string }>();
+    for (const c of menuCategories) {
+      if (c.isActive) known.set(c.id, { id: c.id, name: c.name, color: c.color });
+    }
+    const stringCats = new Set<string>();
+    for (const p of products) {
+      if (p.menuCategoryId && known.has(p.menuCategoryId)) continue;
+      const cat = p.menuCategory || p.category;
+      if (cat && !known.has(cat) && !stringCats.has(cat)) {
+        stringCats.add(cat);
+        known.set(cat, { id: cat, name: cat });
+      }
+    }
+    return Array.from(known.values());
+  }, [menuCategories, products]);
+
+  // Produtos agrupados por id de categoria (menuCategoryId → fallback string →
+  // UNCATEGORIZED). Aplica busca + filtros dietéticos aqui; o filtro de pill de
+  // categoria é aplicado depois, em `visibleCategories`.
+  const productsByCategory = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return products.filter(p => {
-      if (categoryFilter !== 'all' && p.menuCategory !== categoryFilter) return false;
+    const map = new Map<string, Product[]>();
+    for (const p of products) {
       if (dietaryFilters.length > 0) {
         const have = new Set(p.dietary || []);
-        if (!dietaryFilters.every(f => have.has(f as DietaryTag))) return false;
+        if (!dietaryFilters.every(f => have.has(f as DietaryTag))) continue;
       }
-      if (!term) return true;
-      return (
-        p.name.toLowerCase().includes(term) ||
-        p.menuDescription?.toLowerCase().includes(term) ||
-        p.menuCategory?.toLowerCase().includes(term)
-      );
-    });
-  }, [products, search, categoryFilter, dietaryFilters]);
-
-  const grouped = useMemo(() => {
-    const groups = new Map<string, Product[]>();
-    const OTHER = 'Outros';
-    for (const p of filtered) {
-      const cat = p.menuCategory || OTHER;
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat)!.push(p);
+      if (term) {
+        const hay = `${p.name} ${p.menuDescription || ''} ${p.menuCategory || ''}`.toLowerCase();
+        if (!hay.includes(term)) continue;
+      }
+      const key = (p.menuCategoryId && categoryList.some(c => c.id === p.menuCategoryId))
+        ? p.menuCategoryId
+        : categoryList.find(c => c.name === (p.menuCategory || p.category))?.id
+        || UNCATEGORIZED_ID;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(p);
     }
-    for (const items of groups.values()) items.sort((a, b) => a.name.localeCompare(b.name));
-    return Array.from(groups.entries()).sort(([a], [b]) => {
-      if (a === OTHER) return 1;
-      if (b === OTHER) return -1;
-      return a.localeCompare(b);
-    });
-  }, [filtered]);
+    for (const list of map.values()) list.sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+    return map;
+  }, [products, categoryList, search, dietaryFilters]);
 
-  const addToCart = (product: Product, qty = 1) => {
+  // Categorias com pelo menos 1 item (respeitando busca/dietético) + "Outros".
+  const availableCategories = useMemo(() => {
+    const list: { id: string; name: string; color?: string }[] =
+      categoryList.filter(c => (productsByCategory.get(c.id)?.length ?? 0) > 0);
+    if ((productsByCategory.get(UNCATEGORIZED_ID)?.length ?? 0) > 0) {
+      list.push({ id: UNCATEGORIZED_ID, name: 'Outros' });
+    }
+    return list;
+  }, [categoryList, productsByCategory]);
+
+  const visibleCategories = useMemo(
+    () => categoryFilter === 'all'
+      ? availableCategories
+      : availableCategories.filter(c => c.id === categoryFilter),
+    [availableCategories, categoryFilter],
+  );
+
+  const visibleCount = useMemo(
+    () => visibleCategories.reduce((s, c) => s + (productsByCategory.get(c.id)?.length ?? 0), 0),
+    [visibleCategories, productsByCategory],
+  );
+
+  // Soma da quantidade de TODAS as configurações de um produto — badge do card.
+  const productQtyInCart = (productId: string) =>
+    Array.from(cart.values()).reduce((s, l) => s + (l.product.id === productId ? l.qty : 0), 0);
+
+  // Produto SEM modificadores: linha simples chaveada por product.id.
+  const addPlain = (product: Product, qty = 1) => {
     setCart(prev => {
       const next = new Map(prev);
-      const existing = next.get(product.id);
-      next.set(product.id, { product, qty: (existing?.qty || 0) + qty });
+      const key = `${product.id}:plain`;
+      const existing = next.get(key);
+      next.set(key, { product, qty: (existing?.qty || 0) + qty, unitPrice: product.salePrice });
       return next;
     });
   };
 
+  // Produto COM modificadores: linha por configuração (product.id + assinatura).
+  const addConfigured = (
+    product: Product, qty: number, selectedModifiers: SelectedModifier[], unitPrice: number,
+  ) => {
+    setCart(prev => {
+      const next = new Map(prev);
+      const key = `${product.id}:${modifierSignature(selectedModifiers)}`;
+      const existing = next.get(key);
+      next.set(key, {
+        product,
+        qty: (existing?.qty || 0) + qty,
+        unitPrice,
+        selectedModifiers: selectedModifiers.length > 0 ? selectedModifiers : undefined,
+      });
+      return next;
+    });
+  };
+
+  // Roteia: produto com modificadores nunca é adicionado direto (mis-preço /
+  // não debita insumos) — abre o seletor. Sem modificadores segue o fluxo simples.
+  const openProduct = (product: Product) => {
+    if (hasModifierGroups(product)) setModifierProduct(product);
+    else setSelectedProduct(product);
+  };
+  const quickAdd = (product: Product) => {
+    if (hasModifierGroups(product)) setModifierProduct(product);
+    else addPlain(product, 1);
+  };
+
   const handleCreateOrder = () => {
-    const items = Array.from(cart.values()).map(({ product, qty }) => ({
+    const items = Array.from(cart.values()).map(({ product, qty, unitPrice, selectedModifiers }) => ({
       productId: product.id,
       productName: product.name,
       quantity: qty,
-      unitPrice: product.salePrice,
-      total: product.salePrice * qty,
+      unitPrice,
+      total: round2(unitPrice * qty),
       imageUrl: product.imageUrl || undefined,
+      ...(selectedModifiers ? { selectedModifiers, basePrice: product.salePrice } : {}),
     }));
     sessionStorage.setItem('pendingCartItems', JSON.stringify(items));
     setCart(new Map());
@@ -511,7 +972,7 @@ export default function CardapioModule() {
       </div>
 
       {/* Category filter */}
-      {categories.length > 0 && (
+      {availableCategories.length > 0 && (
         <div className="flex gap-1.5 overflow-x-auto pb-0.5 -mx-4 px-4 sm:mx-0 sm:px-0">
           <button
             onClick={() => setCategoryFilter('all')}
@@ -524,20 +985,24 @@ export default function CardapioModule() {
           >
             Todas
           </button>
-          {categories.map(cat => (
-            <button
-              key={cat}
-              onClick={() => setCategoryFilter(cat)}
-              className={cn(
-                'px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors flex-shrink-0',
-                categoryFilter === cat
-                  ? 'bg-red-600 text-white'
-                  : 'bg-white dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700',
-              )}
-            >
-              {cat}
-            </button>
-          ))}
+          {availableCategories.map(cat => {
+            const active = categoryFilter === cat.id;
+            return (
+              <button
+                key={cat.id}
+                onClick={() => setCategoryFilter(cat.id)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors flex-shrink-0',
+                  active
+                    ? 'bg-red-600 text-white'
+                    : 'bg-white dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 border border-gray-200 dark:border-gray-700',
+                )}
+                style={active && cat.color ? { backgroundColor: cat.color } : undefined}
+              >
+                {cat.name}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -570,7 +1035,7 @@ export default function CardapioModule() {
             <div key={i} className="aspect-[4/5] rounded-2xl shimmer" />
           ))}
         </div>
-      ) : filtered.length === 0 ? (
+      ) : visibleCount === 0 ? (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -605,38 +1070,59 @@ export default function CardapioModule() {
       ) : (
         <AnimatePresence mode="popLayout">
           <div className="space-y-8">
-            {grouped.map(([cat, items]) => (
-              <motion.section key={cat} layout>
-                <h2 className="flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300 mb-3">
-                  <Tag className="w-3.5 h-3.5 text-red-500" />
-                  <span className="uppercase tracking-wider">{cat}</span>
-                  <span className="text-[10px] font-medium text-gray-400 ml-1">({items.length})</span>
-                </h2>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {items.map(p => (
-                    <ProductCard
-                      key={p.id}
-                      product={p}
-                      cartQty={cart.get(p.id)?.qty || 0}
-                      onOpen={setSelectedProduct}
-                      onAdd={product => addToCart(product, 1)}
-                    />
-                  ))}
-                </div>
-              </motion.section>
-            ))}
+            {visibleCategories.map(cat => {
+              const items = productsByCategory.get(cat.id) || [];
+              if (items.length === 0) return null;
+              return (
+                <motion.section key={cat.id} layout>
+                  <h2 className="flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300 mb-3">
+                    {cat.color ? (
+                      <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
+                    ) : (
+                      <Tag className="w-3.5 h-3.5 text-red-500" />
+                    )}
+                    <span className="uppercase tracking-wider">{cat.name}</span>
+                    <span className="text-[10px] font-medium text-gray-400 ml-1">({items.length})</span>
+                  </h2>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    {items.map(p => (
+                      <ProductCard
+                        key={p.id}
+                        product={p}
+                        cartQty={productQtyInCart(p.id)}
+                        onOpen={openProduct}
+                        onAdd={quickAdd}
+                        resolveStock={resolveStock}
+                      />
+                    ))}
+                  </div>
+                </motion.section>
+              );
+            })}
           </div>
         </AnimatePresence>
       )}
 
-      {/* Product detail modal */}
+      {/* Product detail modal (produtos SEM modificadores) */}
       <AnimatePresence>
         {selectedProduct && (
           <ProductDetailModal
             product={selectedProduct}
             onClose={() => setSelectedProduct(null)}
-            onAddToCart={addToCart}
-            cartQty={cart.get(selectedProduct.id)?.qty || 0}
+            onAddToCart={addPlain}
+            cartQty={productQtyInCart(selectedProduct.id)}
+            resolveStock={resolveStock}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Modifier picker (produtos COM modificadores) */}
+      <AnimatePresence>
+        {modifierProduct && (
+          <ModifierPicker
+            product={modifierProduct}
+            onClose={() => setModifierProduct(null)}
+            onAdd={addConfigured}
           />
         )}
       </AnimatePresence>

@@ -123,8 +123,38 @@ export async function getCertificadoPayload(
 
   const [fileBuffer] = await file.download();
 
-  // 4. Decrypt password
-  const password = decryptPassword(fiscal.certPasswordEncrypted);
+  // 4. Decrypt password.
+  // Legacy: o CertificateManager antigo gravava btoa(senha) direto do browser
+  // (base64 puro, sem os pontos do formato iv.tag.cipher) e metadados
+  // fabricados (serialNumber PENDING_VALIDATION + validade inventada).
+  // Self-heal: decodifica, valida contra o PFX, re-criptografa com
+  // AES-256-GCM e corrige os metadados com os reais do certificado.
+  let password: string;
+  const storedPassword = String(fiscal.certPasswordEncrypted);
+  if (storedPassword.includes('.')) {
+    password = decryptPassword(storedPassword);
+  } else {
+    password = Buffer.from(storedPassword, 'base64').toString('utf8');
+    try {
+      const info = parseCertificateInfo(fileBuffer, password);
+      await businessDoc.ref.update({
+        'fiscal.certPasswordEncrypted': encryptPassword(password),
+        'fiscal.certificate.serialNumber': info.serialNumber,
+        'fiscal.certificate.subject': info.subject,
+        'fiscal.certificate.issuer': info.issuer,
+        'fiscal.certificate.thumbprint': info.thumbprint,
+        'fiscal.certificate.validFrom': info.validFrom,
+        'fiscal.certificate.expiresAt': info.expiresAt,
+      });
+      console.log(
+        `[certificate-manager] Senha legada (btoa) migrada para AES-256-GCM e metadados corrigidos — business ${businessId}`,
+      );
+    } catch (err) {
+      throw new Error(
+        `Certificado com senha em formato legado que falhou na validação (senha incorreta ou certificado expirado). Refaça o upload em Configurações → Fiscal. Detalhe: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   // 5. Re-export to 3DES preserving full ICP-Brasil CA chain
   //    Some SEFAZ APIs require 3DES-encoded certificates for compatibility

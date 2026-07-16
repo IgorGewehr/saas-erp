@@ -1,6 +1,39 @@
 {
   "indexes": [
     {
+      "collectionGroup": "coupons",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "code", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "coupons",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "couponRedemptions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "couponId", "order": "ASCENDING" },
+        { "fieldPath": "clientId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "giftCards",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "code", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "aiChatMessages",
       "queryScope": "COLLECTION",
       "fields": [
@@ -1426,6 +1459,50 @@
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "paymentProvider", "order": "ASCENDING" },
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" },
+        { "fieldPath": "paymentExpiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" },
+        { "fieldPath": "stockRestoredAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" },
+        { "fieldPath": "paymentExpiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "paymentFsmStatus", "order": "ASCENDING" },
+        { "fieldPath": "stockRestoredAt", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "ASCENDING" }
+      ]
+    },
 
     {
       "collectionGroup": "kanbanCards",
@@ -1648,6 +1725,14 @@
         { "fieldPath": "businessId", "order": "ASCENDING" },
         { "fieldPath": "channelOwnerId", "order": "ASCENDING" },
         { "fieldPath": "unreadCount", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cashSessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "openedAt", "order": "DESCENDING" }
       ]
     }
   ],

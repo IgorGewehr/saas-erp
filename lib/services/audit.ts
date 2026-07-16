@@ -24,7 +24,7 @@ export interface AuditActor {
 
 export interface AuditPayload {
   businessId: string;
-  entity: 'transaction' | 'bankAccount';
+  entity: 'transaction' | 'bankAccount' | 'cashSession';
   entityId: string;
   action: AuditAction;
   actor: AuditActor;

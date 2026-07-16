@@ -113,17 +113,3 @@ export async function ensureCached(src: string): Promise<string | null> {
   INFLIGHT.set(src, p);
   return p;
 }
-
-export function clearImageCache(): void {
-  MEMORY_CACHE.clear();
-  try {
-    const keys: string[] = [];
-    for (let i = 0; i < sessionStorage.length; i++) {
-      const k = sessionStorage.key(i);
-      if (k && k.startsWith(STORAGE_PREFIX)) keys.push(k);
-    }
-    keys.forEach(k => sessionStorage.removeItem(k));
-  } catch {
-    /* ignore */
-  }
-}

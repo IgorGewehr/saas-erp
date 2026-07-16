@@ -57,7 +57,6 @@ interface MarkPaidParams {
   paymentMethod?: PaymentMethod;
 }
 
-const ALLOWED_STATUS: TransactionStatus[] = ['pendente', 'pago', 'atrasado', 'cancelado'];
 const ALLOWED_METHODS: PaymentMethod[] = ['dinheiro', 'pix', 'credito', 'debito', 'boleto', 'pontos', 'gift_card', 'outros'];
 
 export async function POST(req: NextRequest) {

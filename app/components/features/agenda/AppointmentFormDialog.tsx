@@ -18,19 +18,22 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
-import { Search, X, AlertTriangle, Trash2, Check } from 'lucide-react';
+import { Search, X, AlertTriangle, Trash2, Check, Users } from 'lucide-react';
 import { Dialog, DialogTitle, DialogContent, DialogActions } from '@mui/material';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
+import { effectiveServiceCapacity } from '@/lib/contracts/domain/service';
+import type { GroupSlot } from '@/lib/services/groupSession';
 import type { AppointmentStatus, CRMContact, Service, User } from '@/lib/types';
 import {
   STATUS_OPTIONS,
   DURATION_OPTIONS,
   TIME_OPTIONS,
   addDurationToTime,
+  timeToMinutes,
   type AppointmentFormData,
   type RecurrenceFrequency,
 } from './shared';
@@ -50,6 +53,13 @@ export interface AppointmentDialogProps {
   saving?: boolean;
   checkConflicts?: (professionalId: string, date: string, startTime: string, endTime: string, excludeId?: string) => { hasConflict: boolean; message: string };
   editingAppointmentId?: string;
+  /**
+   * Turmas (academia): retorna os horários da grade semanal do serviço numa
+   * data, com vagas. Quando o serviço é turma (capacity>1) com grade, o dialog
+   * troca o seletor de horário livre por estes slots. O caller (AgendaModule)
+   * computa via buildGroupSlots sobre os appointments carregados.
+   */
+  getGroupSlots?: (serviceId: string, date: string) => GroupSlot[];
 }
 
 export function AppointmentFormDialog({
@@ -65,6 +75,7 @@ export function AppointmentFormDialog({
   saving = false,
   checkConflicts,
   editingAppointmentId,
+  getGroupSlots,
 }: AppointmentDialogProps) {
   const { t } = useTranslation();
   const [formData, setFormData] = useState<AppointmentFormData>({
@@ -165,6 +176,48 @@ export function AppointmentFormDialog({
       return m.serviceIds.includes(formData.serviceId);
     });
   }, [members, formData.serviceId]);
+
+  // ── Turmas (academia) ─────────────────────────────────────────────────────
+  // Serviço com capacity>1 = turma. Com sessions[] (grade semanal), o horário
+  // vem dos slots da grade (não do campo livre). Sem grade, é turma "ad-hoc":
+  // horário livre + capacidade. O save (AgendaModule) deriva isGroup do serviço,
+  // então a UI só precisa garantir startTime/professional coerentes.
+  const selectedService = useMemo(
+    () => services.find((s) => s.id === formData.serviceId),
+    [services, formData.serviceId],
+  );
+  const groupCapacity = selectedService ? effectiveServiceCapacity(selectedService.capacity) : 1;
+  const isGroup = groupCapacity > 1;
+  // Só mostra o seletor de grade quando o caller fornece getGroupSlots (Agenda).
+  // Sem o callback (ex: dialog reusado nas Conversas), cai no horário livre.
+  const hasGrid = isGroup && (selectedService?.sessions?.length ?? 0) > 0 && !!getGroupSlots;
+
+  const groupSlots = useMemo<GroupSlot[]>(() => {
+    if (!hasGrid || !getGroupSlots || !formData.serviceId || !formData.date) return [];
+    return getGroupSlots(formData.serviceId, formData.date);
+  }, [hasGrid, getGroupSlots, formData.serviceId, formData.date]);
+
+  const selectedSlot = useMemo(
+    () => groupSlots.find(
+      (s) => s.startTime === formData.startTime
+        && (s.professionalId ?? '') === (formData.professionalId ?? ''),
+    ),
+    [groupSlots, formData.startTime, formData.professionalId],
+  );
+
+  const handleSelectSlot = (slot: GroupSlot) => {
+    if (slot.seatsAvailable <= 0) return;
+    const duration = timeToMinutes(slot.endTime) - timeToMinutes(slot.startTime);
+    setFormData((prev) => ({
+      ...prev,
+      startTime: slot.startTime,
+      duration: duration > 0 ? duration : prev.duration,
+      professionalId: slot.professionalId ?? '',
+      professionalName: slot.professionalName ?? '',
+      professionalIds: slot.professionalId ? [slot.professionalId] : [],
+      professionalNames: slot.professionalName ? [slot.professionalName] : [],
+    }));
+  };
 
   // Conflito de agenda — checa pra CADA profissional selecionado. Se QUALQUER
   // um deles tem conflito no slot, avisa. Mensagem agrega os nomes em conflito
@@ -381,81 +434,171 @@ export function AppointmentFormDialog({
             </select>
           </div>
 
-          {/* Date and time row */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                {t('agenda.date', 'Data')} *
-              </label>
-              <input
-                type="date"
-                value={formData.date}
-                onChange={(e) => setFormData((prev) => ({ ...prev, date: e.target.value }))}
-                className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
-                  'text-sm text-gray-900 dark:text-gray-100',
-                  'bg-white dark:bg-gray-800',
-                  'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                  'transition-all duration-200',
-                )}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                {t('agenda.startTime', 'Horário Início')} *
-              </label>
-              <select
-                value={formData.startTime}
-                onChange={(e) => setFormData((prev) => ({ ...prev, startTime: e.target.value }))}
-                className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
-                  'text-sm text-gray-900 dark:text-gray-100 appearance-none',
-                  'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                  'transition-all duration-200',
-                )}
-              >
-                {TIME_OPTIONS.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Duration and end time */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                {t('agenda.duration', 'Duração')}
-              </label>
-              <select
-                value={formData.duration}
-                onChange={(e) => setFormData((prev) => ({ ...prev, duration: Number(e.target.value) }))}
-                className={cn(
-                  'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
-                  'text-sm text-gray-900 dark:text-gray-100 appearance-none',
-                  'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
-                  'transition-all duration-200',
-                )}
-              >
-                {DURATION_OPTIONS.map((d) => (
-                  <option key={d.value} value={d.value}>{d.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-                {t('agenda.endTime', 'Término')}
-              </label>
-              <div className="px-4 py-2.5 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-500 dark:text-gray-400">
-                {endTime}
+          {hasGrid ? (
+            <>
+              {/* Turma com grade: data + slots fixos da semana com vagas */}
+              <div>
+                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  {t('agenda.date', 'Data')} *
+                </label>
+                <input
+                  type="date"
+                  value={formData.date}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, date: e.target.value }))}
+                  className={cn(
+                    'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                    'text-sm text-gray-900 dark:text-gray-100',
+                    'bg-white dark:bg-gray-800',
+                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                    'transition-all duration-200',
+                  )}
+                />
               </div>
-            </div>
-          </div>
+              <div>
+                <label className="flex items-center gap-1.5 text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                  <Users className="w-3.5 h-3.5" />
+                  {t('agenda.classTime', 'Horário da turma')} *
+                </label>
+                {groupSlots.length === 0 ? (
+                  <div className="px-4 py-3 rounded-xl border border-dashed border-gray-200 dark:border-gray-700 text-xs text-gray-400 dark:text-gray-500 text-center">
+                    {t('agenda.noClassThisDay', 'Nenhuma turma neste dia. Escolha outra data.')}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {groupSlots.map((slot) => {
+                      const full = slot.seatsAvailable <= 0;
+                      const selected = !!selectedSlot
+                        && selectedSlot.startTime === slot.startTime
+                        && (selectedSlot.professionalId ?? '') === (slot.professionalId ?? '');
+                      return (
+                        <button
+                          key={slot.sessionKey}
+                          type="button"
+                          disabled={full}
+                          onClick={() => handleSelectSlot(slot)}
+                          className={cn(
+                            'flex flex-col items-start gap-1 px-3 py-2 rounded-xl border text-left transition-colors',
+                            full
+                              ? 'opacity-50 cursor-not-allowed bg-gray-50 dark:bg-white/[0.02] border-gray-200 dark:border-gray-700'
+                              : selected
+                                ? 'bg-red-50 dark:bg-red-500/15 border-red-300 dark:border-red-500/40'
+                                : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:border-red-200 dark:hover:border-red-500/30',
+                          )}
+                        >
+                          <div className="flex items-center justify-between w-full">
+                            <span className={cn(
+                              'text-sm font-semibold',
+                              selected ? 'text-red-700 dark:text-red-300' : 'text-gray-900 dark:text-gray-100',
+                            )}>
+                              {slot.startTime}–{slot.endTime}
+                            </span>
+                            <span className={cn(
+                              'text-[10px] font-semibold px-1.5 py-0.5 rounded-full',
+                              full
+                                ? 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
+                                : 'bg-emerald-50 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
+                            )}>
+                              {full ? t('agenda.classFull', 'Cheia') : `${slot.seatsAvailable}/${slot.capacity}`}
+                            </span>
+                          </div>
+                          {slot.professionalName && (
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500">{slot.professionalName}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Date and time row */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.date', 'Data')} *
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.date}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, date: e.target.value }))}
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700',
+                      'text-sm text-gray-900 dark:text-gray-100',
+                      'bg-white dark:bg-gray-800',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.startTime', 'Horário Início')} *
+                  </label>
+                  <select
+                    value={formData.startTime}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, startTime: e.target.value }))}
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                      'text-sm text-gray-900 dark:text-gray-100 appearance-none',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  >
+                    {TIME_OPTIONS.map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Duration and end time */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.duration', 'Duração')}
+                  </label>
+                  <select
+                    value={formData.duration}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, duration: Number(e.target.value) }))}
+                    className={cn(
+                      'w-full px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                      'text-sm text-gray-900 dark:text-gray-100 appearance-none',
+                      'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                      'transition-all duration-200',
+                    )}
+                  >
+                    {DURATION_OPTIONS.map((d) => (
+                      <option key={d.value} value={d.value}>{d.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+                    {t('agenda.endTime', 'Término')}
+                  </label>
+                  <div className="px-4 py-2.5 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/50 text-sm text-gray-500 dark:text-gray-400">
+                    {endTime}
+                  </div>
+                </div>
+              </div>
+
+              {isGroup && (
+                <p className="flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-gray-500">
+                  <Users className="w-3.5 h-3.5" />
+                  {t('agenda.groupAdhocHint', `Turma: ${groupCapacity} vagas por horário (sem grade fixa).`)}
+                </p>
+              )}
+            </>
+          )}
 
           {/* Profissionais — multi-select via chips. Cada chip é toggleável,
               azul quando selecionado. Permite atribuir 1+ profissionais ao
               mesmo agendamento. Quando vazio, agendamento é "global" (sem
-              prof específico — útil pra slots da casa que qualquer um cobre). */}
+              prof específico — útil pra slots da casa que qualquer um cobre).
+              Em turma com grade, o profissional vem do slot — oculto aqui. */}
+          {!hasGrid && (
           <div>
             <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
               {t('agenda.professional', 'Profissionais')}
@@ -508,10 +651,12 @@ export function AppointmentFormDialog({
               </p>
             )}
           </div>
+          )}
 
-          {/* Conflict warning */}
+          {/* Conflict warning — irrelevante em turma (colegas dividem o horário;
+              o guard valida vaga/sobreposição com sessionKey no save). */}
           <AnimatePresence>
-            {formConflict.hasConflict && (
+            {!isGroup && formConflict.hasConflict && (
               <motion.div
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
@@ -578,8 +723,9 @@ export function AppointmentFormDialog({
             </div>
           </div>
 
-          {/* Recurrence (create only) */}
-          {!isEditing && (
+          {/* Recurrence (create only) — turma usa a grade semanal do serviço,
+              recorrência manual não se aplica (a repetição já é a grade). */}
+          {!isEditing && !isGroup && (
             <div className="pt-1">
               <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
                 {t('agenda.repeat', 'Repetir')}
@@ -688,7 +834,7 @@ export function AppointmentFormDialog({
           </button>
           <button
             onClick={handleSubmit}
-            disabled={!formData.clientName || saving}
+            disabled={!formData.clientName || saving || (hasGrid && !selectedSlot)}
             className={cn(
               'px-5 py-2.5 rounded-xl text-sm font-semibold',
               'bg-red-600 text-white hover:bg-red-700',

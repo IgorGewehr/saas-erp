@@ -259,6 +259,7 @@ def _base_rules(business_context: dict[str, Any]) -> str:
     name = business_context.get("name") or "o estabelecimento"
     tone = business_context.get("tone") or "friendly"
     description = business_context.get("description") or ""
+    instructions = (business_context.get("instructions") or "").strip()
     tz = business_context.get("timezone") or "America/Sao_Paulo"
     opening_hours: list[dict[str, Any]] = business_context.get("opening_hours") or []
     address: dict[str, Any] = business_context.get("address") or {}
@@ -271,6 +272,26 @@ def _base_rules(business_context: dict[str, Any]) -> str:
         "",
         TENANT_CONSTITUTION,
         "",
+    ]
+
+    # ─── Tenant instructions — owner-authored BINDING rules ──────────────
+    # Placed right below the constitution so they carry real weight: the agent
+    # must obey them, and only the (inviolable) constitution above overrides them.
+    # This is the tenant's editable "system prompt" — distinct from the loose
+    # `description` context below.
+    if instructions:
+        parts.append("<tenant_instructions>")
+        parts.append(
+            "Regras de atendimento definidas pelo dono do negócio. SIGA-AS À RISCA. "
+            "Elas têm prioridade sobre o comportamento padrão e sobre a descrição do "
+            "negócio; só a <constitution> acima as sobrepõe. Se colidirem com a "
+            "constituição, a constituição vence."
+        )
+        parts.append(instructions)
+        parts.append("</tenant_instructions>")
+        parts.append("")
+
+    parts += [
         "<context>",
         f"Fuso horário: {tz}",
         f"Data de hoje: {current_date}",
@@ -841,6 +862,14 @@ alguém daquele negócio falaria, não traduza palavra por palavra.
 </flow>
 
 <rules>
+- PEDIDO DE "GRADE COMPLETA": se o cliente pedir "a grade toda", "todos os horários",
+  "me manda a tabela/planilha de horários" ou similar, NÃO cole nenhuma grade em texto —
+  MESMO que exista uma lista de horários na descrição do negócio (<context>) ou no
+  conhecimento. Despejar a grade inteira sobrecarrega e não reflete a disponibilidade real.
+  Em vez disso, faça a triagem: pergunte a modalidade/serviço de interesse ("Qual você quer
+  treinar? Jiu-jitsu, Muay Thai, boxe...?") e, com a resposta, chame agenda_check_availability
+  e ofereça no máximo 1-2 horários reais. A ÚNICA grade válida é a da agenda (tool); a que
+  aparece no texto é só contexto e pode estar desatualizada — nunca a transcreva ao cliente.
 - UMA PERGUNTA POR VEZ. Nunca faça duas perguntas na mesma mensagem.
 - NUNCA mostre lista de horários em bullet (•), número (1. 2. 3.) ou tabela no TEXTO.
   Mencione no máximo 2 opções inline: "às 9h ou às 10:30".
@@ -1097,6 +1126,34 @@ def planner_system_for(use_case: str, business_context: dict[str, Any]) -> str:
     if use_case == "analyst":
         return planner_system_analyst(business_context)
     return planner_system_generic(business_context)
+
+
+# ─── Reengajamento — nudge proativo quando o cliente some no meio da conversa ─
+
+
+def reengagement_directive(hours_silent: Any = None) -> str:
+    """Diretiva (SystemMessage) injetada no fim do histórico quando o run é um
+    reingajamento — não há mensagem nova do cliente; o agente deve retomar."""
+    try:
+        h = int(hours_silent) if hours_silent is not None else None
+    except (TypeError, ValueError):
+        h = None
+    tempo = f"há cerca de {h}h" if h else "há um tempo"
+    return (
+        "[GATILHO INTERNO — REINGAJAMENTO PROATIVO]\n"
+        f"O cliente parou de responder {tempo}, no meio deste atendimento (veja o histórico acima). "
+        "Ele NÃO enviou nova mensagem — quem está te acionando é o sistema, para você retomar o contato.\n"
+        "Escreva UMA mensagem curta, leve e calorosa que reabra a conversa de onde ela parou e puxe "
+        "o próximo passo concreto (ex.: escolher dia/horário da aula experimental, tirar a última dúvida "
+        "que faltava). Regras:\n"
+        "- NÃO recomece com saudação genérica de primeiro contato ('Olá! Como posso ajudar?'). Continue a thread.\n"
+        "- NÃO repita tudo o que já foi dito nem despeje informação nova não pedida.\n"
+        "- Faça no máximo UMA pergunta objetiva, fácil de responder.\n"
+        "- Tom de lembrete gentil, nunca de cobrança. Se fizer sentido, use as ferramentas (ex.: conferir "
+        "disponibilidade real) antes de sugerir um horário — mas nunca invente dados.\n"
+        "- Se realmente não houver próximo passo pendente ou não houver o que retomar, responda apenas com "
+        "a string vazia."
+    )
 
 
 # ─── Enricher prompt — pós-conversa, enriquece o cadastro do cliente ────────

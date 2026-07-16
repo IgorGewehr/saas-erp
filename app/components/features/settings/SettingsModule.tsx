@@ -94,6 +94,7 @@ import { AuditoriaTab } from './AuditoriaTab';
 import ValidatorChipSection from './ValidatorChipSection';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
+import MercadoPagoConnectCard from './MercadoPagoConnectCard';
 import {
   DeliveryZonesEditor,
   UpsellRulesEditor,
@@ -118,7 +119,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'auditoria';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'pagamentos' | 'auditoria';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -1956,6 +1957,7 @@ function FiscalTab() {
   const [cscId, setCscId] = useState('');
   const [cscToken, setCscToken] = useState('');
   const [showCscToken, setShowCscToken] = useState(false);
+  const [autoEmitNfce, setAutoEmitNfce] = useState(false);
   const [isSavingNfce, setIsSavingNfce] = useState(false);
   const [isSavingCsc, setIsSavingCsc] = useState(false);
 
@@ -2016,6 +2018,7 @@ function FiscalTab() {
     if (f.nfceConfig) {
       setNfceSeries(f.nfceConfig.series || '1');
       setNfceNextNumber(String(f.nfceConfig.nextNumber || 1));
+      setAutoEmitNfce(!!f.nfceConfig.autoEmit);
       // CSC loaded via encrypted API route
       firebaseAuth.currentUser?.getIdToken().then(token => {
         if (!token || !business?.id) return;
@@ -2026,7 +2029,7 @@ function FiscalTab() {
         }).catch(() => {
           setCscId(f.nfceConfig?.cscId || '');
         });
-      });
+      }).catch(() => {});
     }
     const fAny = f as Record<string, unknown>;
     const nfseConfig = fAny.nfseConfig as Record<string, unknown> | undefined;
@@ -2109,6 +2112,7 @@ function FiscalTab() {
           series: nfceSeries,
           nextNumber: Number(nfceNextNumber) || 1,
           environment,
+          autoEmit: autoEmitNfce,
         },
       });
       toast.success(t('settings.fiscal.nfceSaved', 'Configurações NFC-e salvas!'));
@@ -2583,6 +2587,23 @@ function FiscalTab() {
                 <input type="number" min={1} value={nfceNextNumber} onChange={(e) => setNfceNextNumber(e.target.value)} className={inputClasses} disabled={!canEditFiscal} />
               </FormField>
             </div>
+            <div className="flex items-start justify-between gap-4 rounded-xl border border-gray-100 dark:border-gray-800 p-4 mb-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+                  {t('settings.fiscal.autoEmitNfce', 'Emitir NFC-e automaticamente nos pedidos')}
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {t(
+                    'settings.fiscal.autoEmitNfceHint',
+                    'Ao concluir um pedido de delivery, uma NFC-e é emitida automaticamente. Exige certificado digital e CSC configurados. A emissão é best-effort: se falhar, o pedido não é bloqueado. Você ainda pode emitir manualmente a qualquer momento. A nota cobre apenas a mercadoria (soma dos itens) — frete e desconto do pedido não compõem o total fiscal.',
+                  )}
+                </p>
+              </div>
+              <AgenteToggleSwitch
+                checked={autoEmitNfce}
+                onChange={canEditFiscal ? setAutoEmitNfce : () => {}}
+              />
+            </div>
             {canEditFiscal && (
               <div className="flex justify-end">
                 <SaveButton onClick={handleSaveNfce} loading={isSavingNfce} label={t('settings.fiscal.saveNfce', 'Salvar NFC-e')} variant="secondary" />
@@ -2920,7 +2941,7 @@ function UsersTab() {
   const [editingCommissionFor, setEditingCommissionFor] = useState<string | null>(null);
   const [commissionInput, setCommissionInput] = useState('');
   const [savingCommission, setSavingCommission] = useState<string | null>(null);
-  const isOwner = user?.role === 'founder' || user?.role === 'admin';
+  const isOwner = user ? ROLE_HIERARCHY[user.role] >= ROLE_HIERARCHY['admin'] : false;
   const isFounder = user?.role === 'founder';
   const activeSectors = sectors.filter(s => s.isActive);
 
@@ -3945,11 +3966,14 @@ function AgenteTab() {
   const [tone, setTone] = useState<'formal' | 'casual' | 'friendly'>(current?.tone || 'friendly');
   const [segment, setSegment] = useState<BusinessSegment>(current?.segment || 'generico');
   const [businessDescription, setBusinessDescription] = useState<string>(current?.businessDescription || '');
+  const [instructions, setInstructions] = useState<string>(current?.instructions || '');
 
   // Pedidos-specific
+  const [acceptingOrders, setAcceptingOrders] = useState<boolean>(current?.pedidos?.acceptingOrders ?? true);
   const [notifyOnStatusChange, setNotifyOnStatusChange] = useState<boolean>(current?.pedidos?.notifyOnStatusChange ?? true);
   const [acceptOrdersOffHours, setAcceptOrdersOffHours] = useState<boolean>(current?.pedidos?.acceptOrdersOffHours ?? false);
   const [deliveryFee, setDeliveryFee] = useState<number>(current?.pedidos?.deliveryFee ?? 0);
+  const [maxWaitMinutes, setMaxWaitMinutes] = useState<number>(current?.pedidos?.maxWaitMinutes ?? 0);
 
   // Agenda-specific
   const [sendReminder, setSendReminder] = useState<boolean>(current?.agenda?.sendReminder ?? true);
@@ -3967,14 +3991,25 @@ function AgenteTab() {
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
 
+  // Reengajamento proativo (cliente some no meio da conversa)
+  const [reengageEnabled, setReengageEnabled] = useState<boolean>(current?.reengagement?.enabled ?? false);
+  const [reengageDelayHours, setReengageDelayHours] = useState<number>(current?.reengagement?.delayHours ?? 3);
+  const [reengageMaxAttempts, setReengageMaxAttempts] = useState<number>(current?.reengagement?.maxAttempts ?? 2);
+  const [reengageIntervalHours, setReengageIntervalHours] = useState<number>(current?.reengagement?.intervalHours ?? 20);
+  const [reengageQuietStart, setReengageQuietStart] = useState<number>(current?.reengagement?.quietStart ?? 8);
+  const [reengageQuietEnd, setReengageQuietEnd] = useState<number>(current?.reengagement?.quietEnd ?? 21);
+
   // Operator-specific (dashboard chat)
   const [autonomousMode, setAutonomousMode] = useState<boolean>(current?.operator?.autonomousMode ?? false);
+  const [dailyBudgetUsd, setDailyBudgetUsd] = useState<number>(current?.operator?.dailyBudgetUsd ?? 0);
 
   // Wave 7 — policies + SLAs + calendar + upsell
   const [policyCancellation, setPolicyCancellation] = useState<string>(current?.policies?.cancellation || '');
   const [policyRefund, setPolicyRefund] = useState<string>(current?.policies?.refund || '');
+  const [policyPrivacy, setPolicyPrivacy] = useState<string>(current?.policies?.privacy || '');
   const [slaPrepMin, setSlaPrepMin] = useState<number>(current?.sla?.prepMaxMinutes || 0);
   const [slaDeliveryMin, setSlaDeliveryMin] = useState<number>(current?.sla?.deliveryMaxMinutes || 0);
+  const [slaFirstResponseMin, setSlaFirstResponseMin] = useState<number>(current?.sla?.firstResponseMinutes || 0);
   const [holidaysStr, setHolidaysStr] = useState<string>((current?.calendar?.holidays || []).join(', '));
   const [acceptedPaymentsStr, setAcceptedPaymentsStr] = useState<string>((current?.acceptedPaymentMethods || []).join(','));
 
@@ -3991,21 +4026,33 @@ function AgenteTab() {
     setTone(current?.tone || 'friendly');
     setSegment(current?.segment || 'generico');
     setBusinessDescription(current?.businessDescription || '');
+    setInstructions(current?.instructions || '');
+    setAcceptingOrders(current?.pedidos?.acceptingOrders ?? true);
     setNotifyOnStatusChange(current?.pedidos?.notifyOnStatusChange ?? true);
     setAcceptOrdersOffHours(current?.pedidos?.acceptOrdersOffHours ?? false);
     setDeliveryFee(current?.pedidos?.deliveryFee ?? 0);
+    setMaxWaitMinutes(current?.pedidos?.maxWaitMinutes ?? 0);
     setSendReminder(current?.agenda?.sendReminder ?? true);
     setReminderHoursBefore(current?.agenda?.reminderHoursBefore ?? 24);
     setConfirmationBeforeAppointment(current?.agenda?.confirmationBeforeAppointment ?? true);
     setFollowUpAfter(current?.agenda?.followUpAfter ?? false);
+    setReengageEnabled(current?.reengagement?.enabled ?? false);
+    setReengageDelayHours(current?.reengagement?.delayHours ?? 3);
+    setReengageMaxAttempts(current?.reengagement?.maxAttempts ?? 2);
+    setReengageIntervalHours(current?.reengagement?.intervalHours ?? 20);
+    setReengageQuietStart(current?.reengagement?.quietStart ?? 8);
+    setReengageQuietEnd(current?.reengagement?.quietEnd ?? 21);
     setReminderTemplate(current?.agenda?.reminderTemplate ?? null);
     setConfirmationTemplate(current?.agenda?.confirmationTemplate ?? null);
     setFollowUpTemplate(current?.agenda?.followUpTemplate ?? null);
     setAutonomousMode(current?.operator?.autonomousMode ?? false);
+    setDailyBudgetUsd(current?.operator?.dailyBudgetUsd ?? 0);
     setPolicyCancellation(current?.policies?.cancellation || '');
     setPolicyRefund(current?.policies?.refund || '');
+    setPolicyPrivacy(current?.policies?.privacy || '');
     setSlaPrepMin(current?.sla?.prepMaxMinutes || 0);
     setSlaDeliveryMin(current?.sla?.deliveryMaxMinutes || 0);
+    setSlaFirstResponseMin(current?.sla?.firstResponseMinutes || 0);
     setHolidaysStr((current?.calendar?.holidays || []).join(', '));
     setAcceptedPaymentsStr((current?.acceptedPaymentMethods || []).join(','));
     setDeliveryZones(current?.deliveryZones || []);
@@ -4053,11 +4100,22 @@ function AgenteTab() {
     try {
       // Build nested settings — keeps Firestore doc clean and lets server-side
       // prompt builder know exactly what user opted into.
+      // Cada objeto aninhado faz merge com o que já existe (`...current?.X`) pra
+      // preservar subcampos não geridos por esta UI (M3 — antes o save escrevia
+      // o objeto inteiro e apagava silenciosamente qualquer subcampo extra).
       const pedidos = useCase === 'pedidos'
-        ? { notifyOnStatusChange, acceptOrdersOffHours, deliveryFee: deliveryFee > 0 ? deliveryFee : null }
-        : undefined;
+        ? {
+            ...current?.pedidos,
+            acceptingOrders,
+            notifyOnStatusChange,
+            acceptOrdersOffHours,
+            deliveryFee: deliveryFee > 0 ? deliveryFee : null,
+            maxWaitMinutes: maxWaitMinutes > 0 ? maxWaitMinutes : null,
+          }
+        : (current?.pedidos ?? null);
       const agenda = useCase === 'servicos'
         ? {
+            ...current?.agenda,
             sendReminder,
             reminderHoursBefore,
             confirmationBeforeAppointment,
@@ -4066,7 +4124,17 @@ function AgenteTab() {
             confirmationTemplate: confirmationTemplate ?? null,
             followUpTemplate: followUpTemplate ?? null,
           }
-        : undefined;
+        : (current?.agenda ?? null);
+
+      const reengagement = {
+        ...current?.reengagement,
+        enabled: reengageEnabled,
+        delayHours: reengageDelayHours,
+        maxAttempts: reengageMaxAttempts,
+        intervalHours: reengageIntervalHours,
+        quietStart: reengageQuietStart,
+        quietEnd: reengageQuietEnd,
+      };
 
       // Wave 7 — parse dynamic fields
       const holidays = holidaysStr.split(',').map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
@@ -4076,30 +4144,49 @@ function AgenteTab() {
         .map((s) => s.trim().toLowerCase())
         .filter((s) => validPayments.includes(s));
 
-      const policies = (policyCancellation.trim() || policyRefund.trim())
-        ? { cancellation: policyCancellation.trim() || null, refund: policyRefund.trim() || null }
-        : null;
-
-      const sla = (slaPrepMin > 0 || slaDeliveryMin > 0)
+      const policies = (policyCancellation.trim() || policyRefund.trim() || policyPrivacy.trim() || current?.policies)
         ? {
-            prepMaxMinutes: slaPrepMin > 0 ? slaPrepMin : null,
-            deliveryMaxMinutes: slaDeliveryMin > 0 ? slaDeliveryMin : null,
+            ...current?.policies,
+            cancellation: policyCancellation.trim() || null,
+            refund: policyRefund.trim() || null,
+            privacy: policyPrivacy.trim() || null,
           }
         : null;
 
-      const calendar = holidays.length > 0
+      const sla = (slaPrepMin > 0 || slaDeliveryMin > 0 || slaFirstResponseMin > 0 || current?.sla)
+        ? {
+            ...current?.sla,
+            prepMaxMinutes: slaPrepMin > 0 ? slaPrepMin : null,
+            deliveryMaxMinutes: slaDeliveryMin > 0 ? slaDeliveryMin : null,
+            firstResponseMinutes: slaFirstResponseMin > 0 ? slaFirstResponseMin : null,
+          }
+        : null;
+
+      // Preserva seasonalHours mesmo quando não há feriados (antes calendar
+      // virava null e descartava a grade sazonal junto — edge confirmado).
+      const calendar = (holidays.length > 0 || (current?.calendar?.seasonalHours?.length ?? 0) > 0)
         ? { holidays, seasonalHours: current?.calendar?.seasonalHours || [] }
         : null;
 
       const payload: Record<string, unknown> = {
+        // M3: espalha o aiAgent atual primeiro pra preservar campos que esta UI
+        // não toca (ex: lastReindexAt, enabledAt, e qualquer subcampo gravado por
+        // API/migração). Os campos abaixo sobrescrevem só o que o operador editou.
         'settings.aiAgent': {
+          ...(current ?? {}),
           enabled,
           tone,
           segment,
           businessDescription: businessDescription.trim() || null,
-          pedidos: pedidos || null,
-          agenda: agenda || null,
-          operator: { autonomousMode },
+          instructions: instructions.trim() || null,
+          pedidos,
+          agenda,
+          reengagement,
+          operator: {
+            ...current?.operator,
+            autonomousMode,
+            dailyBudgetUsd: dailyBudgetUsd > 0 ? dailyBudgetUsd : null,
+          },
           policies,
           sla,
           calendar,
@@ -4336,6 +4423,50 @@ function AgenteTab() {
           transition={{ duration: 0.25 }}
           className="space-y-6"
         >
+          {/* Reengajamento proativo — retoma quando o cliente some no meio da conversa */}
+          <SectionCard title="Reengajamento proativo" icon={Bell}>
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  Retomar quando o cliente some
+                </p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Se a IA responde e o cliente para de responder, ela reabre a conversa de forma
+                  natural após um tempo. Aplica a tag <strong>&quot;para prosseguir&quot;</strong> ao
+                  tentar e <strong>&quot;falhou contato&quot;</strong> ao esgotar. Respeita a janela de
+                  24h do WhatsApp (fora dela, só funciona no WhatsApp Web/Baileys).
+                </p>
+              </div>
+              <AgenteToggleSwitch checked={reengageEnabled} onChange={setReengageEnabled} />
+            </div>
+            {reengageEnabled && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+                {[
+                  { label: 'Silêncio antes (h)', value: reengageDelayHours, set: setReengageDelayHours, min: 1, max: 96 },
+                  { label: 'Máx. tentativas', value: reengageMaxAttempts, set: setReengageMaxAttempts, min: 1, max: 5 },
+                  { label: 'Intervalo (h)', value: reengageIntervalHours, set: setReengageIntervalHours, min: 1, max: 240 },
+                  { label: 'Não enviar antes das (h)', value: reengageQuietStart, set: setReengageQuietStart, min: 0, max: 23 },
+                  { label: 'Não enviar após as (h)', value: reengageQuietEnd, set: setReengageQuietEnd, min: 1, max: 24 },
+                ].map((f) => (
+                  <label key={f.label} className="flex flex-col gap-1">
+                    <span className="text-[11px] text-gray-500 dark:text-gray-400">{f.label}</span>
+                    <input
+                      type="number"
+                      min={f.min}
+                      max={f.max}
+                      value={f.value}
+                      onChange={(e) => {
+                        const n = parseInt(e.target.value, 10);
+                        f.set(Number.isNaN(n) ? f.min : Math.min(Math.max(n, f.min), f.max));
+                      }}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                    />
+                  </label>
+                ))}
+              </div>
+            )}
+          </SectionCard>
+
           {/* Tom */}
           <SectionCard title="Tom de voz" icon={MessageCircle}>
             <div className="flex gap-2 flex-wrap">
@@ -4425,7 +4556,7 @@ function AgenteTab() {
             </p>
             <textarea
               value={businessDescription}
-              onChange={(e) => setBusinessDescription(e.target.value.slice(0, 2000))}
+              onChange={(e) => setBusinessDescription(e.target.value.slice(0, 12000))}
               rows={5}
               placeholder={
                 useCase === 'pedidos'
@@ -4442,14 +4573,51 @@ function AgenteTab() {
               }
               className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
             />
-            <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/2000</p>
+            <p className="text-[10px] text-gray-400 mt-1 text-right">{businessDescription.length}/12000</p>
+          </SectionCard>
+
+          {/* Instruções / regras de comportamento do agente */}
+          <SectionCard title="Instruções do agente" icon={Sparkles}>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+              Regras de <strong>como</strong> o agente deve atender: tom, o que dizer e o que
+              nunca fazer, ordem do atendimento, quando oferecer preços. Diferente do contexto
+              acima, estas instruções entram no prompt como <strong>regras vinculantes</strong> —
+              o agente obedece à risca (só as regras de segurança da plataforma têm prioridade).
+            </p>
+            <p className="text-[11px] text-amber-600 dark:text-amber-400 mb-2">
+              Não coloque a grade de horários aqui — configure os horários de cada modalidade na
+              Agenda (serviços). O agente confere disponibilidade real por lá, não por texto.
+            </p>
+            <textarea
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value.slice(0, 4000))}
+              rows={8}
+              placeholder={
+                'Ex.:\n1. Se o cliente só cumprimentar, responda "Olá! Como posso ajudar?" e aguarde. Nunca despeje informação.\n2. Responda curto e só o que foi perguntado. Não liste a grade inteira — pergunte qual modalidade interessa.\n3. Só fale de preços/planos se perguntarem explicitamente.\n4. Para agendar, confira disponibilidade real pela agenda antes de confirmar.'
+              }
+              className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
+            />
+            <p className="text-[10px] text-gray-400 mt-1 text-right">{instructions.length}/4000</p>
           </SectionCard>
 
           {/* Automações de pedidos (modo pedidos) */}
           {useCase === 'pedidos' && (
             <SectionCard title="Automações de pedidos" icon={MessageCircle}>
               <div className="space-y-4">
-                <div className="flex items-start justify-between gap-4">
+                <div className={`flex items-start justify-between gap-4 -m-1 p-3 rounded-xl ${acceptingOrders ? '' : 'bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30'}`}>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      {acceptingOrders ? 'Aceitando pedidos agora' : 'Loja pausada'}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                      {acceptingOrders
+                        ? 'Desligue para pausar a loja imediatamente: novos pedidos são recusados independente do horário de funcionamento.'
+                        : 'A loja está pausada — nenhum pedido é aceito, mesmo dentro do horário. Ligue para voltar a aceitar.'}
+                    </p>
+                  </div>
+                  <AgenteToggleSwitch checked={acceptingOrders} onChange={setAcceptingOrders} />
+                </div>
+                <div className="flex items-start justify-between gap-4 pt-3 border-t border-gray-100 dark:border-gray-800">
                   <div>
                     <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                       Avisar cliente em cada mudança de status
@@ -4488,6 +4656,21 @@ function AgenteTab() {
                       className="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30"
                     />
                   </div>
+                </div>
+                <div className="pt-3 border-t border-gray-100 dark:border-gray-800">
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Tempo máximo de espera (min)</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                    Acima disso o agente sugere alternativas ao cliente em vez de só confirmar o pedido. 0 desliga.
+                  </p>
+                  <input
+                    type="number"
+                    min={0}
+                    max={240}
+                    value={maxWaitMinutes}
+                    onChange={(e) => setMaxWaitMinutes(Math.max(0, Math.min(240, Number(e.target.value) || 0)))}
+                    placeholder="Ex: 45"
+                    className="w-24 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                  />
                 </div>
               </div>
             </SectionCard>
@@ -4567,6 +4750,24 @@ function AgenteTab() {
                 </div>
                 <AgenteToggleSwitch checked={autonomousMode} onChange={setAutonomousMode} />
               </div>
+              <div className="pt-1">
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Teto de gasto diário do chat do operador (US$)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1000}
+                  step={0.5}
+                  value={dailyBudgetUsd}
+                  onChange={(e) => setDailyBudgetUsd(Math.max(0, Math.min(1000, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 5"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                />
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                  Limite de custo (USD) por dia no chat do dashboard. 0 = usa o padrão do sistema.
+                </p>
+              </div>
             </div>
           </SectionCard>
 
@@ -4600,6 +4801,20 @@ function AgenteTab() {
                   className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
                 <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyRefund.length}/1000</p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Privacidade / LGPD
+                </label>
+                <textarea
+                  value={policyPrivacy}
+                  onChange={(e) => setPolicyPrivacy(e.target.value)}
+                  maxLength={1000}
+                  rows={2}
+                  placeholder="Ex: Seus dados são usados só para atendimento e nunca compartilhados. Pode pedir exclusão a qualquer momento."
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-gray-100 resize-none focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                />
+                <p className="text-[10px] text-gray-400 mt-0.5 text-right">{policyPrivacy.length}/1000</p>
               </div>
               <p className="text-[11px] text-gray-500 dark:text-gray-400">
                 O agente cita estas políticas literalmente ao responder perguntas relacionadas.
@@ -4636,6 +4851,20 @@ function AgenteTab() {
                   value={slaDeliveryMin}
                   onChange={(e) => setSlaDeliveryMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
                   placeholder="Ex: 60"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                  Primeira resposta (min)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={slaFirstResponseMin}
+                  onChange={(e) => setSlaFirstResponseMin(Math.max(0, Math.min(300, Number(e.target.value) || 0)))}
+                  placeholder="Ex: 5"
                   className="w-full px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/30"
                 />
               </div>
@@ -7612,6 +7841,7 @@ export default function SettingsModule() {
     { id: 'usuarios'   as Tab, label: t('settings.tabs.usuarios', 'Usuários'),   icon: Users      },
     { id: 'setores'    as Tab, label: t('settings.tabs.setores',  'Setores'),    icon: Layers     },
     { id: 'canais'     as Tab, label: t('settings.tabs.canais',   'Canais'),     icon: Plug2      },
+    { id: 'pagamentos' as Tab, label: t('settings.tabs.pagamentos', 'Pagamentos'), icon: CreditCard },
     // 'respostas' foi unificado dentro de 'canais' como sub-seção (Respostas
     // Rápidas aparece abaixo das conexões de canal). Tab top-level removida
     // pra reduzir poluição na barra de configurações.
@@ -7623,7 +7853,7 @@ export default function SettingsModule() {
   ];
 
   const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
-  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'enterprise', 'auditoria']);
+  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'pagamentos', 'enterprise', 'auditoria']);
   const tabs = isAdmin ? allTabs : allTabs.filter(tab => !ADMIN_ONLY_TABS.has(tab.id));
 
   return (
@@ -7738,6 +7968,18 @@ export default function SettingsModule() {
         {activeTab === 'setores'    && <SectorsTab key="setores" />}
 
         {activeTab === 'canais'     && <CanaisTab key="canais" />}
+        {activeTab === 'pagamentos' && (
+          <motion.div
+            key="pagamentos"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
+            className="max-w-2xl"
+          >
+            <MercadoPagoConnectCard />
+          </motion.div>
+        )}
         {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
         {activeTab === 'auditoria'  && <AuditoriaTab key="auditoria" />}
       </AnimatePresence>

@@ -96,25 +96,3 @@ export async function checkRateLimit(
     return { allowed: true, current: -1, max: cfg.max, resetAt };
   }
 }
-
-/**
- * Read-only inspection — useful for debug UIs. Doesn't increment the counter.
- */
-export async function inspectRateLimit(
-  businessId: string,
-  scope: RateLimitConfig['scope'],
-  override?: Partial<RateLimitConfig>,
-): Promise<{ current: number; max: number; resetAt: string }> {
-  const cfg = { ...DEFAULTS[scope], ...override };
-  const now = Date.now();
-  const windowMs = cfg.windowSec * 1000;
-  const bucketTs = Math.floor(now / windowMs) * windowMs;
-  const id = `${businessId}_${cfg.scope}_${bucketTs}`;
-  const snap = await adminDb.collection('agentRateLimits').doc(id).get();
-  const current = snap.exists ? ((snap.data() as { count?: number }).count || 0) : 0;
-  return {
-    current,
-    max: cfg.max,
-    resetAt: new Date(bucketTs + windowMs).toISOString(),
-  };
-}

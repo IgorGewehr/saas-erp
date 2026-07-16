@@ -37,7 +37,9 @@ export async function POST(req: NextRequest) {
     // Read business cap
     const bizSnap = await adminDb.collection('businesses').doc(ctx.businessId).get();
     const biz = bizSnap.data() as Business | undefined;
-    const cap = (biz?.settings?.aiAgent as { dailyBudgetUsd?: number } | undefined)?.dailyBudgetUsd ?? DEFAULT_DAILY_CAP_USD;
+    // M10: lê o path tipado operator.dailyBudgetUsd (antes lia top-level via cast
+    // ad-hoc — path que o Settings nunca grava → caía sempre no default).
+    const cap = biz?.settings?.aiAgent?.operator?.dailyBudgetUsd ?? DEFAULT_DAILY_CAP_USD;
 
     // Sum today's spend from agentRuns
     const todayStart = new Date();

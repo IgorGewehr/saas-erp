@@ -182,6 +182,7 @@ TOOL_ENDPOINTS: dict[str, str] = {
     "services_create":              "/api/agent/tools/services",
     "services_update":              "/api/agent/tools/services",
     "services_set_active":          "/api/agent/tools/services",
+    "services_import_grade":        "/api/agent/tools/services",
     # sales
     "sales_list":                   "/api/agent/tools/sales",
     "sales_get":                    "/api/agent/tools/sales",

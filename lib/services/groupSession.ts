@@ -69,6 +69,26 @@ export function resolveSessionsForDay(service: Service, dayOfWeek: number): Reso
 }
 
 /**
+ * Coerência de grade: a reserva pedida cai numa sessão real da grade?
+ *
+ *  - Serviço SEM sessions[] (grade vazia / ad-hoc / contínuo) → SEMPRE true.
+ *    Não há grade para violar; a disponibilidade é contínua (comportamento atual).
+ *  - Serviço COM sessions[] → true SÓ se existe uma sessão no (weekday, startTime)
+ *    pedido. false quando o horário está FORA da grade (ex.: turma que não roda
+ *    no sábado). O caller (boundary do agente) DEVE recusar nesse caso, em vez de
+ *    gravar um agendamento "ad-hoc" num dia que a modalidade não tem aula.
+ *
+ * Fonte única usada pelos dois caminhos de book (exclusivo e turma) na rota do
+ * agente. A reserva MANUAL (operador) não passa por aqui de propósito — o dono
+ * pode criar um encaixe fora da grade conscientemente.
+ */
+export function isBookingSlotOnGrade(service: Service, date: string, startTime: string): boolean {
+  if (!service.sessions || service.sessions.length === 0) return true;
+  const dayOfWeek = new Date(date + 'T12:00:00').getDay();
+  return resolveSessionsForDay(service, dayOfWeek).some((s) => s.startTime === startTime);
+}
+
+/**
  * Conta alunos já reservados (não-cancelados) numa turma identificada por
  * sessionKey, dentro de uma lista de appointments já carregada.
  */
@@ -110,9 +130,14 @@ export interface GroupSlot {
 
 /**
  * Enumera as sessões fixas da grade de um serviço-turma num dia e calcula vagas.
- * Só emite sessões com pelo menos 1 vaga. Quando `professionalId` é passado,
- * filtra sessões cujo professor fixo bate (sessões abertas — sem professionalId
- * — são incluídas e amarradas ao 'any' no sessionKey).
+ * Por padrão só emite sessões com pelo menos 1 vaga (uso do agente). Quando
+ * `professionalId` é passado, filtra sessões cujo professor fixo bate (sessões
+ * abertas — sem professionalId — são incluídas e amarradas ao 'any' no
+ * sessionKey).
+ *
+ * `includeFull=true` mantém as sessões cheias na lista (seatsAvailable=0) — usado
+ * pela UI manual pra exibir a turma lotada desabilitada, dando contexto ao
+ * operador. O agente chama sem o flag → comportamento BIT-A-BIT (só com vaga).
  */
 export function buildGroupSlots(
   service: Service,
@@ -120,6 +145,7 @@ export function buildGroupSlots(
   dayOfWeek: number,
   professionalId: string | undefined,
   appts: Appointment[],
+  includeFull = false,
 ): GroupSlot[] {
   const sessions = resolveSessionsForDay(service, dayOfWeek);
   const slots: GroupSlot[] = [];
@@ -135,7 +161,7 @@ export function buildGroupSlots(
     });
     const taken = countSeatsTaken(appts, sessionKey);
     const seatsAvailable = Math.max(0, sess.capacity - taken);
-    if (seatsAvailable <= 0) continue;
+    if (seatsAvailable <= 0 && !includeFull) continue;
 
     slots.push({
       startTime: sess.startTime,
@@ -150,4 +176,45 @@ export function buildGroupSlots(
 
   slots.sort((a, b) => a.startTime.localeCompare(b.startTime));
   return slots;
+}
+
+export interface ResolvedGroupBooking {
+  sessionKey: string;
+  /** Capacidade efetiva da turma neste horário (override da sessão tem precedência). */
+  capacity: number;
+  /** Profissional efetivo — undefined em sessão aberta ('any' no sessionKey). */
+  professionalId?: string;
+  professionalName?: string;
+}
+
+/**
+ * FONTE ÚNICA da identidade de uma reserva de turma. Usado IDÊNTICO pela reserva
+ * manual (AgendaModule) e pela do agente (tools/agenda) pra que os dois contem a
+ * MESMA turma — sem isso, sessionKey/capacity divergem e a capacidade estoura.
+ *
+ * Regra (a sessão fixa da grade é "dona" do horário):
+ *  - Sessão da grade que bate o horário → profissional E capacity vêm DELA.
+ *    Sessão aberta (sem professionalId) → 'any' SEMPRE, mesmo que o pedido traga
+ *    um profissional, pra a key bater com o slot exibido (buildGroupSlots).
+ *  - Sem sessão na grade (turma ad-hoc, capacity>1 sem sessions[]) → usa o
+ *    profissional pedido e a capacity do serviço.
+ */
+export function resolveGroupBooking(
+  service: Service,
+  date: string,
+  startTime: string,
+  requestedProfessionalId?: string,
+): ResolvedGroupBooking {
+  const dayOfWeek = new Date(date + 'T12:00:00').getDay();
+  const resolved = resolveSessionsForDay(service, dayOfWeek);
+  const matched = resolved.find(s =>
+    s.startTime === startTime &&
+    (s.professionalId ?? undefined) === (requestedProfessionalId ?? undefined),
+  ) ?? resolved.find(s => s.startTime === startTime);
+
+  const professionalId = matched ? matched.professionalId : requestedProfessionalId;
+  const professionalName = matched ? matched.professionalName : undefined;
+  const capacity = matched ? matched.capacity : effectiveServiceCapacity(service.capacity);
+  const sessionKey = buildSessionKey({ serviceId: service.id, date, startTime, professionalId });
+  return { sessionKey, capacity, professionalId, professionalName };
 }

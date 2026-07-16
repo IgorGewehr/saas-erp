@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Business } from '@/lib/types';
+import { isBusinessOpenNow } from '@/lib/utils/businessHours';
 
 type Action = 'get_context';
 
@@ -41,21 +42,10 @@ async function getContext(businessId: string) {
   const now = new Date();
   const tz = b.settings?.timezone || 'America/Sao_Paulo';
 
-  // Compute open/closed state based on openingHours + current time in business tz
-  let isOpen: boolean | null = null;
+  // Compute open/closed state via helper compartilhado (mesma regra do guardrail
+  // de pedidos off-hours).
   const hours = b.settings?.openingHours;
-  if (hours && hours.length === 7) {
-    // Format today-in-timezone to get dayOfWeek/hour/minute
-    const tzNow = new Date(now.toLocaleString('en-US', { timeZone: tz }));
-    const dow = tzNow.getDay();
-    const hm = `${String(tzNow.getHours()).padStart(2, '0')}:${String(tzNow.getMinutes()).padStart(2, '0')}`;
-    const today = hours[dow];
-    if (today?.isOpen && today.openTime && today.closeTime) {
-      isOpen = hm >= today.openTime && hm < today.closeTime;
-    } else {
-      isOpen = false;
-    }
-  }
+  const isOpen = isBusinessOpenNow(hours, tz, now);
 
   return {
     id: businessId,

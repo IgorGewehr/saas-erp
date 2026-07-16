@@ -12,9 +12,9 @@ function resolveConfigKey(type: 'nfe' | 'nfce' | 'nfse'): FiscalConfigKey {
 }
 
 /**
- * Peek at the next invoice number WITHOUT incrementing.
- * Use this before calling SEFAZ — only commit after successful emission.
- * This prevents wasting numbers on rejected/failed emissions.
+ * @deprecated Leitura SEM reserva — duas chamadas concorrentes veem o mesmo
+ * número (rejeição 539). O emit usa getNextInvoiceNumber (alocação atômica).
+ * Mantida só para consulta informativa de "próximo número" em UI.
  */
 export async function peekNextInvoiceNumber(
   businessId: string,
@@ -36,8 +36,9 @@ export async function peekNextInvoiceNumber(
 }
 
 /**
- * Commit (increment) the invoice number AFTER successful SEFAZ emission.
- * Uses Math.max to prevent regression in concurrent scenarios.
+ * Avança o contador para max(atual, usado+1). Com a alocação atômica virou
+ * salvaguarda de MIGRAÇÃO: o retry usa para docs 'pendente' do regime
+ * antigo (peek), cujo número nunca foi incrementado. No-op para docs novos.
  */
 export async function commitInvoiceNumber(
   businessId: string,
@@ -58,8 +59,8 @@ export async function commitInvoiceNumber(
 }
 
 /**
- * Legacy wrapper — atomically get-and-increment in one step.
- * Prefer peekNextInvoiceNumber + commitInvoiceNumber for new code.
+ * Alocação ATÔMICA do número fiscal (transação get-and-increment) — caminho
+ * canônico da emissão. Rejeição definitiva gera gap; inutilização cobre.
  */
 export async function getNextInvoiceNumber(
   businessId: string,
@@ -108,17 +109,20 @@ export function getPaymentCode(method: string): string {
     'cheque': '02',
     'credito': '03', 'credit_card': '03', 'credit': '03',
     'debito': '04', 'debit_card': '04', 'debit': '04',
-    'credito_loja': '05',
+    // PaymentMethod usa camelCase ('creditoLoja','semPagamento') — após
+    // toLowerCase vira 'creditoloja'/'sempagamento'; mapear ambas as formas
+    // (+ snake_case legado) pra não cair silenciosamente em tPag '99'.
+    'credito_loja': '05', 'creditoloja': '05',
     'vale_alimentacao': '10',
     'vale_refeicao': '11',
-    'vale_presente': '12',
+    'vale_presente': '12', 'gift_card': '12', 'giftcard': '12', 'voucher': '12',
     'vale_combustivel': '13',
     'boleto': '15',
     'deposito': '16',
     'pix': '17',
     'transferencia': '18',
-    'fidelidade': '19',
-    'sem_pagamento': '90',
+    'fidelidade': '19', 'pontos': '19',
+    'sem_pagamento': '90', 'sempagamento': '90',
     'outros': '99', 'other': '99',
   };
   return map[method.toLowerCase()] || '99';

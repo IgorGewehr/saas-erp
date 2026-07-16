@@ -6,35 +6,49 @@ import type { UserRole } from '@/lib/types';
 import { consultarNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 import { resolveUfEmitente } from '@/lib/fiscal/uf';
+import { QueryFiscalRequestSchema } from '@/lib/contracts/api/fiscal/query';
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL;
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY;
 
-interface QueryRequestBody {
-  type: 'nfse' | 'nfse-dps' | 'nfe' | 'nfce';
-  businessId: string;
-  chaveAcesso?: string;
-  idDPS?: string;
-  ufEmitente?: string;
-  certificado?: {
-    pfxBase64: string;
-    password: string;
-  };
-}
-
 export async function POST(request: NextRequest) {
   try {
-    const body: QueryRequestBody = await request.json();
+    const rawBody = await request.json();
+    const parsed = QueryFiscalRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Payload inválido para consulta fiscal.', details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const body = parsed.data;
     const type = body.type || 'nfe';
 
     // Auth: admin+ only
-    if (!body.businessId) {
-      return NextResponse.json({ error: 'businessId e obrigatorio.' }, { status: 400 });
-    }
     const auth = await verifyAuth(request, body.businessId);
     if (isAuthError(auth)) return auth;
     if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
       return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
+    }
+
+    // Posse da chave (R1): a consulta usa o certificado do tenant — sem este
+    // check, um admin de qualquer tenant consultaria QUALQUER chave de acesso
+    // da SEFAZ via nosso gateway. Exigimos que o documento exista no tenant.
+    // (nfse-dps consulta por idDPS — identificador gerado pelo próprio emit,
+    // sem chave; fica fora deste guard.)
+    if (body.chaveAcesso && type !== 'nfse-dps') {
+      const ownSnap = await adminDb
+        .collection('fiscalDocuments')
+        .where('businessId', '==', body.businessId)
+        .where('accessKey', '==', body.chaveAcesso)
+        .limit(1)
+        .get();
+      if (ownSnap.empty) {
+        return NextResponse.json(
+          { error: 'Documento fiscal não encontrado para este negócio.' },
+          { status: 404 },
+        );
+      }
     }
 
     // Resolve certificate, ambiente e UF from Firestore

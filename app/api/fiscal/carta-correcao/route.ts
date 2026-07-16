@@ -6,52 +6,25 @@ import type { UserRole } from '@/lib/types';
 import { cartaCorrecaoNFe, resolveAmbiente, SefazAmbiente } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
 import { resolveUfEmitente } from '@/lib/fiscal/uf';
-
-interface CartaCorrecaoBody {
-  businessId: string;
-  chaveAcesso: string;
-  sequencia: number;
-  textoCorrecao: string;
-  ufEmitente?: string;
-  certificado?: {
-    pfxBase64: string;
-    password: string;
-  };
-}
+import { CartaCorrecaoRequestSchema } from '@/lib/contracts/api/fiscal/carta-correcao';
 
 export async function POST(request: NextRequest) {
   try {
-    const body: CartaCorrecaoBody = await request.json();
+    const rawBody = await request.json();
+    const parsed = CartaCorrecaoRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Payload inválido para carta de correção.', details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const body = parsed.data;
 
     // Auth: admin+ only
-    if (!body.businessId) {
-      return NextResponse.json({ error: 'businessId e obrigatorio.' }, { status: 400 });
-    }
     const auth = await verifyAuth(request, body.businessId);
     if (isAuthError(auth)) return auth;
     if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
       return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
-    }
-
-    if (!body.chaveAcesso || body.chaveAcesso.replace(/\D/g, '').length !== 44) {
-      return NextResponse.json(
-        { error: 'Chave de acesso deve conter 44 digitos.' },
-        { status: 400 },
-      );
-    }
-
-    if (!body.textoCorrecao || body.textoCorrecao.trim().length < 15) {
-      return NextResponse.json(
-        { error: 'Texto da correcao deve ter no minimo 15 caracteres.' },
-        { status: 400 },
-      );
-    }
-
-    if (body.textoCorrecao.trim().length > 1000) {
-      return NextResponse.json(
-        { error: 'Texto da correcao deve ter no maximo 1000 caracteres.' },
-        { status: 400 },
-      );
     }
 
     // Resolve certificate, ambiente e UF from Firestore

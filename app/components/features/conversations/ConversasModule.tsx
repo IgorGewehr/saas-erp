@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'react-toastify';
 import { cn } from '@/lib/utils';
 import { setActiveConversation } from '@/lib/utils/active-conversation';
+import { markConversationRead, markConversationUnread } from '@/lib/utils/markConversationRead';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { softDeleteDoc } from '@/lib/services/softDelete';
@@ -2181,7 +2182,10 @@ function getOutboundBubbleClass(message: ConversationMessage): string {
   return `${base} bg-gradient-to-br from-red-600 to-red-500`;
 }
 
-function MessageBubble({
+// Memoizada: numa thread longa, ao chegar/enviar 1 mensagem só a bolha nova
+// (e vizinhas com isGrouped alterado) re-renderiza — não as N já visíveis.
+const MessageBubble = memo(MessageBubbleBase);
+function MessageBubbleBase({
   message,
   isGrouped,
   channel,
@@ -2434,25 +2438,29 @@ function MessageList({
     return map;
   }, [messages]);
 
-  const items: Array<
-    | { type: 'separator'; label: string }
-    | { type: 'message'; msg: ConversationMessage; isGrouped: boolean }
-  > = [];
-
-  messages.forEach((msg, idx) => {
-    // Date separator
-    const prev = messages[idx - 1];
-    if (!prev || !isSameDay(prev.sentAt, msg.sentAt)) {
-      items.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt, t) });
-    }
-    // Group with previous?
-    const isGrouped =
-      !!prev &&
-      prev.direction === msg.direction &&
-      isSameDay(prev.sentAt, msg.sentAt) &&
-      new Date(msg.sentAt).getTime() - new Date(prev.sentAt).getTime() < 5 * 60_000;
-    items.push({ type: 'message', msg, isGrouped });
-  });
+  // Build memoizado: separadores de data + flag de agrupamento. Antes rodava
+  // este loop O(mensagens) a CADA render da thread (inclusive digitação/hover).
+  const items = useMemo(() => {
+    const acc: Array<
+      | { type: 'separator'; label: string }
+      | { type: 'message'; msg: ConversationMessage; isGrouped: boolean }
+    > = [];
+    messages.forEach((msg, idx) => {
+      // Date separator
+      const prev = messages[idx - 1];
+      if (!prev || !isSameDay(prev.sentAt, msg.sentAt)) {
+        acc.push({ type: 'separator', label: dateSeparatorLabel(msg.sentAt, t) });
+      }
+      // Group with previous?
+      const isGrouped =
+        !!prev &&
+        prev.direction === msg.direction &&
+        isSameDay(prev.sentAt, msg.sentAt) &&
+        new Date(msg.sentAt).getTime() - new Date(prev.sentAt).getTime() < 5 * 60_000;
+      acc.push({ type: 'message', msg, isGrouped });
+    });
+    return acc;
+  }, [messages, t]);
 
   return (
     <>
@@ -6555,10 +6563,13 @@ export default function ConversasModule() {
       // audit (deletedBy / deletedByName). Reader (isActiveRecord) ainda
       // aceita o legado `isDeleted: true` durante a janela de backfill.
       const ref = doc(db, 'conversations', deleteConfirmConv.id);
+      // Decrementa o agregado unreadCounters ANTES de soft-deletar (rota canônica
+      // zera unreadCount + baixa o contador em lockstep). Sem isto, apagar uma
+      // conversa com não-lidas deixava o badge fantasma inflado pra sempre.
+      if ((deleteConfirmConv.unreadCount ?? 0) > 0) {
+        await markConversationRead(deleteConfirmConv.id, business.id);
+      }
       await softDeleteDoc(ref, { uid: user.uid, name: user.name || user.uid });
-      // Zerar unreadCount junto: defesa em profundidade contra badge fantasma
-      // no sidebar (filtros poderiam falhar no futuro). Custo zero.
-      await updateDoc(ref, { unreadCount: 0 });
       setSelectedConversation(null);
       setShowMobileThread(false);
       setDeleteConfirmConv(null);
@@ -6591,11 +6602,11 @@ export default function ConversasModule() {
       next.add(conv.id);
       return next;
     });
+    // Rota canônica: sobe unreadCount da conversa E o contador denormalizado no
+    // MESMO delta/transação (o server calcula Math.max(1, prev)+1). ANTES fazia
+    // updateDoc direto → agregado ficava defasado.
     try {
-      await updateDoc(doc(db, 'conversations', conv.id), {
-        unreadCount: Math.max(1, conv.unreadCount || 0) + 1,
-        updatedAt: new Date().toISOString(),
-      });
+      await markConversationUnread(conv.id, business.id);
     } catch (err) {
       console.error('[Conversations] Mark unread failed:', err);
     }
@@ -7600,71 +7611,94 @@ export default function ConversasModule() {
 
   const handleBatchStatus = useCallback(async (status: ConversationStatus) => {
     if (!business?.id || batchSelectedIds.size === 0) return;
-    const now = new Date().toISOString();
-    const batch = writeBatch(db);
-    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { status, updatedAt: now });
-    await batch.commit();
-    // Send CSAT survey to each resolved conversation if enabled.
-    // Disparos paralelos via Promise.all — N conversas em batch resolve não
-    // devem virar N requests sequenciais.
-    if (status === 'resolved' && business.settings?.csatEnabled) {
-      const toSurvey = conversations.filter(c => batchSelectedIds.has(c.id) && !c.csatSentAt);
-      await Promise.all(toSurvey.map(c => sendCsatSurvey(c)));
+    try {
+      const now = new Date().toISOString();
+      const batch = writeBatch(db);
+      for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { status, updatedAt: now });
+      await batch.commit();
+      // Send CSAT survey to each resolved conversation if enabled.
+      // Disparos paralelos via Promise.all — N conversas em batch resolve não
+      // devem virar N requests sequenciais.
+      if (status === 'resolved' && business.settings?.csatEnabled) {
+        const toSurvey = conversations.filter(c => batchSelectedIds.has(c.id) && !c.csatSentAt);
+        await Promise.all(toSurvey.map(c => sendCsatSurvey(c)));
+      }
+      toast.success(`${batchSelectedIds.size} conversa(s) atualizada(s)`);
+      exitBatchMode();
+    } catch (err) {
+      console.error('[Batch] status update failed:', err);
+      toast.error('Erro ao atualizar conversas');
     }
-    toast.success(`${batchSelectedIds.size} conversa(s) atualizada(s)`);
-    exitBatchMode();
   }, [business?.id, business?.settings?.csatEnabled, batchSelectedIds, conversations, exitBatchMode, sendCsatSurvey]);
 
   const handleBatchMarkRead = useCallback(async () => {
     if (!business?.id || batchSelectedIds.size === 0) return;
-    const now = new Date().toISOString();
-    const batch = writeBatch(db);
-    for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { unreadCount: 0, updatedAt: now });
-    await batch.commit();
-    toast.success(`${batchSelectedIds.size} conversa(s) marcada(s) como lida(s)`);
-    exitBatchMode();
+    try {
+      // Rota canônica por conversa: zera a conversa E decrementa o agregado em
+      // lockstep. ANTES era um writeBatch de updateDoc(unreadCount:0) direto →
+      // as conversas zeravam mas o badge (unreadCounters) não baixava.
+      const bid = business.id;
+      await Promise.all(
+        Array.from(batchSelectedIds).map((id) => markConversationRead(id, bid)),
+      );
+      toast.success(`${batchSelectedIds.size} conversa(s) marcada(s) como lida(s)`);
+      exitBatchMode();
+    } catch (err) {
+      console.error('[Batch] markRead failed:', err);
+      toast.error('Erro ao marcar como lidas');
+    }
   }, [business?.id, batchSelectedIds, exitBatchMode]);
 
   const handleBatchAssign = useCallback(async (userId: string, userName: string) => {
     if (!business?.id || batchSelectedIds.size === 0 || !user) return;
-    const now = new Date().toISOString();
-    const historyEntry = { assignedTo: userId, assignedToName: userName, changedBy: user.uid, changedByName: user.name, changedAt: now };
-    const batch = writeBatch(db);
-    for (const id of batchSelectedIds) {
-      batch.update(doc(db, 'conversations', id), {
-        assignedTo: userId, assignedToName: userName, updatedAt: now,
-        assignmentHistory: arrayUnion(historyEntry),
-      });
+    try {
+      const now = new Date().toISOString();
+      const historyEntry = { assignedTo: userId, assignedToName: userName, changedBy: user.uid, changedByName: user.name, changedAt: now };
+      const batch = writeBatch(db);
+      for (const id of batchSelectedIds) {
+        batch.update(doc(db, 'conversations', id), {
+          assignedTo: userId, assignedToName: userName, updatedAt: now,
+          assignmentHistory: arrayUnion(historyEntry),
+        });
+      }
+      await batch.commit();
+      const count = batchSelectedIds.size;
+      notifyUsers(db, [userId], {
+        businessId: business.id,
+        type: 'conversation_assigned',
+        title: 'Conversa atribuída',
+        body: `${user.name} atribuiu ${count === 1 ? 'uma conversa' : `${count} conversas`} a você`,
+        link: 'Conversas',
+        actorId: user.uid,
+        actorName: user.name,
+      }).catch(err => console.warn('Notification dispatch failed:', err));
+      toast.success(`${count} conversa(s) atribuída(s) a ${userName}`);
+      setShowBatchAssign(false);
+      exitBatchMode();
+    } catch (err) {
+      console.error('[Batch] assign failed:', err);
+      toast.error('Erro ao atribuir conversas');
     }
-    await batch.commit();
-    const count = batchSelectedIds.size;
-    notifyUsers(db, [userId], {
-      businessId: business.id,
-      type: 'conversation_assigned',
-      title: 'Conversa atribuída',
-      body: `${user.name} atribuiu ${count === 1 ? 'uma conversa' : `${count} conversas`} a você`,
-      link: 'Conversas',
-      actorId: user.uid,
-      actorName: user.name,
-    }).catch(err => console.warn('Notification dispatch failed:', err));
-    toast.success(`${count} conversa(s) atribuída(s) a ${userName}`);
-    setShowBatchAssign(false);
-    exitBatchMode();
   }, [business?.id, business, batchSelectedIds, user, exitBatchMode]);
 
   const handleBatchTag = useCallback(async (tag: string) => {
     if (!business?.id || batchSelectedIds.size === 0) return;
-    const now = new Date().toISOString();
-    const convs = conversations.filter(c => batchSelectedIds.has(c.id));
-    const batch = writeBatch(db);
-    for (const c of convs) {
-      const tags = Array.from(new Set([...(c.tags ?? []), tag]));
-      batch.update(doc(db, 'conversations', c.id), { tags, updatedAt: now });
+    try {
+      const now = new Date().toISOString();
+      const convs = conversations.filter(c => batchSelectedIds.has(c.id));
+      const batch = writeBatch(db);
+      for (const c of convs) {
+        const tags = Array.from(new Set([...(c.tags ?? []), tag]));
+        batch.update(doc(db, 'conversations', c.id), { tags, updatedAt: now });
+      }
+      await batch.commit();
+      toast.success(`Tag "${tag}" adicionada a ${batchSelectedIds.size} conversa(s)`);
+      setShowBatchTag(false);
+      exitBatchMode();
+    } catch (err) {
+      console.error('[Batch] tag failed:', err);
+      toast.error('Erro ao adicionar tag');
     }
-    await batch.commit();
-    toast.success(`Tag "${tag}" adicionada a ${batchSelectedIds.size} conversa(s)`);
-    setShowBatchTag(false);
-    exitBatchMode();
   }, [business?.id, batchSelectedIds, conversations, exitBatchMode]);
 
   // ── Merge conversations ────────────────────────────────────────────────────
@@ -8247,15 +8281,18 @@ export default function ConversasModule() {
   // ── Mark as read ───────────────────────────────────────────────────────────
 
   const markAsRead = useCallback(async (conversationId: string) => {
+    if (!business?.id) return;
+    // Rota canônica server-side: zera unreadCount da conversa E decrementa o
+    // contador denormalizado unreadCounters/{businessId} na MESMA transação.
+    // ANTES fazia updateDoc(unreadCount:0) direto no client — a conversa zerava
+    // mas o agregado NÃO baixava → badge fantasma (não limpava ao abrir a
+    // conversa). Ver lib/utils/markConversationRead + app/api/conversations/[id].
     try {
-      await updateDoc(doc(db, 'conversations', conversationId), {
-        unreadCount: 0,
-        updatedAt: new Date().toISOString(),
-      });
+      await markConversationRead(conversationId, business.id);
     } catch (err) {
       console.error('Error marking conversation as read:', err);
     }
-  }, []);
+  }, [business?.id]);
 
   // ── Signal de conversa ativa (consumido por useConversationsAlerts) ────────
   // Registra/desregistra o ID da conversa atualmente aberta. Hook global

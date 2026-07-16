@@ -321,41 +321,6 @@ export interface CashFlowRow {
   acumulado: number;
 }
 
-// ─── 5.5 DRE BY SECTOR CSV ───────────────────────────────────────────────────
-
-export interface SectorDRERow {
-  sectorName: string;
-  receitas: number;
-  despesas: number;
-  resultado: number;
-  margem: number;
-}
-
-export function exportDRESectorCSV(
-  rows: SectorDRERow[],
-  period: string,
-  businessName: string,
-  filename = `dre_setores_${period.replace(/\//g, '-')}.csv`,
-) {
-  const lines: string[] = [
-    BOM,
-    row([businessName]),
-    row([`DRE por Setor — ${period}`]),
-    row([`Gerado em ${new Date().toLocaleString('pt-BR')}`]),
-    '',
-    row(['Setor', 'Receitas (R$)', 'Despesas (R$)', 'Resultado (R$)', 'Margem (%)']),
-    ...rows.map(r => row([r.sectorName, fmtR(r.receitas), fmtR(r.despesas), fmtR(r.resultado), fmtR(r.margem)])),
-    '',
-    row(['TOTAL',
-      fmtR(rows.reduce((s, r) => s + r.receitas, 0)),
-      fmtR(rows.reduce((s, r) => s + r.despesas, 0)),
-      fmtR(rows.reduce((s, r) => s + r.resultado, 0)),
-      '',
-    ]),
-  ];
-  triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
-}
-
 // ─── 6. CASH FLOW CSV ────────────────────────────────────────────────────────
 
 export function exportCashFlowCSV(
@@ -466,4 +431,99 @@ export function exportRecurrencesCSV(
     row(['PAUSADAS', recs.filter(t => !t.recurrence!.isActive).length]),
   ];
   triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
+}
+
+// ─── 9. SUBSCRIPTIONS / MRR (financial-v2 Relatórios) ────────────────────────
+// Shape local (não importa tipos de `financial-v2/`) — `lib/utils` é infra
+// compartilhada, não deve depender de uma feature; quem chama mapeia
+// `SubscriptionTableRow` (financial-v2/read-models/assinaturas) pra este shape.
+
+export interface SubscriptionExportRow {
+  serviceName: string;
+  clientLabel: string;
+  monthlyValue: number;
+  cycleLabel: string;
+  nextBillingLabel?: string;
+  statusLabel: string;
+}
+
+export interface SubscriptionExportSummary {
+  mrr: number;
+  arr: number;
+  churnMonthValue: number;
+}
+
+export function exportSubscriptionsCSV(
+  rows: SubscriptionExportRow[],
+  summary: SubscriptionExportSummary,
+  period: string,
+  businessName: string,
+  filename = `assinaturas_mrr_${period.replace(/\//g, '-')}.csv`,
+) {
+  const lines: string[] = [
+    BOM,
+    row([businessName]),
+    row([`Assinaturas / MRR — ${period}`]),
+    row([`Gerado em ${new Date().toLocaleString('pt-BR')}`]),
+    '',
+    row(['MRR (R$)', fmtR(summary.mrr)]),
+    row(['ARR estimado (R$)', fmtR(summary.arr)]),
+    row(['Churn do mês (R$)', fmtR(summary.churnMonthValue)]),
+    '',
+    row(['Serviço', 'Cliente', 'Valor/mês (R$)', 'Ciclo', 'Próx. cobrança', 'Status']),
+    ...rows.map(r => row([
+      r.serviceName,
+      r.clientLabel,
+      fmtR(r.monthlyValue),
+      r.cycleLabel,
+      r.nextBillingLabel ? formatDate(r.nextBillingLabel) : '—',
+      r.statusLabel,
+    ])),
+  ];
+  triggerDownload(lines.join('\n'), filename, 'text/csv;charset=utf-8;');
+}
+
+export async function exportSubscriptionsPDF(
+  rows: SubscriptionExportRow[],
+  summary: SubscriptionExportSummary,
+  period: string,
+  businessName: string,
+  filename = `assinaturas_mrr_${period.replace(/\//g, '-')}.pdf`,
+) {
+  const { default: jsPDF } = await import('jspdf');
+  const { default: autoTable } = await import('jspdf-autotable');
+
+  const doc = new jsPDF();
+  doc.setFontSize(16);
+  doc.setFont('helvetica', 'bold');
+  doc.text(businessName, 14, 16);
+  doc.setFontSize(12);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Assinaturas / MRR — ${period}`, 14, 24);
+  doc.setFontSize(8);
+  doc.text(`Gerado em ${new Date().toLocaleString('pt-BR')}`, 14, 30);
+
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`MRR: ${formatCurrency(summary.mrr)}`, 14, 40);
+  doc.text(`ARR estimado: ${formatCurrency(summary.arr)}`, 80, 40);
+  doc.text(`Churn do mês: ${formatCurrency(summary.churnMonthValue)}`, 146, 40);
+
+  autoTable(doc, {
+    startY: 46,
+    head: [['Serviço', 'Cliente', 'Valor/mês', 'Ciclo', 'Próx. cobrança', 'Status']],
+    body: rows.map(r => [
+      r.serviceName,
+      r.clientLabel,
+      formatCurrency(r.monthlyValue),
+      r.cycleLabel,
+      r.nextBillingLabel ? formatDate(r.nextBillingLabel) : '—',
+      r.statusLabel,
+    ]),
+    styles: { fontSize: 8, cellPadding: 3 },
+    headStyles: { fillColor: [220, 38, 38], textColor: 255, fontStyle: 'bold' },
+    alternateRowStyles: { fillColor: [250, 250, 250] },
+  });
+
+  triggerBlobDownload(doc.output('blob'), filename);
 }

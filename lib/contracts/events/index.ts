@@ -14,7 +14,19 @@
  *   `dispatchDomainEvent()` pode ser síncrono — chama handlers conhecidos
  *   em ordem. Persiste o evento em `domainEvents/{id}` para auditoria.
  *
- * - Cada evento documenta no body Zod (jsdoc) quem reage.
+ * ⚠️ ESTADO REAL DO BUS (v1): AUDIT-ONLY salvo o piloto.
+ *   `dispatchDomainEvent()` SEMPRE persiste `domainEvents/{id}` (trilha de
+ *   auditoria) e roda os handlers REGISTRADOS — mas hoje o ÚNICO handler
+ *   pluggado é `appointment.completed` (ver `_runtime/handlers/index.ts`).
+ *   Para TODO o resto — em especial os eventos do CARDÁPIO/PEDIDO
+ *   (`payment.approved`, `payment.refunded`, `deliveryOrder.confirmed`) — NÃO
+ *   há subscriber: o evento serve só de AUDITORIA. Os efeitos (marcar pedido
+ *   pago, restaurar estoque, estornar receita, etc.) rodam INLINE no caller,
+ *   com guards de idempotência (CAS: `stockRestoredAt`, `transactionReversedAt`,
+ *   `paidAt`, etc.). Os jsdocs abaixo descrevem ONDE o efeito roda inline, não
+ *   "subscribers" do bus. Não confie no bus para disparar efeito de dinheiro.
+ *
+ * - Cada evento documenta no body Zod (jsdoc) quem reage (ou que é audit-only).
  *   Adicionar/remover subscriber = mudança visível em 1 lugar.
  */
 
@@ -160,7 +172,22 @@ export const ClientCreatedSchema = EventEnvelopeBase.extend({
 
 /**
  * DeliveryOrder confirmada (status mudou recebido → preparando).
- * Útil para stock deduction async, kitchen display.
+ *
+ * AUDIT-ONLY: sem subscriber registrado no bus. O débito de estoque do pedido
+ * do cardápio NÃO é async via este evento — roda INLINE na criação do pedido
+ * (`/api/orders/public` debita via `stock.deductStock`/`deductStockAdmin`,
+ * guard `stockDeductedAt`). Kitchen display lê o pedido direto. O evento serve
+ * só para a trilha de auditoria em `domainEvents/{id}`.
+ *
+ * ISENÇÃO DE COMISSÃO (decisão explícita v1):
+ *   Pedidos de DELIVERY do cardápio NÃO geram comissão. Comissão (`lib/services/
+ *   commission.ts`) é disparada APENAS pelo fluxo de Agenda
+ *   (`appointment.completed` → commission Transaction). Nenhum evento de pedido
+ *   (`deliveryOrder.confirmed`, `payment.approved`, `payment.refunded`) cria,
+ *   cancela ou estorna commission Transaction. Isto é uma decisão de produto,
+ *   não um gap: delivery do cardápio é venda direta sem profissional/atribuição
+ *   de comissão na v1. Reavaliar antes de plugar qualquer handler de comissão
+ *   nestes eventos.
  */
 export const DeliveryOrderConfirmedSchema = EventEnvelopeBase.extend({
   type: z.literal('deliveryOrder.confirmed'),
@@ -186,6 +213,84 @@ export const ConversationReopenedSchema = EventEnvelopeBase.extend({
   reason: z.enum(['inbound_after_resolve', 'manual_reopen']),
 });
 
+/**
+ * Pagamento online aprovado (Mercado Pago) — payment FSM → paid.
+ * Emitido pelo webhook do MP após confirmar o pagamento.
+ *
+ * AUDIT-ONLY: sem subscriber registrado no bus. O efeito de marcar o pedido pago
+ * roda INLINE em `lib/services/mercadopago/webhook-settle.ts`, DENTRO do
+ * `runTransaction` que liquida o pagamento (re-consulta GET /v1/payments/{id},
+ * `assertTransitionPayment(from,'paid')`, grava `paymentFsmStatus='paid'`,
+ * `paymentStatus='pago'`, `paidAt`). A idempotência é o CAS de status na própria
+ * FSM (reentrega do MP no mesmo estado = no-op). Este evento é disparado APÓS a
+ * tx, só na transição fresca (gate `!outcome.noop`), apenas para a trilha de
+ * auditoria em `domainEvents/{id}`.
+ *
+ * NÃO existe (decisão v1, não é gap a fechar via bus):
+ *   - Receita: a Transaction de RECEITA do pedido é lançada quando o pedido é
+ *     ENTREGUE (guard `order.transactionId`), NÃO na aprovação do pagamento.
+ *   - Comissão: pedidos de DELIVERY do cardápio NÃO geram comissão na v1 (ver
+ *     ISENÇÃO documentada em `deliveryOrder.confirmed` abaixo). Aprovar pagamento
+ *     não cria commission Transaction.
+ *   - Notificação ao cliente via WhatsApp ainda não implementada.
+ */
+export const PaymentApprovedSchema = EventEnvelopeBase.extend({
+  type: z.literal('payment.approved'),
+  orderId: z.string().min(1),
+  externalPaymentId: z.string().min(1),
+  paymentMethodKind: z.enum(['pix', 'card']).optional(),
+  amount: z.number().nonnegative(),
+});
+
+/**
+ * Pagamento estornado (refund total) — payment FSM paid → refunded.
+ *
+ * AUDIT-ONLY: sem subscriber registrado no bus. Os efeitos rodam INLINE em
+ * `lib/services/mercadopago/webhook-settle.ts`, FORA da tx da FSM, por
+ * ESTADO-DESEJADO (re-executáveis para recuperar webhook perdido via cron
+ * reconcile), cada um com seu guard CAS de idempotência:
+ *   - DeliveryOrder: `paymentFsmStatus='refunded'`, `paymentStatus='estornado'`,
+ *     `refundedAt` (gravado dentro da tx de liquidação).
+ *   - Estoque: `restoreOrderStockRecoverable()` devolve itens (guard
+ *     `stockRestoredAt`) — compartilha o helper puro com o cron expire-pix.
+ *   - Receita: `reverseDeliveryOrderRevenue()` contra-lança a Transaction SÓ se
+ *     houve receita (pedido entregue → `transactionId`), guard
+ *     `transactionReversedAt`.
+ * Refund PARCIAL NÃO cai aqui: vira `settleMismatch` + `needsManualReview`.
+ * Este evento é disparado só na transição FRESCA (não na recuperação), apenas
+ * como registro em `domainEvents/{id}` — nenhum efeito de dinheiro depende dele.
+ *
+ * Comissão: como o pedido de delivery não gera comissão na v1, NÃO há comissão a
+ * estornar aqui (ver ISENÇÃO em `deliveryOrder.confirmed`).
+ */
+export const PaymentRefundedSchema = EventEnvelopeBase.extend({
+  type: z.literal('payment.refunded'),
+  orderId: z.string().min(1),
+  externalPaymentId: z.string().min(1),
+  amount: z.number().nonnegative(),
+});
+
+/**
+ * Sessão de caixa (gaveta em espécie) fechada — financeiro v2, aba Fluxo de
+ * Caixa (`lib/contracts/domain/cashSession.ts`, FSM aberta→fechada).
+ *
+ * AUDIT-ONLY (sem subscriber registrado no bus): `FecharCaixaDialog` grava o
+ * fechamento (status, countedAmount, expectedAmount, difference) direto no
+ * doc `cashSessions/{id}` e loga em `financialAuditLog`, igual ao padrão do
+ * `BaixaDialog`. Este evento existe hoje só como DOCUMENTAÇÃO do gancho futuro
+ * (plano `saas-erp-financeiro-plano.md` §1.2/§2.6-g5): quando o vertical PDV
+ * ganhar sessão de caixa própria, o subscriber vai querer reagir a
+ * `difference !== 0` (alertar sobra/falta) sem duplicar a lógica de fechamento.
+ */
+export const CashSessionClosedSchema = EventEnvelopeBase.extend({
+  type: z.literal('caixa.fechado'),
+  cashSessionId: z.string().min(1),
+  bankAccountId: z.string().min(1),
+  expectedAmount: z.number(),
+  countedAmount: z.number().nonnegative(),
+  difference: z.number(),
+});
+
 // ============================================================================
 // Discriminated union — fonte da verdade dos eventos do sistema
 // ============================================================================
@@ -202,6 +307,9 @@ export const DomainEventSchema = z.discriminatedUnion('type', [
   DeliveryOrderConfirmedSchema,
   PurchaseImportedSchema,
   ConversationReopenedSchema,
+  PaymentApprovedSchema,
+  PaymentRefundedSchema,
+  CashSessionClosedSchema,
 ]);
 
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
@@ -219,6 +327,9 @@ export const DOMAIN_EVENT_TYPES = [
   'deliveryOrder.confirmed',
   'purchase.imported',
   'conversation.reopened',
+  'payment.approved',
+  'payment.refunded',
+  'caixa.fechado',
 ] as const satisfies readonly DomainEventType[];
 
 /** Extrai o evento concreto de um tipo da union. */

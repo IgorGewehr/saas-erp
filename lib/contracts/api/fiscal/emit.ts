@@ -162,6 +162,20 @@ const SharedFields = {
   businessId: z.string().min(1, 'businessId obrigatório'),
   certificado: CertificadoInputSchema.optional(),
   informacoesAdicionais: z.string().max(5000).optional(),
+  /**
+   * Vínculo com o documento de ORIGEM que motivou a nota — Sale (PDV) ou
+   * DeliveryOrder (Pedidos). Quando presente, o handler:
+   *   - ancora a idempotência ao documento (`sale_${saleId}` / `order_${orderId}`),
+   *     de forma que retry da MESMA venda/pedido replaya a nota em vez de
+   *     emitir uma segunda (dedup deixa de depender da chave efêmera do cliente);
+   *   - persiste saleId/orderId/sourceType no fiscalDocument (rastreio bidirecional);
+   *   - grava accessKey + documentId de volta na Sale/DeliveryOrder.
+   * `sourceType` é derivado quando ausente (saleId ⇒ 'sale', orderId ⇒ 'order').
+   * Emissão manual (dialog) omite os três — sem vínculo, sem writeback.
+   */
+  sourceType: z.enum(['sale', 'order', 'manual']).optional(),
+  saleId: z.string().optional(),
+  orderId: z.string().optional(),
 };
 
 /** NF-e — mercadoria, B2B. */

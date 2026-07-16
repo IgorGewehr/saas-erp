@@ -226,6 +226,22 @@ service cloud.firestore {
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
                     && isManager();
+
+      // Guard de idempotência de compra (recordClientPurchase, client SDK).
+      // Subcoleção IMUTÁVEL escopada por businessId — só read + create (sem
+      // update/delete). Sem esta regra o catch-all nega e as stats de cliente
+      // dos canais client-SDK (PDV/Pedidos) não eram gravadas.
+      // read aceita resource == null: a tx faz tx.get(guardRef) ANTES do create e,
+      // na 1ª compra, o doc-guard NÃO existe — sem o ramo null, resource.data falha
+      // e a leitura é negada ⇒ a tx inteira aborta e as stats nunca gravam.
+      match /purchases/{purchaseId} {
+        allow read: if isAuthenticated()
+                    && isOperator()
+                    && (resource == null || resource.data.businessId == userBusinessId());
+        allow create: if isAuthenticated()
+                      && isOperator()
+                      && incomingBelongsToBusiness();
+      }
     }
 
     // ============================================
@@ -496,6 +512,31 @@ service cloud.firestore {
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
                     && isAdmin();
+    }
+
+    // ============================================
+    // CASH SESSIONS COLLECTION (Financeiro v2 — Fluxo de Caixa)
+    // ============================================
+    // Sessão de caixa/gaveta (abertura/sangria/fechamento) de uma BankAccount
+    // accountType='caixa'. Mesmo nível de acesso de transactions/bankAccounts
+    // (dado financeiro sensível). Tier 2 status-driven (FSM aberta->fechada):
+    // hard-delete proibido — histórico de sobra/falta precisa persistir.
+    match /cashSessions/{sessionId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isManager();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && request.resource.data.status in ['aberta', 'fechada'];
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      allow delete: if false;
     }
 
     // ============================================
@@ -1067,10 +1108,52 @@ service cloud.firestore {
                     && incomingBelongsToBusiness()
                     && isOperator();
 
+      // Campos de PAGAMENTO online (Mercado Pago) são escritos SÓ pelo Admin SDK
+      // (webhook MP / rota de cartão), nunca pelo client. Permitir staff gravá-los
+      // pelo SDK web deixaria marcar pedido 'pago' sem confirmação do provedor.
+      // Trava só estes campos via diff(); o staff continua livre pra avançar o
+      // status de FABRICAÇÃO (recebido→entregue) e demais campos do pedido.
+      //
+      // ATENÇÃO: 'paymentStatus' NÃO entra aqui. Ele é tambem o flag de pagamento
+      // MANUAL/offline (dinheiro/voucher) que o staff confirma pelo SDK web
+      // (OrdersModule). Travá-lo sempre regrediu a confirmação manual de pedidos
+      // em dinheiro. Ver paymentStatusLocked() abaixo — só trava em pedidos MP.
+      function paymentFieldsLocked() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+                 .hasAny([
+                   'paymentFsmStatus', 'externalPaymentId', 'paidAt',
+                   // defesa em profundidade: client nunca edita estes
+                   'paymentAmount', 'pixMintAt', 'pixMintBy',
+                   // M8: 'paymentProvider' precisa ser imutavel pelo client. Sem isso
+                   // o operador removia/alterava paymentProvider num 1o update (saindo
+                   // de 'mercadopago'), desarmava paymentStatusLocked() — que depende
+                   // de resource.data.paymentProvider — e num 2o update marcava o
+                   // pedido MP como 'pago' sem confirmacao do provedor. Travar via
+                   // diff() NAO afeta pedido manual (dinheiro/voucher): o staff so
+                   // muda paymentStatus, nunca toca paymentProvider/refundedAt.
+                   'paymentProvider', 'paymentMethodKind', 'refundedAt',
+                   // stockDeductedAt NÃO entra: o staff grava esse campo no fluxo
+                   // de fabricação manual (preparando/cancelar/excluir via SDK web).
+                   // Só stockRestoredAt é server-only (cron expire-pix + webhook).
+                   'stockRestoredAt'
+                 ]);
+      }
+
+      // paymentStatus só é travado pro client quando o pedido é online (MP).
+      // Pedidos manuais (sem paymentProvider == 'mercadopago') seguem podendo
+      // ter paymentStatus alterado pelo staff (ex.: dinheiro → 'pago').
+      function paymentStatusLocked() {
+        return resource.data.paymentProvider == 'mercadopago'
+               && request.resource.data.diff(resource.data).affectedKeys()
+                    .hasAny(['paymentStatus']);
+      }
+
       allow update: if isAuthenticated()
                     && isOwnBusiness()
                     && isOperator()
-                    && incomingBelongsToBusiness();
+                    && incomingBelongsToBusiness()
+                    && !paymentFieldsLocked()
+                    && !paymentStatusLocked();
 
       // Fase 5e: deliveryOrders e Tier 2 status-driven. "Excluir" agora e
       // transicao FSM pra status='cancelado'. Hard-delete proibido —
@@ -1081,6 +1164,22 @@ service cloud.firestore {
     // Contadores sequenciais (subcollection businesses/{id}/counters/{name})
     match /businesses/{businessId}/counters/{counterId} {
       allow read, write: if isAuthenticated() && belongsToBusiness(businessId);
+    }
+
+    // ============================================
+    // BUSINESS PRIVATE (segredos do tenant — Admin SDK only)
+    // ============================================
+    // Subcollection businesses/{id}/private/{doc}. Guarda credenciais sensíveis
+    // do tenant que NUNCA podem chegar ao cliente:
+    //   - mpAuth      → tokens OAuth do Mercado Pago do vendedor (access/refresh
+    //                   cifrados com AES-256-GCM via ENCRYPTION_KEY). Flags
+    //                   públicas (conectado/nickname) ficam espelhadas no doc
+    //                   businesses/{id} — só ISTO o cliente lê.
+    //   - mpTokenLock → lock de concorrência do refresh de token OAuth.
+    // Acesso exclusivo via Admin SDK (server-side, bypassa rules). Mesmo cifrado,
+    // vazar habilita ataque offline contra a chave — clientes NÃO leem/escrevem.
+    match /businesses/{businessId}/private/{doc} {
+      allow read, write: if false;
     }
 
     // ============================================
@@ -1585,6 +1684,36 @@ service cloud.firestore {
       allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
       allow update: if isAuthenticated() && isOwnBusiness() && isOperator() && incomingBelongsToBusiness();
       allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // ============================================
+    // COUPONS COLLECTION (motor de cupom / conversão)
+    // ============================================
+    // Cupons são configuração de marketing — manager+ cria/edita (espelha
+    // giftCards). O checkout público valida/reserva via Admin SDK (bypassa rules);
+    // aqui é o CRUD do lojista. O incremento REAL de consumo (usedCount) vem do
+    // servidor na transação de reserva; edições de membro são do cadastro do cupom.
+    match /coupons/{couponId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create: if isAuthenticated() && incomingBelongsToBusiness() && isManager();
+      allow update: if isAuthenticated() && isOwnBusiness() && isManager() && incomingBelongsToBusiness();
+      allow delete: if isAuthenticated() && isOwnBusiness() && isAdmin();
+    }
+
+    // couponRedemptions: LEDGER de resgates, escrito SÓ pelo Admin SDK na
+    // transação de reserva (reserveCouponAdmin). Cliente jamais cria/edita/apaga —
+    // protege o contador de uso contra fraude. Operator+ lê para relatório.
+    match /couponRedemptions/{redemptionId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create, update, delete: if false;
+    }
+
+    // giftCardRedemptions: LEDGER de resgates de gift card no delivery, escrito SÓ
+    // pelo Admin SDK (redeemGiftCardAdmin) na transação de débito de saldo. Cliente
+    // jamais escreve — protege o saldo contra fraude. Operator+ lê para relatório.
+    match /giftCardRedemptions/{redemptionId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create, update, delete: if false;
     }
 
     // ============================================

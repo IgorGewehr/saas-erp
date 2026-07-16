@@ -506,18 +506,3 @@ export async function emitirNFSe(payload: NfsePayload): Promise<SefazResponse> {
   }
   return sefazRequest('emitirNFSe', '/nfse/emitir', payload as unknown as Record<string, unknown>);
 }
-
-export async function cancelarNFSe(payload: {
-  chaveAcesso: string;
-  codigoCancelamento?: string;
-  justificativa: string;
-  codigoMunicipio: string;
-  ambiente: SefazAmbiente;
-  certificado: CertificadoPayload;
-}): Promise<SefazResponse> {
-  if (isMockMode()) {
-    console.log('[SEFAZ] Mock mode — cancelarNFSe');
-    return buildMockCancelResponse();
-  }
-  return sefazRequest('cancelarNFSe', '/nfse/cancelar', payload);
-}

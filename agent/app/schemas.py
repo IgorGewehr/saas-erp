@@ -19,10 +19,19 @@ class ProcessRequest(BaseModel):
     recipient_id: str  # Meta user id or phone for outbound send
     # Prior messages to ground the model (most recent last), optional
     history: list[dict[str, Any]] = Field(default_factory=list)
+    # What kicked off this run. "inbound" = the customer sent a message (default).
+    # "reengagement" = proactive nudge fired by the scheduler because the customer
+    # went silent mid-conversation — no fresh customer turn; the agent should
+    # resume the thread naturally. See reengagement_context for details.
+    trigger: Literal["inbound", "reengagement"] = "inbound"
+    reengagement_context: dict[str, Any] | None = None  # {hours_silent, attempt}
     # Business-level config — passed by the webhook so we don't re-fetch
     use_case: Literal["pedidos", "servicos", "simples", "operator", "analyst"] = "servicos"
     business_name: str | None = None
     business_description: str | None = None
+    # Owner-authored behavior rules. Injected into the prompt as a binding
+    # <tenant_instructions> block (subordinate only to the safety constitution).
+    agent_instructions: str | None = None
     tone: Literal["formal", "casual", "friendly"] = "friendly"
     # Business vertical — adjusts vocabulary, examples and persona of the agent.
     # Absent → treated as "generico". Wire field is snake_case (see business_context).
@@ -39,7 +48,7 @@ class ProcessRequest(BaseModel):
     opening_hours: list[dict[str, Any]] | None = None  # 7 BusinessHoursDay entries (0=Dom..6=Sáb)
     address: dict[str, Any] | None = None              # business.endereco
     services_list: list[dict[str, Any]] | None = None  # active services (agenda mode pre-load)
-    current_date: str | None = None  # ISO date YYYY-MM-DD injected by dispatcher
+    current_date: str | None = None  # human label w/ weekday in business tz, e.g. "sexta-feira 12/06" (display only)
     # Operator context (use_case='operator'/'analyst' only) — populated from UI session
     operator_user_id: str | None = None
     operator_user_name: str | None = None
@@ -54,7 +63,6 @@ class ProcessRequest(BaseModel):
     seasonal_label: str | None = None               # e.g., "Carnaval 2026"
     delivery_zones: list[dict[str, Any]] | None = None
     accepted_payment_methods: list[str] | None = None
-    team_capacity: dict[str, Any] | None = None     # {maxConcurrentOrders, maxDailyAppointments}
     upsell_rules: list[dict[str, Any]] | None = None
 
 

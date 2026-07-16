@@ -82,7 +82,10 @@ import { consumeServiceComponents } from '@/lib/services/serviceConsumption';
 import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
-import { createAppointmentSafe, updateAppointmentSafe, AppointmentConflictError } from '@/lib/services/appointmentTxGuard';
+import { createAppointmentSafe, updateAppointmentSafe, AppointmentConflictError, SessionFullError } from '@/lib/services/appointmentTxGuard';
+import { buildGroupSlots, resolveGroupBooking, type GroupSlot } from '@/lib/services/groupSession';
+import { isGroupService } from '@/lib/contracts/domain/service';
+import { canTransitionAppointment } from '@/lib/contracts/fsm/appointment';
 import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -398,10 +401,14 @@ interface AppointmentBlockProps {
   onClick: (appt: Appointment) => void;
   compact?: boolean;
   clientsMap?: Record<string, string>;
+  /** Vagas ocupadas na turma deste appointment (não-canceladas com o mesmo
+   *  sessionKey). Só passado pra appointments de turma; exibe badge "N/cap". */
+  groupSeats?: number;
 }
 
-function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }: AppointmentBlockProps) {
+function AppointmentBlock({ appointment, onClick, compact = false, clientsMap, groupSeats }: AppointmentBlockProps) {
   const displayName = (appointment.clientId && clientsMap?.[appointment.clientId]) || appointment.clientName;
+  const isGroup = !!appointment.isGroupSession && !!appointment.capacitySnapshot;
   const color = STATUS_COLORS[appointment.status];
   const bgColor = STATUS_BG_COLORS[appointment.status];
   const height = getAppointmentHeight(appointment.duration);
@@ -473,6 +480,16 @@ function AppointmentBlock({ appointment, onClick, compact = false, clientsMap }:
             >
               {displayName}
             </div>
+            {isGroup && !isTiny && (
+              <span
+                className="flex-shrink-0 inline-flex items-center gap-0.5 text-[9px] font-semibold px-1 py-px rounded-full bg-black/[0.06] dark:bg-white/[0.12] mt-[2px]"
+                style={{ color }}
+                title="Turma — vagas ocupadas"
+              >
+                <UsersIcon className="w-2.5 h-2.5" />
+                {groupSeats ?? '–'}/{appointment.capacitySnapshot}
+              </span>
+            )}
             {appointment.reminderSentAt && !isTiny && (
               <Bell className="w-2.5 h-2.5 flex-shrink-0 opacity-70 mt-[3px]" style={{ color }} />
             )}
@@ -2087,6 +2104,32 @@ export default function AgendaModule() {
     [appointments, members, t],
   );
 
+  // Turmas (academia): slots da grade semanal do serviço numa data, com vagas
+  // calculadas sobre os appointments carregados. includeFull=true pra exibir a
+  // turma cheia desabilitada no dialog. Reusa o MESMO núcleo (buildGroupSlots)
+  // do agente — zero lógica de disponibilidade duplicada.
+  const getGroupSlots = useCallback(
+    (serviceId: string, date: string): GroupSlot[] => {
+      const service = services.find((s) => s.id === serviceId);
+      if (!service || !isGroupService(service.capacity) || !service.sessions?.length) return [];
+      const dayOfWeek = new Date(`${date}T00:00:00`).getDay();
+      return buildGroupSlots(service, date, dayOfWeek, undefined, appointments ?? [], true);
+    },
+    [services, appointments],
+  );
+
+  // Vagas ocupadas por turma (sessionKey → count de não-cancelados). Alimenta o
+  // badge "N/cap" nos cards de calendário sem recomputar por card.
+  const sessionSeatsMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const a of appointments ?? []) {
+      if (a.sessionKey && a.status !== 'cancelado') {
+        m[a.sessionKey] = (m[a.sessionKey] ?? 0) + 1;
+      }
+    }
+    return m;
+  }, [appointments]);
+
   // ==========================================
   // SERVICE CRUD HANDLERS
   // ==========================================
@@ -2188,10 +2231,28 @@ export default function AgendaModule() {
     setSaving(true);
     try {
       const endTime = addDurationToTime(data.startTime, data.duration);
-      const serviceColor = services.find((s) => s.id === data.serviceId)?.color || data.color || '#3B82F6';
+      const service = services.find((s) => s.id === data.serviceId);
+      const serviceColor = service?.color || data.color || '#3B82F6';
 
-      // Hard conflict block — salva somente se não há conflito
-      if (data.professionalId) {
+      // ── Turma (academia) ────────────────────────────────────────────────
+      // capacity>1 = turma: o aluno é UM appointment compartilhando o sessionKey
+      // canônico. O guard conta vagas e ignora colegas (mesmo sessionKey) no
+      // check de conflito — então pulamos o hard-block legado abaixo (que veria
+      // colega como conflito) e a recorrência (a grade já é a repetição).
+      const isGroup = service ? isGroupService(service.capacity) : false;
+      // FONTE ÚNICA (mesma do agente em tools/agenda): resolve sessionKey +
+      // capacity efetiva (respeita WeeklySession.capacity) + profissional. Sem
+      // isso, manual e agente montavam keys/capacidades diferentes e a turma
+      // estourava.
+      const groupBooking = isGroup && service
+        ? resolveGroupBooking(service, data.date, data.startTime, data.professionalId || undefined)
+        : null;
+      const groupCapacity = groupBooking?.capacity ?? 1;
+      const sessionKey = groupBooking?.sessionKey;
+
+      // Hard conflict block — exclusivo apenas. Turma é validada no guard via
+      // sessionKey+capacity (colegas dividem o horário legitimamente).
+      if (!isGroup && data.professionalId) {
         const conflictResult = checkConflicts(
           data.professionalId,
           data.date,
@@ -2251,6 +2312,14 @@ export default function AgendaModule() {
         payload.isTrial = true;
         payload.trialOutcome = data.trialOutcome ?? 'pendente';
       }
+      // Turma: grava a chave da sessão + snapshot da capacidade (mesma forma do
+      // agente). Isso liga o appointment à turma pra contagem de vagas e pro
+      // tx guard ignorar colegas no check de conflito.
+      if (isGroup && sessionKey) {
+        payload.sessionKey = sessionKey;
+        payload.isGroupSession = true;
+        payload.capacitySnapshot = groupCapacity;
+      }
 
       if (editingAppointment) {
         // Re-check atomico via tx — fecha race window de ~100-200ms onde
@@ -2266,6 +2335,7 @@ export default function AgendaModule() {
             date: data.date,
             startTime: data.startTime,
             endTime,
+            ...(isGroup ? { sessionKey, capacity: groupCapacity } : {}),
             ...payload,
           },
           members,
@@ -2373,7 +2443,11 @@ export default function AgendaModule() {
         payload.createdAt = new Date().toISOString();
 
         const freq: RecurrenceFrequency = data.recurrenceFrequency || 'none';
-        const occurrences = freq === 'none' ? 1 : Math.max(2, Math.min(52, data.recurrenceOccurrences || 2));
+        // Turma nunca cria série recorrente: a grade semanal do serviço já é a
+        // repetição; cada reserva é UM aluno entrando numa sessão específica.
+        const occurrences = isGroup
+          ? 1
+          : (freq === 'none' ? 1 : Math.max(2, Math.min(52, data.recurrenceOccurrences || 2)));
 
         if (occurrences > 1) {
           // Recurring series — one shared recurrenceId links all instances.
@@ -2436,6 +2510,7 @@ export default function AgendaModule() {
               date: data.date,
               startTime: data.startTime,
               endTime,
+              ...(isGroup ? { sessionKey, capacity: groupCapacity } : {}),
               ...payload,
             },
             members,
@@ -2509,7 +2584,7 @@ export default function AgendaModule() {
             if (eventId) {
               updateDoc(doc(db, 'appointments', newDocRef.id), { googleCalendarEventId: eventId }).catch(() => {});
             }
-          });
+          }).catch(err => console.warn('[Agenda] GCal create sync failed:', err));
 
           setSnackbar({ open: true, message: t('agenda.appointmentCreated', 'Agendamento criado com sucesso!'), severity: 'success' });
         }
@@ -2571,6 +2646,15 @@ export default function AgendaModule() {
         setSnackbar({
           open: true,
           message: `${t('agenda.conflictBlocked', 'Conflito de horário')}: ${err.message}`,
+          severity: 'error',
+        });
+        return;
+      }
+      // Turma lotou entre o render e o commit (outra reserva pegou a vaga).
+      if (err instanceof SessionFullError) {
+        setSnackbar({
+          open: true,
+          message: t('agenda.classFullBlocked', 'Turma cheia: todas as vagas deste horário já foram ocupadas.'),
           severity: 'error',
         });
         return;
@@ -2757,6 +2841,25 @@ export default function AgendaModule() {
 
   const handleStatusChange = useCallback(async (status: AppointmentStatus) => {
     if (!selectedAppointment || !business?.id) return;
+
+    // R4 / FSM: valida a transição ANTES de gravar. Sem isto o operador pulava
+    // 'agendado' → 'concluido' direto, gerando comissão/loyalty/baixa de insumo
+    // sem o atendimento ter passado por confirmado/em_andamento (P2.16). Mesma
+    // regra que a rota do agente IA já aplica — fecha a assimetria.
+    const fromStatus = selectedAppointment.status;
+    if (fromStatus === status) return; // no-op
+    if (!canTransitionAppointment(fromStatus, status)) {
+      setSnackbar({
+        open: true,
+        message: t(
+          'agenda.invalidTransition',
+          `Não é possível ir de "${getStatusLabel(fromStatus)}" para "${getStatusLabel(status)}". Confirme ou inicie o atendimento antes de concluir.`,
+        ),
+        severity: 'warning',
+      });
+      return;
+    }
+
     setStatusChanging(true);
     try {
       await updateDoc(doc(db, 'appointments', selectedAppointment.id), {
@@ -3224,6 +3327,7 @@ export default function AgendaModule() {
                   appointment={appt}
                   onClick={handleAppointmentClick}
                   clientsMap={clientsMap}
+                  groupSeats={appt.sessionKey ? sessionSeatsMap[appt.sessionKey] : undefined}
                 />
               ))}
 
@@ -3351,6 +3455,7 @@ export default function AgendaModule() {
                     onClick={handleAppointmentClick}
                     compact
                     clientsMap={clientsMap}
+                    groupSeats={appt.sessionKey ? sessionSeatsMap[appt.sessionKey] : undefined}
                   />
                 ))}
               </div>
@@ -3723,6 +3828,7 @@ export default function AgendaModule() {
         members={members}
         saving={saving}
         checkConflicts={checkConflicts}
+        getGroupSlots={getGroupSlots}
         editingAppointmentId={editingAppointment?.id}
       />
 

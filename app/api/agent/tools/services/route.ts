@@ -16,9 +16,12 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { WeeklySessionSchema, ServiceCapacitySchema, type WeeklySession } from '@/lib/contracts/domain/service';
+import { parseGradeText } from '@/lib/services/gradeParser';
+import { z } from 'zod';
 import type { Service } from '@/lib/types';
 
-type Action = 'list' | 'get' | 'search' | 'create' | 'update' | 'set_active';
+type Action = 'list' | 'get' | 'search' | 'create' | 'update' | 'set_active' | 'import_grade';
 
 interface CreateParams {
   name: string;
@@ -36,13 +39,40 @@ interface CreateParams {
   codigoMunicipal?: string;
   nbs?: string;
   aliquotaISS?: number;
+  // Turmas: capacidade (>1 = turma) + grade semanal fixa. Antes eram descartados
+  // silenciosamente — só a UI da Agenda conseguia gravá-los.
+  capacity?: number;
+  sessions?: WeeklySession[];
 }
 
 const WRITEABLE: (keyof Service)[] = [
   'name', 'description', 'duration', 'price', 'category', 'color',
   'commissionRate', 'isActive', 'userId', 'userName',
   'lc116Code', 'codigoMunicipal', 'nbs', 'aliquotaISS',
+  'capacity', 'sessions',
 ];
+
+const SessionsArraySchema = z.array(WeeklySessionSchema).max(200);
+
+interface ImportGradeParams {
+  /** Texto da grade. Se omitido, usa business.settings.aiAgent.businessDescription. */
+  text?: string;
+  /** false (padrão) = dry-run/preview; true = grava os serviços. */
+  apply?: boolean;
+  /** Capacidade das turmas (>1). Padrão 20. Só sobrescreve serviço SEM capacity. */
+  defaultCapacity?: number;
+  /** Duração (min) ao CRIAR uma modalidade nova. Padrão 60. */
+  defaultDuration?: number;
+  /** true = só atualiza serviços existentes; não cria modalidade nova. */
+  matchOnly?: boolean;
+}
+
+interface ImportGradeResultItem {
+  name: string;
+  sessionCount: number;
+  action: 'create' | 'update' | 'skip';
+  matchedServiceId?: string;
+}
 
 export async function POST(req: NextRequest) {
   let ctx;
@@ -71,6 +101,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await updateService(businessId, body.params.id as string, body.params.patch as Partial<Service>) });
       case 'set_active':
         return NextResponse.json({ ok: true, data: await updateService(businessId, body.params.id as string, { isActive: body.params.isActive as boolean }) });
+      case 'import_grade':
+        return NextResponse.json({ ok: true, data: await importGrade(businessId, body.params as unknown as ImportGradeParams) });
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
     }
@@ -154,6 +186,9 @@ async function createService(businessId: string, p: CreateParams): Promise<Servi
   if (typeof p.duration !== 'number' || p.duration <= 0) throw new Error('duration must be > 0');
   if (typeof p.price !== 'number' || p.price < 0) throw new Error('price must be >= 0');
 
+  const capacity = p.capacity !== undefined ? ServiceCapacitySchema.parse(p.capacity) : undefined;
+  const sessions = p.sessions !== undefined ? SessionsArraySchema.parse(p.sessions) : undefined;
+
   const now = new Date().toISOString();
   const ref = adminDb.collection('services').doc();
   const service: Service = {
@@ -167,6 +202,8 @@ async function createService(businessId: string, p: CreateParams): Promise<Servi
     price: round(p.price),
     category: p.category,
     color: p.color || '#ef4444',
+    capacity,
+    sessions,
     commissionRate: typeof p.commissionRate === 'number' ? Math.max(0, Math.min(100, p.commissionRate)) : undefined,
     // Campos fiscais opcionais — clamp aliquotaISS 0-100 (mesmo padrão de
     // commissionRate). Strings vazias caem em undefined pra não poluir o doc.
@@ -211,4 +248,104 @@ async function updateService(businessId: string, id: string, patch: Partial<Serv
 
 function round(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
+}
+
+function normName(s: string): string {
+  return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Importa uma grade de horários em texto (ex.: businessDescription) para serviços
+ * estruturados com sessions[] — a fonte da verdade da Agenda. Faz upsert por nome
+ * (normalizado): atualiza a grade de serviços existentes e (opcional) cria os que
+ * faltam. Sempre rode com apply=false primeiro para revisar o preview.
+ */
+async function importGrade(businessId: string, p: ImportGradeParams): Promise<{
+  applied: boolean;
+  created: number;
+  updated: number;
+  items: ImportGradeResultItem[];
+}> {
+  let text = (p.text || '').trim();
+  if (!text) {
+    const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
+    const biz = bizSnap.data() as { settings?: { aiAgent?: { businessDescription?: string } } } | undefined;
+    text = (biz?.settings?.aiAgent?.businessDescription || '').trim();
+  }
+  if (!text) throw new Error('Nenhum texto de grade fornecido e businessDescription vazio.');
+
+  const capacity = ServiceCapacitySchema.parse(p.defaultCapacity ?? 20);
+  const duration = Math.min(Math.max(Math.round(p.defaultDuration ?? 60), 5), 720);
+  const apply = p.apply === true;
+  const matchOnly = p.matchOnly === true;
+
+  const modalities = parseGradeText(text);
+  if (modalities.length === 0) {
+    return { applied: false, created: 0, updated: 0, items: [] };
+  }
+
+  // Índice dos serviços existentes por nome normalizado.
+  const snap = await adminDb.collection('services').where('businessId', '==', businessId).get();
+  const existing = new Map<string, { id: string; data: Service }>();
+  for (const d of snap.docs) {
+    const data = { ...(d.data() as Service), id: d.id };
+    existing.set(normName(data.name), { id: d.id, data });
+  }
+
+  const items: ImportGradeResultItem[] = [];
+  const batch = adminDb.batch();
+  const now = new Date().toISOString();
+  let created = 0;
+  let updated = 0;
+
+  for (const m of modalities) {
+    const sessions = SessionsArraySchema.parse(m.sessions);
+    const match = existing.get(normName(m.name));
+
+    if (match) {
+      items.push({ name: m.name, sessionCount: sessions.length, action: 'update', matchedServiceId: match.id });
+      if (apply) {
+        const patch = stripUndefined({
+          sessions,
+          // Só promove a turma se ainda não tem capacity definida (não rebaixa config manual).
+          capacity: match.data.capacity ?? capacity,
+          isActive: true,
+          updatedAt: now,
+        });
+        batch.update(adminDb.collection('services').doc(match.id), patch);
+      }
+      updated++;
+    } else if (!matchOnly) {
+      items.push({ name: m.name, sessionCount: sessions.length, action: 'create' });
+      if (apply) {
+        const ref = adminDb.collection('services').doc();
+        const service = stripUndefined({
+          id: ref.id,
+          businessId,
+          name: m.name.slice(0, 200),
+          duration,
+          price: 0,
+          color: '#ef4444',
+          capacity,
+          sessions,
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        }) as unknown as Service;
+        batch.set(ref, service);
+      }
+      created++;
+    } else {
+      items.push({ name: m.name, sessionCount: sessions.length, action: 'skip' });
+    }
+  }
+
+  if (apply) await batch.commit();
+  // created/updated são as contagens de ações (no dry-run = "o que SERIA feito").
+  // `applied` distingue preview de gravação real.
+  return { applied: apply, created, updated, items };
 }

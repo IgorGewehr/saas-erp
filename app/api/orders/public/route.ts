@@ -1,16 +1,27 @@
+import { randomBytes } from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 import {
-  deductStockAdmin, loadProductIndex,
-  type StockDeductionLine,
+  deductStockAdmin, loadProductIndex, checkStockAvailability, InsufficientStockError,
 } from '@/lib/services/stock-admin';
+import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
+import { buildOrderStockLines } from '@/lib/services/stock-lines';
+import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
+import { assertOrdersAcceptedNow, OrdersClosedError } from '@/lib/services/orders/acceptance';
+import { validateAndCleanModifiers, computeModifierDelta, round2 } from '@/lib/services/orders/pricing';
+import { resolveDeliveryZone } from '@/lib/services/orders/deliveryZones';
+import { reserveCouponAdmin } from '@/lib/services/orders/couponRedeem';
+import { COUPON_REJECT_MESSAGE } from '@/lib/services/orders/coupons';
+import { redeemGiftCardAdmin, loadGiftCardByCode, checkGiftCardEligibility } from '@/lib/services/orders/checkoutRedemptions';
+import { formatCurrency } from '@/lib/utils/format';
 import type {
+  Business,
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
-  DeliveryOrderPaymentMethod, DeliveryType, Client, SelectedModifier,
-  Product, ProductModifierGroup, ModifierPriceStrategy,
+  DeliveryOrderPaymentMethod, DeliveryType, SelectedModifier,
+  Product,
 } from '@/lib/types';
 
 interface PublicOrderPayload {
@@ -34,6 +45,8 @@ interface PublicOrderPayload {
   paymentMethod?: DeliveryOrderPaymentMethod;
   changeFor?: number;
   customerNotes?: string;
+  couponCode?: string;
+  giftCardCode?: string;
 }
 
 const PRICE_TOLERANCE = 0.01;
@@ -72,8 +85,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
+  // `deliveryFee` do payload é IGNORADO de propósito: a taxa é recomputada
+  // server-side contra a zona de entrega resolvida (não se confia no client).
   const { businessId, clientName, clientPhone, items, deliveryType, deliveryAddress,
-    deliveryFee, paymentMethod, changeFor, customerNotes } = body;
+    paymentMethod, changeFor, customerNotes, couponCode, giftCardCode } = body;
 
   if (!businessId || !clientName?.trim() || !items?.length || !deliveryType) {
     return NextResponse.json({ error: 'Campos obrigatórios ausentes' }, { status: 400 });
@@ -104,8 +119,11 @@ export async function POST(req: NextRequest) {
     const { result } = await withIdempotency(
       adminDb,
       { businessId, key: idempotencyKey, endpoint: 'POST /api/orders/public' },
-      async (): Promise<{ orderId: string; orderNumber: number }> => {
+      async (): Promise<{ orderId: string; orderNumber: number; trackingToken: string; total: number; discount: number; giftCardAmount: number }> => {
     const now = new Date().toISOString();
+    // Token OPACO de acompanhamento: capability URL pro cliente anônimo pagar e
+    // acompanhar SÓ o próprio pedido, sem abrir leitura pública de deliveryOrders.
+    const trackingToken = randomBytes(32).toString('base64url');
 
     // ── 1. Validate business exists ──────────────────────────────────────────
     const bizRef = adminDb.collection('businesses').doc(businessId);
@@ -113,6 +131,14 @@ export async function POST(req: NextRequest) {
     if (!bizSnap.exists) {
       throw new PublicOrderError(404, 'Negócio não encontrado');
     }
+    const biz = bizSnap.data() as Business;
+
+    // ── 1b. Guard de horário (COER-01) ───────────────────────────────────────
+    // A regra de "aceita pedido fora do horário?" vivia só no prompt do agente;
+    // um POST forjado aqui criava pedido com a loja FECHADA. Impomos server-side
+    // ANTES de queimar número sequencial / debitar estoque. Reusa o MESMO
+    // algoritmo (isBusinessOpenNow) do tool de status do agente.
+    assertOrdersAcceptedNow(biz, new Date(now));
 
     // ── 2. Validate items + recompute prices server-side ─────────────────────
     const productIds = [...new Set(items.map(i => i.productId))];
@@ -130,10 +156,11 @@ export async function POST(req: NextRequest) {
     }
 
     const validatedItems: DeliveryOrderItem[] = [];
-    // P2.6: linhas de estoque a debitar. Itens base entram como linhas top-level
-    // (deductStockAdmin expande BOM 1 nível internamente); modificadores com
-    // linkedProductId entram como linhas próprias já multiplicadas pela qty do item.
-    const stockLines: StockDeductionLine[] = [];
+    // P2.7: IDs que NÃO podem ficar negativos. Espelha a regra "Esgotado" da UI
+    // (CatalogClient): só item simples (sem BOM, sem modificadores) com estoque
+    // definido é bloqueado. Combos/insumos seguem o comportamento legado (debitam
+    // mesmo indo negativo) — operador acompanha por stockMovements/alertas.
+    const guardedStockIds = new Set<string>();
     for (const raw of items) {
       if (!raw.productId || typeof raw.quantity !== 'number' || raw.quantity <= 0) {
         throw new PublicOrderError(400, 'Item inválido');
@@ -143,6 +170,11 @@ export async function POST(req: NextRequest) {
         throw new PublicOrderError(400, `Produto indisponível: ${raw.productName || raw.productId}`);
       }
       if (product.isActive === false || product.isDeliverable === false) {
+        throw new PublicOrderError(400, `Produto indisponível: ${product.name}`);
+      }
+      // "Esgotado hoje" manual (menuAvailable === false): espelha a regra da UI/helper
+      // — rejeita independentemente do estoque. Ausente/true mantém comportamento atual.
+      if (product.menuAvailable === false) {
         throw new PublicOrderError(400, `Produto indisponível: ${product.name}`);
       }
 
@@ -175,68 +207,169 @@ export async function POST(req: NextRequest) {
       if (mods.clean.length) item.selectedModifiers = mods.clean;
       validatedItems.push(item);
 
-      // Estoque: linha base do produto (BOM expandido pelo serviço) + modifiers.
-      stockLines.push({ productId: product.id, quantity: raw.quantity });
-      for (const ml of mods.modifierStockLines) {
-        stockLines.push({ productId: ml.productId, quantity: ml.quantity * raw.quantity });
+      // "Não controlar estoque" (trackStock === false): fora do guard — nunca bloqueia
+      // por estoque (é debitado tolerando negativo, sem barrar o pedido). Ausente/true
+      // mantém o comportamento atual.
+      if (
+        product.trackStock !== false
+        && !product.components?.length && !product.hasModifiers
+        && product.currentStock !== undefined
+      ) {
+        guardedStockIds.add(product.id);
       }
     }
 
-    // ── 3. Upsert client by phone ────────────────────────────────────────────
+    // ── Linhas de estoque (fonte ÚNICA, simétrica ao restauro) ───────────────
+    // buildOrderStockLines reconstrói AS MESMAS linhas que o estorno (admin SDK)
+    // a partir dos itens validados: linha base por item (BOM expandido depois
+    // pelo serviço de estoque) + insumos de modificadores com linkedProductId já
+    // multiplicados por consumeQty × qty da opção × qty do item.
+    const stockLines = buildOrderStockLines(
+      { items: validatedItems } as unknown as DeliveryOrder,
+      productMap,
+    );
+
+    // ── 3. Resolve client identity by phone (dedup/canonical/merge) ──────────
+    // Ponto ÚNICO de "achar ou criar" Client por telefone: segue os candidatos
+    // BR, canonicalização, a cadeia de mergedInto e ignora soft-deleted. Antes
+    // este caminho fazia match por phone exato (digitsOnly), criando uma
+    // duplicata a cada pedido quando o número fora gravado em outra forma.
     let clientId: string | undefined;
+    // Primeiro pedido do cliente? (para cupons firstOrderOnly). Cliente sem
+    // telefone é sempre tratado como anônimo → primeiro pedido.
+    let isFirstOrder = true;
     if (clientPhone) {
       const phone = clientPhone.replace(/\D/g, '');
       if (phone.length < 8) {
         throw new PublicOrderError(400, 'Telefone inválido');
       }
-      const clientSnap = await adminDb
-        .collection('clients')
-        .where('businessId', '==', businessId)
-        .where('phone', '==', phone)
-        .limit(1)
-        .get();
-
-      if (!clientSnap.empty) {
-        clientId = clientSnap.docs[0].id;
-        await clientSnap.docs[0].ref.update({
-          name: clientSnap.docs[0].data().name || clientName.trim(),
-          visitCount: FieldValue.increment(1),
-          lastVisit: now,
-          updatedAt: now,
-        });
-      } else {
-        const newClient: Omit<Client, 'id'> = {
-          businessId,
-          name: clientName.trim(),
-          phone,
-          whatsapp: phone,
-          source: 'outro',
-          status: 'novo',
-          score: 0,
-          isActive: true,
-          visitCount: 1,
-          lastVisit: now,
-          createdAt: now,
-          updatedAt: now,
-        };
-        const clientRef = await adminDb.collection('clients').add(newClient);
-        clientId = clientRef.id;
-      }
+      const { clientId: resolvedId } = await resolveClientIdentityAdmin({
+        db: adminDb,
+        businessId,
+        phone: clientPhone,
+        name: clientName,
+      });
+      clientId = resolvedId ?? undefined; // default createIfMissing=true → sempre string
+      // Conta a visita no cliente primário (resolveClientIdentity não conta) e
+      // preenche o nome só se ainda estiver vazio — não sobrescreve nome real.
+      const clientRef = adminDb.collection('clients').doc(clientId!);
+      const clientSnap = await clientRef.get();
+      // visitCount ANTES deste pedido: 0 ⇒ primeiro pedido (cliente novo ou sem
+      // compras). O INCREMENTO é adiado para DEPOIS da persistência do pedido
+      // (ver abaixo) — contar aqui envelheceria o cliente mesmo em pedido que
+      // falha adiante (estoque 409), invalidando cupom firstOrderOnly numa
+      // retentativa que é, de fato, a primeira compra concluída.
+      isFirstOrder = ((clientSnap.data()?.visitCount as number | undefined) ?? 0) === 0;
+      await clientRef.update({
+        name: clientSnap.data()?.name || clientName.trim(),
+        lastVisit: now,
+        updatedAt: now,
+      });
     }
 
     // ── 4. Compute totals server-side ────────────────────────────────────────
+    // Taxa de entrega AUTORITATIVA: resolvida contra as zonas configuradas
+    // (settings.aiAgent.deliveryZones) a partir do endereço — nunca do valor
+    // enviado pelo client (SOTA-05/COE). Sem zonas → cai na taxa plana
+    // (settings.aiAgent.pedidos.deliveryFee). Endereço fora de área → rejeita.
     const subtotal = round2(validatedItems.reduce((s, i) => s + i.total, 0));
-    const fee = deliveryType === 'entrega' ? round2(Math.max(0, deliveryFee ?? 0)) : 0;
-    const total = round2(subtotal + fee);
+    let fee = 0;
+    if (deliveryType === 'entrega') {
+      const resolution = resolveDeliveryZone(biz.settings?.aiAgent?.deliveryZones, {
+        cep: deliveryAddress?.cep,
+        bairro: deliveryAddress?.bairro,
+      });
+      if (resolution.status === 'out-of-area') {
+        throw new PublicOrderError(400, 'Endereço fora da área de entrega desta loja.');
+      }
+      fee = resolution.status === 'matched'
+        ? round2(resolution.fee)
+        : round2(Math.max(0, biz.settings?.aiAgent?.pedidos?.deliveryFee ?? 0));
+    }
+    // Cupom + gift card (aplicados abaixo, após o pre-check de estoque). `total`
+    // é computado só depois de resolver desconto/frete-grátis/gift card.
+    let discount = 0;
+    let couponId: string | undefined;
+    let appliedCouponCode: string | undefined;
+    let giftCardId: string | undefined;
+    let appliedGiftCardCode: string | undefined;
+    let giftCardAmount = 0;
 
-    // ── 5. Sequential order number (transaction-safe) ────────────────────────
-    const orderNumber = await adminDb.runTransaction(async (tx) => {
-      const snap = await tx.get(bizRef);
-      const last = (snap.data()?.lastOrderNumber as number) || 0;
-      const next = last + 1;
-      tx.update(bizRef, { lastOrderNumber: next, updatedAt: now });
-      return next;
-    });
+    // ── 4b. Pré-check de estoque (evita queimar número sequencial) ───────────
+    // Checa os itens guardados (simples + estoque definido) contra o productMap
+    // já carregado, ANTES de consumir o número do pedido. Fecha o caso comum
+    // (página velha / item esgotado) sem buraco na numeração. O guard ATÔMICO no
+    // deductStockAdmin continua sendo a autoridade contra corrida concorrente.
+    if (guardedStockIds.size > 0) {
+      const guardedLines = stockLines.filter(l => guardedStockIds.has(l.productId));
+      const shortages = checkStockAvailability(guardedLines, productMap);
+      if (shortages.length > 0) {
+        const names = [...new Set(shortages.map(s => s.productName))].join(', ');
+        throw new PublicOrderError(409, `Sem estoque para: ${names}. Atualize o carrinho e tente novamente.`);
+      }
+    }
+
+    // ── 4c. Cupom (reserva ATÔMICA antes de queimar número/estoque) ──────────
+    // Reservado ANTES da alocação de número e da dedução de estoque: uma rejeição
+    // (400) ou falha de limite não deixa buraco na numeração nem toca o estoque.
+    // O resgate é idempotente pela chave do carrinho (X-Idempotency-Key) — retry
+    // do mesmo carrinho não re-consome. orderRef é pré-gerado só para ancorar o
+    // resgate/pedido; a persistência do pedido é o último passo (orderRef.set).
+    const orderRef = adminDb.collection('deliveryOrders').doc();
+    if (couponCode?.trim()) {
+      const reserve = await reserveCouponAdmin(adminDb, {
+        businessId,
+        code: couponCode,
+        redemptionKey: idempotencyKey || orderRef.id,
+        orderId: orderRef.id,
+        clientId,
+        channel: 'site',
+        ctx: {
+          subtotal,
+          deliveryFee: fee,
+          deliveryType,
+          now: new Date(now),
+          isFirstOrder,
+        },
+      });
+      if (!reserve.ok) {
+        const msg = reserve.reason === 'not_found'
+          ? 'Cupom inválido.'
+          : COUPON_REJECT_MESSAGE[reserve.reason];
+        throw new PublicOrderError(400, msg);
+      }
+      discount = reserve.discount;
+      if (reserve.freeDelivery) fee = reserve.finalFee; // frete grátis → 0
+      couponId = reserve.couponId;
+      appliedCouponCode = reserve.code;
+    }
+
+    // Valor a pagar após cupom — base sobre a qual o gift card (dinheiro) incide.
+    const payableBeforeCash = round2(Math.max(0, subtotal + fee - discount));
+
+    // ── 4d. Gift card — PRÉ-CHECK de elegibilidade (SEM debitar) ─────────────
+    // Débito de saldo (dinheiro) é irreversível sem estorno; por isso só o
+    // COMMITAMOS DEPOIS que o estoque foi deduzido (passo 5c) — fecha a janela em
+    // que um 409 de estoque deixaria o saldo consumido num pedido inexistente.
+    // Aqui apenas rejeitamos cedo um cartão claramente inválido, sem side-effect.
+    // Exigimos X-Idempotency-Key para pedidos com gift card (o front sempre envia):
+    // sem ela um retry re-debitaria o saldo, pois o ledger é ancorado nessa chave.
+    if (giftCardCode?.trim()) {
+      if (!idempotencyKey) {
+        throw new PublicOrderError(400, 'Recarregue a página e tente novamente.');
+      }
+      const preGc = await loadGiftCardByCode(adminDb, businessId, giftCardCode);
+      const reason = preGc ? checkGiftCardEligibility(preGc, now) : 'not_found';
+      if (reason) {
+        // Mensagem GENÉRICA (anti-oráculo p/ instrumento ao portador): não
+        // distingue inexistente/inativo/expirado/sem-saldo na resposta pública.
+        console.warn('[PublicOrder] gift card inelegível (pré-check):', reason);
+        throw new PublicOrderError(400, 'Gift card inválido ou sem saldo disponível.');
+      }
+    }
+
+    // ── 5. Sequential order number (fonte ÚNICA, transaction-safe) ───────────
+    const orderNumber = await allocateOrderNumberAdmin(adminDb, businessId);
 
     // ── 5b. Dedução atômica de estoque (P2.6) ────────────────────────────────
     // Antes este caminho público não debitava estoque algum. Agora reusa o
@@ -250,23 +383,69 @@ export async function POST(req: NextRequest) {
       // Index precisa cobrir produtos base, insumos de modifier e folhas de BOM
       // (para nome/minStock e expansão), todos filtrados por businessId.
       const baseIds = stockLines.map(l => l.productId);
+      // baseIds já inclui os insumos LINKADOS de modificadores (linkedProductId),
+      // mas `productMap` só carregou os produtos dos ITENS — não os linkados. Se um
+      // insumo linkado for ele próprio COMPOSTO (tem components), coletar seus
+      // components a partir de productMap perderia as folhas e elas nunca seriam
+      // debitadas (assimetria com o restauro). Por isso, espelhando
+      // order-stock-restore, carregamos um índice base sobre baseIds (itens +
+      // linkados) ANTES de coletar componentIds, garantindo simetria baixa↔restauro.
+      const baseIndex = await loadProductIndex(adminDb, baseIds, businessId);
       const componentIds = baseIds.flatMap(id =>
-        (productMap.get(id)?.components || []).map(c => c.productId),
+        (baseIndex.get(id)?.components || []).map(c => c.productId),
       );
-      const stockIndex = await loadProductIndex(
-        adminDb,
-        [...baseIds, ...componentIds],
-        businessId,
-      );
-      await deductStockAdmin(adminDb, stockLines, {
-        businessId,
-        operatorId: 'public',
-        operatorName: 'Cardápio online',
-        reason: `Pedido #${orderNumber}`,
-        productIndex: stockIndex,
-      });
+      const stockIndex = componentIds.length
+        ? await loadProductIndex(adminDb, [...baseIds, ...componentIds], businessId)
+        : baseIndex;
+      try {
+        await deductStockAdmin(adminDb, stockLines, {
+          businessId,
+          operatorId: 'public',
+          operatorName: 'Cardápio online',
+          reason: `Pedido #${orderNumber}`,
+          productIndex: stockIndex,
+          failOnInsufficientFor: guardedStockIds,
+        });
+      } catch (e) {
+        if (e instanceof InsufficientStockError) {
+          // Detalhe (qtd disponível por SKU) só no log server-side. A resposta
+          // pública lista apenas os nomes — espelha o "Esgotado" boolean da UI e
+          // evita sondagem de inventário exato por visitante anônimo.
+          console.warn('[PublicOrder] estoque insuficiente:', e.message);
+          const names = [...new Set(e.shortages.map((s) => s.productName))].join(', ');
+          throw new PublicOrderError(409, `Sem estoque para: ${names}. Atualize o carrinho e tente novamente.`);
+        }
+        throw e;
+      }
       stockDeductedAt = now;
     }
+
+    // ── 5c. Gift card — DÉBITO autoritativo (estoque já garantido) ───────────
+    // Só agora, com o estoque deduzido, debitamos o saldo. Idempotente pela chave
+    // do carrinho (ledger giftCardRedemptions/{id}_{key}): se o order.set falhar e
+    // houver retry com a mesma chave, o replay devolve o valor sem re-debitar.
+    if (giftCardCode?.trim()) {
+      const gc = await redeemGiftCardAdmin(adminDb, {
+        businessId,
+        code: giftCardCode,
+        amountToRedeem: payableBeforeCash,
+        redemptionKey: idempotencyKey!, // garantido não-nulo pelo pré-check (4d)
+        orderId: orderRef.id,
+        nowIso: now,
+      });
+      if (gc.ok && gc.amountRedeemed > 0) {
+        giftCardAmount = gc.amountRedeemed;
+        giftCardId = gc.giftCardId;
+        appliedGiftCardCode = gc.code;
+      } else if (!gc.ok) {
+        // Concorrência: cartão drenado/expirado entre o pré-check e aqui. NÃO
+        // derruba o pedido (estoque já foi deduzido) — segue sem desconto do gift.
+        console.warn('[PublicOrder] gift card inelegível no débito:', gc.reason);
+      }
+    }
+
+    // Total AUTORITATIVO: (mercadoria + frete − cupom) − gift card, nunca negativo.
+    const total = round2(Math.max(0, payableBeforeCash - giftCardAmount));
 
     // ── 6. Create order ──────────────────────────────────────────────────────
     const order: Omit<DeliveryOrder, 'id'> = {
@@ -280,6 +459,11 @@ export async function POST(req: NextRequest) {
       items: validatedItems,
       subtotal,
       deliveryFee: fee,
+      ...(discount > 0 ? { discount } : {}),
+      ...(couponId ? { couponId, couponCode: appliedCouponCode, couponDiscount: discount } : {}),
+      ...(giftCardId && giftCardAmount > 0
+        ? { giftCardId, giftCardCode: appliedGiftCardCode, giftCardAmount }
+        : {}),
       total,
       deliveryType,
       deliveryAddress: deliveryType === 'entrega' ? deliveryAddress : undefined,
@@ -287,17 +471,30 @@ export async function POST(req: NextRequest) {
       paymentStatus: 'pendente',
       changeFor: changeFor && changeFor > total ? changeFor : undefined,
       customerNotes: customerNotes?.slice(0, 1000) || undefined,
+      trackingToken,
       ...(stockDeductedAt ? { stockDeductedAt } : {}),
       createdAt: now,
       updatedAt: now,
     };
 
-    const orderRef = await adminDb.collection('deliveryOrders').add(order);
+    await orderRef.set(order);
+
+    // ── 6b. Conta a visita só agora (pedido persistido) ──────────────────────
+    // Movido para depois do set: um pedido que falhe antes daqui NÃO envelhece o
+    // cliente (preserva isFirstOrder p/ cupons de 1ª compra numa retentativa).
+    if (clientId) {
+      await adminDb.collection('clients').doc(clientId)
+        .update({ visitCount: FieldValue.increment(1) })
+        .catch(() => {}); // best-effort: pedido já existe, não derruba por isso
+    }
 
     // ── 7. WhatsApp notification to business (best-effort) ───────────────────
     notifyBusiness(businessId, orderNumber, clientName.trim(), total, deliveryType, validatedItems).catch(() => {});
 
-        return { orderId: orderRef.id, orderNumber };
+        // `total` AUTORITATIVO (recomputado server-side, = subtotal + fee) devolvido
+        // ao cliente: é exatamente o valor que será cobrado, fechando a janela em
+        // que o front exibia o total local em vez do efetivamente persistido.
+        return { orderId: orderRef.id, orderNumber, trackingToken, total, discount, giftCardAmount };
       },
     );
 
@@ -307,7 +504,7 @@ export async function POST(req: NextRequest) {
     );
 
   } catch (err) {
-    if (err instanceof PublicOrderError) {
+    if (err instanceof PublicOrderError || err instanceof OrdersClosedError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
     if (err instanceof IdempotencyConflictError) {
@@ -326,94 +523,6 @@ export async function POST(req: NextRequest) {
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-function computeModifierDelta(selected: SelectedModifier[]): number {
-  let delta = 0;
-  for (const group of selected) {
-    const prices = group.selectedOptions.map(o => o.additionalPrice * Math.max(1, o.quantity || 1));
-    if (!prices.length) continue;
-    delta += applyStrategy(group.priceStrategy, prices);
-  }
-  return delta;
-}
-
-function applyStrategy(strategy: ModifierPriceStrategy, prices: number[]): number {
-  if (!prices.length) return 0;
-  if (strategy === 'max') return Math.max(...prices);
-  if (strategy === 'avg') return prices.reduce((s, p) => s + p, 0) / prices.length;
-  return prices.reduce((s, p) => s + p, 0); // sum (default)
-}
-
-type ModifierValidation =
-  | { clean: SelectedModifier[]; modifierStockLines: StockDeductionLine[] }
-  | { error: string };
-
-/**
- * Validates client-provided modifier selections against the product's
- * modifierGroups definition, rebuilding each SelectedModifier from the
- * server-side source of truth (group name, strategy, option prices).
- *
- * P2.6: também coleta as linhas de estoque dos modificadores que têm
- * `linkedProductId` — quantidade = consumeQty × quantidade da opção (a
- * multiplicação pela quantidade do item fica a cargo do caller).
- */
-function validateAndCleanModifiers(
-  product: Product,
-  incoming: SelectedModifier[] | undefined,
-): ModifierValidation {
-  const groups = product.modifierGroups || [];
-  const sel = incoming || [];
-
-  // Required groups must be present with valid selection counts
-  for (const group of groups) {
-    const chosen = sel.find(s => s.groupId === group.id);
-    const count = chosen?.selectedOptions.reduce((s, o) => s + Math.max(1, o.quantity || 1), 0) || 0;
-    if (group.required && count < Math.max(1, group.minSelections)) {
-      return { error: `Selecione ${group.name}` };
-    }
-    if (count > group.maxSelections && group.maxSelections > 0) {
-      return { error: `Máximo ${group.maxSelections} em ${group.name}` };
-    }
-  }
-
-  const clean: SelectedModifier[] = [];
-  const modifierStockLines: StockDeductionLine[] = [];
-  for (const chosen of sel) {
-    const group = groups.find(g => g.id === chosen.groupId);
-    if (!group) continue; // silently drop unknown groups
-    const cleanedOptions = [];
-    for (const opt of chosen.selectedOptions) {
-      const srcOpt = group.options.find(o => o.id === opt.optionId);
-      if (!srcOpt || srcOpt.available === false) continue;
-      const qty = Math.max(1, Math.min(opt.quantity || 1, srcOpt.maxQuantity ?? 99));
-      cleanedOptions.push({
-        optionId: srcOpt.id,
-        optionName: srcOpt.name,
-        additionalPrice: srcOpt.additionalPrice,
-        quantity: qty,
-      });
-      if (srcOpt.linkedProductId) {
-        modifierStockLines.push({
-          productId: srcOpt.linkedProductId,
-          quantity: (srcOpt.consumeQty ?? 1) * qty,
-        });
-      }
-    }
-    if (cleanedOptions.length === 0) continue;
-    clean.push({
-      groupId: group.id,
-      groupName: group.name,
-      priceStrategy: group.priceStrategy,
-      selectedOptions: cleanedOptions,
-    });
-  }
-
-  return { clean, modifierStockLines };
-}
-
 async function notifyBusiness(
   businessId: string,
   orderNumber: number,
@@ -427,7 +536,7 @@ async function notifyBusiness(
     const biz = bizSnap.data();
     if (!biz) return;
 
-    const totalStr = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(total);
+    const totalStr = formatCurrency(total);
     const modeStr = deliveryType === 'entrega' ? '🛵 Entrega' : '🏠 Retirada';
 
     const itemLines = items.slice(0, 8).map(i => {

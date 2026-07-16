@@ -5,8 +5,7 @@ import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
 import { emitirNFe, emitirNFCe, emitirNFSe, prepararNFCeContingencia, NfsePayload, CertificadoPayload, SefazAmbiente, resolveAmbiente, isTransientSefazError } from '@/lib/services/sefaz-gateway';
 import {
-  peekNextInvoiceNumber,
-  commitInvoiceNumber,
+  getNextInvoiceNumber,
   getCRT,
   getPaymentCode,
   getICMSDefaults,
@@ -17,6 +16,7 @@ import { decryptToken } from '@/lib/utils/encryption';
 import type { Product } from '@/lib/types';
 import { EmitFiscalRequestSchema } from '@/lib/contracts/api/fiscal/emit';
 import { validateMunicipalRequirements } from '@/lib/fiscal/municipalRequirements';
+import { normalizeFiscalDocumentStatus } from '@/lib/contracts/fsm/fiscalDocument';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,9 +53,11 @@ function stripEmpty<T>(obj: T): T {
 
 /**
  * Persiste documento fiscal como 'pendente' (SEFAZ indisponível) e responde
- * 200 ao cliente. Salva o payload original menos o certificado pra permitir
- * retry pela rota /api/fiscal/retry — operador clica "Reenviar para SEFAZ"
- * quando o serviço voltar. NUNCA persistir certificado no Firestore (sensível).
+ * 200 ao cliente. Salva o PAYLOAD DO GATEWAY já montado (não o request da
+ * UI!) menos certificado e CSC, pra permitir replay direto pela rota
+ * /api/fiscal/retry — operador clica "Reenviar para SEFAZ" quando o serviço
+ * voltar. NUNCA persistir certificado nem CSC token no Firestore (sensíveis;
+ * o retry os re-resolve do business).
  */
 async function persistPendingAndRespond(params: {
   businessId: string;
@@ -65,12 +67,17 @@ async function persistPendingAndRespond(params: {
   clientName: string | null;
   clientCpfCnpj: string | null;
   totalValue: number;
+  /** Payload do gateway (nfePayload/nfcePayload/nfsePayload) pronto pra replay. */
   originalRequest: Record<string, unknown>;
+  ufEmitente?: string | null;
+  ambiente?: string | null;
   error: Error;
   now: string;
 }): Promise<NextResponse> {
-  const { certificado: _certCleanup, ...payloadForRetry } = params.originalRequest as Record<string, unknown>;
+  const { certificado: _certCleanup, csc: _cscCleanup, ...payloadForRetry } =
+    params.originalRequest as Record<string, unknown>;
   void _certCleanup;
+  void _cscCleanup;
   const docRef = await adminDb.collection('fiscalDocuments').add(
     stripEmpty({
       businessId: params.businessId,
@@ -83,6 +90,8 @@ async function persistPendingAndRespond(params: {
       clientCpfCnpj: params.clientCpfCnpj,
       totalValue: params.totalValue,
       originalRequest: payloadForRetry,
+      ufEmitente: params.ufEmitente || null,
+      ambiente: params.ambiente || null,
       issueDate: params.now,
       createdAt: params.now,
       updatedAt: params.now,
@@ -100,14 +109,186 @@ async function persistPendingAndRespond(params: {
   );
 }
 
+/**
+ * Grava o vínculo do fiscalDocument recém-emitido de volta no documento de
+ * origem (Sale em `sales` ou DeliveryOrder em `deliveryOrders`). Fecha o loop
+ * de rastreio: a venda passa a saber sua nota (accessKey + documentId) e o
+ * módulo Fiscal já ancora a idempotência no saleId/orderId. Best-effort — a
+ * emissão já ocorreu, então falha de writeback loga (warn) e não derruba a
+ * resposta. Cross-tenant guard: nunca escreve em doc de outro businessId
+ * (adminDb bypassa Firestore rules).
+ */
+async function linkFiscalDocToSource(params: {
+  businessId: string;
+  saleId?: string;
+  orderId?: string;
+  fiscalDocumentId: string;
+  accessKey: string | null;
+  type: 'nfe' | 'nfce';
+  status: string;
+  now: string;
+}): Promise<void> {
+  const collectionName = params.saleId ? 'sales' : params.orderId ? 'deliveryOrders' : null;
+  const docId = params.saleId || params.orderId;
+  if (!collectionName || !docId) return;
+  try {
+    const ref = adminDb.collection(collectionName).doc(docId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data()?.businessId !== params.businessId) return;
+    await ref.set(
+      stripEmpty({
+        fiscalDocumentId: params.fiscalDocumentId,
+        fiscalAccessKey: params.accessKey,
+        fiscalType: params.type,
+        fiscalStatus: params.status,
+        fiscalEmittedAt: params.now,
+        updatedAt: params.now,
+      }),
+      { merge: true },
+    );
+  } catch (err) {
+    console.warn('[Fiscal Emit] writeback ao documento de origem falhou', {
+      collectionName,
+      docId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Route
 // ---------------------------------------------------------------------------
 
-export async function POST(request: NextRequest) {
-  try {
-    const body = await request.json();
+// ---------------------------------------------------------------------------
+// Idempotência (R3): POST que cria recurso aceita X-Idempotency-Key.
+// Claim transacional em fiscalIdempotency/{businessId}_{key}:
+//   - chave nova → marca 'processing' e executa a emissão;
+//   - 'done'     → devolve a MESMA resposta gravada (replay seguro);
+//   - 'processing' fresco → 409 (emissão duplicada em voo);
+//   - 'processing' velho (>10min, processo morreu) → re-claim.
+// Respostas 5xx/exceções LIBERAM a chave (retry legítimo não fica preso).
+// ---------------------------------------------------------------------------
 
+const IDEM_STALE_MS = 10 * 60 * 1000;
+
+export async function POST(request: NextRequest) {
+  let body: unknown = null;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
+  }
+
+  const bodyRec = body as Record<string, unknown> | null;
+  const bid = bodyRec?.businessId;
+  // Ancora a idempotência ao documento de origem (Sale/DeliveryOrder) quando
+  // houver: dedup passa a valer POR VENDA/PEDIDO, independente da chave efêmera
+  // do cliente. Assim um refresh, um segundo tab ou um retry da MESMA venda
+  // replaya a nota já emitida em vez de gerar a segunda. Sem origem (dialog
+  // manual), cai na X-Idempotency-Key enviada pela UI (comportamento legado).
+  const sourceSaleId = typeof bodyRec?.saleId === 'string' ? bodyRec.saleId.trim() : '';
+  const sourceOrderId = typeof bodyRec?.orderId === 'string' ? bodyRec.orderId.trim() : '';
+  const sourceAnchor = sourceSaleId
+    ? `sale_${sourceSaleId}`
+    : sourceOrderId
+      ? `order_${sourceOrderId}`
+      : '';
+  const idemKeyRaw = sourceAnchor || request.headers.get('x-idempotency-key')?.trim();
+  if (!idemKeyRaw || typeof bid !== 'string' || !bid) {
+    return emitCore(request, body);
+  }
+
+  // Auth ANTES do claim: sem isso, request não-autenticada escreveria em
+  // fiscalIdempotency e poderia ler replay de resposta de outro usuário.
+  // (emitCore re-valida — custo de 1 verify duplicado, aceitável.)
+  const preAuth = await verifyAuth(request, bid);
+  if (isAuthError(preAuth)) return preAuth;
+
+  // Doc id não aceita '/', e chave gigante não pode virar 500 cru.
+  const idemKey = idemKeyRaw.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 120);
+  if (!idemKey) {
+    return emitCore(request, body);
+  }
+
+  const idemRef = adminDb.collection('fiscalIdempotency').doc(`${bid}_${idemKey}`);
+  const nowMs = Date.now();
+  const claim = await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(idemRef);
+    if (!snap.exists) {
+      tx.set(idemRef, { businessId: bid, status: 'processing', createdAt: new Date(nowMs).toISOString(), createdAtMs: nowMs });
+      return { state: 'new' as const };
+    }
+    const d = snap.data()!;
+    if (d.status === 'done') {
+      return { state: 'done' as const, response: d.response, httpStatus: d.httpStatus as number };
+    }
+    // 'failed' (5xx/exceção anterior) é re-claimável imediatamente — mantém
+    // trilha de auditoria em vez de delete, mesma semântica de retry.
+    if (d.status === 'failed') {
+      tx.set(idemRef, { businessId: bid, status: 'processing', createdAt: new Date(nowMs).toISOString(), createdAtMs: nowMs });
+      return { state: 'new' as const };
+    }
+    if (typeof d.createdAtMs === 'number' && nowMs - d.createdAtMs > IDEM_STALE_MS) {
+      tx.set(idemRef, { businessId: bid, status: 'processing', createdAt: new Date(nowMs).toISOString(), createdAtMs: nowMs });
+      return { state: 'new' as const };
+    }
+    return { state: 'inflight' as const };
+  });
+
+  if (claim.state === 'done') {
+    return NextResponse.json(claim.response, { status: claim.httpStatus || 200 });
+  }
+  if (claim.state === 'inflight') {
+    return NextResponse.json(
+      { error: 'Emissão com esta chave de idempotência já está em andamento. Aguarde o resultado antes de reenviar.' },
+      { status: 409 },
+    );
+  }
+
+  let res: NextResponse;
+  try {
+    res = await emitCore(request, body);
+  } catch (err) {
+    await idemRef
+      .set({ status: 'failed', failedAt: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) }, { merge: true })
+      .catch(() => {});
+    throw err;
+  }
+
+  try {
+    if (res.status < 500) {
+      const json = await res.clone().json().catch(() => null);
+      if (json) {
+        // XML completo fica em fiscalDocuments — replay devolve a resposta
+        // sem ele (evita duplicar nota inteira nesta coleção sem TTL).
+        const stored = JSON.parse(JSON.stringify(json)) as Record<string, unknown>;
+        const dataObj = stored.data as Record<string, unknown> | undefined;
+        if (dataObj && typeof dataObj.xml === 'string') {
+          dataObj.xml = null;
+          dataObj.xmlOmitidoNoReplay = true;
+        }
+        const payload = { status: 'done', httpStatus: res.status, response: stored, doneAt: new Date().toISOString() };
+        try {
+          await idemRef.set(payload, { merge: true });
+        } catch {
+          // 2ª tentativa: chave presa em 'processing' re-emitiria após o
+          // stale window mesmo com a emissão já entregue.
+          await idemRef.set(payload, { merge: true });
+        }
+      } else {
+        await idemRef.set({ status: 'failed', failedAt: new Date().toISOString(), error: 'resposta não-JSON' }, { merge: true });
+      }
+    } else {
+      await idemRef.set({ status: 'failed', failedAt: new Date().toISOString(), httpStatus: res.status }, { merge: true });
+    }
+  } catch {
+    // Falha ao gravar o resultado não pode derrubar uma emissão já feita.
+  }
+  return res;
+}
+
+async function emitCore(request: NextRequest, body: unknown): Promise<NextResponse> {
+  try {
     // 1. Validate payload shape via Zod (SDD R6: validação no boundary).
     // Schema cobre type/businessId/items/recipient/tomador/etc. Erros de
     // shape retornam 400 com detalhes acionáveis. Cross-field validações
@@ -132,11 +313,31 @@ export async function POST(request: NextRequest) {
     // handler for quebrado em sub-handlers (1 por type).
     const data = parsed.data as Record<string, any>;
 
-    // Auth: admin+ only
+    // Vínculo com o documento de origem (Sale/DeliveryOrder). sourceType é
+    // derivado quando ausente. Usado pra persistir no fiscalDocument e gravar
+    // accessKey/documentId de volta na venda/pedido após a emissão.
+    const saleId = typeof data.saleId === 'string' && data.saleId.trim() ? data.saleId.trim() : undefined;
+    const orderId = typeof data.orderId === 'string' && data.orderId.trim() ? data.orderId.trim() : undefined;
+    const sourceType: 'sale' | 'order' | 'manual' | undefined =
+      data.sourceType === 'sale' || data.sourceType === 'order' || data.sourceType === 'manual'
+        ? data.sourceType
+        : saleId
+          ? 'sale'
+          : orderId
+            ? 'order'
+            : undefined;
+
+    // Auth: NFC-e (cupom de caixa) pode ser emitida por operator+ — é o fluxo
+    // pós-venda do PDV, operado por caixas. NF-e/NFSe seguem admin+ (dados
+    // cadastrais/tributários sensíveis, sem urgência de balcão).
     const auth = await verifyAuth(request, businessId);
     if (isAuthError(auth)) return auth;
-    if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY['admin']) {
-      return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
+    const minRole: UserRole = type === 'nfce' ? 'operator' : 'admin';
+    if (ROLE_HIERARCHY[auth.role as UserRole] < ROLE_HIERARCHY[minRole]) {
+      return NextResponse.json(
+        { error: type === 'nfce' ? 'Operator role required' : 'Admin role required' },
+        { status: 403 },
+      );
     }
 
     // 2. Fetch business + fiscal config -----------------------------------------
@@ -185,9 +386,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 4. Peek at next invoice number (commit only after SEFAZ accepts) ----------
-
-    const { number, series } = await peekNextInvoiceNumber(businessId, type);
+    // 4. Numeração fiscal: a alocação ATÔMICA (getNextInvoiceNumber, transação
+    // get-and-increment) acontece DENTRO de cada branch, imediatamente antes
+    // da montagem do payload — depois de TODAS as validações locais. Alocar
+    // aqui em cima queimava um número a cada 400 de configuração (IE/IBGE/
+    // CSC ausentes etc.). Gap agora só ocorre por rejeição definitiva da
+    // SEFAZ (comportamento previsto; /api/fiscal/inutilizar cobre).
 
     // 5. Determine tax regime, defaults and ambiente ----------------------------
 
@@ -536,6 +740,8 @@ export async function POST(request: NextRequest) {
         return {
           tipo: code,
           valor: +(Number(p.amount) || 0).toFixed(2),
+          // tPag '99' exige xPag (descrição) no XSD — manda o rótulo do método.
+          ...(code === '99' ? { descricao: (p.method || 'Outros').slice(0, 60) } : {}),
           ...(needsCardInfo ? { cartao: { tipoIntegracao: '2' } } : {}),
         };
       })
@@ -631,6 +837,9 @@ export async function POST(request: NextRequest) {
         };
       }
 
+      // Validações NFSe concluídas — alocar número agora (atômico).
+      const { number, series } = await getNextInvoiceNumber(businessId, type);
+
       const nfsePayload = stripEmpty({
         numeroDPS: number,
         serie: series,
@@ -683,17 +892,13 @@ export async function POST(request: NextRequest) {
             clientName: data.tomador?.nome ?? null,
             clientCpfCnpj: (data.tomador?.cnpj || data.tomador?.cpf || '').replace(/\D/g, '') || null,
             totalValue: baseCalculo,
-            originalRequest: data,
+            originalRequest: nfsePayload as Record<string, unknown>,
+            ambiente,
             error: sefazErr,
             now,
           });
         }
         throw sefazErr;
-      }
-
-      // Commit number only after success
-      if (result.status === 'autorizado') {
-        await commitInvoiceNumber(businessId, 'nfse', number);
       }
 
       // Persist fiscal document
@@ -708,7 +913,9 @@ export async function POST(request: NextRequest) {
             // For NFSe, the SEFAZ returns codigoVerificacao (used to validate the note on the city portal).
             accessKey: result.codigoVerificacao || result.chaveAcesso,
             protocol: result.protocolo,
-            status: result.status === 'autorizado' ? 'autorizada' : result.status,
+            // Canoniza pro feminino do FSM (rejeitado→rejeitada, erro mantém)
+            // — gravar o masculino cru do gateway divergiria do FSM e da UI.
+            status: normalizeFiscalDocumentStatus(result.status) ?? result.status,
             statusMessage: result.motivoStatus || result.mensagens?.[0]?.mensagem || result.erros?.[0] || null,
             xml: result.xml,
             // linkVisualizacao = external URL (city portal) to view/print the NFSe — there's no DANFE for NFSe.
@@ -759,6 +966,19 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Validação da contingência ANTES da alocação (motivo curto não pode
+      // queimar número). O branch forcarContingencia abaixo reusa este check.
+      const motivoContingencia = String(data.motivoContingencia || '').trim();
+      if (data.forcarContingencia && motivoContingencia.length < 15) {
+        return NextResponse.json(
+          { error: 'Contingência exige motivoContingencia com 15-256 caracteres (justificativa).' },
+          { status: 400 },
+        );
+      }
+
+      // Validações NFC-e concluídas — alocar número agora (atômico).
+      const { number, series } = await getNextInvoiceNumber(businessId, type);
+
       const nfcePayload = stripEmpty({
         emitente,
         numero: number,
@@ -796,13 +1016,7 @@ export async function POST(request: NextRequest) {
       // 'contingencia', responde 200 com chave + xml pra impressão do DANFCE
       // em contingência. Transmissão posterior via /api/fiscal/retry.
       if (data.forcarContingencia) {
-        const motivo = String(data.motivoContingencia || '').trim();
-        if (motivo.length < 15) {
-          return NextResponse.json(
-            { error: 'Contingência exige motivoContingencia com 15-256 caracteres (justificativa).' },
-            { status: 400 },
-          );
-        }
+        const motivo = motivoContingencia; // já validado antes da alocação
         const dhCont = new Date().toISOString();
         const payloadContingencia = {
           ...(nfcePayload as Record<string, unknown>),
@@ -820,9 +1034,6 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // Commit número de série (a chave já foi reservada).
-        await commitInvoiceNumber(businessId, 'nfce', number);
-
         const docRef = await adminDb.collection('fiscalDocuments').add(
           stripEmpty({
             businessId,
@@ -838,12 +1049,26 @@ export async function POST(request: NextRequest) {
             xml: prep.xml,
             sefazResponse: prep,
             totalValue: totalNF,
+            saleId,
+            orderId,
+            sourceType,
             contingencia: { dhCont, xJust: motivo, ufEmitente, ambiente },
             issueDate: now,
             createdAt: now,
             updatedAt: now,
           }),
         );
+
+        await linkFiscalDocToSource({
+          businessId,
+          saleId,
+          orderId,
+          fiscalDocumentId: docRef.id,
+          accessKey: prep.chaveAcesso,
+          type: 'nfce',
+          status: 'contingencia',
+          now,
+        });
 
         return NextResponse.json(
           {
@@ -869,7 +1094,9 @@ export async function POST(request: NextRequest) {
             clientName: data.nomeConsumidor ?? null,
             clientCpfCnpj: data.cpfConsumidor?.replace(/\D/g, '') || null,
             totalValue: totalNF,
-            originalRequest: data,
+            originalRequest: nfcePayload as Record<string, unknown>,
+            ufEmitente,
+            ambiente,
             error: sefazErr,
             now,
           });
@@ -877,14 +1104,12 @@ export async function POST(request: NextRequest) {
         throw sefazErr;
       }
 
-      // Commit number only after SEFAZ accepts
-      if (result.status === 'autorizado') {
-        await commitInvoiceNumber(businessId, 'nfce', number);
-      }
-
       // Persist fiscal document — sempre (autorizada, rejeitada ou processando)
       // pra que o usuário consulte o histórico mesmo em caso de falha.
-      await adminDb.collection('fiscalDocuments').add(
+      // ufEmitente/ambiente são obrigatórios pro cron consultar-processando
+      // conseguir consultar a nota depois (consultaStatusRunner exige ambos).
+      const nfceStatus = normalizeFiscalDocumentStatus(result.status) ?? result.status;
+      const nfceDocRef = await adminDb.collection('fiscalDocuments').add(
         stripEmpty({
           businessId,
           type: 'nfce',
@@ -892,19 +1117,34 @@ export async function POST(request: NextRequest) {
           series,
           accessKey: result.chaveAcesso || null,
           protocol: result.protocolo || null,
-          status:
-            result.status === 'autorizado' ? 'autorizada' : result.status,
+          status: nfceStatus,
           statusMessage: result.motivoStatus || result.erros?.[0] || null,
           clientName: data.nomeConsumidor || null,
           clientCpfCnpj: data.cpfConsumidor?.replace(/\D/g, '') || null,
           xml: result.xml || null,
           sefazResponse: result,
           totalValue: totalNF,
+          saleId,
+          orderId,
+          sourceType,
+          ufEmitente,
+          ambiente,
           issueDate: now,
           createdAt: now,
           updatedAt: now,
         }),
       );
+
+      await linkFiscalDocToSource({
+        businessId,
+        saleId,
+        orderId,
+        fiscalDocumentId: nfceDocRef.id,
+        accessKey: result.chaveAcesso || null,
+        type: 'nfce',
+        status: nfceStatus,
+        now,
+      });
 
       return NextResponse.json(
         { success: result.success, data: result },
@@ -1001,6 +1241,9 @@ export async function POST(request: NextRequest) {
       ? String(data.tipoOperacao)
       : finalidade === '4' ? '0' : '1';
 
+    // Validações NF-e concluídas — alocar número agora (atômico).
+    const { number, series } = await getNextInvoiceNumber(businessId, type);
+
     const nfePayload = stripEmpty({
       emitente,
       numero: number,
@@ -1038,7 +1281,9 @@ export async function POST(request: NextRequest) {
           clientName: data.recipient?.name ?? null,
           clientCpfCnpj: data.recipient?.document?.replace(/\D/g, '') || null,
           totalValue: totalNF,
-          originalRequest: data,
+          originalRequest: nfePayload as Record<string, unknown>,
+          ufEmitente,
+          ambiente,
           error: sefazErr,
           now,
         });
@@ -1046,13 +1291,10 @@ export async function POST(request: NextRequest) {
       throw sefazErr;
     }
 
-    // Commit number only after SEFAZ accepts
-    if (result.status === 'autorizado' || result.status === 'processando') {
-      await commitInvoiceNumber(businessId, 'nfe', number);
-    }
-
     // Persist fiscal document — sempre (autorizada, rejeitada ou processando).
-    await adminDb.collection('fiscalDocuments').add(
+    // ufEmitente/ambiente são obrigatórios pro cron consultar-processando.
+    const nfeStatus = normalizeFiscalDocumentStatus(result.status) ?? result.status;
+    const nfeDocRef = await adminDb.collection('fiscalDocuments').add(
       stripEmpty({
         businessId,
         type: 'nfe',
@@ -1060,23 +1302,34 @@ export async function POST(request: NextRequest) {
         series,
         accessKey: result.chaveAcesso || null,
         protocol: result.protocolo || null,
-        status:
-          result.status === 'autorizado'
-            ? 'autorizada'
-            : result.status === 'processando'
-              ? 'processando'
-              : result.status,
+        status: nfeStatus,
         statusMessage: result.motivoStatus || result.erros?.[0] || null,
         clientName: data.recipient?.name || null,
         clientCpfCnpj: data.recipient?.document?.replace(/\D/g, '') || null,
         xml: result.xml || null,
         sefazResponse: result,
         totalValue: totalNF,
+        saleId,
+        orderId,
+        sourceType,
+        ufEmitente,
+        ambiente,
         issueDate: now,
         createdAt: now,
         updatedAt: now,
       }),
     );
+
+    await linkFiscalDocToSource({
+      businessId,
+      saleId,
+      orderId,
+      fiscalDocumentId: nfeDocRef.id,
+      accessKey: result.chaveAcesso || null,
+      type: 'nfe',
+      status: nfeStatus,
+      now,
+    });
 
     return NextResponse.json(
       { success: result.success, data: result },

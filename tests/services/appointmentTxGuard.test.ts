@@ -37,6 +37,7 @@ import {
   createAppointmentSafe,
   updateAppointmentSafe,
   AppointmentConflictError,
+  SessionFullError,
 } from '@/lib/services/appointmentTxGuard';
 import type { Appointment, User } from '@/lib/types';
 
@@ -169,6 +170,86 @@ describe('createAppointmentSafe', () => {
         [prof],
       ),
     ).rejects.toBeInstanceOf(AppointmentConflictError);
+  });
+});
+
+describe('createAppointmentSafe — turmas (capacity)', () => {
+  // sessionKey canonico de uma turma com prof fixo p1.
+  const sk = 's1_2026-05-22_09:00_p1';
+
+  it('turma com prof fixo: colega (mesmo sessionKey) NAO conflita e entra na vaga', async () => {
+    docsResolver.mockReturnValue([
+      { id: 'colega', data: () => apt({ id: 'colega', startTime: '09:00', endTime: '10:00', sessionKey: sk }) },
+    ]);
+    const id = await createAppointmentSafe(
+      fakeDb,
+      { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00', sessionKey: sk, capacity: 3 },
+      [prof],
+    );
+    expect(typeof id).toBe('string');
+    // Lock + appointment = 2 sets; colega no mesmo sessionKey nao bloqueou.
+    expect(txSet).toHaveBeenCalledTimes(2);
+  });
+
+  it('turma com prof fixo: cheia (taken >= capacity) → SessionFullError, zero writes', async () => {
+    docsResolver.mockReturnValue([
+      { id: 'al1', data: () => apt({ id: 'al1', startTime: '09:00', endTime: '10:00', sessionKey: sk }) },
+      { id: 'al2', data: () => apt({ id: 'al2', startTime: '09:00', endTime: '10:00', sessionKey: sk }) },
+    ]);
+    await expect(
+      createAppointmentSafe(
+        fakeDb,
+        { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00', sessionKey: sk, capacity: 2 },
+        [prof],
+      ),
+    ).rejects.toBeInstanceOf(SessionFullError);
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('turma cheia: cancelados nao contam como vaga ocupada', async () => {
+    docsResolver.mockReturnValue([
+      { id: 'al1', data: () => apt({ id: 'al1', startTime: '09:00', endTime: '10:00', sessionKey: sk }) },
+      { id: 'al2', data: () => apt({ id: 'al2', status: 'cancelado', startTime: '09:00', endTime: '10:00', sessionKey: sk }) },
+    ]);
+    // capacity 2, 1 ativo + 1 cancelado → 1 vaga livre → cria
+    const id = await createAppointmentSafe(
+      fakeDb,
+      { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00', sessionKey: sk, capacity: 2 },
+      [prof],
+    );
+    expect(typeof id).toBe('string');
+  });
+
+  it('turma ABERTA (sem prof, sessionKey _any): roda tx com session-lock e conta vagas', async () => {
+    const skOpen = 's1_2026-05-22_09:00_any';
+    docsResolver.mockReturnValue([
+      { id: 'al1', data: () => apt({ id: 'al1', professionalId: undefined, startTime: '09:00', endTime: '10:00', sessionKey: skOpen }) },
+    ]);
+    const id = await createAppointmentSafe(
+      fakeDb,
+      { businessId, date: '2026-05-22', startTime: '09:00', endTime: '10:00', sessionKey: skOpen, capacity: 2 },
+      [prof],
+    );
+    expect(typeof id).toBe('string');
+    // Diferente do exclusivo-sem-prof (write direto): turma aberta roda tx
+    // (session-lock + appointment = 2 sets).
+    expect(txSet).toHaveBeenCalledTimes(2);
+  });
+
+  it('turma ABERTA cheia → SessionFullError', async () => {
+    const skOpen = 's1_2026-05-22_09:00_any';
+    docsResolver.mockReturnValue([
+      { id: 'al1', data: () => apt({ id: 'al1', professionalId: undefined, startTime: '09:00', endTime: '10:00', sessionKey: skOpen }) },
+      { id: 'al2', data: () => apt({ id: 'al2', professionalId: undefined, startTime: '09:00', endTime: '10:00', sessionKey: skOpen }) },
+    ]);
+    await expect(
+      createAppointmentSafe(
+        fakeDb,
+        { businessId, date: '2026-05-22', startTime: '09:00', endTime: '10:00', sessionKey: skOpen, capacity: 2 },
+        [prof],
+      ),
+    ).rejects.toBeInstanceOf(SessionFullError);
+    expect(txSet).not.toHaveBeenCalled();
   });
 });
 

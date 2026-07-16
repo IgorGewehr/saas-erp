@@ -72,8 +72,9 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Product, StockMovement, StockAlert, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
+import type { Product, StockMovement, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
 import { notifyLowStock } from '@/lib/services/notifications';
+import { addStock, deductStock, restoreStock, type StockAdjustment } from '@/lib/services/stock';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -135,6 +136,9 @@ interface ProductFormData {
   existingImageUrl: string;
   // Delivery / Cardápio
   isDeliverable: boolean;
+  // Raw (semântica do type): true/ausente = disponível / controla estoque.
+  menuAvailable: boolean;
+  trackStock: boolean;
   menuCategory: string;
   menuCategoryId: string;
   menuDescription: string;
@@ -203,6 +207,8 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   imagePreview: '',
   existingImageUrl: '',
   isDeliverable: false,
+  menuAvailable: true,
+  trackStock: true,
   menuCategory: '',
   menuCategoryId: '',
   menuDescription: '',
@@ -267,6 +273,13 @@ const cardVariants = {
     scale: 0.95,
     transition: { duration: 0.2 },
   },
+};
+
+// Grade de produtos: cascata curta e sutil. O problema antigo era
+// containerVariants.staggerChildren 0.08 (≈5s pra 60 cards, grade "travada").
+const productGridVariants = {
+  hidden: { opacity: 0 },
+  visible: { opacity: 1, transition: { staggerChildren: 0.015 } },
 };
 
 const sectionVariants = {
@@ -438,7 +451,10 @@ interface ProductCardProps {
   onMovement: (product: Product, type: MovementType) => void;
 }
 
-function ProductCard({ product, onEdit, onDelete, onMovement }: ProductCardProps) {
+// Memoizado: handlers do parent são useCallback (estáveis), então cada card só
+// re-renderiza quando o próprio produto muda — não a cada estado do módulo.
+const ProductCard = React.memo(ProductCardBase);
+function ProductCardBase({ product, onEdit, onDelete, onMovement }: ProductCardProps) {
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const catIcon = CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto;
@@ -621,7 +637,8 @@ interface ProductRowProps {
   onMovement: (product: Product, type: MovementType) => void;
 }
 
-function ProductRow({ product, onEdit, onDelete, onMovement }: ProductRowProps) {
+const ProductRow = React.memo(ProductRowBase);
+function ProductRowBase({ product, onEdit, onDelete, onMovement }: ProductRowProps) {
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const low = isLowStock(product);
@@ -1253,6 +1270,8 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
           imagePreview: '',
           existingImageUrl: product.imageUrl || '',
           isDeliverable: product.isDeliverable ?? false,
+          menuAvailable: product.menuAvailable !== false,
+          trackStock: product.trackStock !== false,
           menuCategory: product.menuCategory || '',
           menuCategoryId: product.menuCategoryId || '',
           menuDescription: product.menuDescription || '',
@@ -1664,6 +1683,67 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                       transition={{ duration: 0.22 }}
                       className="space-y-3 overflow-hidden"
                     >
+                      {/* Toggles operacionais do cardápio */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => updateField('menuAvailable', !form.menuAvailable)}
+                          className={cn(
+                            'flex items-center justify-between gap-3 p-3 rounded-xl border-2 transition-all text-left',
+                            !form.menuAvailable
+                              ? 'border-amber-400 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/40'
+                              : 'border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-950/30'
+                          )}
+                        >
+                          <div>
+                            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Esgotado hoje</p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {!form.menuAvailable
+                                ? 'Marcado como indisponível no cardápio'
+                                : 'Disponível (independe do estoque)'}
+                            </p>
+                          </div>
+                          <div className={cn(
+                            'w-11 h-6 rounded-full p-0.5 transition-colors shrink-0',
+                            !form.menuAvailable ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'
+                          )}>
+                            <div className={cn(
+                              'w-5 h-5 rounded-full bg-white shadow transition-transform',
+                              !form.menuAvailable ? 'translate-x-5' : 'translate-x-0'
+                            )} />
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => updateField('trackStock', !form.trackStock)}
+                          className={cn(
+                            'flex items-center justify-between gap-3 p-3 rounded-xl border-2 transition-all text-left',
+                            !form.trackStock
+                              ? 'border-sky-400 bg-sky-50 dark:bg-sky-500/10 dark:border-sky-500/40'
+                              : 'border-slate-200 dark:border-slate-700 bg-white/60 dark:bg-slate-950/30'
+                          )}
+                        >
+                          <div>
+                            <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Não controlar estoque</p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {!form.trackStock
+                                ? 'Nunca esgota por estoque; não debita'
+                                : 'Estoque controlado normalmente'}
+                            </p>
+                          </div>
+                          <div className={cn(
+                            'w-11 h-6 rounded-full p-0.5 transition-colors shrink-0',
+                            !form.trackStock ? 'bg-sky-500' : 'bg-slate-300 dark:bg-slate-700'
+                          )}>
+                            <div className={cn(
+                              'w-5 h-5 rounded-full bg-white shadow transition-transform',
+                              !form.trackStock ? 'translate-x-5' : 'translate-x-0'
+                            )} />
+                          </div>
+                        </button>
+                      </div>
+
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
                           <label className="block text-xs font-semibold text-gray-500 dark:text-gray-400 mb-1">
@@ -2199,6 +2279,8 @@ export default function InventoryModule() {
         isActive: data.isActive,
         imageUrl: imageUrl || null,
         isDeliverable: data.isDeliverable,
+        menuAvailable: data.menuAvailable,
+        trackStock: data.trackStock,
         menuCategory: data.isDeliverable ? (data.menuCategory.trim() || null) : null,
         menuCategoryId: data.isDeliverable && data.menuCategoryId ? data.menuCategoryId : null,
         menuDescription: data.isDeliverable ? (data.menuDescription.trim() || null) : null,
@@ -2242,6 +2324,8 @@ export default function InventoryModule() {
         isActive: data.isActive,
         imageUrl: '',
         isDeliverable: data.isDeliverable,
+        menuAvailable: data.menuAvailable,
+        trackStock: data.trackStock,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -2278,66 +2362,61 @@ export default function InventoryModule() {
     if (!product) return;
 
     const qty = parseInt(data.quantity) || 0;
-    const previousStock = product.currentStock;
-    let newStock: number;
+    if (qty < 0) return;
 
-    if (data.type === 'entrada') {
-      newStock = previousStock + qty;
-    } else if (data.type === 'saida') {
-      newStock = Math.max(0, previousStock - qty);
-    } else {
-      // ajuste - set to exact value
-      newStock = qty;
-    }
-
-    // Create stock movement record
-    const movementData = {
+    // Roteia TODA movimentação manual por stock.ts: increment atômico + batch
+    // único (produto + stockMovement no mesmo writeBatch). Nada de write direto
+    // não-atômico aqui. Simetria com PDV/Pedidos.
+    const productIndex = new Map(products.map((p) => [p.id, p]));
+    const ctxBase = {
       businessId: business.id,
-      productId: product.id,
-      productName: product.name,
-      type: data.type,
-      quantity: qty,
-      previousStock,
-      newStock,
-      reason: data.reason,
       operatorId: user.uid,
       operatorName: user.name,
-      createdAt: new Date().toISOString(),
+      reason: data.reason || data.type,
+      productIndex,
     };
 
-    await addDoc(collection(db, 'stockMovements'), movementData);
-
-    // Update product stock
-    await updateDoc(doc(db, 'products', product.id), {
-      currentStock: newStock,
-      updatedAt: new Date().toISOString(),
-    });
+    // saída/ajuste-abaixo passam por deductStock, que expande BOM
+    // (expandComponents) e debita os insumos de produtos compostos — mesma
+    // regra da venda. entrada credita o SKU pai (igual à nota de compra);
+    // ajuste-acima usa restoreStock (inverso simétrico, também expande BOM).
+    let adjustments: StockAdjustment[] = [];
+    if (data.type === 'entrada') {
+      adjustments = await addStock(db, [{ productId: product.id, quantity: qty }], ctxBase);
+    } else if (data.type === 'saida') {
+      adjustments = await deductStock(db, [{ productId: product.id, quantity: qty }], ctxBase);
+    } else {
+      // ajuste: seta o estoque do PRÓPRIO SKU para o valor exato (qty). expandBom:false
+      // → em produto COMPOSTO mexe no saldo daquele doc, NÃO nos insumos (o ajuste
+      // manual visa o balanço daquele produto). Atômico via os mesmos helpers.
+      const ajusteCtx = { ...ctxBase, expandBom: false };
+      const delta = qty - (product.currentStock || 0);
+      if (delta > 0) {
+        adjustments = await restoreStock(db, [{ productId: product.id, quantity: delta }], ajusteCtx);
+      } else if (delta < 0) {
+        adjustments = await deductStock(db, [{ productId: product.id, quantity: -delta }], ajusteCtx);
+      }
+    }
 
     toast.success(t('inventory.toast.movementCreated', 'Movimentação registrada com sucesso!'));
     // products via onSnapshot. stockMovements continua em useQuery local.
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
 
-    // Cruzou minStock pra baixo? Movimentação manual também alerta. Detecção
-    // inline (este path não passa pelo deductStock — escreve direto). Reusa
-    // a mesma logica do helper: só dispara em transição.
-    const minStock = product.minStock ?? 0;
-    if (minStock > 0 && previousStock > minStock && newStock <= minStock) {
-      const alert: StockAlert = {
-        productId: product.id,
-        productName: product.name,
-        previousStock,
-        newStock,
-        minStock,
-        severity: newStock <= 0 ? 'zeroed' : 'min',
-      };
-      const icon = alert.severity === 'zeroed' ? '🚨' : '⚠️';
-      const msg = alert.severity === 'zeroed'
-        ? `${icon} ${product.name} esgotou`
-        : `${icon} ${product.name} no estoque mínimo (${newStock}/${minStock})`;
-      toast.warning(msg, { autoClose: 6000 });
+    // Estoque baixo: reusa os alerts que o deductStock já calcula em memória
+    // (por insumo, em produto composto). Só o deductStock popula `alert` —
+    // entrada/restore sobem estoque e não geram alerta.
+    const stockAlerts = adjustments.flatMap((a) => (a.alert ? [a.alert] : []));
+    if (stockAlerts.length > 0) {
+      stockAlerts.forEach((alert) => {
+        const icon = alert.severity === 'zeroed' ? '🚨' : '⚠️';
+        const msg = alert.severity === 'zeroed'
+          ? `${icon} ${alert.productName} esgotou`
+          : `${icon} ${alert.productName} no estoque mínimo (${alert.newStock}/${alert.minStock})`;
+        toast.warning(msg, { autoClose: 6000 });
+      });
       void notifyLowStock(db, {
         businessId: business.id,
-        alerts: [alert],
+        alerts: stockAlerts,
         actorId: user.uid,
         actorName: user.name,
         sourceLabel: `Ajuste manual: ${data.reason || data.type}`,
@@ -2704,7 +2783,7 @@ export default function InventoryModule() {
                 </div>
               ) : (
                 <motion.div
-                  variants={containerVariants}
+                  variants={productGridVariants}
                   initial="hidden"
                   animate="visible"
                   className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"

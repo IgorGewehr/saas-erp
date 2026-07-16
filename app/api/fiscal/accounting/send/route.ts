@@ -24,30 +24,14 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { ROLE_HIERARCHY } from '@/lib/types';
+import type { UserRole } from '@/lib/types';
+import { AccountingSendRequestSchema } from '@/lib/contracts/api/fiscal/accounting-send';
 
 const MONTH_NAMES = [
   'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
   'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
 ];
-
-interface AccountingSendBody {
-  businessId: string;
-  businessName: string;
-  businessCnpj: string;
-  month: number;
-  year: number;
-  accountingEmail: string;
-  documents: {
-    type: string;
-    number?: number;
-    series?: string;
-    accessKey?: string;
-    totalValue: number;
-    issueDate: string;
-    clientName?: string;
-    xml?: string;
-  }[];
-}
 
 export async function POST(request: NextRequest) {
   // Rate limit defensivo: 5 envios/min por IP (operação cara — vários XMLs)
@@ -57,31 +41,31 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Aguarde antes de enviar novamente.' }, { status: 429 });
   }
 
-  let body: AccountingSendBody;
+  let rawBody: unknown;
   try {
-    body = await request.json();
+    rawBody = await request.json();
   } catch {
     return NextResponse.json({ error: 'JSON inválido.' }, { status: 400 });
   }
 
-  // Validações básicas
-  if (!body.businessId) {
-    return NextResponse.json({ error: 'businessId obrigatório.' }, { status: 400 });
+  const parsed = AccountingSendRequestSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Payload inválido para envio à contabilidade.', details: parsed.error.flatten() },
+      { status: 400 },
+    );
   }
-  if (!body.accountingEmail) {
-    return NextResponse.json({ error: 'Email do contador é obrigatório.' }, { status: 400 });
-  }
-  if (!body.month || body.month < 1 || body.month > 12) {
-    return NextResponse.json({ error: 'Mês inválido.' }, { status: 400 });
-  }
-  if (!body.year || body.year < 2020 || body.year > 2099) {
-    return NextResponse.json({ error: 'Ano inválido.' }, { status: 400 });
-  }
+  const body = parsed.data;
 
   // Auth + ownership — sem isso, qualquer um chamando o endpoint conseguia
   // enviar emails arbitrários (a antiga versão do endpoint nem checava auth).
+  // Admin+ porque despeja TODOS os XMLs do mês (dados fiscais sensíveis) num
+  // email arbitrário escolhido pelo caller.
   const authResult = await verifyAuth(request, body.businessId);
   if (isAuthError(authResult)) return authResult;
+  if (ROLE_HIERARCHY[authResult.role as UserRole] < ROLE_HIERARCHY['admin']) {
+    return NextResponse.json({ error: 'Admin role required' }, { status: 403 });
+  }
 
   // Configuração GLOBAL do notification-server (mesma para todos os tenants)
   const nsUrl = (process.env.NOTIFICATION_SERVER_URL || '').replace(/\/+$/, '');
@@ -121,6 +105,12 @@ export async function POST(request: NextRequest) {
       }, { status: 500 });
     }
 
+    // Identificação da empresa vem do Firestore, NÃO do body — antes o caller
+    // controlava businessName/businessCnpj e podia se passar por outra empresa
+    // no email/SPED enviado ao contador.
+    const businessName: string = bizData.razaoSocial || bizData.nomeFantasia || bizData.name || 'Empresa';
+    const businessCnpj: string = String(bizData.cnpj || '').replace(/\D/g, '');
+
     const docs = body.documents || [];
     const monthName = MONTH_NAMES[body.month - 1];
     const period = `${monthName} ${body.year}`;
@@ -137,9 +127,9 @@ export async function POST(request: NextRequest) {
 
     // SPED summary
     const spedLines: string[] = [
-      `|0000|LECD|${String(body.month).padStart(2, '0')}${body.year}|${body.businessCnpj?.replace(/\D/g, '') || ''}|${body.businessName || ''}|`,
+      `|0000|LECD|${String(body.month).padStart(2, '0')}${body.year}|${businessCnpj}|${businessName}|`,
       `|0001|0|`,
-      `|0005|${body.businessName || ''}||||||||`,
+      `|0005|${businessName}||||||||`,
       `|0990|4|`,
       `|I001|0|`,
       '',
@@ -163,7 +153,7 @@ export async function POST(request: NextRequest) {
     spedLines.push('', `|9999|${spedLines.length + 2}|`, '');
 
     const spedContent = spedLines.join('\n');
-    const spedFilename = `SPED_EFD_${body.year}${String(body.month).padStart(2, '0')}_${(body.businessCnpj || '').replace(/\D/g, '')}.txt`;
+    const spedFilename = `SPED_EFD_${body.year}${String(body.month).padStart(2, '0')}_${businessCnpj}.txt`;
 
     // Anexos: SPED + XMLs
     const attachments: { filename: string; contentBase64: string }[] = [
@@ -187,7 +177,7 @@ export async function POST(request: NextRequest) {
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
         <div style="background: linear-gradient(135deg, #DC2626, #991B1B); padding: 24px; border-radius: 12px 12px 0 0;">
           <h1 style="color: white; margin: 0; font-size: 20px;">Documentos Fiscais - ${period}</h1>
-          <p style="color: rgba(255,255,255,0.8); margin: 8px 0 0; font-size: 14px;">${body.businessName || 'Empresa'}</p>
+          <p style="color: rgba(255,255,255,0.8); margin: 8px 0 0; font-size: 14px;">${businessName}</p>
         </div>
         <div style="background: #f9fafb; padding: 24px; border: 1px solid #e5e7eb; border-top: none;">
           <h2 style="font-size: 16px; color: #374151; margin: 0 0 16px;">Resumo do Período</h2>
@@ -223,7 +213,7 @@ export async function POST(request: NextRequest) {
       </div>
     `;
 
-    const textBody = `Documentos Fiscais - ${period}\n${body.businessName}\n\nNF-e: ${nfes.length} docs (R$ ${totalNfe.toFixed(2)})\nNFC-e: ${nfces.length} docs (R$ ${totalNfce.toFixed(2)})\nNFSe: ${nfses.length} docs (R$ ${totalNfse.toFixed(2)})\nTotal: ${docs.length} docs (R$ ${totalGeral.toFixed(2)})\n\nAnexos: ${attachments.length} arquivo(s)`;
+    const textBody = `Documentos Fiscais - ${period}\n${businessName}\n\nNF-e: ${nfes.length} docs (R$ ${totalNfe.toFixed(2)})\nNFC-e: ${nfces.length} docs (R$ ${totalNfce.toFixed(2)})\nNFSe: ${nfses.length} docs (R$ ${totalNfse.toFixed(2)})\nTotal: ${docs.length} docs (R$ ${totalGeral.toFixed(2)})\n\nAnexos: ${attachments.length} arquivo(s)`;
 
     // Envia via notification-server — formato alinhado ao endpoint atual:
     // { appId, email, subject, message, html, attachments, smtp }
@@ -236,7 +226,7 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         appId: body.businessId,
         email: body.accountingEmail,
-        subject: `Documentos Fiscais - ${period} - ${body.businessName || 'Empresa'}`,
+        subject: `Documentos Fiscais - ${period} - ${businessName}`,
         message: textBody,
         html: htmlBody,
         attachments,

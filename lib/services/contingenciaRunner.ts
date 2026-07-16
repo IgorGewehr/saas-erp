@@ -31,6 +31,10 @@ import {
   isTransientSefazError,
 } from '@/lib/services/sefaz-gateway';
 import { getCertificadoPayload } from '@/lib/fiscal/certificate-manager';
+import {
+  canTransitionFiscalDocument,
+  normalizeFiscalDocumentStatus,
+} from '@/lib/contracts/fsm/fiscalDocument';
 
 const MAX_PER_RUN = 50;
 const DELAY_AFTER_EMISSION_MS = 30 * 60 * 1000;       // 30 min
@@ -124,6 +128,17 @@ export async function runTransmitContingencia(now: Date = new Date()): Promise<C
     // Expirou (>= 24h após dhCont): SEFAZ vai rejeitar por extemporaneidade.
     // Marca como 'rejeitada' com motivo e segue. Operador fica sabendo no UI.
     if (elapsedSinceEmission >= SEFAZ_DEADLINE_MS + 60 * 60 * 1000) {
+      // FSM (R4): query filtra status='contingencia', mas docs legados podem
+      // guardar forma não-canônica — valida antes de marcar rejeitada.
+      const fromExpired = normalizeFiscalDocumentStatus(data.status);
+      if (!fromExpired || !canTransitionFiscalDocument(fromExpired, 'rejeitada')) {
+        console.warn('[contingenciaRunner] FSM: transição inválida na expiração — pulando doc', {
+          documentId, businessId, from: data.status, to: 'rejeitada',
+        });
+        summary.erros += 1;
+        summary.details.push({ documentId, businessId, outcome: 'erro', message: `FSM: ${data.status} → rejeitada inválida` });
+        continue;
+      }
       await docSnap.ref.update({
         status: 'rejeitada',
         statusMessage: 'Contingência expirada (>24h apos dhCont). SEFAZ rejeitaria por extemporaneidade.',
@@ -166,15 +181,30 @@ export async function runTransmitContingencia(now: Date = new Date()): Promise<C
         result.status === 'processando' ? 'processando' :
         result.status;
 
+      // FSM (R4): canoniza status do gateway (masculino 'rejeitado'/'erro'
+      // vazava cru pro Firestore) e valida contingencia → próximo. Transição
+      // inválida (resposta desconhecida do gateway) = warn+skip — doc fica em
+      // contingência pro operador/próximo ciclo.
+      const fromStatus = normalizeFiscalDocumentStatus(data.status);
+      const toStatus = normalizeFiscalDocumentStatus(nextStatus);
+      if (!fromStatus || !toStatus || !canTransitionFiscalDocument(fromStatus, toStatus)) {
+        console.warn('[contingenciaRunner] FSM: transição inválida — pulando doc', {
+          documentId, businessId, from: data.status, to: nextStatus,
+        });
+        summary.erros += 1;
+        summary.details.push({ documentId, businessId, outcome: 'erro', message: `FSM: ${data.status} → ${nextStatus} inválida` });
+        continue;
+      }
+
       await docSnap.ref.update({
-        status: nextStatus,
+        status: toStatus,
         statusMessage: result.motivoStatus || result.erros?.[0] || null,
         protocol: result.protocolo || data.protocol || null,
         sefazResponse: result,
         updatedAt: now.toISOString(),
       });
 
-      if (nextStatus === 'autorizada') {
+      if (toStatus === 'autorizada') {
         summary.autorizadas += 1;
         summary.details.push({ documentId, businessId, outcome: 'autorizada' });
       } else {

@@ -1,6 +1,6 @@
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { notFound } from 'next/navigation';
-import CatalogClient from './CatalogClient';
+import CatalogClient, { type PublicBusiness } from './CatalogClient';
 import type { Business, Product, MenuCategory } from '@/lib/types';
 
 export const revalidate = 60;
@@ -73,5 +73,33 @@ export default async function PublicMenuPage({
 
   if (!business) notFound();
 
-  return <CatalogClient business={business!} products={products} categories={categories} />;
+  // ALLOWLIST DE SEGURANÇA: o cardápio é público/anônimo — NUNCA enviar o doc
+  // completo do business ao client (contém segredos: channels.*.accessToken,
+  // fiscal/certificado). Projeta-se só o necessário + flags MP públicas.
+  const publicBusiness: PublicBusiness = {
+    id: business.id,
+    slug: business.slug,
+    logo: business.logo,
+    nomeFantasia: business.nomeFantasia,
+    razaoSocial: business.razaoSocial,
+    mpConnected: business.mpConnected,
+    mpPublicKey: business.mpPublicKey,
+    mpLiveMode: business.mpLiveMode,
+    settings: {
+      openingHours: business.settings?.openingHours,
+      aiAgent: {
+        acceptedPaymentMethods: business.settings?.aiAgent?.acceptedPaymentMethods,
+        businessDescription: business.settings?.aiAgent?.businessDescription,
+        pedidos: {
+          acceptOrdersOffHours: business.settings?.aiAgent?.pedidos?.acceptOrdersOffHours,
+          deliveryFee: business.settings?.aiAgent?.pedidos?.deliveryFee,
+        },
+        // Zonas de entrega são conteúdo público (bairros/taxas exibidos ao
+        // cliente) — seguro projetar; habilita a taxa por região no checkout.
+        deliveryZones: business.settings?.aiAgent?.deliveryZones,
+      },
+    },
+  };
+
+  return <CatalogClient business={publicBusiness} products={products} categories={categories} />;
 }

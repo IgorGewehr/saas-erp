@@ -1,0 +1,70 @@
+/**
+ * fin2.css — tokens HSL herdados do mockup aprovado (financeiro-assinaturas.html),
+ * escopados ao módulo pra não vazar pro resto do app.
+ *
+ * O app usa `.dark` na <html> (não `data-theme`) — por isso o override aqui é
+ * `.dark .fin2` em vez do `[data-theme="dark"]` do mockup original. Tema claro
+ * é o padrão visual do produto (herdado do mockup), dark é a variante.
+ *
+ * Consumo: `text-[hsl(var(--fin-pos))]`, `bg-[hsl(var(--fin-primary-soft))]` etc.
+ * via Tailwind arbitrary values — nunca crie classes .fin2-* novas aqui, isso é
+ * só a fonte dos tokens de cor que o Tailwind não cobre (charts SVG, chips).
+ */
+
+.fin2 {
+  --fin-primary: 0 72% 51%;
+  --fin-primary-soft: 0 72% 96%;
+  --fin-pos: 152 58% 40%;
+  --fin-pos-soft: 152 55% 94%;
+  --fin-warn: 32 90% 44%;
+  --fin-warn-soft: 38 92% 94%;
+  --fin-crit: 349 78% 48%;
+  --fin-crit-soft: 349 80% 96%;
+  --fin-faint: 215 20% 65%;
+  --fin-muted: 215 16% 47%;
+  --fin-border: 214 32% 90%;
+  --fin-surface-2: 210 40% 96.5%;
+  --fin-shadow: 220 40% 20%;
+  --fin-mono: 'SF Mono', ui-monospace, 'JetBrains Mono', 'Cascadia Code', Menlo, monospace;
+}
+
+.dark .fin2 {
+  --fin-primary: 0 72% 58%;
+  --fin-primary-soft: 0 45% 16%;
+  --fin-pos: 152 55% 50%;
+  --fin-pos-soft: 152 40% 14%;
+  --fin-warn: 38 92% 55%;
+  --fin-warn-soft: 36 45% 15%;
+  --fin-crit: 350 85% 62%;
+  --fin-crit-soft: 349 45% 16%;
+  --fin-faint: 215 18% 42%;
+  --fin-muted: 215 20% 60%;
+  --fin-border: 215 25% 18%;
+  --fin-surface-2: 218 34% 13%;
+  --fin-shadow: 222 60% 2%;
+}
+
+.fin2 .fin-num {
+  font-family: var(--fin-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.fin2 .fin-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Drill esq⇄dir — 220ms, sem blur no exit (instabilidade GPU, ver CLAUDE.md §6). */
+.fin2 .fin-cardin > * {
+  animation: fin-cardin 0.22s ease both;
+}
+@keyframes fin-cardin {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fin2 .fin-cardin > * { animation: none; }
+}

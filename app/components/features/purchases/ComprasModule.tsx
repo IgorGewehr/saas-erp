@@ -9,7 +9,7 @@ import {
   BarChart3, ArrowUpRight, Truck,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, onSnapshot,
+  collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, onSnapshot, writeBatch,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -556,6 +556,10 @@ export default function ComprasModule() {
       const matched: Array<{ productId: string; quantity: number }> = [];
       const productIndex = new Map<string, Product>();
       const unmatched: Array<{ productName: string; quantity: number; cProd?: string }> = [];
+      // Agrega qtd/valor da nota por produto para o custo médio móvel (base do CMV).
+      // Só considera itens com unitPrice > 0 — bonificação/erro de preço não deve
+      // zerar o costPrice do produto.
+      const costAgg = new Map<string, { qtyNota: number; valueNota: number }>();
 
       for (const item of note.items) {
         const skuKey = item.cProd?.trim().toLowerCase();
@@ -564,6 +568,12 @@ export default function ComprasModule() {
         if (found && item.quantity > 0) {
           matched.push({ productId: found.id, quantity: item.quantity });
           productIndex.set(found.id, found);
+          if (item.unitPrice > 0) {
+            const agg = costAgg.get(found.id) ?? { qtyNota: 0, valueNota: 0 };
+            agg.qtyNota += item.quantity;
+            agg.valueNota += item.quantity * item.unitPrice;
+            costAgg.set(found.id, agg);
+          }
         } else {
           unmatched.push({ productName: item.productName, quantity: item.quantity, cProd: item.cProd });
         }
@@ -581,6 +591,37 @@ export default function ComprasModule() {
         reason: `NF-e ${note.numero}/${note.serie} — ${note.supplierName}`,
         productIndex,
       });
+
+      // ── Custo médio móvel (CMV/margem) ──────────────────────────────────────
+      // Atualiza product.costPrice a partir do unitPrice da NF-e. productIndex
+      // guarda o snapshot PRÉ-entrada (currentStock/costPrice antes desta nota),
+      // então o custo médio pondera saldo antigo × custo antigo com a compra nova.
+      // Sem saldo/custo prévio válido (denom ≤ 0), cai no "último custo" = unitPrice.
+      if (costAgg.size > 0) {
+        const costBatch = writeBatch(db);
+        const nowCost = new Date().toISOString();
+        let costUpdates = 0;
+        for (const [productId, agg] of costAgg) {
+          const product = productIndex.get(productId);
+          if (!product || agg.qtyNota <= 0) continue;
+          const prevStock = product.currentStock || 0;
+          const prevCost = product.costPrice || 0;
+          const denom = prevStock + agg.qtyNota;
+          const avgUnitNota = agg.valueNota / agg.qtyNota;
+          const newCost = denom > 0
+            ? (prevStock * prevCost + agg.valueNota) / denom
+            : avgUnitNota;
+          const rounded = Math.round(newCost * 100) / 100;
+          if (rounded > 0 && rounded !== prevCost) {
+            costBatch.update(doc(db, 'products', productId), {
+              costPrice: rounded,
+              updatedAt: nowCost,
+            });
+            costUpdates++;
+          }
+        }
+        if (costUpdates > 0) await costBatch.commit();
+      }
 
       await updateDoc(doc(db, 'purchaseNotes', note.id), {
         status: 'importada' as PurchaseNoteStatus,
@@ -706,7 +747,7 @@ export default function ComprasModule() {
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         {[
-          { label: 'Total importado', value: formatCurrency(kpis.totalValue), icon: TrendingDown, color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-500/10', isStr: true },
+          { label: 'Total importado', value: formatCurrency(kpis.totalValue), icon: TrendingDown, color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-500/10' },
           { label: 'Notas', value: kpis.total, icon: FileText, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
           { label: 'Importadas', value: kpis.imported, icon: CheckCircle2, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
           { label: 'Pendentes', value: kpis.pending, icon: Clock, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10' },
@@ -717,7 +758,7 @@ export default function ComprasModule() {
               <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{kpi.label}</span>
               <div className={cn('p-1.5 rounded-lg', kpi.bg)}><kpi.icon className={cn('w-4 h-4', kpi.color)} /></div>
             </div>
-            <p className="text-2xl font-bold text-gray-900 dark:text-white">{kpi.isStr ? kpi.value : kpi.value}</p>
+            <p className="text-2xl font-bold text-gray-900 dark:text-white">{kpi.value}</p>
           </motion.div>
         ))}
       </div>

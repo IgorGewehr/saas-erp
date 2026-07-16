@@ -6,10 +6,9 @@ import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
 import { updateAppointmentSafeAdmin, AppointmentConflictError } from '@/lib/services/appointmentTxGuardAdmin';
-import { effectiveServiceCapacity, isGroupService } from '@/lib/contracts/domain/service';
+import { isGroupService } from '@/lib/contracts/domain/service';
 import { assertTransitionAppointment } from '@/lib/contracts/fsm/appointment';
-import { buildSessionKey } from '@/lib/utils/sessionKey';
-import { resolveSessionsForDay, countSeatsTaken, findBlockingAppointment, buildGroupSlots } from '@/lib/services/groupSession';
+import { countSeatsTaken, findBlockingAppointment, buildGroupSlots, resolveGroupBooking, isBookingSlotOnGrade } from '@/lib/services/groupSession';
 
 type Action = AgendaToolAction;
 
@@ -542,6 +541,34 @@ async function bookAppointment(businessId: string, p: BookParams) {
   const endTime = addMinutes(p.startTime, p.durationMinutes);
   const now = new Date().toISOString();
 
+  // ── Coerência de grade (turmas/academia) ──────────────────────────────────
+  // Serviço com sessions[] só aceita dia+horário que EXISTE na grade. Sem isto,
+  // a IA (ou um race de prompt) consegue confirmar um horário fora da grade —
+  // ex.: "jiu-jitsu kids sábado 17h" numa modalidade que não roda no sábado — e
+  // o caminho de turma gravaria uma sessão ad-hoc silenciosamente. Recusa
+  // acionável (mesma forma de 'conflict') pra IA reofertar um horário real.
+  // Retrocompat: serviço SEM sessions[] (contínuo/ad-hoc) passa direto.
+  if (service && service.sessions && service.sessions.length > 0 &&
+      !isBookingSlotOnGrade(service, p.date, p.startTime)) {
+    let alternatives: AvailabilitySlot[] = [];
+    try {
+      const avail = await checkAvailability(businessId, p.date, p.professionalId, p.durationMinutes, p.serviceId);
+      alternatives = avail.slots.slice(0, 3);
+    } catch (altErr) {
+      console.warn('[agent/tools/agenda] book: off-grid alternatives load failed', altErr);
+    }
+    return {
+      status: 'conflict' as const,
+      date: p.date,
+      startTime: p.startTime,
+      endTime,
+      serviceName,
+      professionalName: p.professionalName,
+      conflictReason: `${serviceName || 'Esse serviço'} não tem horário na grade em ${p.date} às ${p.startTime}. Ofereça um horário real da grade.`,
+      alternatives,
+    };
+  }
+
   // ── Turma (capacity>1): caminho de vagas compartilhadas ───────────────────
   // Serviço exclusivo (capacity ausente/1) NÃO entra aqui — segue bit-a-bit.
   if (service && p.serviceId && isGroupService(service.capacity)) {
@@ -668,28 +695,11 @@ interface GroupBookContext {
  *  - Turma cheia → SessionFullError → status='full' + alternativas.
  */
 async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupBookContext) {
-  const dayOfWeek = new Date(p.date + 'T12:00:00').getDay();
-
-  // Capacidade efetiva: se o serviço tem sessions[], usa a capacity da sessão
-  // que bate startTime/professional; senão usa a capacity do serviço.
-  const resolved = resolveSessionsForDay(c.service, dayOfWeek);
-  const matched = resolved.find(s =>
-    s.startTime === p.startTime &&
-    (s.professionalId ?? undefined) === (p.professionalId ?? undefined),
-  ) ?? resolved.find(s => s.startTime === p.startTime);
-
-  const capacity = matched ? matched.capacity : effectiveServiceCapacity(c.service.capacity);
-
-  // professionalId da sessão fixa (se houver) tem precedência sobre o pedido —
-  // a turma é "dona" do horário. Quando a sessão fixa não define professor,
-  // usa o pedido (que pode ser undefined → 'any').
-  const effectiveProfessionalId = matched?.professionalId ?? p.professionalId;
-  const sessionKey = buildSessionKey({
-    serviceId: c.serviceId,
-    date: p.date,
-    startTime: p.startTime,
-    professionalId: effectiveProfessionalId,
-  });
+  // FONTE ÚNICA (compartilhada com a reserva manual em AgendaModule): resolve
+  // sessionKey + capacity + profissional efetivo da turma. Garante que os dois
+  // caminhos contem a MESMA turma (mesmo key) e respeitem a capacity por-sessão.
+  const { sessionKey, capacity, professionalId: effectiveProfessionalId, professionalName: matchedProfName } =
+    resolveGroupBooking(c.service, p.date, p.startTime, p.professionalId);
 
   // P2.9: se o cliente tem mensalidade ativa com teto de usos por ciclo que
   // cobre este serviço, recusa quando o limite já foi atingido. Carregado fora
@@ -769,7 +779,7 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
       updatedAt: c.now,
     };
     if (effectiveProfessionalId !== undefined) docData.professionalId = effectiveProfessionalId;
-    const profName = matched?.professionalName ?? p.professionalName;
+    const profName = matchedProfName ?? p.professionalName;
     if (profName !== undefined) docData.professionalName = profName;
     if (p.clientPhone !== undefined) docData.clientPhone = p.clientPhone;
     if (p.notes !== undefined) docData.notes = p.notes;

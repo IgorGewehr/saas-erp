@@ -46,6 +46,9 @@ export const CreatePublicOrderResponseSchema = z.union([
   successEnvelope(z.object({
     orderId: z.string(),
     orderNumber: z.number().int().nonnegative(),
+    /** Capability token opaco: cliente anônimo acompanha/paga só o próprio
+     *  pedido (rotas /status, /pay-pix, /pay-card). Nunca em projeção pública. */
+    trackingToken: z.string(),
     status: DeliveryOrderSchema.shape.status,
     estimatedDeliveryAt: z.string().optional(),
     total: z.number().nonnegative(),

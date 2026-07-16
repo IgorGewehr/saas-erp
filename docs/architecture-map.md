@@ -63,7 +63,8 @@ External
 ```
 PDV ──► stock.deductStock ──► products + stockMovements + transactions (batch)
 PDV ──► /api/fiscal/emit ──► fiscalDocuments + SEFAZ
-Order pública ──► validação preço server (tol 0.01) ──► stock.deductStock
+Order pública ──► validação preço server (tol 0.01) ──► stock.deductStock (guard stockDeductedAt)
+Webhook MP ──► settlePaymentNotification (re-consulta GET /v1/payments/{id}) ──► CAS FSM payment ──► [paid] marca pedido pago | [refunded] restoreOrderStockRecoverable + reverseDeliveryOrderRevenue (efeitos INLINE com guards; evento payment.* só auditoria)
 Compra (NF-e XML) ──► match manual ──► stock.addStock (idempotente via stockImportedAt)
 Appointment 'concluido' ──► commission Transaction + loyalty + GCal push
 Booking IA ──► /api/booking/chat ──► agent.process ──► tool agenda.book ──► appointment (idempotency hash)
@@ -71,6 +72,33 @@ Webhook Meta ──► conversation upsert (fuzzy phone BR) ──► dispatchIn
 Broadcast send ──► throttle + sessions ──► broadcastMessages + upsertConversationFromCampaign
 Cron horário birthday ──► targetMmDdInTz + idempotência (campaign, client, ano) ──► detectAndNotifyMissedRun se atrasou >6h
 ```
+
+## Event bus (`lib/contracts/events` + `_runtime/dispatch`) — AUDIT-ONLY na v1
+
+`dispatchDomainEvent(db, event)` faz duas coisas: (1) valida o evento com Zod e
+**persiste em `domainEvents/{id}`** (trilha de auditoria, status `dispatched` →
+`processed`); (2) roda os handlers **registrados** para aquele tipo. Hoje o
+ÚNICO handler pluggado é `appointment.completed` (ver
+`_runtime/handlers/index.ts`). Todo o resto — em especial os eventos de
+**cardápio/pedido** (`payment.approved`, `payment.refunded`,
+`deliveryOrder.confirmed`) — **não tem subscriber**: o evento é só auditoria.
+
+Regra mental: **os efeitos de dinheiro/estoque rodam INLINE no caller, com
+guards de idempotência (CAS)** — não dependa do bus para dispará-los.
+
+| Efeito | Onde roda (inline) | Guard de idempotência |
+|---|---|---|
+| Marcar pedido pago | `mercadopago/webhook-settle.ts` (dentro do `runTransaction`) | CAS de status na FSM payment (`paidAt`) |
+| Restaurar estoque no estorno | `order-stock-restore.ts` (via webhook-settle / cron) | `stockRestoredAt` |
+| Estornar receita | `transaction-reversal.ts` (via webhook-settle) | `transactionReversedAt` |
+| Débito de estoque do pedido | `/api/orders/public` → `stock.deductStock` | `stockDeductedAt` |
+
+**Isenção de comissão (decisão de produto v1):** pedidos de **delivery do
+cardápio NÃO geram comissão**. Comissão (`lib/services/commission.ts`) é
+disparada APENAS pelo fluxo de Agenda (`appointment 'concluido'` →
+`appointment.completed`). Nenhum evento de pedido cria/cancela/estorna commission
+Transaction. É decisão explícita, não gap — reavaliar antes de plugar qualquer
+handler de comissão nesses eventos.
 
 ## Padrões de gaps de contrato (recorrentes em todos os módulos)
 
@@ -80,7 +108,7 @@ Cron horário birthday ──► targetMmDdInTz + idempotência (campaign, clien
 | G2 | Status `string` largo sem FSM | Sale, Order, Appointment, Conversation, FiscalDoc, Broadcast | Transições inválidas possíveis |
 | G3 | Sem idempotency-key | `/api/v1/sales`, `/api/v1/appointments`, broadcast send | Retry HTTP duplica registro + side-effects |
 | G4 | Lógica duplicada client↔server | stock.ts vs stock-admin.ts, BOM expansion, validação de modifiers, fuzzy phone BR | Divergência silenciosa |
-| G5 | Eventos cross-módulo não formalizados | Booking IA não notifica CRM; FormResponse não cria Client; Birthday confirmação não atualiza Appointment | Auditoria furada, dados órfãos |
+| G5 | Eventos cross-módulo só auditoria (bus audit-only — ver seção acima) | Booking IA não notifica CRM; FormResponse não cria Client; Birthday confirmação não atualiza Appointment | Bus registra `domainEvents/{id}` mas só `appointment.completed` tem handler; efeitos de pedido/pagamento rodam inline com guards (não no bus) |
 | G6 | Tools do agente sem output schema | `/api/agent/tools/*` | LLM trabalha em cima de dict cru; falhas silenciosas no executor |
 
 ## Coleções Firestore (resumo)

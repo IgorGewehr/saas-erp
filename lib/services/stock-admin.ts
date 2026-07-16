@@ -34,6 +34,43 @@ export interface StockDeductionContextAdmin {
   reason: string;
   /** Pre-fetched product map keyed by productId */
   productIndex: Map<string, Product>;
+  /**
+   * IDs de produtos (já expandidos por BOM) que NÃO podem ficar negativos.
+   * Quando uma linha desses produtos não tem estoque suficiente (lido DENTRO
+   * da tx), a dedução inteira aborta com `InsufficientStockError` antes de
+   * qualquer escrita — fecha oversell por concorrência (P2.7).
+   *
+   * Vazio/ausente = comportamento legado (debita mesmo indo negativo). O caller
+   * decide o que guardar; o cardápio público guarda só itens simples com estoque
+   * definido, espelhando a regra de "Esgotado" da UI (CatalogClient).
+   */
+  failOnInsufficientFor?: ReadonlySet<string>;
+}
+
+/** Linha que não pôde ser atendida por falta de estoque. */
+export interface StockShortage {
+  productId: string;
+  productName: string;
+  requested: number;
+  available: number;
+}
+
+/**
+ * Lançado por `deductStockAdmin` quando `failOnInsufficientFor` está setado e
+ * algum produto guardado ficaria negativo. Nenhuma escrita ocorre (lançado na
+ * fase de leitura da tx). Caller deve mapear para 4xx amigável.
+ */
+export class InsufficientStockError extends Error {
+  readonly code = 'INSUFFICIENT_STOCK' as const;
+  constructor(public readonly shortages: StockShortage[]) {
+    super(
+      'Estoque insuficiente: ' +
+        shortages
+          .map((s) => `${s.productName} (disponível: ${s.available}, pedido: ${s.requested})`)
+          .join(', '),
+    );
+    this.name = 'InsufficientStockError';
+  }
 }
 
 export interface StockAdjustmentAdmin {
@@ -173,6 +210,26 @@ export async function deductStockAdmin(
       reads.push({ line, product, previousStock });
     }
 
+    // Guard de oversell (P2.7): antes de escrever, valida que os produtos
+    // marcados em `failOnInsufficientFor` não ficam negativos. Como o estoque
+    // foi lido DENTRO da tx, duas vendas simultâneas do mesmo SKU não passam
+    // ambas — a perdedora reexecuta, relê o saldo já debitado e aborta aqui.
+    if (ctx.failOnInsufficientFor && ctx.failOnInsufficientFor.size > 0) {
+      const shortages = reads
+        .filter(
+          (r) =>
+            ctx.failOnInsufficientFor!.has(r.product.id) &&
+            r.previousStock - r.line.quantity < 0,
+        )
+        .map((r) => ({
+          productId: r.product.id,
+          productName: r.product.name,
+          requested: r.line.quantity,
+          available: r.previousStock,
+        }));
+      if (shortages.length > 0) throw new InsufficientStockError(shortages);
+    }
+
     // Fase de escrita.
     for (const { line, product, previousStock } of reads) {
       const newStock = previousStock - line.quantity;
@@ -207,6 +264,76 @@ export async function deductStockAdmin(
         previousStock,
         newStock,
         ...(alert ? { alert } : {}),
+      });
+    }
+
+    return adjustments;
+  });
+}
+
+/**
+ * Atomically RESTORE stock for a set of order lines (reverse of
+ * deductStockAdmin). Expands composite products and writes one product update +
+ * one `entrada` stockMovement per resulting leaf SKU, incrementing currentStock.
+ *
+ * Usado quando uma cobrança é desfeita (PIX expirado, estorno) e o estoque que
+ * fora debitado na criação do pedido precisa voltar. A idempotência é
+ * responsabilidade do CALLER (ex: guard `stockRestoredAt` no pedido) — chamar
+ * esta função duas vezes incrementa o estoque duas vezes.
+ */
+export async function restoreStockAdmin(
+  db: Firestore,
+  lines: StockDeductionLine[],
+  ctx: StockDeductionContextAdmin,
+): Promise<StockAdjustmentAdmin[]> {
+  const expanded = expandComponents(lines, ctx.productIndex);
+  if (expanded.length === 0) return [];
+
+  const now = new Date().toISOString();
+
+  return db.runTransaction(async (tx) => {
+    const reads: Array<{ line: StockDeductionLine; product: Product; previousStock: number }> = [];
+    for (const line of expanded) {
+      const product = ctx.productIndex.get(line.productId);
+      if (!product) continue;
+      const snap = await tx.get(db.collection('products').doc(product.id));
+      const previousStock =
+        (snap.exists ? (snap.data()?.currentStock as number | undefined) : undefined) ?? 0;
+      reads.push({ line, product, previousStock });
+    }
+
+    const adjustments: StockAdjustmentAdmin[] = [];
+    for (const { line, product, previousStock } of reads) {
+      const newStock = previousStock + line.quantity;
+
+      tx.update(db.collection('products').doc(product.id), {
+        currentStock: FieldValue.increment(line.quantity),
+        updatedAt: now,
+      });
+
+      const movementRef = db.collection('stockMovements').doc();
+      const movement: Omit<StockMovement, 'id'> = {
+        businessId: ctx.businessId,
+        productId: product.id,
+        productName: product.name,
+        type: 'entrada',
+        quantity: line.quantity,
+        previousStock,
+        newStock,
+        reason: ctx.reason,
+        ...(ctx.sourceId ? { saleId: ctx.sourceId } : {}),
+        operatorId: ctx.operatorId,
+        operatorName: ctx.operatorName,
+        createdAt: now,
+      };
+      tx.set(movementRef, movement);
+
+      adjustments.push({
+        productId: product.id,
+        productName: product.name,
+        delta: line.quantity,
+        previousStock,
+        newStock,
       });
     }
 

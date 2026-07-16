@@ -5,6 +5,8 @@ import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { useTabContext } from '@/app/components/layout/TabContext';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
+import { useAuth } from '@/app/components/providers/AuthProvider';
+import { FinancialV2EntryBanner } from '@/app/components/features/financial-v2/FinancialV2EntryBanner';
 
 // Lazy-loaded modules
 const DashboardModule  = lazy(() => import('@/app/components/features/dashboard/DashboardModule'));
@@ -12,6 +14,7 @@ const ClientsModule    = lazy(() => import('@/app/components/features/clients/Cl
 const AgendaModule     = lazy(() => import('@/app/components/features/agenda/AgendaModule'));
 const PDVModule        = lazy(() => import('@/app/components/features/pdv/PDVModule'));
 const FinancialModule  = lazy(() => import('@/app/components/features/financial/FinancialModule'));
+const FinancialV2Module = lazy(() => import('@/app/components/features/financial-v2/FinancialV2Module'));
 const InventoryModule  = lazy(() => import('@/app/components/features/inventory/InventoryModule'));
 const FiscalModule     = lazy(() => import('@/app/components/features/fiscal/FiscalModule'));
 const KanbanModule     = lazy(() => import('@/app/components/features/kanban/KanbanModule'));
@@ -96,7 +99,10 @@ function ModuleLoadingFallback() {
 }
 
 // ─── Render a single module ───────────────────────────────────────────────────
-function renderModule(page: MenuPage) {
+// `financialV2Enabled` vem de `business.settings.financialV2Enabled` (default
+// false) — o único ponto de decisão clássico-vs-v2 (financial-v2/ é aditivo,
+// nunca importa nem edita FinancialModule.tsx clássico).
+function renderModule(page: MenuPage, financialV2Enabled: boolean) {
   const isFullHeight = FULL_HEIGHT_PAGES.has(page);
   const fallback = isFullHeight ? <FullHeightFallback /> : <ModuleLoadingFallback />;
 
@@ -111,7 +117,15 @@ function renderModule(page: MenuPage) {
       case 'Vendas':       return <Suspense fallback={fallback}><VendasModule /></Suspense>;
       case 'Compras':      return <Suspense fallback={fallback}><ComprasModule /></Suspense>;
       case 'Kanban':       return <Suspense fallback={fallback}><KanbanModule /></Suspense>;
-      case 'Financeiro':   return <Suspense fallback={fallback}><FinancialModule /></Suspense>;
+      case 'Financeiro':
+        return financialV2Enabled ? (
+          <Suspense fallback={fallback}><FinancialV2Module /></Suspense>
+        ) : (
+          <>
+            <FinancialV2EntryBanner />
+            <Suspense fallback={fallback}><FinancialModule /></Suspense>
+          </>
+        );
       case 'Estoque':      return <Suspense fallback={fallback}><InventoryModule /></Suspense>;
       case 'Pedidos':      return <Suspense fallback={fallback}><OrdersModule /></Suspense>;
       case 'Cardápio':     return <Suspense fallback={fallback}><CardapioModule /></Suspense>;
@@ -137,6 +151,8 @@ function renderModule(page: MenuPage) {
 // instant and scroll positions / form state are not lost.
 export default function AppPage() {
   const { tabs, activeTabId } = useTabContext();
+  const { business } = useAuth();
+  const financialV2Enabled = business?.settings?.financialV2Enabled === true;
   const [mountedTabs, setMountedTabs] = useState<Set<MenuPage>>(() => new Set());
 
   // Lazily mount: only render a tab when it first becomes active
@@ -158,6 +174,7 @@ export default function AppPage() {
         return (
           <div
             key={tab.id}
+            data-scroll-container=""
             className={cn(
               'absolute inset-0 will-change-transform',
               FULL_HEIGHT_PAGES.has(tab.id) ? 'overflow-hidden' : 'overflow-y-auto',
@@ -167,7 +184,7 @@ export default function AppPage() {
             )}
             style={{ transition: 'opacity 0.18s ease' }}
           >
-            {renderModule(tab.id)}
+            {renderModule(tab.id, financialV2Enabled)}
           </div>
         );
       })}

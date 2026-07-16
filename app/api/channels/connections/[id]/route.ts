@@ -17,7 +17,6 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import {
-  canUserAccessConnection,
   canUserManageConnection,
   updateConnection,
 } from '@/lib/services/channels/channelConnections';
@@ -54,7 +53,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
   }
 
-  const isAdmin = role === 'founder' || role === 'admin';
+  const isAdmin = (ROLE_HIERARCHY[role as UserRole] ?? 0) >= ROLE_HIERARCHY['admin'];
   const patch: Partial<ChannelConnection> = {};
 
   // Imutável: purpose nasce com a connection e nunca muda. Permitir conversão

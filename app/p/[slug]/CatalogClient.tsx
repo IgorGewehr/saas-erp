@@ -6,13 +6,18 @@ import {
   ShoppingCart, Plus, Minus, X, ChevronRight, MapPin, Phone,
   CreditCard, Wallet, Banknote, QrCode, Truck, Store,
   CheckCircle2, Clock, Star, Search, ArrowLeft, AlertCircle,
-  ChevronDown, Loader2, Package, Sparkles,
+  ChevronDown, Loader2, Package, Sparkles, Tag, RotateCcw,
 } from 'lucide-react';
 import type {
   Business, Product, DeliveryOrderPaymentMethod, DeliveryType,
   MenuCategory, SelectedModifier,
 } from '@/lib/types';
+import type { CouponDiscountType } from '@/lib/contracts/domain/coupon';
+import { resolveDeliveryZone, type DeliveryZone } from '@/lib/services/orders/deliveryZones';
+import { isOutOfStock } from '@/lib/utils/menu-availability';
 import ProductDetailSheet from './ProductDetailSheet';
+import PixPaymentPanel, { type PixCharge } from './PixPaymentPanel';
+import CardPaymentBrick from './CardPaymentBrick';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,7 +31,58 @@ export interface CartItem {
   basePrice: number;                   // product.salePrice (reference)
 }
 
-type CheckoutStep = 'cart' | 'delivery' | 'contact' | 'success';
+type CheckoutStep = 'cart' | 'delivery' | 'contact' | 'pix' | 'card' | 'success';
+
+/** Pagamento online (Mercado Pago) escolhido no checkout, ou null = offline. */
+type OnlineMethod = 'pix' | 'card' | null;
+
+interface CreatedOrder {
+  orderId: string;
+  orderNumber: number;
+  trackingToken: string;
+  /** Total AUTORITATIVO recomputado server-side (subtotal + fee). Garante que o
+   *  valor exibido/cobrado == o persistido. Fallback pro previewTotal se ausente. */
+  total?: number;
+  /** Desconto de cupom AUTORITATIVO devolvido pelo POST /api/orders/public. */
+  discount?: number;
+  /** Saldo de gift card resgatado AUTORITATIVO (bearer, sem preview prévio). */
+  giftCardAmount?: number;
+}
+
+/** Cupom validado no preview (POST /api/coupons/validate). É só otimista: o
+ *  desconto AUTORITATIVO vem do server no POST /api/orders/public (reserva +
+ *  reconfirma limites/firstOrder). Aqui alimenta apenas o preview do total. */
+interface AppliedCoupon {
+  code: string;
+  discount: number;
+  freeDelivery: boolean;
+  discountType: CouponDiscountType;
+}
+
+/** Projeção PÚBLICA do business entregue ao cardápio anônimo. A page.tsx monta
+ *  SÓ estes campos (allowlist) — NUNCA o doc completo, que contém segredos
+ *  (channels.*.accessToken, fiscal/certificado). Inclui as flags MP públicas. */
+type BizSettings = NonNullable<Business['settings']>;
+export interface PublicBusiness {
+  id: string;
+  slug?: string;
+  logo?: string;
+  nomeFantasia: string;
+  razaoSocial: string;
+  mpConnected?: boolean;
+  mpPublicKey?: string;
+  mpLiveMode?: boolean;
+  settings?: {
+    openingHours?: BizSettings['openingHours'];
+    aiAgent?: {
+      acceptedPaymentMethods?: NonNullable<BizSettings['aiAgent']>['acceptedPaymentMethods'];
+      businessDescription?: string;
+      pedidos?: { acceptOrdersOffHours?: boolean; deliveryFee?: number };
+      /** Zonas de entrega (bairro/raio/polígono). A taxa plana só vale quando vazio. */
+      deliveryZones?: DeliveryZone[];
+    };
+  };
+}
 
 interface CheckoutForm {
   deliveryType: DeliveryType;
@@ -91,6 +147,98 @@ const DIETARY_LABELS: Record<string, string> = {
 
 const UNCATEGORIZED_ID = '__uncategorized__';
 
+// 27 unidades federativas — fallback editável quando o ViaCEP não resolve o CEP
+// (a API de pedidos exige `uf`; sem isso o pedido de entrega é rejeitado).
+const UF_LIST = [
+  'AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG',
+  'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
+];
+
+const VALID_DDDS = new Set([
+  11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 27, 28, 31, 32, 33, 34, 35, 37,
+  38, 41, 42, 43, 44, 45, 46, 47, 48, 49, 51, 53, 54, 55, 61, 62, 63, 64, 65, 66,
+  67, 68, 69, 71, 73, 74, 75, 77, 79, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92,
+  93, 94, 95, 96, 97, 98, 99,
+]);
+
+function formatPhoneBR(value: string): string {
+  const d = value.replace(/\D/g, '').slice(0, 11);
+  if (d.length <= 2) return d.length ? `(${d}` : '';
+  if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+}
+
+/** Celular BR válido: DDD existente + 9 dígitos iniciando em 9. */
+function isValidPhoneBR(value: string): boolean {
+  const d = value.replace(/\D/g, '');
+  if (d.length !== 11) return false;
+  if (!VALID_DDDS.has(Number(d.slice(0, 2)))) return false;
+  return d[2] === '9';
+}
+
+// Mapa código (settings.aiAgent.acceptedPaymentMethods) → botão de checkout.
+// O backend só conhece DeliveryOrderPaymentMethod; códigos sem equivalente
+// direto (boleto/pontos/gift_card/outros) caem em 'outro'.
+const PAYMENT_BY_CODE: Record<string, { value: DeliveryOrderPaymentMethod; label: string; icon: typeof Banknote }> = {
+  pix:       { value: 'pix',            label: 'PIX',       icon: QrCode },
+  credito:   { value: 'cartao_credito', label: 'Crédito',   icon: CreditCard },
+  debito:    { value: 'cartao_debito',  label: 'Débito',    icon: CreditCard },
+  dinheiro:  { value: 'dinheiro',       label: 'Dinheiro',  icon: Banknote },
+  voucher:   { value: 'voucher',        label: 'Vale',      icon: Wallet },
+  pontos:    { value: 'outro',          label: 'Pontos',    icon: Star },
+  boleto:    { value: 'outro',          label: 'Boleto',    icon: Banknote },
+  gift_card: { value: 'outro',          label: 'Gift Card', icon: Wallet },
+  outros:    { value: 'outro',          label: 'Outro',     icon: Wallet },
+};
+
+function checkoutStorageKey(businessId: string) {
+  return `sp:checkout:${businessId}`;
+}
+
+// Snapshot compacto dos últimos pedidos para "pedir de novo" (client-only).
+function lastOrdersStorageKey(businessId: string) {
+  return `sp:lastOrders:${businessId}`;
+}
+
+interface SavedOrderItem {
+  productId: string;
+  productName: string;
+  quantity: number;
+  selectedModifiers?: SelectedModifier[];
+}
+interface SavedOrder {
+  at: string;                 // ISO — quando o pedido foi concluído
+  deliveryType: DeliveryType;
+  items: SavedOrderItem[];
+}
+
+// Recalcula o preço unitário a partir dos modificadores salvos — espelha o
+// cálculo do ProductDetailSheet. Best-effort: o server revalida no submit.
+function unitPriceFromModifiers(basePrice: number, mods?: SelectedModifier[]): number {
+  let total = basePrice;
+  for (const m of mods ?? []) {
+    const prices: number[] = [];
+    for (const o of m.selectedOptions) {
+      for (let i = 0; i < o.quantity; i++) prices.push(o.additionalPrice);
+    }
+    if (prices.length === 0) continue;
+    if (m.priceStrategy === 'max') total += Math.max(...prices);
+    else if (m.priceStrategy === 'avg') total += prices.reduce((a, b) => a + b, 0) / prices.length;
+    else total += prices.reduce((a, b) => a + b, 0);
+  }
+  return total;
+}
+
+// Assinatura estável para dedup no carrinho — espelha ProductDetailSheet.
+function cartItemIdFromModifiers(productId: string, mods?: SelectedModifier[]): string {
+  if (!mods || mods.length === 0) return `${productId}:plain`;
+  const signature = mods
+    .map(m => `${m.groupId}:${m.selectedOptions.map(o => `${o.optionId}x${o.quantity}`).sort().join('|')}`)
+    .sort().join('||');
+  return `${productId}:${signature || 'plain'}:`;
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function ProductImage({ src, name }: { src?: string; name: string }) {
@@ -115,7 +263,7 @@ function ProductImage({ src, name }: { src?: string; name: string }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 interface Props {
-  business: Business;
+  business: PublicBusiness;
   products: Product[];
   categories: MenuCategory[];
 }
@@ -132,6 +280,24 @@ export default function CatalogClient({ business, products, categories }: Props)
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [detailProduct, setDetailProduct] = useState<Product | null>(null);
   const [editingCartItem, setEditingCartItem] = useState<CartItem | null>(null);
+
+  // ── Pagamento online (opcional) ─────────────────────────────────────────────
+  const [onlineMethod, setOnlineMethod] = useState<OnlineMethod>(null);
+  const [createdOrder, setCreatedOrder] = useState<CreatedOrder | null>(null);
+  const [pixData, setPixData] = useState<PixCharge | null>(null);
+
+  // ── Cupom de desconto (preview otimista) ─────────────────────────────────────
+  const [couponInput, setCouponInput] = useState('');
+  const [appliedCoupon, setAppliedCoupon] = useState<AppliedCoupon | null>(null);
+  const [couponLoading, setCouponLoading] = useState(false);
+  const [couponError, setCouponError] = useState<string | null>(null);
+
+  // ── Gift card (bearer, SEM preview — só coleta o código e envia no submit) ────
+  const [giftCardInput, setGiftCardInput] = useState('');
+
+  // ── Pedir de novo (snapshot local do último pedido) ──────────────────────────
+  const [lastOrder, setLastOrder] = useState<SavedOrder | null>(null);
+  const [repeatNotice, setRepeatNotice] = useState<string | null>(null);
 
   const { scrollY } = useScroll();
   const headerOpacity = useTransform(scrollY, [0, 120], [1, 0]);
@@ -150,9 +316,72 @@ export default function CatalogClient({ business, products, categories }: Props)
     notes: '',
   });
 
-  const deliveryFee = business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0;
+  // MP espelhado no doc do business (projeção pública). Pagamento online só é
+  // ofertado quando a loja tem conta conectada + public key + ambiente de PRODUÇÃO.
+  // MP-01: NÃO ofertamos checkout sandbox (mpLiveMode!==true) ao público anônimo —
+  // chave TEST-* aceitaria cartões de teste e geraria fulfillment de pedido não
+  // pago de verdade. O dono valida em sandbox via smoke test, não no cardápio real.
+  const onlinePaymentEnabled =
+    Boolean(business.mpConnected) && Boolean(business.mpPublicKey) && business.mpLiveMode === true;
+  const mpPublicKey = business.mpPublicKey ?? '';
+  // onlinePaymentEnabled já exige produção, então não há mais modo-teste exposto.
+  const mpTestMode = false;
+
+  // ── Zona de entrega ──────────────────────────────────────────────────────────
+  // A taxa exibida é resolvida contra as zonas configuradas a partir do
+  // CEP/bairro do checkout (mesma função pura que a rota valida server-side, p/
+  // garantir taxa exibida == cobrada). Sem zonas → taxa plana legada.
+  const deliveryZones = business.settings?.aiAgent?.deliveryZones;
+  const flatDeliveryFee = business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0;
+  const hasDeliveryZones = !!deliveryZones?.length;
+  const zoneResolution = useMemo(
+    () => resolveDeliveryZone(deliveryZones, { cep: form.cep, bairro: form.bairro }),
+    [deliveryZones, form.cep, form.bairro],
+  );
+  const deliveryFee = zoneResolution.status === 'matched' ? zoneResolution.fee : flatDeliveryFee;
+  const zoneName = zoneResolution.status === 'matched' ? zoneResolution.zone.name : undefined;
+  const zoneEtaMinutes = zoneResolution.status === 'matched' ? zoneResolution.estimatedMinutes : undefined;
+  const zoneEstimated = zoneResolution.status === 'matched' && zoneResolution.estimated;
+  // Bloqueio "fora de área" só depois que o cliente digitou um bairro — senão
+  // bloquearíamos antes de haver endereço.
+  const bairroEntered = form.bairro.trim().length > 1;
+  const outOfDeliveryArea =
+    form.deliveryType === 'entrega' && hasDeliveryZones && bairroEntered
+    && zoneResolution.status === 'out-of-area';
+
   const isOpen = isBusinessOpen(business.settings?.openingHours);
+  const acceptOffHours = business.settings?.aiAgent?.pedidos?.acceptOrdersOffHours === true;
+  const ordersBlocked = !isOpen && !acceptOffHours;
   const businessName = business.nomeFantasia || business.razaoSocial;
+
+  // Estável entre retries do MESMO carrinho; renovado quando o carrinho muda
+  // (efeito abaixo) ou após sucesso. Fecha pedido duplicado por double-tap/rede.
+  const idempotencyKey = useRef<string | null>(null);
+  // Estável: evita recriar a função a cada render (recriá-la reinicia o loop de
+  // polling do PixPaymentPanel, que a tem nas deps do effect).
+  const clearIdempotencyKey = useCallback(() => { idempotencyKey.current = null; }, []);
+  useEffect(() => {
+    idempotencyKey.current = null;
+    // Carrinho mudou ⇒ o pedido criado não vale mais; recomeça do zero.
+    setCreatedOrder(null);
+    setPixData(null);
+  }, [cart]);
+
+  // Métodos de pagamento dirigidos pela whitelist do negócio; fallback aos
+  // padrões quando ausente/vazia. Dedup por value (vários códigos → 'outro').
+  const paymentOptions = useMemo(() => {
+    const accepted = business.settings?.aiAgent?.acceptedPaymentMethods;
+    if (!accepted?.length) return PAYMENT_OPTIONS;
+    const seen = new Set<DeliveryOrderPaymentMethod>();
+    const list: typeof PAYMENT_OPTIONS = [];
+    for (const code of accepted) {
+      const opt = PAYMENT_BY_CODE[code];
+      if (!opt || seen.has(opt.value)) continue;
+      seen.add(opt.value);
+      list.push(opt);
+    }
+    return list.length ? list : PAYMENT_OPTIONS;
+  }, [business.settings?.aiAgent?.acceptedPaymentMethods]);
 
   // ── Build category → products map ──────────────────────────────────────────
   const categoryList = useMemo(() => {
@@ -208,7 +437,149 @@ export default function CatalogClient({ business, products, categories }: Props)
   // ── Cart helpers ─────────────────────────────────────────────────────────────
   const cartCount = useMemo(() => cart.reduce((s, i) => s + i.quantity, 0), [cart]);
   const cartSubtotal = useMemo(() => cart.reduce((s, i) => s + i.unitPrice * i.quantity, 0), [cart]);
-  const cartTotal = useMemo(() => cartSubtotal + (form.deliveryType === 'entrega' ? deliveryFee : 0), [cartSubtotal, deliveryFee, form.deliveryType]);
+
+  // Resumo curto do último pedido salvo: nº de itens + primeiro item.
+  const lastOrderSummary = useMemo(() => {
+    if (!lastOrder?.items.length) return '';
+    const totalItems = lastOrder.items.reduce((s, i) => s + i.quantity, 0);
+    return `${totalItems} ${totalItems === 1 ? 'item' : 'itens'} · ${lastOrder.items[0].productName}`;
+  }, [lastOrder]);
+
+  // ── Cupom: preview local do total ────────────────────────────────────────────
+  // Só feedback visual. O total AUTORITATIVO é o `createdOrder.total` devolvido
+  // pelo POST /api/orders/public (que reserva o cupom e reconfirma os limites).
+  const couponDiscount = appliedCoupon ? appliedCoupon.discount : 0;
+  const couponFreeDelivery = appliedCoupon?.freeDelivery === true;
+  const effectiveDeliveryFee = form.deliveryType === 'entrega'
+    ? (couponFreeDelivery ? 0 : deliveryFee)
+    : 0;
+  const previewTotal = Math.max(0, cartSubtotal + effectiveDeliveryFee - couponDiscount);
+
+  // Subtotal/modalidade mudou ⇒ o desconto avaliado pode não valer mais (mín. de
+  // pedido, appliesTo, frete grátis por tipo). Limpa e força reaplicar — o
+  // preview nunca mostra um desconto obsoleto. (Aplicar cupom não mexe nessas
+  // deps, então este effect não desfaz a própria aplicação.)
+  useEffect(() => {
+    setAppliedCoupon(null);
+    setCouponError(null);
+  }, [cartSubtotal, form.deliveryType]);
+
+  async function applyCoupon() {
+    const code = couponInput.trim();
+    if (!code || couponLoading) return;
+    setCouponLoading(true);
+    setCouponError(null);
+    try {
+      const res = await fetch('/api/coupons/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessId: business.id,
+          code,
+          subtotal: cartSubtotal,
+          deliveryFee: form.deliveryType === 'entrega' ? deliveryFee : 0,
+          deliveryType: form.deliveryType,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data?.valid) {
+        setAppliedCoupon({
+          code: data.code,
+          discount: typeof data.discount === 'number' ? data.discount : 0,
+          freeDelivery: data.freeDelivery === true,
+          discountType: data.discountType,
+        });
+        setCouponInput('');
+        setCouponError(null);
+      } else {
+        setAppliedCoupon(null);
+        setCouponError(data?.message || data?.error || 'Cupom inválido.');
+      }
+    } catch {
+      setCouponError('Não foi possível validar o cupom. Tente novamente.');
+    } finally {
+      setCouponLoading(false);
+    }
+  }
+
+  function removeCoupon() {
+    setAppliedCoupon(null);
+    setCouponError(null);
+    setCouponInput('');
+  }
+
+  // Bloco reutilizado no resumo do carrinho e na confirmação. Função (não
+  // constante JSX) p/ criar elementos frescos — os passos nunca coexistem no
+  // DOM (AnimatePresence mode="wait"), mas evita qualquer instância compartilhada.
+  function renderCouponBlock() {
+    return (
+      <div className="space-y-3">
+        <div>
+        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+          Cupom de desconto
+        </label>
+        {appliedCoupon ? (
+          <div className="flex items-center justify-between gap-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl">
+            <div className="flex items-center gap-2 min-w-0">
+              <Tag className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-emerald-700 dark:text-emerald-400 truncate">{appliedCoupon.code}</p>
+                <p className="text-[11px] text-emerald-600/80 dark:text-emerald-400/80">
+                  {couponFreeDelivery ? 'Frete grátis' : `−${formatBRL(couponDiscount)}`}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={removeCoupon}
+              aria-label="Remover cupom"
+              className="p-1.5 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-800/40 transition-colors flex-shrink-0"
+            >
+              <X className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              value={couponInput}
+              onChange={e => setCouponInput(e.target.value.toUpperCase())}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); applyCoupon(); } }}
+              placeholder="Digite o cupom"
+              className="flex-1 px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight uppercase tracking-wide outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
+            />
+            <button
+              onClick={applyCoupon}
+              disabled={couponLoading || !couponInput.trim()}
+              className="px-4 py-2.5 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-xl font-bold text-sm disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 flex-shrink-0"
+            >
+              {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Aplicar'}
+            </button>
+          </div>
+        )}
+        {couponError && !appliedCoupon && (
+          <p className="mt-1.5 px-1 text-[11px] text-red-500 flex items-center gap-1">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {couponError}
+          </p>
+        )}
+        </div>
+
+        {/* Gift card — BEARER, sem preview de saldo (evita enumeração). Só coleta
+            o código; o server resgata atomicamente no submit e devolve o valor
+            aplicado em giftCardAmount na resposta 201. */}
+        <div>
+          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">
+            Gift card (opcional)
+          </label>
+          <input
+            value={giftCardInput}
+            onChange={e => setGiftCardInput(e.target.value.toUpperCase())}
+            placeholder="Digite o código"
+            className="w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight uppercase tracking-wide outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
+          />
+          <p className="mt-1.5 px-1 text-[11px] text-gray-400">O saldo é aplicado ao finalizar o pedido.</p>
+        </div>
+      </div>
+    );
+  }
 
   const addSimpleToCart = useCallback((product: Product) => {
     setCart(prev => {
@@ -266,6 +637,42 @@ export default function CatalogClient({ business, products, categories }: Props)
     return cart.filter(i => i.product.id === productId).reduce((s, i) => s + i.quantity, 0);
   }, [cart]);
 
+  // ── Pedir de novo ────────────────────────────────────────────────────────────
+  // Repovoa o carrinho com o último pedido salvo, mantendo só os itens que ainda
+  // existem e estão disponíveis no cardápio atual (cruza productId). O server
+  // revalida tudo no submit — isto é best-effort.
+  function repeatLastOrder() {
+    if (!lastOrder) return;
+    const byId = new Map(products.map(p => [p.id, p]));
+    const rebuilt: CartItem[] = [];
+    let skipped = 0;
+    for (const it of lastOrder.items) {
+      const product = byId.get(it.productId);
+      if (!product || isOutOfStock(product)) { skipped++; continue; }
+      const mods = it.selectedModifiers && it.selectedModifiers.length > 0 ? it.selectedModifiers : undefined;
+      rebuilt.push({
+        id: cartItemIdFromModifiers(product.id, mods),
+        product,
+        quantity: it.quantity > 0 ? it.quantity : 1,
+        notes: '',
+        selectedModifiers: mods,
+        unitPrice: unitPriceFromModifiers(product.salePrice, mods),
+        basePrice: product.salePrice,
+      });
+    }
+    if (rebuilt.length === 0) {
+      setRepeatNotice('Os itens do último pedido não estão mais disponíveis no cardápio.');
+      return;
+    }
+    setForm(f => ({ ...f, deliveryType: lastOrder.deliveryType }));
+    setCart(rebuilt);
+    setRepeatNotice(
+      skipped > 0
+        ? `${skipped} ${skipped === 1 ? 'item foi removido' : 'itens foram removidos'} do cardápio e não entrou no carrinho.`
+        : null,
+    );
+  }
+
   // ── Scroll spy for category pills ──────────────────────────────────────────
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -316,54 +723,226 @@ export default function CatalogClient({ business, products, categories }: Props)
       .finally(() => setCepLoading(false));
   }, [form.cep]);
 
+  // ── Auto-preenche dados do cliente de visitas anteriores (client-only) ──────
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(checkoutStorageKey(business.id));
+      if (!raw) return;
+      const saved = JSON.parse(raw) as Partial<CheckoutForm>;
+      setForm(f => ({
+        ...f,
+        name: saved.name || f.name,
+        phone: saved.phone || f.phone,
+        cep: saved.cep || f.cep,
+        logradouro: saved.logradouro || f.logradouro,
+        numero: saved.numero || f.numero,
+        complemento: saved.complemento || f.complemento,
+        bairro: saved.bairro || f.bairro,
+        municipio: saved.municipio || f.municipio,
+        uf: saved.uf || f.uf,
+      }));
+    } catch {
+      // localStorage indisponível (modo privado/SSR) — segue sem auto-preencher
+    }
+  }, [business.id]);
+
+  // Carrega o snapshot do último pedido para o card "pedir de novo" (client-only).
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(lastOrdersStorageKey(business.id));
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as SavedOrder[];
+      const first = Array.isArray(parsed) ? parsed[0] : null;
+      if (first && Array.isArray(first.items) && first.items.length > 0) setLastOrder(first);
+    } catch {
+      // localStorage indisponível — segue sem oferecer "pedir de novo"
+    }
+  }, [business.id]);
+
+  // Corrige o método selecionado se cair fora da whitelist (ex.: pix default,
+  // mas a loja não aceita pix).
+  useEffect(() => {
+    setForm(f => paymentOptions.some(o => o.value === f.paymentMethod)
+      ? f
+      : { ...f, paymentMethod: paymentOptions[0].value });
+  }, [paymentOptions]);
+
+  // Itens citados pelo backend na mensagem de erro (ex.: "Sem estoque para: X").
+  const errorItemIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!submitError) return ids;
+    for (const i of cart) {
+      if (i.product.name && submitError.includes(i.product.name)) ids.add(i.id);
+    }
+    return ids;
+  }, [submitError, cart]);
+
+  // ── Cria o pedido (idempotente) ou reusa o já criado nesta sessão ───────────
+  // Retorna sempre o CreatedOrder; lança em falha. Reaproveitar o mesmo pedido
+  // permite retry do pagamento online sem duplicar o pedido.
+  async function ensureOrder(): Promise<CreatedOrder> {
+    if (createdOrder) return createdOrder;
+
+    const items = cart.map(i => ({
+      productId: i.product.id,
+      productName: i.product.name,
+      quantity: i.quantity,
+      unitPrice: i.unitPrice,
+      basePrice: i.basePrice,
+      total: i.unitPrice * i.quantity,
+      notes: i.notes || undefined,
+      imageUrl: i.product.imageUrl || undefined,
+      selectedModifiers: i.selectedModifiers,
+    }));
+
+    if (!idempotencyKey.current) {
+      // crypto.randomUUID só existe em secure context (HTTPS/localhost);
+      // fallback evita quebrar o checkout se servido por HTTP simples.
+      idempotencyKey.current = crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    // Método registrado no pedido: online PIX→'pix', online cartão→'cartao_credito'.
+    const recordedMethod: DeliveryOrderPaymentMethod =
+      onlineMethod === 'pix' ? 'pix' : onlineMethod === 'card' ? 'cartao_credito' : form.paymentMethod;
+
+    const res = await fetch('/api/orders/public', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Idempotency-Key': idempotencyKey.current,
+      },
+      body: JSON.stringify({
+        businessId: business.id,
+        clientName: form.name.trim(),
+        clientPhone: form.phone.replace(/\D/g, ''),
+        items,
+        deliveryType: form.deliveryType,
+        deliveryAddress: form.deliveryType === 'entrega' ? {
+          cep: form.cep, logradouro: form.logradouro, numero: form.numero,
+          complemento: form.complemento || undefined, bairro: form.bairro,
+          municipio: form.municipio, uf: form.uf,
+        } : undefined,
+        deliveryFee: form.deliveryType === 'entrega' ? deliveryFee : 0,
+        paymentMethod: recordedMethod,
+        changeFor: !onlineMethod && form.paymentMethod === 'dinheiro' && form.changeFor ? parseFloat(form.changeFor) : undefined,
+        customerNotes: form.notes || undefined,
+        // Server revalida e reserva (reserveCouponAdmin). Se rejeitar, 400 { error }
+        // → handleSubmit exibe e o cliente pode remover o cupom e reenviar.
+        couponCode: appliedCoupon ? appliedCoupon.code : undefined,
+        // Gift card BEARER: sem preview. O server resgata atomicamente e devolve
+        // giftCardAmount na 201. Se inválido → 400 { error }, cliente corrige e reenvia.
+        giftCardCode: giftCardInput.trim() || undefined,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao realizar pedido');
+
+    try {
+      localStorage.setItem(checkoutStorageKey(business.id), JSON.stringify({
+        name: form.name.trim(), phone: form.phone,
+        cep: form.cep, logradouro: form.logradouro, numero: form.numero,
+        complemento: form.complemento, bairro: form.bairro,
+        municipio: form.municipio, uf: form.uf,
+      }));
+    } catch { /* persistência best-effort */ }
+
+    // Snapshot p/ "pedir de novo" — guarda os 3 últimos (mais recente primeiro).
+    try {
+      const snapshot: SavedOrder = {
+        at: new Date().toISOString(),
+        deliveryType: form.deliveryType,
+        items: cart.map(i => ({
+          productId: i.product.id,
+          productName: i.product.name,
+          quantity: i.quantity,
+          selectedModifiers: i.selectedModifiers,
+        })),
+      };
+      const key = lastOrdersStorageKey(business.id);
+      const rawPrev = localStorage.getItem(key);
+      const prev = rawPrev ? (JSON.parse(rawPrev) as SavedOrder[]) : [];
+      const next = [snapshot, ...(Array.isArray(prev) ? prev : [])].slice(0, 3);
+      localStorage.setItem(key, JSON.stringify(next));
+      setLastOrder(snapshot);
+    } catch { /* persistência best-effort */ }
+
+    const created: CreatedOrder = {
+      orderId: data.orderId,
+      orderNumber: data.orderNumber,
+      trackingToken: data.trackingToken,
+      total: typeof data.total === 'number' ? data.total : undefined,
+      discount: typeof data.discount === 'number' ? data.discount : undefined,
+      giftCardAmount: typeof data.giftCardAmount === 'number' ? data.giftCardAmount : undefined,
+    };
+    setCreatedOrder(created);
+    setOrderId(created.orderId);
+    setOrderNumber(created.orderNumber);
+    return created;
+  }
+
+  // Gera (ou reusa) a cobrança PIX do pedido. trackingToken autoriza o cliente
+  // anônimo a cobrar o PRÓPRIO pedido.
+  async function createPixCharge(order: CreatedOrder): Promise<PixCharge> {
+    // SEM X-Idempotency-Key: a dedup é responsabilidade da rota (mint-lock +
+    // reuso transacional de PIX ainda válido). Uma chave fixa `pix-${orderId}`
+    // faria o withIdempotency replicar a 1ª resposta por 24h — após a expiração
+    // o re-mint seria curto-circuitado e o cliente ficaria com um QR morto.
+    const res = await fetch(`/api/orders/${order.orderId}/pay-pix`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trackingToken: order.trackingToken }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error?.message || 'Não foi possível gerar o PIX. Tente novamente.');
+    }
+    return data.data as PixCharge;
+  }
+
   // ── Submit order ──────────────────────────────────────────────────────────
   async function handleSubmit() {
     setIsSubmitting(true);
     setSubmitError(null);
     try {
-      const items = cart.map(i => ({
-        productId: i.product.id,
-        productName: i.product.name,
-        quantity: i.quantity,
-        unitPrice: i.unitPrice,
-        basePrice: i.basePrice,
-        total: i.unitPrice * i.quantity,
-        notes: i.notes || undefined,
-        imageUrl: i.product.imageUrl || undefined,
-        selectedModifiers: i.selectedModifiers,
-      }));
+      const order = await ensureOrder();
 
-      const res = await fetch('/api/orders/public', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          businessId: business.id,
-          clientName: form.name.trim(),
-          clientPhone: form.phone.replace(/\D/g, ''),
-          items,
-          deliveryType: form.deliveryType,
-          deliveryAddress: form.deliveryType === 'entrega' ? {
-            cep: form.cep, logradouro: form.logradouro, numero: form.numero,
-            complemento: form.complemento || undefined, bairro: form.bairro,
-            municipio: form.municipio, uf: form.uf,
-          } : undefined,
-          deliveryFee: form.deliveryType === 'entrega' ? deliveryFee : 0,
-          paymentMethod: form.paymentMethod,
-          changeFor: form.paymentMethod === 'dinheiro' && form.changeFor ? parseFloat(form.changeFor) : undefined,
-          customerNotes: form.notes || undefined,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Erro ao realizar pedido');
-      setOrderId(data.orderId);
-      setOrderNumber(data.orderNumber);
-      setStep('success');
+      // Pedido 100% quitado por gift card (total 0): não há o que cobrar online —
+      // pay-pix/pay-card rejeitam total<=0. Vai direto pro sucesso, sem cobrança.
+      if (onlineMethod && (order.total ?? 0) <= 0) {
+        idempotencyKey.current = null;
+        setStep('success');
+      } else if (onlineMethod === 'pix') {
+        const pix = await createPixCharge(order);
+        setPixData(pix);
+        setStep('pix');
+      } else if (onlineMethod === 'card') {
+        setStep('card');
+      } else {
+        // Offline: pagamento na entrega/retirada — mantém o fluxo de sucesso.
+        idempotencyKey.current = null; // próximo pedido recebe nova chave
+        setStep('success');
+      }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Erro inesperado');
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  // Encerra o checkout, limpa carrinho e zera o estado de pedido/pagamento.
+  function finishAndReset() {
+    setCheckoutOpen(false);
+    setCart([]);
+    setStep('cart');
+    setOnlineMethod(null);
+    setCreatedOrder(null);
+    setPixData(null);
+    setOrderId(null);
+    setOrderNumber(null);
+    setGiftCardInput('');
+    setRepeatNotice(null);
+    idempotencyKey.current = null;
   }
 
   function openCheckout() {
@@ -373,9 +952,12 @@ export default function CatalogClient({ business, products, categories }: Props)
 
   // ── Validation ────────────────────────────────────────────────────────────
   const addressValid = form.deliveryType === 'retirada' || (
-    form.logradouro.trim().length > 2 && form.numero.trim().length > 0 && form.municipio.trim().length > 0
+    form.logradouro.trim().length > 2 && form.numero.trim().length > 0
+    && form.bairro.trim().length > 0
+    && form.municipio.trim().length > 0 && form.uf.trim().length === 2
+    && !outOfDeliveryArea
   );
-  const contactValid = form.name.trim().length >= 2 && form.phone.replace(/\D/g, '').length >= 10;
+  const contactValid = form.name.trim().length >= 2 && isValidPhoneBR(form.phone);
 
   return (
     <div className="min-h-[100dvh] bg-gray-50 dark:bg-gray-950">
@@ -407,7 +989,7 @@ export default function CatalogClient({ business, products, categories }: Props)
           <div className="flex items-center gap-3">
             <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl overflow-hidden border border-white/10 shadow-xl bg-white flex-shrink-0">
               {business.logo ? (
-                <img src={business.logo} alt={businessName} className="w-full h-full object-contain p-1" />
+                <img src={business.logo} alt={businessName} referrerPolicy="no-referrer" className="w-full h-full object-contain p-1" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-red-500 to-red-700">
                   <span className="text-xl sm:text-2xl font-black text-white">
@@ -431,7 +1013,11 @@ export default function CatalogClient({ business, products, categories }: Props)
 
           {/* Info chips row */}
           <div className="flex items-center gap-2 mt-3 flex-wrap">
-            {deliveryFee > 0 ? (
+            {hasDeliveryZones && zoneResolution.status !== 'matched' ? (
+              <span className="flex items-center gap-1.5 text-[11px] text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-full">
+                <Truck className="w-3 h-3" /> Entrega por região
+              </span>
+            ) : deliveryFee > 0 ? (
               <span className="flex items-center gap-1.5 text-[11px] text-gray-300 bg-white/5 border border-white/10 px-2.5 py-1 rounded-full">
                 <Truck className="w-3 h-3" /> Entrega {formatBRL(deliveryFee)}
               </span>
@@ -499,6 +1085,37 @@ export default function CatalogClient({ business, products, categories }: Props)
 
       {/* ── Product List by Category ───────────────────────────────────────── */}
       <div className="max-w-2xl mx-auto px-4 pb-[calc(8rem+env(safe-area-inset-bottom,0px))] pt-4">
+
+        {/* Aviso de itens removidos do último pedido (best-effort) */}
+        {repeatNotice && (
+          <div className="mb-4 flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <p className="flex-1 text-xs text-amber-600 dark:text-amber-400">{repeatNotice}</p>
+            <button onClick={() => setRepeatNotice(null)} aria-label="Fechar aviso" className="p-0.5 flex-shrink-0">
+              <X className="w-3.5 h-3.5 text-amber-500" />
+            </button>
+          </div>
+        )}
+
+        {/* Pedir de novo — só na landing (carrinho vazio, sem busca ativa) */}
+        {cart.length === 0 && !search.trim() && lastOrder && (
+          <motion.button
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            onClick={repeatLastOrder}
+            className="w-full text-left mb-4 flex items-center gap-3 bg-white dark:bg-gray-900 rounded-2xl p-3.5 shadow-sm border border-gray-100 dark:border-gray-800 hover:border-red-200 dark:hover:border-red-900/50 active:scale-[0.99] transition-all"
+          >
+            <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-500/10 flex items-center justify-center flex-shrink-0">
+              <RotateCcw className="w-4 h-4 text-red-500" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-gray-900 dark:text-white">Pedir de novo</p>
+              <p className="text-xs text-gray-400 truncate">{lastOrderSummary}</p>
+            </div>
+            <ChevronRight className="w-4 h-4 text-gray-400 flex-shrink-0" />
+          </motion.button>
+        )}
+
         {visibleCategories.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-center">
             <div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 flex items-center justify-center mb-4">
@@ -604,7 +1221,7 @@ export default function CatalogClient({ business, products, categories }: Props)
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
-              onClick={() => step !== 'success' && setCheckoutOpen(false)}
+              onClick={() => (step === 'cart' || step === 'delivery' || step === 'contact') && setCheckoutOpen(false)}
             />
 
             <motion.div
@@ -621,14 +1238,19 @@ export default function CatalogClient({ business, products, categories }: Props)
 
               <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
                 <div className="flex items-center gap-3">
-                  {step !== 'cart' && step !== 'success' && (
-                    <button onClick={() => setStep(step === 'delivery' ? 'cart' : 'delivery')}
+                  {(step === 'delivery' || step === 'contact') && (
+                    <button onClick={() => { if (step === 'contact') setOnlineMethod(null); setStep(step === 'delivery' ? 'cart' : 'delivery'); }}
                       className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
                       <ArrowLeft className="w-4 h-4 text-gray-500" />
                     </button>
                   )}
                   <h2 className="font-bold text-gray-900 dark:text-white">
-                    {step === 'cart' ? 'Seu Pedido' : step === 'delivery' ? 'Entrega' : step === 'contact' ? 'Confirmar' : 'Pedido Realizado!'}
+                    {step === 'cart' ? 'Seu Pedido'
+                      : step === 'delivery' ? 'Entrega'
+                      : step === 'contact' ? 'Confirmar'
+                      : step === 'pix' ? 'Pagamento PIX'
+                      : step === 'card' ? 'Pagamento no cartão'
+                      : 'Pedido Realizado!'}
                   </h2>
                 </div>
                 {step !== 'success' && (
@@ -639,7 +1261,7 @@ export default function CatalogClient({ business, products, categories }: Props)
                 )}
               </div>
 
-              {step !== 'success' && (
+              {(step === 'cart' || step === 'delivery' || step === 'contact') && (
                 <div className="flex gap-1.5 px-5 py-2 flex-shrink-0">
                   {(['cart', 'delivery', 'contact'] as CheckoutStep[]).map((s, i) => (
                     <div key={s} className={`h-1 flex-1 rounded-full transition-all ${
@@ -711,6 +1333,10 @@ export default function CatalogClient({ business, products, categories }: Props)
                         />
                       </div>
 
+                      <div className="mt-2">
+                        {renderCouponBlock()}
+                      </div>
+
                       <div className="bg-gray-50 dark:bg-gray-800/60 rounded-xl p-4 space-y-1.5 mt-2">
                         <div className="flex justify-between text-sm text-gray-500">
                           <span>Subtotal</span>
@@ -719,12 +1345,18 @@ export default function CatalogClient({ business, products, categories }: Props)
                         {deliveryFee > 0 && form.deliveryType === 'entrega' && (
                           <div className="flex justify-between text-sm text-gray-500">
                             <span>Entrega</span>
-                            <span>{formatBRL(deliveryFee)}</span>
+                            <span className={couponFreeDelivery ? 'line-through' : undefined}>{formatBRL(deliveryFee)}</span>
+                          </div>
+                        )}
+                        {appliedCoupon && (couponDiscount > 0 || couponFreeDelivery) && (
+                          <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                            <span>Cupom {appliedCoupon.code}</span>
+                            <span>{couponFreeDelivery ? 'Frete grátis' : `−${formatBRL(couponDiscount)}`}</span>
                           </div>
                         )}
                         <div className="flex justify-between font-bold text-base pt-1.5 border-t border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white">
                           <span>Total</span>
-                          <span className="text-red-600 dark:text-red-400">{formatBRL(cartTotal)}</span>
+                          <span className="text-red-600 dark:text-red-400">{formatBRL(previewTotal)}</span>
                         </div>
                       </div>
 
@@ -749,7 +1381,12 @@ export default function CatalogClient({ business, products, categories }: Props)
                         </label>
                         <div className="grid grid-cols-2 gap-2">
                           {([
-                            { value: 'entrega', label: 'Entrega', sub: deliveryFee > 0 ? formatBRL(deliveryFee) : 'Grátis', icon: Truck },
+                            {
+                              value: 'entrega', label: 'Entrega', icon: Truck,
+                              sub: hasDeliveryZones && zoneResolution.status !== 'matched'
+                                ? 'Por região'
+                                : deliveryFee > 0 ? formatBRL(deliveryFee) : 'Grátis',
+                            },
                             { value: 'retirada', label: 'Retirada', sub: 'No local', icon: Store },
                           ] as const).map(opt => (
                             <button
@@ -814,20 +1451,56 @@ export default function CatalogClient({ business, products, categories }: Props)
                               placeholder="Complemento (apto, bloco...)"
                               className="w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
                             />
+                            <input
+                              value={form.bairro}
+                              onChange={e => setForm(f => ({ ...f, bairro: e.target.value }))}
+                              placeholder="Bairro"
+                              className="w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
+                            />
                             <div className="grid grid-cols-3 gap-2">
-                              <input
-                                value={form.bairro}
-                                onChange={e => setForm(f => ({ ...f, bairro: e.target.value }))}
-                                placeholder="Bairro"
-                                className="px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
-                              />
                               <input
                                 value={form.municipio}
                                 onChange={e => setForm(f => ({ ...f, municipio: e.target.value }))}
                                 placeholder="Cidade"
                                 className="col-span-2 px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
                               />
+                              <div className="relative">
+                                <select
+                                  value={form.uf}
+                                  onChange={e => setForm(f => ({ ...f, uf: e.target.value }))}
+                                  className={`appearance-none w-full px-3 py-2.5 pr-8 bg-gray-50 dark:bg-gray-800 border rounded-xl text-[16px] leading-tight outline-none focus:ring-2 focus:ring-red-400/40 ${
+                                    form.uf ? 'text-gray-900 dark:text-white border-gray-200 dark:border-gray-700' : 'text-gray-400 border-gray-200 dark:border-gray-700'
+                                  }`}
+                                >
+                                  <option value="" disabled>UF</option>
+                                  {UF_LIST.map(uf => <option key={uf} value={uf}>{uf}</option>)}
+                                </select>
+                                <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                              </div>
                             </div>
+
+                            {/* Feedback da zona de entrega resolvida pelo bairro/CEP */}
+                            {outOfDeliveryArea ? (
+                              <div className="flex items-start gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+                                <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+                                <div className="min-w-0">
+                                  <p className="text-sm font-semibold text-amber-600 dark:text-amber-400">Fora da área de entrega</p>
+                                  <p className="text-xs text-amber-500/90 dark:text-amber-400/80 mt-0.5">
+                                    Não entregamos no bairro informado. Você ainda pode escolher retirada no local.
+                                  </p>
+                                </div>
+                              </div>
+                            ) : zoneResolution.status === 'matched' && bairroEntered ? (
+                              <div className="flex items-center gap-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-xl">
+                                <Truck className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                                <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                                  <span className="font-semibold">{zoneName}</span>
+                                  {' · '}{deliveryFee > 0 ? formatBRL(deliveryFee) : 'Frete grátis'}
+                                  {zoneEtaMinutes ? ` · ~${zoneEtaMinutes} min` : ''}
+                                  {zoneEstimated ? ' (estimado)' : ''}
+                                </p>
+                              </div>
+                            ) : null}
                           </motion.div>
                         )}
                       </AnimatePresence>
@@ -861,12 +1534,15 @@ export default function CatalogClient({ business, products, categories }: Props)
                           />
                           <input
                             value={form.phone}
-                            onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
-                            placeholder="WhatsApp (DDD + número)"
+                            onChange={e => setForm(f => ({ ...f, phone: formatPhoneBR(e.target.value) }))}
+                            placeholder="WhatsApp (xx) xxxxx-xxxx"
                             type="tel"
                             inputMode="tel"
                             className="w-full px-3 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-[16px] leading-tight outline-none focus:ring-2 focus:ring-red-400/40 text-gray-900 dark:text-white placeholder-gray-400"
                           />
+                          {form.phone.replace(/\D/g, '').length > 0 && !isValidPhoneBR(form.phone) && (
+                            <p className="text-[11px] text-amber-500 px-1">Informe um celular válido com DDD.</p>
+                          )}
                         </div>
                       </div>
 
@@ -874,28 +1550,79 @@ export default function CatalogClient({ business, products, categories }: Props)
                         <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                           Pagamento
                         </label>
+
+                        {/* Pagar agora (online) — só quando a loja tem MP conectado */}
+                        {onlinePaymentEnabled && (
+                          <div className="mb-3">
+                            <p className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 mb-1.5">
+                              <Sparkles className="w-3 h-3" /> Pagar agora · confirmação na hora
+                            </p>
+                            {mpTestMode && (
+                              <div className="flex items-start gap-2 p-2.5 mb-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+                                <AlertCircle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-px" />
+                                <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-tight">
+                                  <span className="font-bold">Ambiente de testes.</span>{' '}
+                                  Os pagamentos online aqui são de sandbox e não cobram de verdade —
+                                  prefira pagar na {form.deliveryType === 'entrega' ? 'entrega' : 'retirada'}.
+                                </p>
+                              </div>
+                            )}
+                            <div className="grid grid-cols-2 gap-2">
+                              {([
+                                { value: 'pix' as const, label: 'PIX', icon: QrCode },
+                                { value: 'card' as const, label: 'Cartão', icon: CreditCard },
+                              ]).map(opt => {
+                                const Icon = opt.icon;
+                                const active = onlineMethod === opt.value;
+                                return (
+                                  <button
+                                    key={opt.value}
+                                    onClick={() => setOnlineMethod(opt.value)}
+                                    className={`flex items-center justify-center gap-2 p-3 rounded-xl border-2 transition-all ${
+                                      active
+                                        ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-500/10'
+                                        : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                                    }`}
+                                  >
+                                    <Icon className={`w-4 h-4 ${active ? 'text-emerald-500' : 'text-gray-400'}`} />
+                                    <span className={`text-sm font-semibold ${active ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-600 dark:text-gray-400'}`}>
+                                      {opt.label}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        {onlinePaymentEnabled && (
+                          <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">
+                            Ou pagar na {form.deliveryType === 'entrega' ? 'entrega' : 'retirada'}
+                          </p>
+                        )}
                         <div className="grid grid-cols-3 gap-2">
-                          {PAYMENT_OPTIONS.map(opt => {
+                          {paymentOptions.map(opt => {
                             const Icon = opt.icon;
+                            const active = onlineMethod === null && form.paymentMethod === opt.value;
                             return (
                               <button
                                 key={opt.value}
-                                onClick={() => setForm(f => ({ ...f, paymentMethod: opt.value }))}
+                                onClick={() => { setOnlineMethod(null); setForm(f => ({ ...f, paymentMethod: opt.value })); }}
                                 className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all ${
-                                  form.paymentMethod === opt.value
+                                  active
                                     ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
                                     : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
                                 }`}
                               >
-                                <Icon className={`w-4 h-4 ${form.paymentMethod === opt.value ? 'text-red-500' : 'text-gray-400'}`} />
-                                <span className={`text-xs font-semibold ${form.paymentMethod === opt.value ? 'text-red-600 dark:text-red-400' : 'text-gray-600 dark:text-gray-400'}`}>
+                                <Icon className={`w-4 h-4 ${active ? 'text-red-500' : 'text-gray-400'}`} />
+                                <span className={`text-xs font-semibold ${active ? 'text-red-600 dark:text-red-400' : 'text-gray-600 dark:text-gray-400'}`}>
                                   {opt.label}
                                 </span>
                               </button>
                             );
                           })}
                         </div>
-                        {form.paymentMethod === 'dinheiro' && (
+                        {onlineMethod === null && form.paymentMethod === 'dinheiro' && (
                           <input
                             value={form.changeFor}
                             onChange={e => setForm(f => ({ ...f, changeFor: e.target.value }))}
@@ -906,43 +1633,115 @@ export default function CatalogClient({ business, products, categories }: Props)
                         )}
                       </div>
 
+                      {renderCouponBlock()}
+
                       <div className="bg-gray-50 dark:bg-gray-800/60 rounded-xl p-4 space-y-1">
                         <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Resumo</p>
-                        {cart.map(i => (
-                          <div key={i.id} className="flex justify-between text-sm text-gray-600 dark:text-gray-400">
-                            <span className="truncate pr-2">{i.quantity}× {i.product.name}</span>
-                            <span className="whitespace-nowrap">{formatBRL(i.unitPrice * i.quantity)}</span>
-                          </div>
-                        ))}
+                        {cart.map(i => {
+                          const culprit = errorItemIds.has(i.id);
+                          return (
+                            <div key={i.id} className={`flex justify-between text-sm rounded-md -mx-1 px-1 ${
+                              culprit
+                                ? 'text-red-600 dark:text-red-400 font-semibold bg-red-50 dark:bg-red-900/20'
+                                : 'text-gray-600 dark:text-gray-400'
+                            }`}>
+                              <span className="truncate pr-2 flex items-center gap-1">
+                                {culprit && <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />}
+                                {i.quantity}× {i.product.name}
+                              </span>
+                              <span className="whitespace-nowrap">{formatBRL(i.unitPrice * i.quantity)}</span>
+                            </div>
+                          );
+                        })}
                         {deliveryFee > 0 && form.deliveryType === 'entrega' && (
                           <div className="flex justify-between text-sm text-gray-500 pt-1 border-t border-gray-200 dark:border-gray-700">
-                            <span>Entrega</span><span>{formatBRL(deliveryFee)}</span>
+                            <span>Entrega</span><span className={couponFreeDelivery ? 'line-through' : undefined}>{formatBRL(deliveryFee)}</span>
+                          </div>
+                        )}
+                        {appliedCoupon && (couponDiscount > 0 || couponFreeDelivery) && (
+                          <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                            <span>Cupom {appliedCoupon.code}</span>
+                            <span>{couponFreeDelivery ? 'Frete grátis' : `−${formatBRL(couponDiscount)}`}</span>
                           </div>
                         )}
                         <div className="flex justify-between font-black text-base pt-1.5 border-t border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white">
                           <span>Total</span>
-                          <span className="text-red-600 dark:text-red-400">{formatBRL(cartTotal)}</span>
+                          <span className="text-red-600 dark:text-red-400">{formatBRL(previewTotal)}</span>
                         </div>
                       </div>
 
                       {submitError && (
-                        <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl">
-                          <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
-                          <p className="text-sm text-red-600 dark:text-red-400">{submitError}</p>
+                        <div className="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl">
+                          <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                          <div className="min-w-0">
+                            <p className="text-sm text-red-600 dark:text-red-400">{submitError}</p>
+                            <p className="text-xs text-red-500/80 dark:text-red-400/70 mt-0.5">
+                              {errorItemIds.size > 0
+                                ? 'Revise os itens destacados acima e tente novamente.'
+                                : 'Confira os dados e tente novamente em instantes.'}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {ordersBlocked && (
+                        <div className="flex items-center gap-2 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl">
+                          <Clock className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                          <p className="text-sm text-amber-600 dark:text-amber-400">Loja fechada no momento</p>
                         </div>
                       )}
 
                       <button
                         onClick={handleSubmit}
-                        disabled={!contactValid || isSubmitting}
+                        disabled={!contactValid || isSubmitting || ordersBlocked || outOfDeliveryArea}
                         className="w-full bg-red-500 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98] text-white py-4 rounded-2xl font-bold text-base transition-all flex items-center justify-center gap-2"
                       >
                         {isSubmitting ? (
-                          <><Loader2 className="w-5 h-5 animate-spin" /> Enviando...</>
+                          <><Loader2 className="w-5 h-5 animate-spin" /> {onlineMethod ? 'Processando...' : 'Enviando...'}</>
+                        ) : ordersBlocked ? (
+                          <>Loja fechada</>
+                        ) : onlineMethod === 'pix' ? (
+                          <><QrCode className="w-4 h-4" /> Pagar com PIX · {formatBRL(previewTotal)}</>
+                        ) : onlineMethod === 'card' ? (
+                          <><CreditCard className="w-4 h-4" /> Pagar com cartão · {formatBRL(previewTotal)}</>
                         ) : (
-                          <>Confirmar Pedido · {formatBRL(cartTotal)}</>
+                          <>Confirmar Pedido · {formatBRL(previewTotal)}</>
                         )}
                       </button>
+                    </motion.div>
+                  )}
+
+                  {/* ── Step: PIX online ────────────────────────────────────── */}
+                  {step === 'pix' && createdOrder && pixData && (
+                    <motion.div key="pix"
+                      initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
+                      <PixPaymentPanel
+                        orderId={createdOrder.orderId}
+                        trackingToken={createdOrder.trackingToken}
+                        orderNumber={createdOrder.orderNumber}
+                        amount={createdOrder.total ?? previewTotal}
+                        pix={pixData}
+                        businessName={businessName}
+                        onConfirmed={clearIdempotencyKey}
+                        onBackToMenu={finishAndReset}
+                      />
+                    </motion.div>
+                  )}
+
+                  {/* ── Step: Cartão online (Brick MP) ──────────────────────── */}
+                  {step === 'card' && createdOrder && (
+                    <motion.div key="card"
+                      initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
+                      <CardPaymentBrick
+                        orderId={createdOrder.orderId}
+                        trackingToken={createdOrder.trackingToken}
+                        orderNumber={createdOrder.orderNumber}
+                        publicKey={mpPublicKey}
+                        amount={createdOrder.total ?? previewTotal}
+                        businessName={businessName}
+                        onApproved={clearIdempotencyKey}
+                        onBackToMenu={finishAndReset}
+                      />
                     </motion.div>
                   )}
 
@@ -985,14 +1784,45 @@ export default function CatalogClient({ business, products, categories }: Props)
                           <div>
                             <p className="text-xs text-gray-400">Pagamento</p>
                             <p className="text-sm font-semibold text-gray-900 dark:text-white">
-                              {PAYMENT_OPTIONS.find(p => p.value === form.paymentMethod)?.label} · {formatBRL(cartTotal)}
+                              {paymentOptions.find(p => p.value === form.paymentMethod)?.label} · {formatBRL(createdOrder?.total ?? previewTotal)}
                             </p>
                           </div>
                         </div>
+
+                        {/* Breakdown AUTORITATIVO (server): cupom + gift card + total pago */}
+                        {((createdOrder?.discount ?? 0) > 0 || (createdOrder?.giftCardAmount ?? 0) > 0) && (
+                          <div className="p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl text-left space-y-1">
+                            {(createdOrder?.discount ?? 0) > 0 && (
+                              <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                                <span>Desconto cupom</span>
+                                <span>−{formatBRL(createdOrder!.discount!)}</span>
+                              </div>
+                            )}
+                            {(createdOrder?.giftCardAmount ?? 0) > 0 && (
+                              <div className="flex justify-between text-sm text-emerald-600 dark:text-emerald-400">
+                                <span>Gift card</span>
+                                <span>−{formatBRL(createdOrder!.giftCardAmount!)}</span>
+                              </div>
+                            )}
+                            <div className="flex justify-between text-sm font-bold pt-1 border-t border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white">
+                              <span>Total pago</span>
+                              <span>{formatBRL(createdOrder?.total ?? previewTotal)}</span>
+                            </div>
+                          </div>
+                        )}
                       </div>
+                      {createdOrder && (
+                        <a
+                          href={`/p/${business.slug ?? business.id}/pedido/${createdOrder.orderId}?t=${encodeURIComponent(createdOrder.trackingToken)}`}
+                          referrerPolicy="no-referrer"
+                          className="mt-8 inline-flex items-center justify-center gap-2 px-8 py-3 rounded-2xl font-bold border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white transition-all hover:scale-[1.02]"
+                        >
+                          Acompanhar pedido
+                        </a>
+                      )}
                       <button
-                        onClick={() => { setCheckoutOpen(false); setCart([]); setStep('cart'); }}
-                        className="mt-8 px-8 py-3 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-2xl font-bold transition-all hover:scale-[1.02]"
+                        onClick={finishAndReset}
+                        className="mt-3 px-8 py-3 bg-gray-900 dark:bg-white text-white dark:text-gray-900 rounded-2xl font-bold transition-all hover:scale-[1.02]"
                       >
                         Voltar ao cardápio
                       </button>
@@ -1019,7 +1849,9 @@ function ProductCard({
   onClick: () => void;
   delay: number;
 }) {
-  const outOfStock = product.currentStock <= 0 && product.currentStock !== undefined && !product.hasModifiers && !product.components?.length;
+  // Fonte única (menu-availability): honra menuAvailable ("esgotado hoje") e
+  // trackStock ("não controlar estoque"), além de modificadores/BOM/estoque.
+  const outOfStock = isOutOfStock(product);
   const hasModifiers = !!product.hasModifiers && !!product.modifierGroups?.length;
   const price = hasModifiers ? startingPrice(product) : product.salePrice;
 

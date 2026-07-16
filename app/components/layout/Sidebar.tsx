@@ -352,7 +352,12 @@ function SidebarContent({
     const unsub = onSnapshot(
       q,
       (snap) => {
-        const count = snap.docs.filter(d => d.data().recurrence?.isActive === true).length;
+        // Exclui os dispensados manualmente: reminderDismissedFor === nextDueDate
+        // (lembrete dispensado pelo sino p/ esta ocorrência; volta no próximo ciclo).
+        const count = snap.docs.filter(d => {
+          const rec = d.data().recurrence;
+          return rec?.isActive === true && rec?.reminderDismissedFor !== rec?.nextDueDate;
+        }).length;
         setUrgentRecurringCount(count);
       },
       (err) => console.error('[Sidebar] urgent recurring snapshot error:', err),

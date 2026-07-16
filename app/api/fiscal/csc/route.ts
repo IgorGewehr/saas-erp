@@ -13,6 +13,7 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { encryptToken, decryptToken } from '@/lib/utils/encryption';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { UserRole } from '@/lib/types';
+import { CscSaveRequestSchema } from '@/lib/contracts/api/fiscal/csc';
 
 async function checkAdmin(req: NextRequest, businessId: string) {
   const auth = await verifyAuth(req, businessId);
@@ -25,8 +26,14 @@ async function checkAdmin(req: NextRequest, businessId: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { businessId, cscId, cscToken } = await req.json();
-    if (!businessId) return NextResponse.json({ error: 'businessId required' }, { status: 400 });
+    const parsed = CscSaveRequestSchema.safeParse(await req.json());
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'businessId required', details: parsed.error.flatten() },
+        { status: 400 },
+      );
+    }
+    const { businessId, cscId, cscToken } = parsed.data;
 
     const auth = await checkAdmin(req, businessId);
     if (auth instanceof NextResponse) return auth;

@@ -22,7 +22,8 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { checkRateLimit } from '@/lib/agent/rate-limit';
 import { isCircuitAllowed, recordSuccess, recordFailure } from '@/lib/agent/circuit-breaker';
-import type { Business, User } from '@/lib/types';
+import type { Business, BusinessSegment, User } from '@/lib/types';
+import { SEGMENT_VOCAB } from '@/lib/types';
 
 const AGENT_URL = process.env.AGENT_SERVICE_URL || 'http://localhost:8080';
 const SECRET = process.env.AGENT_SHARED_SECRET;
@@ -113,6 +114,12 @@ export async function POST(req: NextRequest) {
 
   // Compute today's effective opening hours (applies holidays + seasonal overrides)
   const todayIso = new Date().toISOString().slice(0, 10);
+  // Rótulo humano com dia da semana no fuso do business — o agente resolve
+  // "quinta" pela PRÓXIMA ocorrência em vez de adivinhar o weekday da ISO crua.
+  const agentTz = business.settings?.timezone || 'America/Sao_Paulo';
+  const currentDateLabel =
+    `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, weekday: 'long' }).format(new Date())} ` +
+    `${new Intl.DateTimeFormat('pt-BR', { timeZone: agentTz, day: '2-digit', month: '2-digit' }).format(new Date())}`;
   const holidays = business.settings?.aiAgent?.calendar?.holidays || [];
   const isClosedToday = holidays.includes(todayIso);
   const seasonalHours = business.settings?.aiAgent?.calendar?.seasonalHours || [];
@@ -120,6 +127,8 @@ export async function POST(req: NextRequest) {
   const effectiveHours = activeSeason?.hours || business.settings?.openingHours || null;
 
   // 5. Build agent payload
+  const segment: BusinessSegment = business.settings?.aiAgent?.segment || 'generico';
+  const segmentVocab = SEGMENT_VOCAB[segment];
   const payload = {
     message_id: `op_${crypto.randomUUID()}`,
     conversation_id: `operator:${sessionId}`,
@@ -130,6 +139,10 @@ export async function POST(req: NextRequest) {
     recipient_id: uid,
     history: (body.history || []).slice(-20),          // client-managed rolling window
     use_case: body.mode === 'analyst' ? 'analyst' as const : 'operator' as const,
+    // M11: ramo/vertical no fio (igual ao dispatch). Sem isso, o assistente do
+    // dashboard caía sempre no vocabulário 'generico' mesmo com segment setado.
+    segment,
+    segment_vocab: segmentVocab,
     business_name: business.nomeFantasia || business.razaoSocial,
     business_description: business.settings?.aiAgent?.businessDescription,
     tone: business.settings?.aiAgent?.tone || 'friendly',
@@ -140,14 +153,13 @@ export async function POST(req: NextRequest) {
     opening_hours: effectiveHours,
     address: business.endereco || null,
     services_list: null,
-    current_date: todayIso,
+    current_date: currentDateLabel,
     policies: business.settings?.aiAgent?.policies || null,
     sla: business.settings?.aiAgent?.sla || null,
     is_closed_today: isClosedToday,
     seasonal_label: activeSeason?.label || null,
     delivery_zones: business.settings?.aiAgent?.deliveryZones || null,
     accepted_payment_methods: business.settings?.aiAgent?.acceptedPaymentMethods || null,
-    team_capacity: business.settings?.aiAgent?.teamCapacity || null,
     upsell_rules: (business.settings?.aiAgent?.upsellRules || []).filter((r) => r.isActive),
     // Operator-specific identity fields
     operator_user_id: uid,

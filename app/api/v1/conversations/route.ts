@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import type { Query } from 'firebase-admin/firestore';
 
 // =============================================================================
 // GET /api/v1/conversations — List conversations for the authenticated business
@@ -36,8 +37,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Build Firestore query — always filter by businessId
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let query: any = adminDb
+    let query: Query = adminDb
       .collection('conversations')
       .where('businessId', '==', auth.businessId);
 
@@ -62,8 +62,7 @@ export async function GET(req: NextRequest) {
 
     const snapshot = await query.get();
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let conversations = snapshot.docs.map((doc: any) => ({
+    let conversations = snapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }));

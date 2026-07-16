@@ -8,28 +8,38 @@ import {
   ClipboardCheck, Plus, Search, Clock, MapPin, User as UserIcon, Bike, CheckCircle2,
   X, ChefHat, Package, Truck, XCircle, Edit3, Trash2, Phone, DollarSign,
   ChevronDown, ArrowRight, ArrowLeft, MessageSquare, Timer, Sparkles,
-  LayoutGrid, List, Filter, Home,
+  LayoutGrid, List, Filter, Home, Volume2, VolumeX, Bell, Printer, Check, Ban,
+  Receipt, FileCheck2,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, onSnapshot, addDoc, updateDoc,
-  doc, deleteDoc, getDocs, runTransaction, serverTimestamp, increment,
-  limit as firestoreLimit,
+  collection, query, where, orderBy, onSnapshot, setDoc, getDoc, getDocs, updateDoc,
+  doc, runTransaction, limit,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
+import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
+import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { buildOrderStockLines } from '@/lib/services/stock-lines';
+import { allocateOrderNumber } from '@/lib/services/orderNumber';
 import { notifyLowStock } from '@/lib/services/notifications';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
-  Product, Client, DeliveryOrderAddress, StockAlert,
+  Product, Client, DeliveryOrderAddress, StockAlert, PaymentFsmStatus,
+  ConversationChannel,
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
+import { useNewOrderAlert } from '@/lib/hooks/useNewOrderAlert';
+import { printOrder } from '@/lib/services/printing/printOrder';
+import PrinterSetupDialog from './PrinterSetupDialog';
+import EmitirNotaDialog from '@/app/components/features/fiscal/EmitirNotaDialog';
+import { buildDeliveryOrderNfceInput } from '@/lib/services/fiscal/deliveryOrderNfce';
 
 // Local aliases — keep JSX concise.
 type Order = DeliveryOrder;
@@ -41,6 +51,30 @@ type OrderPaymentStatus = DeliveryOrderPaymentStatus;
 type OrderAddress = DeliveryOrderAddress;
 const ORDER_STATUS_ORDER = DELIVERY_ORDER_STATUS_FLOW;
 const ORDER_STATUS_LABELS = DELIVERY_ORDER_STATUS_LABELS;
+
+// Fluxo de etapas por tipo: RETIRADA não passa por 'saiu_entrega' (pronto→entregue
+// direto, já permitido pela FSM). ENTREGA segue o fluxo completo. Sem deliveryType
+// (retrocompat) usa o fluxo completo. Filtro só remove a etapa de logística de rota.
+function statusFlowFor(deliveryType?: DeliveryType): OrderStatus[] {
+  if (deliveryType === 'retirada') {
+    return ORDER_STATUS_ORDER.filter(s => s !== 'saiu_entrega');
+  }
+  return ORDER_STATUS_ORDER;
+}
+
+// EF-01: janela do onSnapshot de pedidos. ANTES a subscription lia o HISTÓRICO
+// INTEIRO sem limit ⇒ custo/latência O(idade do tenant). AGORA limita a uma
+// janela recente (createdAt >= início do dia − N dias), usando o índice
+// businessId+createdAt já existente. Ativos são sempre recentes; board oculta
+// entregue/cancelado > 24h; KPIs de hoje ficam dentro da janela.
+const ORDERS_WINDOW_DAYS = 30;
+
+function ordersWindowStartIso(): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ORDERS_WINDOW_DAYS);
+  return d.toISOString();
+}
 
 // ─── Status visuals ──────────────────────────────────────────────────────────
 
@@ -105,7 +139,41 @@ const PAYMENT_METHOD_LABELS: Record<OrderPaymentMethod, string> = {
   pix: 'Pix',
   voucher: 'Voucher',
   outro: 'Outro',
+  pix_online: 'Pix (online)',
+  cartao_online: 'Cartão (online)',
 };
+
+const PAYMENT_FSM_LABELS: Record<PaymentFsmStatus, string> = {
+  pending: 'Pendente',
+  authorized: 'Autorizado',
+  paid: 'Pago',
+  failed: 'Falhou',
+  refunded: 'Estornado',
+  expired: 'Expirado',
+};
+
+// ─── Payment state derivation ────────────────────────────────────────────────
+// A FSM de pagamento online (paymentFsmStatus) é a fonte da verdade quando
+// existe; paymentStatus (fabricação manual / dinheiro-na-entrega) é o fallback.
+
+/** Pedido cobrado online (Mercado Pago checkout ou método *_online). */
+function isOnlineOrder(order: Order): boolean {
+  return order.paymentProvider === 'mercadopago'
+    || (typeof order.paymentMethod === 'string' && order.paymentMethod.endsWith('_online'));
+}
+
+/** Pagamento confirmado? Lê paymentFsmStatus (online), cai pra paymentStatus. */
+function isOrderPaid(order: Order): boolean {
+  return order.paymentFsmStatus
+    ? order.paymentFsmStatus === 'paid'
+    : order.paymentStatus === 'pago';
+}
+
+/** Rótulo do estado de pagamento pra UI (FSM tem prioridade). */
+function orderPaymentLabel(order: Order): string {
+  if (order.paymentFsmStatus) return PAYMENT_FSM_LABELS[order.paymentFsmStatus];
+  return order.paymentStatus === 'pago' ? 'Pago' : 'A pagar';
+}
 
 function timeSince(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
@@ -116,6 +184,19 @@ function timeSince(iso: string): string {
   if (hrs < 24) return `${hrs}h`;
   const days = Math.floor(hrs / 24);
   return `${days}d`;
+}
+
+/** Cronômetro ao vivo (mm:ss ou Hh mm) desde `iso` até `nowMs`, pra destacar há
+ *  quanto tempo um pedido novo espera aceite na cozinha. */
+function elapsedSince(iso: string, nowMs: number): string {
+  const diff = Math.max(0, nowMs - new Date(iso).getTime());
+  const totalSec = Math.floor(diff / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (h > 0) return `${h}h ${pad(m)}m`;
+  return `${pad(m)}:${pad(s)}`;
 }
 
 function isUrgent(order: Order): boolean {
@@ -207,11 +288,11 @@ function OrderCard({
           </span>
           <span className={cn(
             'ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold',
-            order.paymentStatus === 'pago'
+            isOrderPaid(order)
               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
               : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
           )}>
-            {order.paymentStatus === 'pago' ? 'Pago' : 'A pagar'}
+            {orderPaymentLabel(order)}
           </span>
         </div>
         <span className="text-sm font-bold text-gray-900 dark:text-gray-100">
@@ -331,15 +412,18 @@ function emptyOrderForm(): OrderFormData {
 }
 
 function OrderFormDialog({
-  open, onClose, onSave, initial, clients, products, isEditing,
+  open, onClose, onSave, initial, clients, products, isEditing, lockPayment,
 }: {
   open: boolean;
   onClose: () => void;
-  onSave: (data: OrderFormData) => Promise<void>;
+  onSave: (data: OrderFormData, idempotencyKey: string) => Promise<void>;
   initial: OrderFormData;
   clients: Client[];
   products: Product[];
   isEditing: boolean;
+  /** Pedido pago via Mercado Pago: status/método de pagamento são geridos pelo
+   *  webhook (paymentFsmStatus), edição manual é proibida (grupo 9). */
+  lockPayment: boolean;
 }) {
   const [form, setForm] = useState<OrderFormData>(initial);
   const [saving, setSaving] = useState(false);
@@ -348,11 +432,17 @@ function OrderFormDialog({
   const [showClientDropdown, setShowClientDropdown] = useState(false);
   const [showProductDropdown, setShowProductDropdown] = useState(false);
 
+  // Grupo 11: chave de idempotência ESTÁVEL por sessão do formulário. Vira o doc
+  // id do pedido (setDoc) ⇒ retries do mesmo formulário (duplo-clique, rede lenta)
+  // colapsam num único pedido em vez de duplicar. Renovada a cada abertura.
+  const idemKeyRef = useRef<string>(crypto.randomUUID());
+
   useEffect(() => {
     if (open) {
       setForm(initial);
       setClientSearch(initial.clientName || '');
       setProductSearch('');
+      idemKeyRef.current = crypto.randomUUID();
     }
   }, [open, initial]);
 
@@ -430,7 +520,7 @@ function OrderFormDialog({
     if (!form.clientName.trim() || form.items.length === 0) return;
     setSaving(true);
     try {
-      await onSave(form);
+      await onSave(form, idemKeyRef.current);
       onClose();
     } finally {
       setSaving(false);
@@ -702,15 +792,19 @@ function OrderFormDialog({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className={labelCls}>Pagamento</label>
-                <select className={inputCls}
+                <select className={cn(inputCls, lockPayment && 'opacity-60 cursor-not-allowed')}
+                  disabled={lockPayment}
                   value={form.paymentMethod}
                   onChange={e => setForm(f => ({ ...f, paymentMethod: e.target.value as OrderPaymentMethod }))}>
-                  {Object.entries(PAYMENT_METHOD_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  {Object.entries(PAYMENT_METHOD_LABELS)
+                    .filter(([k]) => !k.endsWith('_online')) // online só via checkout/webhook MP, não no pedido manual
+                    .map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                 </select>
               </div>
               <div>
                 <label className={labelCls}>Status do Pagamento</label>
-                <select className={inputCls}
+                <select className={cn(inputCls, lockPayment && 'opacity-60 cursor-not-allowed')}
+                  disabled={lockPayment}
                   value={form.paymentStatus}
                   onChange={e => setForm(f => ({ ...f, paymentStatus: e.target.value as OrderPaymentStatus }))}>
                   <option value="pendente">Pendente</option>
@@ -719,6 +813,12 @@ function OrderFormDialog({
                 </select>
               </div>
             </div>
+            {lockPayment && (
+              <p className="-mt-3 text-[11px] text-gray-500 dark:text-gray-400">
+                Pagamento online (Mercado Pago): status e método são controlados
+                automaticamente pelo gateway e não podem ser editados manualmente.
+              </p>
+            )}
 
             {form.paymentMethod === 'dinheiro' && form.paymentStatus !== 'pago' && (
               <div>
@@ -786,20 +886,23 @@ function OrderFormDialog({
 // ─── Order Detail Drawer ─────────────────────────────────────────────────────
 
 function OrderDetailDrawer({
-  order, onClose, onStatusChange, onEdit, onDelete,
+  order, onClose, onStatusChange, onEdit, onDelete, onEmitNfce,
 }: {
   order: Order;
   onClose: () => void;
   onStatusChange: (status: OrderStatus) => Promise<void>;
   onEdit: () => void;
   onDelete: () => void;
+  /** Abre o EmitirNotaDialog pré-preenchido pra emitir a NFC-e deste pedido. */
+  onEmitNfce: () => void;
 }) {
   const cfg = STATUS_CONFIG[order.status];
-  const statusIdx = ORDER_STATUS_ORDER.indexOf(order.status);
-  const nextStatus = statusIdx >= 0 && statusIdx < ORDER_STATUS_ORDER.length - 1
-    ? ORDER_STATUS_ORDER[statusIdx + 1]
+  const statusFlow = statusFlowFor(order.deliveryType);
+  const statusIdx = statusFlow.indexOf(order.status);
+  const nextStatus = statusIdx >= 0 && statusIdx < statusFlow.length - 1
+    ? statusFlow[statusIdx + 1]
     : null;
-  const prevStatus = statusIdx > 0 ? ORDER_STATUS_ORDER[statusIdx - 1] : null;
+  const prevStatus = statusIdx > 0 ? statusFlow[statusIdx - 1] : null;
 
   return (
     <motion.div
@@ -889,11 +992,11 @@ function OrderDetailDrawer({
           </div>
           <span className={cn(
             'px-2 py-0.5 rounded-full text-[10px] font-bold',
-            order.paymentStatus === 'pago'
+            isOrderPaid(order)
               ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-400'
               : 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400',
           )}>
-            {order.paymentStatus.toUpperCase()}
+            {orderPaymentLabel(order).toUpperCase()}
           </span>
         </div>
 
@@ -958,6 +1061,30 @@ function OrderDetailDrawer({
             )}
           </div>
         )}
+        {/* NFC-e: emitida → badge (idempotência visual); senão, entregue/pago → botão.
+            Emissão real vive no EmitirNotaDialog + /api/fiscal/emit (não reimplementada aqui). */}
+        {order.fiscalDocumentId ? (
+          <a
+            href={order.fiscalAccessKey ? `https://www.nfce.fazenda.gov.br/portal/consultarNFCe.aspx?p=${order.fiscalAccessKey}` : undefined}
+            target={order.fiscalAccessKey ? '_blank' : undefined}
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50 dark:bg-emerald-500/10 text-xs font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-500/20"
+          >
+            <FileCheck2 className="w-3.5 h-3.5" />
+            NFC-e emitida
+            {order.fiscalAccessKey && (
+              <span className="font-mono text-[10px] text-emerald-600/70 dark:text-emerald-400/70 truncate max-w-[140px]">
+                {order.fiscalAccessKey.slice(0, 8)}…{order.fiscalAccessKey.slice(-4)}
+              </span>
+            )}
+          </a>
+        ) : (order.status === 'entregue' || isOrderPaid(order)) ? (
+          <button onClick={onEmitNfce}
+            className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-blue-200 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-xs font-semibold text-blue-700 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20">
+            <Receipt className="w-3.5 h-3.5" />
+            Emitir NFC-e
+          </button>
+        ) : null}
         <div className="flex gap-2">
           <button onClick={onEdit}
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800">
@@ -981,21 +1108,239 @@ function OrderDetailDrawer({
   );
 }
 
+// ─── New-order reception bar ─────────────────────────────────────────────────
+// Loop de recebimento da cozinha: destaca os pedidos aguardando ACEITE
+// (status 'recebido'), com cronômetro ao vivo, controles de alerta (som/notif)
+// e ações rápidas Aceitar / Recusar / Imprimir comanda por pedido.
+
+function NewOrderCard({
+  order, nowMs, onAccept, onReject, onPrint, onOpen,
+}: {
+  order: Order;
+  nowMs: number;
+  onAccept: (o: Order) => void;
+  onReject: (o: Order) => void;
+  onPrint: (o: Order) => void;
+  onOpen: (o: Order) => void;
+}) {
+  const waitedMin = (nowMs - new Date(order.createdAt).getTime()) / 60000;
+  const timerTone = waitedMin >= 15
+    ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
+    : waitedMin >= 7
+      ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300'
+      : 'bg-white/70 text-gray-700 dark:bg-black/30 dark:text-gray-200';
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, scale: 0.92, y: 8 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.92, y: -8 }}
+      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+      className="min-w-[260px] w-[260px] flex-shrink-0 rounded-2xl bg-white dark:bg-gray-900 border-2 border-amber-300 dark:border-amber-500/40 shadow-md shadow-amber-500/10 p-3 flex flex-col gap-2"
+    >
+      <button onClick={() => onOpen(order)} className="text-left">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {order.channel && (
+              <span className={cn('text-[11px]', CHANNEL_ICONS[order.channel].color)}>
+                {CHANNEL_ICONS[order.channel].icon}
+              </span>
+            )}
+            <span className="text-[11px] font-mono font-bold text-gray-400 dark:text-gray-500">#{order.number}</span>
+          </div>
+          <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold tabular-nums', timerTone)}>
+            <Clock className="w-3 h-3" />
+            {elapsedSince(order.createdAt, nowMs)}
+          </span>
+        </div>
+        <p className="mt-1.5 text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">{order.clientName}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+          {order.items.slice(0, 2).map(i => `${i.quantity}× ${i.productName}`).join(', ')}
+          {order.items.length > 2 ? ` +${order.items.length - 2}` : ''}
+        </p>
+        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
+          {order.deliveryType === 'entrega' ? <Bike className="w-3 h-3" /> : <Home className="w-3 h-3" />}
+          <span>{order.deliveryType === 'entrega' ? 'Entrega' : 'Retirada'}</span>
+          <span className="text-gray-300 dark:text-gray-600">·</span>
+          <span className="font-semibold text-gray-700 dark:text-gray-300">{formatCurrency(order.total)}</span>
+        </div>
+      </button>
+
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={() => onAccept(order)}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm shadow-emerald-600/20"
+        >
+          <Check className="w-3.5 h-3.5" />
+          Aceitar
+        </button>
+        <button
+          onClick={() => onPrint(order)}
+          title="Imprimir comanda"
+          className="p-2 rounded-xl border border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+        >
+          <Printer className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={() => onReject(order)}
+          title="Recusar pedido"
+          className="p-2 rounded-xl border border-red-200 dark:border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
+        >
+          <Ban className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+function NewOrderReceptionBar({
+  orders, onAccept, onReject, onPrint, onOpen,
+  soundOn, toggleSound, notifPermission, onRequestNotif,
+  autoPrint, onToggleAutoPrint,
+}: {
+  orders: Order[];
+  onAccept: (o: Order) => void;
+  onReject: (o: Order) => void;
+  onPrint: (o: Order) => void;
+  onOpen: (o: Order) => void;
+  soundOn: boolean;
+  toggleSound: () => void;
+  notifPermission: 'default' | 'granted' | 'denied' | 'unsupported';
+  onRequestNotif: () => void;
+  autoPrint: boolean;
+  onToggleAutoPrint: () => void;
+}) {
+  // Cronômetro ao vivo: um único tick de 1s re-renderiza todos os cards.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.25 }}
+      className="overflow-hidden rounded-2xl border-2 border-amber-300 dark:border-amber-500/40 bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-500/10 dark:to-orange-500/10"
+    >
+      <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <motion.span
+            animate={{ scale: [1, 1.15, 1] }}
+            transition={{ repeat: Infinity, duration: 1.4, ease: 'easeInOut' }}
+            className="relative flex items-center justify-center w-8 h-8 rounded-xl bg-amber-500 text-white shadow-sm"
+          >
+            <Bell className="w-4 h-4" />
+          </motion.span>
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-amber-800 dark:text-amber-300 font-display leading-tight">
+              Novos Pedidos · {orders.length}
+            </p>
+            <p className="text-[11px] text-amber-700/80 dark:text-amber-400/80 truncate">
+              Aguardando aceite da cozinha
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          <button
+            onClick={onToggleAutoPrint}
+            title="Imprimir comanda automaticamente ao aceitar"
+            className={cn(
+              'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors',
+              autoPrint
+                ? 'bg-amber-600 border-amber-600 text-white'
+                : 'bg-white/70 dark:bg-black/20 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300',
+            )}
+          >
+            <Printer className="w-3.5 h-3.5" />
+            Auto-imprimir
+          </button>
+          {notifPermission !== 'granted' && notifPermission !== 'unsupported' && (
+            <button
+              onClick={onRequestNotif}
+              title="Permitir notificações no desktop"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border bg-white/70 dark:bg-black/20 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-white"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              Notificar
+            </button>
+          )}
+          <button
+            onClick={toggleSound}
+            title={soundOn ? 'Silenciar alerta sonoro' : 'Ativar alerta sonoro'}
+            className={cn(
+              'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors',
+              soundOn
+                ? 'bg-emerald-600 border-emerald-600 text-white'
+                : 'bg-white/70 dark:bg-black/20 border-amber-200 dark:border-amber-500/30 text-amber-700 dark:text-amber-300',
+            )}
+          >
+            {soundOn ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+            {soundOn ? 'Som on' : 'Som off'}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-2.5 overflow-x-auto px-4 pb-3 pt-1">
+        <AnimatePresence mode="popLayout" initial={false}>
+          {orders.map(o => (
+            <NewOrderCard
+              key={o.id}
+              order={o}
+              nowMs={nowMs}
+              onAccept={onAccept}
+              onReject={onReject}
+              onPrint={onPrint}
+              onOpen={onOpen}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  );
+}
+
 // ─── Main Module ─────────────────────────────────────────────────────────────
 
 type ViewMode = 'board' | 'list';
+
+const AUTO_PRINT_PREF_KEY = 'orders:autoPrintOnAccept';
 
 export default function OrdersModule() {
   const { user, business } = useAuth();
 
   const [viewMode, setViewMode] = useState<ViewMode>('board');
   const [search, setSearch] = useState('');
+  const [printerSetupOpen, setPrinterSetupOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  // Pedido em emissão de NFC-e — quando setado, abre o EmitirNotaDialog
+  // pré-preenchido. Null = fechado.
+  const [nfceOrder, setNfceOrder] = useState<Order | null>(null);
+
+  // Preferência local (por dispositivo) de imprimir a comanda ao aceitar.
+  const [autoPrintOnAccept, setAutoPrintOnAccept] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    setAutoPrintOnAccept(window.localStorage.getItem(AUTO_PRINT_PREF_KEY) === '1');
+  }, []);
+  const toggleAutoPrint = useCallback(() => {
+    setAutoPrintOnAccept(prev => {
+      const next = !prev;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(AUTO_PRINT_PREF_KEY, next ? '1' : '0');
+      }
+      return next;
+    });
+  }, []);
   const [prefillFromConversation, setPrefillFromConversation] = useState<{
     clientId: string;
     clientName: string;
@@ -1045,6 +1390,7 @@ export default function OrdersModule() {
     const q = query(
       collection(db, 'deliveryOrders'),
       where('businessId', '==', business.id),
+      where('createdAt', '>=', ordersWindowStartIso()),
       orderBy('createdAt', 'desc'),
     );
     const unsub = onSnapshot(q, (snap) => {
@@ -1057,25 +1403,32 @@ export default function OrdersModule() {
     return unsub;
   }, [business?.id]);
 
-  // Related data — onSnapshot (refactor sync multi-user):
+  // Products — onSnapshot (refactor sync multi-user): em ambiente delivery
+  // multi-atendente o preço/disponibilidade muda o tempo todo (Estoque), então
+  // o cardápio no formulário precisa ser tempo real.
   //
-  // Em ambiente delivery multi-atendente, lookups de clients/products
-  // mudam o tempo todo: cliente novo via Conversas é cadastrado, produto
-  // tem preço atualizado em Estoque. ANTES: staleTime 2-3min mostrava
-  // dados antigos no formulário de pedido. AGORA: real-time.
+  // EF-02: clients, ao contrário, alimentam APENAS o autocomplete do formulário.
+  // ANTES: onSnapshot da coleção INTEIRA ⇒ listener persistente re-disparava a
+  // cada escrita em qualquer cliente do tenant. AGORA: getDocs one-shot por
+  // business (sem tempo real). Single-field query + sort client-side (evita
+  // composite index). Refetch ao reabrir o módulo/trocar de business cobre o
+  // caso de cliente novo cadastrado via Conversas.
   const [clients, setClients] = useState<Client[]>([]);
   useEffect(() => {
     if (!business?.id) return;
-    // Single-field query — sort por name client-side (evita composite index).
-    const q = query(collection(db, 'clients'), where('businessId', '==', business.id));
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs
-        .map(d => ({ ...d.data(), id: d.id } as Client))
-        .filter(isActiveClient)
-        .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-      setClients(list);
-    }, (err) => console.error('[Orders] clients snapshot error:', err));
-    return () => unsub();
+    let cancelled = false;
+    const q = query(collection(db, 'clients'), where('businessId', '==', business.id), limit(2000));
+    getDocs(q)
+      .then((snap) => {
+        if (cancelled) return;
+        const list = snap.docs
+          .map(d => ({ ...d.data(), id: d.id } as Client))
+          .filter(isActiveClient)
+          .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        setClients(list);
+      })
+      .catch((err) => console.error('[Orders] clients load error:', err));
+    return () => { cancelled = true; };
   }, [business?.id]);
 
   const [products, setProducts] = useState<Product[]>([]);
@@ -1126,10 +1479,26 @@ export default function OrdersModule() {
     return groups;
   }, [filteredOrders, viewMode]);
 
+  // Loop de recebimento: pedidos aguardando aceite ('recebido'). Não passa pelo
+  // filtro de busca — a cozinha precisa ver TODO pedido novo até dar aceite.
+  const newOrders = useMemo(
+    () => orders.filter(o => o.status === 'recebido'),
+    [orders],
+  );
+
+  const businessName = business?.nomeFantasia || business?.razaoSocial || 'Estabelecimento';
+
+  // Alerta sonoro em loop + notificação desktop enquanto houver pedido não-aceito.
+  const { soundOn, toggleSound, notifPermission, requestNotif } = useNewOrderAlert(newOrders.length);
+
   // KPIs
   const kpis = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const todayOrders = orders.filter(o => o.createdAt.startsWith(today));
+    // Grupo 10: receita POTENCIAL (todos os pedidos não-cancelados de hoje,
+    // inclusive não-entregues/não-pagos). NÃO é a receita reconhecida do
+    // Financeiro — essa é lançada por competência só na entrega
+    // (bookDeliveryRevenue). KPI rotulado "Receita potencial" pra não confundir.
     const todayRevenue = todayOrders
       .filter(o => o.status !== 'cancelado')
       .reduce((s, o) => s + o.total, 0);
@@ -1143,22 +1512,8 @@ export default function OrdersModule() {
     return { todayCount: todayOrders.length, todayRevenue, active, urgent, avgTime: Math.round(avgTime) };
   }, [orders]);
 
-  // Get next sequential order number
-  const getNextOrderNumber = useCallback(async (): Promise<number> => {
-    if (!business?.id) return 1;
-    const q = query(
-      collection(db, 'deliveryOrders'),
-      where('businessId', '==', business.id),
-      orderBy('number', 'desc'),
-      firestoreLimit(1),
-    );
-    const snap = await getDocs(q);
-    if (snap.empty) return 1;
-    return (snap.docs[0].data().number || 0) + 1;
-  }, [business?.id]);
-
   // Persist new/edit
-  const persistOrder = async (data: OrderFormData) => {
+  const persistOrder = async (data: OrderFormData, idempotencyKey: string) => {
     if (!business?.id || !user) return;
     const now = new Date().toISOString();
     const subtotal = data.items.reduce((s, i) => s + i.total, 0);
@@ -1167,6 +1522,10 @@ export default function OrdersModule() {
 
     try {
       if (editingOrder) {
+        // Grupo 9: pedido Mercado Pago tem status/método controlados pelo webhook
+        // (paymentFsmStatus). Edição manual desses campos é proibida — não os
+        // incluímos no payload mesmo que a UI venha adulterada.
+        const lockPayment = editingOrder.paymentProvider === 'mercadopago';
         const payload: Partial<Order> = {
           clientId: data.clientId || undefined,
           clientName: data.clientName.trim(),
@@ -1178,8 +1537,7 @@ export default function OrdersModule() {
           total,
           deliveryType: data.deliveryType,
           deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
-          paymentMethod: data.paymentMethod,
-          paymentStatus: data.paymentStatus,
+          ...(lockPayment ? {} : { paymentMethod: data.paymentMethod, paymentStatus: data.paymentStatus }),
           changeFor: data.changeFor || undefined,
           customerNotes: data.customerNotes || undefined,
           internalNotes: data.internalNotes || undefined,
@@ -1190,7 +1548,23 @@ export default function OrdersModule() {
         await updateDoc(doc(db, 'deliveryOrders',editingOrder.id), cleaned);
         toast.success('Pedido atualizado');
       } else {
-        const number = await getNextOrderNumber();
+        // Grupo 11: idempotência do pedido manual. A chave do formulário vira o
+        // doc id ⇒ duplo-clique/retry reusa o MESMO doc. Pré-check evita queimar
+        // um número sequencial num retry cujo pedido já existe.
+        const orderRef = doc(db, 'deliveryOrders', idempotencyKey);
+        const existing = await getDoc(orderRef);
+        if (existing.exists()) {
+          toast.info(`Pedido #${(existing.data() as Order).number} já foi criado`);
+          setEditingOrder(null);
+          setPrefillFromConversation(null);
+          setPrefillCartItems([]);
+          setFormOpen(false);
+          return;
+        }
+        // X1: numeração atômica via contador monotônico do business
+        // (allocateOrderNumber, runTransaction). Substitui o max()+1 lido em
+        // memória, que colidia com o canal público (orders/public) sob concorrência.
+        const number = await allocateOrderNumber(db, business.id);
         const payload: Omit<Order, 'id'> = {
           businessId: business.id,
           number,
@@ -1219,16 +1593,22 @@ export default function OrdersModule() {
         };
         const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined)) as Omit<Order, 'id'>;
 
-        // Non-blocking stock pre-check — warns operator but doesn't block creation
+        // Non-blocking stock pre-check — warns operator but doesn't block creation.
+        // Reconstrói as MESMAS linhas que a baixa/restauro (buildOrderStockLines):
+        // itens + insumos de modificadores (linkedProductId), pra alertar também
+        // quando o que falta é um insumo, não só o produto base.
         const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = data.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
+        const stockLines = buildOrderStockLines(
+          { ...cleaned, id: 'preview' } as Order,
+          productIndex,
+        );
         const shortages = checkStockAvailability(stockLines, productIndex);
         if (shortages.length > 0) {
           const names = shortages.map(s => `${s.productName} (pediu ${s.requested}, tem ${s.available})`).join(' · ');
           toast.warn(`Estoque insuficiente: ${names}`, { autoClose: 7000 });
         }
 
-        await addDoc(collection(db, 'deliveryOrders'), cleaned);
+        await setDoc(orderRef, cleaned);
         toast.success(`Pedido #${number} criado!`);
       }
       setEditingOrder(null);
@@ -1241,6 +1621,169 @@ export default function OrdersModule() {
     }
   };
 
+  // Restaura, idempotentemente, o estoque debitado de um pedido (caminho MANUAL,
+  // client SDK). Espelha restoreOrderStockOnReversal (admin/webhook) com a MESMA
+  // ordem RECUPERÁVEL e os mesmos guards CAS:
+  //   1. claim DENTRO da runTransaction ANTES de restaurar: grava
+  //      stockRestoreClaimedAt + stockRestoredAt=null, só se ainda NÃO há
+  //      timestamp de restauro e nenhum claim recente (<5min). Após o restauro
+  //      automático (cron/webhook) ou de outro atendente, este caminho vira no-op
+  //      (STK-01 — guard por stockRestoredAt, não só por stockDeductedAt).
+  //   2. reconstrói as MESMAS linhas (itens + insumos de modificadores via
+  //      linkedProductId) com buildOrderStockLines e restaura (STK-02).
+  //   3. grava stockRestoredAt=timestamp SÓ APÓS concluir — se restoreStock
+  //      lançar, o claim antigo expira e a recuperação (cron) reprocessa.
+  const restoreOrderStockOnce = useCallback(async (order: Order): Promise<boolean> => {
+    const businessId = business?.id;
+    if (!businessId || !user) return false;
+    const orderRef = doc(db, 'deliveryOrders', order.id);
+    const claimedOrder = await runTransaction(db, async (trx) => {
+      const snap = await trx.get(orderRef);
+      const data = snap.data() as Order | undefined;
+      if (!data) return null;
+      if (data.businessId !== businessId) return null;            // R1 re-check
+      if (!data.stockDeductedAt) return null;                     // nada debitado
+      if (typeof data.stockRestoredAt === 'string') return null;  // já restaurado
+      const claimedAt = data.stockRestoreClaimedAt;
+      if (typeof claimedAt === 'string' && Date.now() - Date.parse(claimedAt) < 5 * 60 * 1000) {
+        return null; // claim recente em progresso — não restaura de novo
+      }
+      const nowIso = new Date().toISOString();
+      trx.update(orderRef, { stockRestoreClaimedAt: nowIso, stockRestoredAt: null, updatedAt: nowIso });
+      return data;
+    });
+    if (!claimedOrder) return false;
+
+    const productIndex = new Map(products.map(p => [p.id, p]));
+    const stockLines = buildOrderStockLines(claimedOrder, productIndex);
+    await restoreStock(db, stockLines, {
+      businessId,
+      operatorId: user.uid,
+      operatorName: user.name,
+      sourceId: order.id,
+      reason: `Cancelamento pedido #${order.number}`,
+      productIndex,
+    });
+    // Timestamp gravado SÓ APÓS concluir (ordem recuperável).
+    await updateDoc(orderRef, { stockRestoredAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    return true;
+  }, [business?.id, user, products]);
+
+  // Lança a receita de entrega como Transaction idempotente e marca o pedido como
+  // entregue numa única runTransaction (F1/F3). Espelha o estorno:
+  //   - ID DETERMINÍSTICO transactions/{orderId}_revenue ⇒ no máximo UM doc de
+  //     receita por pedido, mesmo sob reentrada/concorrência (set idempotente);
+  //   - CAS em order.transactionId ⇒ não relança se já houve receita.
+  // Gate X1 (revalidado contra a versão fresca do doc): pedido ONLINE só lança
+  // receita 'pago' quando paymentFsmStatus==='paid'.
+  const bookDeliveryRevenue = useCallback(async (order: Order, now: string): Promise<void> => {
+    const businessId = business?.id;
+    if (!businessId) return;
+    const orderRef = doc(db, 'deliveryOrders', order.id);
+    const txRef = doc(db, 'transactions', `${order.id}_revenue`);
+    // Capturados FRESCOS dentro da transação (não do closure, que pode estar
+    // stale se o pedido mutou concorrentemente) pra alimentar o recordClientPurchase.
+    let freshClientId: string | undefined;
+    let freshClientName: string | undefined;
+    let freshTotal = 0;
+    let freshChannel: Order['channel'] | undefined;
+    // COE-01: fidelidade só acumula na PRIMEIRA reconciliação (mesmo CAS de
+    // order.transactionId que garante uma única receita) ⇒ idempotente por
+    // sourceId=order.id sob reentrada/concorrência.
+    let bookedNow = false;
+    await runTransaction(db, async (trx) => {
+      const snap = await trx.get(orderRef);
+      const data = snap.data() as Order | undefined;
+      if (!data) throw new Error('Pedido não encontrado');
+      if (isOnlineOrder(data) && data.paymentFsmStatus !== 'paid') {
+        throw new Error('ONLINE_UNPAID: pagamento online não confirmado');
+      }
+      freshClientId = data.clientId || undefined;
+      freshClientName = data.clientName || undefined;
+      freshTotal = data.total;
+      freshChannel = data.channel;
+      const patch: Record<string, unknown> = { status: 'entregue', deliveredAt: now, updatedAt: now };
+      if (!data.transactionId) {
+        trx.set(txRef, {
+          businessId,
+          type: 'receita',
+          category: 'Vendas',
+          description: `Pedido #${data.number}${data.clientName ? ` - ${data.clientName}` : ''}`,
+          amount: data.total,
+          dueDate: now.split('T')[0],
+          paymentDate: now.split('T')[0],
+          status: 'pago',
+          clientId: data.clientId || null,
+          contactId: data.clientId || null,
+          clientName: data.clientName || null,
+          deliveryOrderId: order.id,
+          paymentMethod: data.paymentMethod || null,
+          // FIN-DEL-03: propaga a origem do pedido pra receita — channelType só
+          // aceita canais de conversa (whatsapp/facebook/instagram); manual/site
+          // ficam sem canal. sectorId herda o setor responsável do pedido.
+          ...(data.channel && (['whatsapp', 'facebook', 'instagram'] as string[]).includes(data.channel)
+            ? { channelType: data.channel as ConversationChannel }
+            : {}),
+          ...(data.sectorId ? { sectorId: data.sectorId } : {}),
+          createdAt: now,
+          updatedAt: now,
+        });
+        patch.transactionId = txRef.id;
+        bookedNow = true;
+      }
+      trx.update(orderRef, patch);
+    });
+
+    // Grupo 6: no reconhecimento da receita (entrega), registra a compra na ficha
+    // do cliente — totalSpent/lastVisit/lifecycle — de forma idempotente por pedido
+    // (guard clients/{id}/purchases/{orderId}), logo reentrada/concorrência não
+    // re-conta. Pedidos do cardápio público (channel 'site') já incrementaram
+    // visitCount na criação ⇒ countVisit:false; manual/whatsapp/... contam aqui.
+    // Best-effort: não derruba a entrega já efetivada se a ficha falhar.
+    if (freshClientId) {
+      try {
+        await recordClientPurchaseClient({
+          businessId,
+          clientId: freshClientId,
+          sourceId: order.id,
+          amount: freshTotal,
+          countVisit: freshChannel !== 'site',
+        });
+      } catch (err) {
+        console.warn('[Orders] recordClientPurchase failed:', err);
+      }
+    }
+
+    // COE-02: acúmulo de pontos de fidelidade no reconhecimento da receita —
+    // espelha PDV (sale) e Agenda (appointment). A idempotência vem do gate
+    // `bookedNow` (só true quando o CAS em order.transactionId lançou a receita
+    // ÚNICA nesta execução) — reentrega/reconciliação repetida não re-acumula.
+    // (addLoyaltyPoints em si grava com doc id aleatório; a garantia é o CAS.)
+    // Best-effort: não derruba a entrega já efetivada se a fidelidade falhar.
+    if (bookedNow && freshClientId) {
+      const lc = business?.settings?.loyalty;
+      if (lc?.isEnabled) {
+        const earned = calculateEarnedPoints(freshTotal, lc);
+        if (earned > 0) {
+          try {
+            await addLoyaltyPoints(db, {
+              businessId,
+              clientId: freshClientId,
+              clientName: freshClientName || '',
+              pointsEarned: earned,
+              config: lc,
+              sourceId: order.id,
+              sourceType: 'order',
+              description: `Pedido #${order.number}`,
+            });
+          } catch (err) {
+            console.warn('[Orders] loyalty accrual failed:', err);
+          }
+        }
+      }
+    }
+  }, [business?.id, business?.settings?.loyalty]);
+
   // Status change — deducts stock on transition into "preparando" (idempotent).
   const handleStatusChange = async (order: Order, newStatus: OrderStatus) => {
     if (!business?.id || !user) return;
@@ -1251,68 +1794,48 @@ export default function OrdersModule() {
       if (newStatus !== order.status) {
         assertTransitionDeliveryOrder(order.status, newStatus);
       }
-      const patch: Record<string, unknown> = { status: newStatus, updatedAt: now };
 
-      // Deduct stock when entering 'preparando' for the first time
+      // X1-gate (UX, pré-write): pedido ONLINE só pode ser entregue — e ter
+      // receita 'pago' lançada — com pagamento confirmado. Dinheiro-na-entrega
+      // não entra aqui (isOnlineOrder=false) e segue bookando normalmente.
+      if (newStatus === 'entregue' && isOnlineOrder(order) && order.paymentFsmStatus !== 'paid') {
+        toast.error('Pedido online ainda não foi pago — não é possível entregar.');
+        return;
+      }
+
+      let appliedPatch: Record<string, unknown> = { status: newStatus, updatedAt: now };
       let stockAlertsFromOrder: StockAlert[] = [];
-      if (newStatus === 'preparando' && !order.stockDeductedAt) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
-        const adjustments = await deductStock(db, stockLines, {
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name,
-          sourceId: order.id,
-          reason: `Pedido #${order.number}`,
-          productIndex,
-        });
-        stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
-        patch.stockDeductedAt = now;
-      }
-      // Restaura estoque quando vai pra 'cancelado' e tinha sido deduzido.
-      // Idempotente via stockDeductedAt: se ja restaurado (campo limpo) nao
-      // restaura duas vezes. Pattern espelha sales.handleCancelSale.
-      if (newStatus === 'cancelado' && order.stockDeductedAt) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
-        await restoreStock(db, stockLines, {
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name,
-          sourceId: order.id,
-          reason: `Cancelamento pedido #${order.number}`,
-          productIndex,
-        });
-        patch.stockDeductedAt = null;
-      }
+
       if (newStatus === 'entregue') {
-        patch.deliveredAt = now;
-        // Receita de delivery → Transaction (idempotente via order.transactionId).
-        // Espelha o padrão do PDV (Transaction com saleId em PDVModule.tsx).
-        if (!order.transactionId) {
-          const txRef = await addDoc(collection(db, 'transactions'), {
+        await bookDeliveryRevenue(order, now);
+        appliedPatch = { status: 'entregue', deliveredAt: now, updatedAt: now };
+        // Fiscal: auto-emissão de NFC-e na conclusão (opt-in). Fire-and-forget —
+        // a receita/entrega já foi efetivada acima; a nota nunca bloqueia o pedido.
+        void autoEmitNfceIfEnabled(order);
+      } else if (newStatus === 'cancelado') {
+        // STK-01/STK-02: restauro idempotente com guard CAS por stockRestoredAt.
+        await restoreOrderStockOnce(order);
+        await updateDoc(doc(db, 'deliveryOrders', order.id), appliedPatch);
+      } else {
+        // Deduct stock when entering 'preparando' for the first time.
+        if (newStatus === 'preparando' && !order.stockDeductedAt) {
+          const productIndex = new Map(products.map(p => [p.id, p]));
+          const stockLines = buildOrderStockLines(order, productIndex);
+          const adjustments = await deductStock(db, stockLines, {
             businessId: business.id,
-            type: 'receita',
-            category: 'Vendas',
-            description: `Pedido #${order.number}${order.clientName ? ` - ${order.clientName}` : ''}`,
-            amount: order.total,
-            dueDate: now.split('T')[0],
-            paymentDate: now.split('T')[0],
-            status: 'pago',
-            clientId: order.clientId || null,
-            contactId: order.clientId || null,
-            clientName: order.clientName || null,
-            deliveryOrderId: order.id,
-            paymentMethod: order.paymentMethod || null,
-            createdAt: now,
-            updatedAt: now,
+            operatorId: user.uid,
+            operatorName: user.name,
+            sourceId: order.id,
+            reason: `Pedido #${order.number}`,
+            productIndex,
           });
-          patch.transactionId = txRef.id;
+          stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
+          appliedPatch.stockDeductedAt = now;
         }
+        await updateDoc(doc(db, 'deliveryOrders', order.id), appliedPatch);
       }
 
-      await updateDoc(doc(db, 'deliveryOrders',order.id), patch);
-      setSelectedOrder(prev => prev && prev.id === order.id ? { ...prev, ...patch, status: newStatus } as Order : prev);
+      setSelectedOrder(prev => prev && prev.id === order.id ? { ...prev, ...appliedPatch, status: newStatus } as Order : prev);
       toast.success(`Pedido #${order.number}: ${STATUS_CONFIG[newStatus].label}`);
 
       // Estoque baixo após dedução do pedido: toast + notif (best-effort).
@@ -1341,7 +1864,9 @@ export default function OrdersModule() {
       console.error('[Orders] Status change failed:', err);
       const msg = err instanceof Error && err.message.startsWith('DeliveryOrder FSM:')
         ? 'Transição de status inválida'
-        : 'Erro ao alterar status';
+        : err instanceof Error && err.message.startsWith('ONLINE_UNPAID')
+          ? 'Pedido online ainda não foi pago'
+          : 'Erro ao alterar status';
       toast.error(msg);
     }
   };
@@ -1361,6 +1886,39 @@ export default function OrdersModule() {
     }
   }
 
+  // Auto-emissão de NFC-e na conclusão do pedido (opt-in via Settings → Fiscal).
+  // Best-effort: só dispara quando o flag está ligado e a nota ainda não existe
+  // (o route /api/fiscal/emit-order reforça a idempotência por fiscalDocumentId —
+  // o guard local só evita o round-trip). Nunca lança: a entrega já foi efetivada.
+  async function autoEmitNfceIfEnabled(order: Order) {
+    if (!business?.fiscal?.nfceConfig?.autoEmit) return;
+    if (order.fiscalDocumentId) return;
+    // Fiscal: a NFC-e é montada sobre a MERCADORIA cheia (soma dos itens) e um
+    // único tender no método do pedido. Ainda não modelamos (a) desconto de cupom
+    // como vDesc nem (b) gift card como pagamento em voucher (tPag 12). Auto-emitir
+    // um pedido com cupom OU gift card distorceria base/tender — então pulamos a
+    // auto-emissão e deixamos o operador emitir manualmente (ciente dos valores).
+    // Follow-up: modelar couponDiscount (vDesc) e giftCardAmount (voucher) no emit.
+    if ((order.couponDiscount ?? order.discount ?? 0) > 0 || (order.giftCardAmount ?? 0) > 0) {
+      console.info('[Orders] auto-emit NFC-e pulada: pedido com cupom/gift card (emitir manual).');
+      return;
+    }
+    try {
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) return;
+      const res = await fetch(`/api/fiscal/emit-order/${order.id}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        console.warn('[Orders] auto-emit NFC-e falhou:', res.status);
+      }
+    } catch (err) {
+      console.warn('[Orders] auto-emit NFC-e error:', err);
+    }
+  }
+
   const handleDelete = async (order: Order) => {
     if (!business?.id) return;
     if (!confirm(`Cancelar o pedido #${order.number}? O pedido fica no histórico marcado como cancelado.`)) return;
@@ -1375,6 +1933,10 @@ export default function OrdersModule() {
         return;
       }
       const now = new Date().toISOString();
+      // Restaura estoque se foi deduzido — MESMO guard CAS que handleStatusChange
+      // (restoreOrderStockOnce): guard por stockRestoredAt, não só stockDeductedAt,
+      // pra não duplicar o restauro após o automático (cron/webhook). STK-01/STK-02.
+      await restoreOrderStockOnce(order);
       const patch: Record<string, unknown> = {
         status: 'cancelado',
         cancelledAt: now,
@@ -1382,22 +1944,6 @@ export default function OrdersModule() {
         cancelledByName: user.name || user.uid,
         updatedAt: now,
       };
-      // Restaura estoque se foi deduzido (Item 2 backlog). Mesma logica que
-      // handleStatusChange — operador pode usar qualquer fluxo (mover pra
-      // cancelado ou clicar Excluir).
-      if (order.stockDeductedAt) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = order.items.map(i => ({ productId: i.productId, quantity: i.quantity }));
-        await restoreStock(db, stockLines, {
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name,
-          sourceId: order.id,
-          reason: `Cancelamento pedido #${order.number}`,
-          productIndex,
-        });
-        patch.stockDeductedAt = null;
-      }
       await updateDoc(doc(db, 'deliveryOrders', order.id), patch);
       setSelectedOrder(null);
       toast.info('Pedido cancelado');
@@ -1406,6 +1952,51 @@ export default function OrdersModule() {
       toast.error('Erro ao cancelar');
     }
   };
+
+  // Aceite do pedido novo: recebido→preparando (reusa handleStatusChange, que já
+  // valida a FSM e faz a baixa de estoque). Opcionalmente imprime a comanda.
+  const handleAccept = useCallback(async (order: Order) => {
+    await handleStatusChange(order, 'preparando');
+    if (autoPrintOnAccept) void printOrder(order, businessName, business?.id || '');
+  }, [handleStatusChange, autoPrintOnAccept, businessName, business?.id]);
+
+  // Recusa do pedido novo: recebido→cancelado com motivo. Reusa o MESMO caminho
+  // de cancelamento (restoreOrderStockOnce restaura estoque idempotente).
+  const handleReject = useCallback(async (order: Order) => {
+    if (!business?.id || !user) return;
+    if (order.status === 'cancelado') return;
+    const reason = (typeof window !== 'undefined'
+      ? window.prompt(`Recusar o pedido #${order.number}? Informe o motivo:`, '')
+      : '') ?? undefined;
+    if (reason === undefined) return; // cancelou o prompt
+    try {
+      const now = new Date().toISOString();
+      // Valida a transição pela FSM antes de qualquer write/side-effect.
+      assertTransitionDeliveryOrder(order.status, 'cancelado');
+      await restoreOrderStockOnce(order);
+      const patch: Record<string, unknown> = {
+        status: 'cancelado',
+        cancelledAt: now,
+        cancelledBy: user.uid,
+        cancelledByName: user.name || user.uid,
+        updatedAt: now,
+      };
+      const trimmed = reason.trim();
+      if (trimmed) patch.cancelReason = trimmed;
+      await updateDoc(doc(db, 'deliveryOrders', order.id), patch);
+      setSelectedOrder(prev => prev && prev.id === order.id ? null : prev);
+      toast.info(`Pedido #${order.number} recusado`);
+      if (business.settings?.aiAgent?.enabled && business.settings?.aiAgent?.pedidos?.notifyOnStatusChange) {
+        void notifyStatusChange('order', order.id, 'cancelado', business.id);
+      }
+    } catch (err) {
+      console.error('[Orders] Reject failed:', err);
+      const msg = err instanceof Error && err.message.startsWith('DeliveryOrder FSM:')
+        ? 'Transição de status inválida'
+        : 'Erro ao recusar pedido';
+      toast.error(msg);
+    }
+  }, [business?.id, business?.settings?.aiAgent?.enabled, business?.settings?.aiAgent?.pedidos?.notifyOnStatusChange, user, restoreOrderStockOnce]);
 
   const formInitial = useMemo<OrderFormData>(() => {
     if (editingOrder) {
@@ -1494,6 +2085,13 @@ export default function OrdersModule() {
               </button>
             </div>
             <button
+              onClick={() => setPrinterSetupOpen(true)}
+              title="Configurar impressora"
+              className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-gray-100 dark:bg-gray-800/60 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
+            >
+              <Printer className="w-4 h-4" />
+            </button>
+            <button
               onClick={() => { setEditingOrder(null); setFormOpen(true); }}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-bold shadow-sm shadow-red-600/20"
             >
@@ -1506,7 +2104,7 @@ export default function OrdersModule() {
         {/* KPIs strip */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <KPIMini label="Hoje" value={String(kpis.todayCount)} icon={ClipboardCheck} accent="text-blue-500" />
-          <KPIMini label="Receita" value={formatCurrency(kpis.todayRevenue)} icon={DollarSign} accent="text-emerald-500" />
+          <KPIMini label="Receita potencial" value={formatCurrency(kpis.todayRevenue)} icon={DollarSign} accent="text-emerald-500" />
           <KPIMini label="Em andamento" value={String(kpis.active)} icon={Timer} accent="text-amber-500" />
           <KPIMini
             label="Atrasados"
@@ -1528,6 +2126,27 @@ export default function OrdersModule() {
           />
         </div>
       </div>
+
+      {/* Loop de recebimento — pedidos aguardando aceite */}
+      <AnimatePresence initial={false}>
+        {newOrders.length > 0 && (
+          <div key="new-orders-bar" className="flex-shrink-0 px-4 md:px-6 pt-3">
+            <NewOrderReceptionBar
+              orders={newOrders}
+              onAccept={handleAccept}
+              onReject={handleReject}
+              onPrint={(o) => { void printOrder(o, businessName, business?.id || '').then(r => { if (r.method === 'webusb') toast.success('Comanda enviada à impressora'); }); }}
+              onOpen={setSelectedOrder}
+              soundOn={soundOn}
+              toggleSound={toggleSound}
+              notifPermission={notifPermission}
+              onRequestNotif={() => { void requestNotif(); }}
+              autoPrint={autoPrintOnAccept}
+              onToggleAutoPrint={toggleAutoPrint}
+            />
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
@@ -1626,6 +2245,14 @@ export default function OrdersModule() {
         clients={clients}
         products={products}
         isEditing={!!editingOrder}
+        lockPayment={editingOrder?.paymentProvider === 'mercadopago'}
+      />
+
+      <PrinterSetupDialog
+        open={printerSetupOpen}
+        onClose={() => setPrinterSetupOpen(false)}
+        businessId={business?.id || ''}
+        businessName={businessName}
       />
 
       {/* Detail drawer */}
@@ -1645,10 +2272,22 @@ export default function OrdersModule() {
               onStatusChange={(s) => handleStatusChange(selectedOrder, s)}
               onEdit={() => { setEditingOrder(selectedOrder); setSelectedOrder(null); setFormOpen(true); }}
               onDelete={() => handleDelete(selectedOrder)}
+              onEmitNfce={() => { setNfceOrder(selectedOrder); setSelectedOrder(null); }}
             />
           </>
         )}
       </AnimatePresence>
+
+      {/* Emissão de NFC-e do pedido — reusa o dialog fiscal existente, pré-preenchido
+          via buildDeliveryOrderNfceInput. A emissão real (certificado + SEFAZ) e o
+          writeback fiscalDocumentId/accessKey vivem no /api/fiscal/emit. */}
+      <EmitirNotaDialog
+        open={!!nfceOrder}
+        onClose={() => setNfceOrder(null)}
+        type="nfce"
+        onSuccess={() => setNfceOrder(null)}
+        prefillNFCe={nfceOrder && business ? buildDeliveryOrderNfceInput(nfceOrder, business) : undefined}
+      />
     </div>
   );
 }

@@ -59,14 +59,18 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, addDoc, updateDoc, deleteDoc, doc, writeBatch, increment, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { buildOrderStockLines } from '@/lib/services/stock-lines';
+import PDVModifierPicker from './PDVModifierPicker';
 import { notifyLowStock } from '@/lib/services/notifications';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
+import { resolveClientIdentityClient } from '@/lib/services/clients/resolveIdentity';
+import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
 import { db } from '@/lib/config/firebase';
-import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
+import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod, SelectedModifier, DeliveryOrder } from '@/lib/types';
 
 // ==========================================
 // TYPES & CONSTANTS
@@ -131,12 +135,17 @@ function getItemIcon(item: CatalogItem) {
 
 interface CartItem extends SaleItem {
   itemType: 'product' | 'service';
+  /** Assinatura estável da seleção de modificadores (UI-only, dedup de carrinho). */
+  modifierSignature?: string;
 }
 
 export default function PDVModule() {
   const { t } = useTranslation();
   const { isDark } = useTheme();
-  const { user, business } = useAuth();
+  const { user, business, firebaseUser } = useAuth();
+  // Idempotência NFC-e: chave estável por venda — retry manual da mesma venda
+  // reusa a chave (dedup no servidor); regenerada após emissão autorizada.
+  const nfceIdemKeyRef = useRef<string>(crypto.randomUUID());
   const queryClient = useQueryClient();
 
   const loyaltyConfig = business?.settings?.loyalty;
@@ -174,6 +183,8 @@ export default function PDVModule() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState(t('pdv.catalog.all', 'Todos'));
   const [cart, setCart] = useState<CartItem[]>([]);
+  // Produto configurável aguardando escolha de modificadores (abre PDVModifierPicker).
+  const [modifierProduct, setModifierProduct] = useState<Product | null>(null);
   const [selectedClient, setSelectedClient] = useState<CRMContact | null>(null);
   const [discountValue, setDiscountValue] = useState('');
   const [discountType, setDiscountType] = useState<'reais' | 'percent'>('reais');
@@ -195,7 +206,7 @@ export default function PDVModule() {
   const pendingNfceRef = useRef<{
     saleId: string;
     cart: CartItem[];
-    total: number;
+    discount: number;
     payments: Payment[];
     clientName: string;
     cpf: string;
@@ -243,17 +254,16 @@ export default function PDVModule() {
   }, [mainView]);
 
   // --- Firestore Queries ---
-  // Products + clients via onSnapshot (refactor sync multi-user):
+  // Products via onSnapshot (refactor sync multi-user):
   //
   // ANTES: useQuery + getDocs sem staleTime explícito (caía no global,
   // antes 5min, agora 30s). Cenário multi-PDV: caixa A vende produto X
   // (estoque cai), caixa B só via novo estoque após refetch — risco de
   // vender unidades já consumidas.
   //
-  // AGORA: onSnapshot pra products e clients. Estoque/disponibilidade
-  // refletem em todos os PDVs em tempo real. services e salesHistory
-  // continuam em useQuery (volume baixo, mudança rara, ou histórico que
-  // não exige real-time).
+  // AGORA: onSnapshot pra products. Estoque/disponibilidade refletem em
+  // todos os PDVs em tempo real. services, clients e salesHistory ficam em
+  // useQuery (volume baixo, mudança rara, ou lista que não exige real-time).
   const [products, setProducts] = useState<Product[]>([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   useEffect(() => {
@@ -292,20 +302,27 @@ export default function PDVModule() {
     enabled: !!business?.id,
   });
 
-  const [clients, setClients] = useState<CRMContact[]>([]);
-  const [loadingClients, setLoadingClients] = useState(true);
-  useEffect(() => {
-    if (!business?.id) { setLoadingClients(false); return; }
-    setLoadingClients(true);
-    // Single-field filter (businessId apenas). isActive + sort por name
-    // aplicados client-side pra evitar composite index (clients/businessId+
-    // isActive+name) que exigiria criação manual no Firebase console.
-    const q = query(
-      collection(db, 'clients'),
-      where('businessId', '==', business.id),
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs
+  // Autocomplete de cliente: busca LIMITADA sob demanda, sem listener real-time.
+  //
+  // ANTES (EF-02): onSnapshot de TODA a coleção clients só pra popular o
+  // autocomplete — baixava a coleção inteira e mantinha um listener aberto por
+  // sessão de PDV, mesmo que a seleção de cliente seja opcional.
+  //
+  // AGORA: React Query + getDocs limitado (200 clientes mais recentes, usa o
+  // índice businessId+createdAt já existente). A filtragem por nome roda
+  // client-side no próprio Autocomplete (typeahead). Sem real-time: o cliente
+  // é só um vínculo da venda, não precisa refletir edições concorrentes.
+  const { data: clients = [], isLoading: loadingClients } = useQuery({
+    queryKey: ['pdv-clients', business?.id],
+    queryFn: async () => {
+      const q = query(
+        collection(db, 'clients'),
+        where('businessId', '==', business!.id),
+        orderBy('createdAt', 'desc'),
+        limit(200),
+      );
+      const snap = await getDocs(q);
+      return snap.docs
         .map(d => {
           const data = d.data();
           // Normalize legacy `nome` field to `name` (migration from old CRM schema)
@@ -314,11 +331,9 @@ export default function PDVModule() {
         })
         .filter(isActiveClient)
         .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-      setClients(list);
-      setLoadingClients(false);
-    }, (err) => { console.error('[PDV] clients snapshot error:', err); setLoadingClients(false); });
-    return () => unsub();
-  }, [business?.id]);
+    },
+    enabled: !!business?.id,
+  });
 
   const { data: salesHistory = [], isLoading: loadingSales } = useQuery({
     queryKey: ['sales', business?.id],
@@ -340,16 +355,10 @@ export default function PDVModule() {
 
   const isLoading = loadingProducts || loadingServices || loadingClients;
 
-  // Sync selectedClient com snapshot — se o cliente associado à venda em
-  // progresso é editado por outro user, refresca dados (nome, telefone) na
-  // tela do PDV. Se for desativado/deletado externamente, desassocia da
-  // venda (operador continua o checkout sem cliente, last-write-wins).
-  useEffect(() => {
-    if (!selectedClient) return;
-    const fresh = clients.find(c => c.id === selectedClient.id);
-    if (!fresh) { setSelectedClient(null); return; }
-    if (fresh.updatedAt !== selectedClient.updatedAt) setSelectedClient(fresh);
-  }, [clients, selectedClient]);
+  // (Removido) Sync real-time de selectedClient contra o snapshot da coleção:
+  // a lista de clientes agora é uma busca limitada (EF-02), então o cliente
+  // selecionado pode não estar na fatia carregada — mantê-lo é o correto. O
+  // vínculo canônico é reresolvido no confirmSale via resolveClientIdentity.
 
   // --- Derived Data ---
   const categories = useMemo(() => {
@@ -465,6 +474,56 @@ export default function PDVModule() {
       return [...prev, newItem];
     });
   }, []);
+
+  // Roteia o clique do catálogo: produto configurável (hasModifiers) abre o
+  // seletor de modificadores; o resto cai no addToCart direto de sempre.
+  const handleCatalogClick = useCallback((item: CatalogItem) => {
+    if (item.type === 'product') {
+      const product = item as Product;
+      if (product.hasModifiers && (product.modifierGroups?.length ?? 0) > 0) {
+        setModifierProduct(product);
+        return;
+      }
+    }
+    addToCart(item);
+  }, [addToCart]);
+
+  // Adiciona um produto JÁ configurado (com modificadores). unitPrice já vem com
+  // o delta aplicado (computeModifierDelta, mesma fonte do público). Deduplica por
+  // assinatura da seleção: mesma config incrementa a linha existente.
+  const addConfiguredProduct = useCallback(
+    (product: Product, selectedModifiers: SelectedModifier[], unitPrice: number, basePrice: number) => {
+      const signature = selectedModifiers
+        .map(m => `${m.groupId}:${m.selectedOptions.map(o => `${o.optionId}x${o.quantity}`).sort().join('|')}`)
+        .sort().join('||');
+      setCart(prev => {
+        const existing = prev.find(c => c.productId === product.id && (c.modifierSignature || '') === signature);
+        if (existing) {
+          return prev.map(c =>
+            c.id === existing.id
+              ? { ...c, quantity: c.quantity + 1, total: (c.quantity + 1) * c.unitPrice }
+              : c,
+          );
+        }
+        const newItem: CartItem = {
+          id: `cart-${Date.now()}`,
+          productId: product.id,
+          serviceId: undefined,
+          description: product.name,
+          quantity: 1,
+          unitPrice,
+          discount: 0,
+          total: unitPrice,
+          itemType: 'product',
+          basePrice,
+          selectedModifiers: selectedModifiers.length ? selectedModifiers : undefined,
+          modifierSignature: signature,
+        };
+        return [...prev, newItem];
+      });
+    },
+    [],
+  );
 
   const updateQuantity = useCallback((cartItemId: string, delta: number) => {
     setCart((prev) =>
@@ -632,7 +691,7 @@ export default function PDVModule() {
   const emitNfce = useCallback(async (
     saleId: string,
     cartSnapshot: CartItem[],
-    saleTotal: number,
+    saleDiscount: number,
     salePayments: Payment[],
     clientName: string,
     cpf: string,
@@ -643,14 +702,36 @@ export default function PDVModule() {
     setNfceResult(null);
 
     try {
+      // Rateia o desconto de nível de venda proporcionalmente nos itens — o
+      // backend calcula vNF = Σ(vProd − vDesc), então desconto que não vive
+      // nos itens simplesmente some da nota. Último item absorve o resto de
+      // arredondamento; share clampado pro item nunca ficar negativo.
+      const grossOf = (item: CartItem) => item.quantity * item.unitPrice - (item.discount || 0);
+      const grossTotal = cartSnapshot.reduce((sum, item) => sum + grossOf(item), 0);
+      let allocated = 0;
+      const saleDiscountShares = cartSnapshot.map((item, idx) => {
+        const gross = grossOf(item);
+        const raw = idx === cartSnapshot.length - 1
+          ? saleDiscount - allocated
+          : grossTotal > 0 ? (gross / grossTotal) * saleDiscount : 0;
+        const share = Math.min(gross, Math.max(0, +raw.toFixed(2)));
+        allocated = +(allocated + share).toFixed(2);
+        return share;
+      });
+
       // Build items with fiscal data from products
-      const nfceItems = cartSnapshot.map((item) => {
+      const nfceItems = cartSnapshot.map((item, idx) => {
         const prod = item.productId ? products.find(p => p.id === item.productId) : null;
+        const discount = +((item.discount || 0) + saleDiscountShares[idx]).toFixed(2);
         return {
+          // productId reativa o enrichment fiscal server-side (CST/CSOSN/
+          // alíquotas/NCM cadastrados no Product). Sem ele o emit caía só nos
+          // defaults do regime, ignorando o perfil fiscal do produto.
+          productId: item.productId || undefined,
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
-          discount: (item.discount || 0) > 0 ? item.discount : undefined,
+          discount: discount > 0 ? discount : undefined,
           ncm: prod?.ncm || undefined,
           cfop: prod?.cfop ? Number(prod.cfop) : undefined,
           barcode: prod?.barcode || undefined,
@@ -659,16 +740,46 @@ export default function PDVModule() {
         };
       });
 
-      // Map primary payment method
-      const primaryPayment = salePayments[0];
-      const paymentMethod = primaryPayment?.method || 'dinheiro';
+      // Total fiscal = Σ itens − descontos (espelha o vNF calculado no backend).
+      const fiscalTotal = +cartSnapshot
+        .reduce((sum, item, idx) => sum + item.quantity * item.unitPrice - ((item.discount || 0) + saleDiscountShares[idx]), 0)
+        .toFixed(2);
+
+      // Envia TODAS as formas de pagamento (antes só salePayments[0] com o
+      // total inteiro — 50% PIX + 50% cartão saía 100% no primeiro método).
+      // SEFAZ exige Σ formas == vNF e o contrato (lib/contracts/api/fiscal/
+      // emit.ts) não tem vTroco nem vOutro: troco e gorjeta não são
+      // representáveis. O excedente é abatido preferencialmente de dinheiro
+      // (semântica de troco) e, se sobrar (ex.: gorjeta no cartão), dos
+      // demais a partir do último.
+      const fiscalPayments = salePayments.map(p => ({ method: p.method, amount: +p.amount.toFixed(2) }));
+      let excess = +(fiscalPayments.reduce((sum, p) => sum + p.amount, 0) - fiscalTotal).toFixed(2);
+      const absorbExcess = (match: (method: PaymentMethod) => boolean) => {
+        for (let i = fiscalPayments.length - 1; i >= 0 && excess > 0; i--) {
+          if (!match(fiscalPayments[i].method)) continue;
+          const cut = Math.min(fiscalPayments[i].amount, excess);
+          fiscalPayments[i].amount = +(fiscalPayments[i].amount - cut).toFixed(2);
+          excess = +(excess - cut).toFixed(2);
+        }
+      };
+      absorbExcess(method => method === 'dinheiro');
+      absorbExcess(() => true);
+      // PDV tolera 1 centavo a menos no pagamento (remaining <= 0.01) —
+      // completa no primeiro método pra fechar com o vNF.
+      if (excess < 0 && fiscalPayments.length > 0) {
+        fiscalPayments[0].amount = +(fiscalPayments[0].amount - excess).toFixed(2);
+      }
 
       const nfcePayload = {
         type: 'nfce' as const,
         businessId: business.id,
+        // Vínculo com a venda: ancora a idempotência a `sale_${saleId}` (dedup
+        // por venda, não pela chave efêmera) e faz o emit gravar accessKey +
+        // documentId de volta em sales/{saleId}.
+        saleId,
+        sourceType: 'sale' as const,
         items: nfceItems,
-        paymentMethod,
-        paymentValue: saleTotal,
+        payments: fiscalPayments.filter(p => p.amount > 0),
         cpfConsumidor: cpf.replace(/\D/g, '') || undefined,
         nomeConsumidor: clientName.trim() || undefined,
         presencaComprador: 1,
@@ -677,7 +788,13 @@ export default function PDVModule() {
 
       const res = await fetch('/api/fiscal/emit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Dedup server-side: retry da MESMA venda reusa a chave → replay/409
+          // em vez de segunda NFC-e; regenerada quando a emissão autoriza.
+          'X-Idempotency-Key': nfceIdemKeyRef.current,
+          ...(firebaseUser ? { Authorization: `Bearer ${await firebaseUser.getIdToken()}` } : {}),
+        },
         body: JSON.stringify(nfcePayload),
       });
 
@@ -687,10 +804,23 @@ export default function PDVModule() {
         setNfceResult({
           accessKey: json.data.chaveAcesso,
         });
+        nfceIdemKeyRef.current = crypto.randomUUID();
         setNfceModalState('authorized');
         // FiscalModule usa onSnapshot agora — invalidação não é mais necessária.
 
         return { success: true, accessKey: json.data.chaveAcesso };
+      } else if (json.fallback === 'pending') {
+        // SEFAZ fora do ar: o doc foi salvo como 'pendente' — a venda está OK
+        // e a nota será reenviada pelo módulo Fiscal (não é erro de emissão).
+        setNfceResult({
+          error: 'SEFAZ indisponível no momento. A nota ficou PENDENTE e pode ser reenviada no módulo Fiscal — a venda foi concluída normalmente.',
+        });
+        setNfceModalState('error');
+        return { success: false };
+      } else if (res.status === 409) {
+        setNfceResult({ error: 'Emissão desta venda já está em andamento — aguarde alguns segundos e verifique o módulo Fiscal antes de tentar de novo.' });
+        setNfceModalState('error');
+        return { success: false };
       } else {
         const errorMsg = json.error || json.data?.mensagem || 'Erro desconhecido na emissão da NFC-e';
         setNfceResult({ error: errorMsg });
@@ -703,7 +833,7 @@ export default function PDVModule() {
       setNfceModalState('error');
       return { success: false };
     }
-  }, [business, products, queryClient]);
+  }, [business, products, firebaseUser]);
 
   const confirmSale = useCallback(async () => {
     if (!user || !business) return;
@@ -723,9 +853,29 @@ export default function PDVModule() {
     try {
       const now = new Date().toISOString();
 
+      // Identidade canônica do cliente (dedup/merge) — ponto ÚNICO compartilhado
+      // com o cardápio (orders/public). Segue a cadeia de mergedInto e evita
+      // anexar a venda a um duplicado. NÃO cria duplicata: se a resolução não
+      // casar com o cliente selecionado (created=true), mantém o id original.
+      let saleClientId: string | null = selectedClient?.id ?? null;
+      if (selectedClient?.phone) {
+        try {
+          const resolved = await resolveClientIdentityClient({
+            businessId: business.id,
+            phone: selectedClient.phone,
+            name: selectedClient.name,
+            createIfMissing: false, // cliente já selecionado: find-only, nunca cria órfão
+          });
+          // Casou com um primário (possível merge) → usa-o; senão mantém o selecionado.
+          if (resolved.clientId) saleClientId = resolved.clientId;
+        } catch (err) {
+          console.warn('[pdv] resolveClientIdentity falhou, usando id selecionado:', err);
+        }
+      }
+
       const saleData = {
         businessId: business.id,
-        clientId: selectedClient?.id || null,
+        clientId: saleClientId,
         clientName: selectedClient?.name || null,
         items: cart.map(item => ({
           id: generateId(),
@@ -736,6 +886,10 @@ export default function PDVModule() {
           unitPrice: item.unitPrice,
           discount: item.discount || 0,
           total: item.quantity * item.unitPrice - (item.discount || 0),
+          // Modificadores denormalizados p/ item configurável — dedução de insumos
+          // (buildOrderStockLines) e reimpressão. Guarded: Firestore rejeita undefined.
+          ...(item.selectedModifiers?.length ? { selectedModifiers: item.selectedModifiers } : {}),
+          ...(item.basePrice !== undefined ? { basePrice: item.basePrice } : {}),
         })),
         payments: payments,
         subtotal,
@@ -756,9 +910,21 @@ export default function PDVModule() {
 
       // Deduct stock into the same batch (supports composite products/BOM).
       const productIndex = new Map(products.map(p => [p.id, p]));
-      const stockLines = cart
-        .filter(item => item.productId)
-        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+      // Fonte ÚNICA de linhas de estoque (mesma do cardápio público): linha base
+      // por item + insumos de modificadores (linkedProductId × consumeQty × qty da
+      // opção × qty do item). deductStock expande BOM das linhas base internamente.
+      const stockLines = buildOrderStockLines(
+        {
+          items: cart
+            .filter(item => item.productId)
+            .map(item => ({
+              productId: item.productId!,
+              quantity: item.quantity,
+              selectedModifiers: item.selectedModifiers,
+            })),
+        } as unknown as DeliveryOrder,
+        productIndex,
+      );
 
       // Validate stock availability before committing
       if (stockLines.length > 0) {
@@ -801,8 +967,8 @@ export default function PDVModule() {
         dueDate: now.split('T')[0],
         paymentDate: now.split('T')[0],
         status: 'pago',
-        clientId: selectedClient?.id || null,
-        contactId: selectedClient?.id || null,
+        clientId: saleClientId,
+        contactId: saleClientId,
         clientName: selectedClient?.name || null,
         saleId: saleRef.id,
         paymentMethod: payments[0]?.method || 'dinheiro',
@@ -815,18 +981,13 @@ export default function PDVModule() {
       // status/lifecycleStage — lead que comprava continuava marcado como
       // "qualificado" pra sempre. Após primeira venda paga, marca como
       // 'ganho' / 'customer'.
-      if (selectedClient) {
-        const promote: Record<string, unknown> = {
-          totalSpent: increment(total),
-          visitCount: increment(1),
-          lastVisit: now,
-          updatedAt: now,
-        };
-        if (selectedClient.status !== 'ganho') promote.status = 'ganho';
-        // lifecycleStage opcional no tipo Client — só promove se ainda não é customer
-        const currentStage = (selectedClient as { lifecycleStage?: string }).lifecycleStage;
-        if (currentStage !== 'customer') promote.lifecycleStage = 'customer';
-        batch.update(doc(db, 'clients', selectedClient.id), promote);
+      // Promoção de status (lead → ganho) na mesma transação atômica da venda.
+      // As STATS de contagem (totalSpent/visitCount/lastVisit/lifecycleStage)
+      // saíram do batch e são aplicadas via recordClientPurchaseClient após o
+      // commit — idempotente por venda (guard clients/{id}/purchases/{saleId}),
+      // fechando o double-count em retry/duplo-clique.
+      if (saleClientId && selectedClient && selectedClient.status !== 'ganho') {
+        batch.update(doc(db, 'clients', saleClientId), { status: 'ganho', updatedAt: now });
       }
 
       // Commit all core operations atomically
@@ -857,19 +1018,16 @@ export default function PDVModule() {
       }
 
       // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
-      // TODO(auditoria P2.12): comissão é addDoc avulso pós-commit, sem chave de
-      // idempotência nem `commissionTransactionId` na Sale. A correção canônica
-      // (comissão dentro do batch com ID determinístico de saleRef.id + link na
-      // Sale) já existe em lib/services/sales-server.ts createSaleWithSideEffects;
-      // migrar o PDV pra esse serviço é arriscado agora (PDV usa client SDK e
-      // batch único atômico; o serviço usa firebase-admin). Migração rastreada
-      // como dívida — caminho de duplicação aqui é estreito (sem retry automático,
-      // guard de UI).
+      // P2.12: comissão gravada com ID DETERMINÍSTICO (`comm_sale_<saleId>`) via
+      // setDoc em vez de addDoc. Como o saleRef.id é único por venda, um re-clique
+      // ou retry pós-commit sobrescreve o mesmo doc em vez de criar uma 2ª comissão
+      // — fecha a janela de duplicação. A migração completa pro motor server-side
+      // (sales-server) segue como dívida; este guard idempotente cobre o risco real.
       const commissionRate = user.commissionRate ?? 0;
       if (commissionRate > 0 && total > 0) {
         const commissionAmount = Math.round(total * commissionRate) / 100;
         try {
-          await addDoc(collection(db, 'transactions'), {
+          await setDoc(doc(db, 'transactions', `comm_sale_${saleRef.id}`), {
             businessId: business.id,
             type: 'despesa',
             category: 'Comissoes',
@@ -888,6 +1046,26 @@ export default function PDVModule() {
           });
         } catch (err) {
           console.warn('[pdv] commission transaction failed:', err);
+        }
+      }
+
+      // ── Client stats (idempotente por venda) ──────────────────────────────
+      // Reconhece a receita na ficha do cliente: totalSpent/visitCount/lastVisit
+      // + lifecycleStage='customer'. O guard clients/{id}/purchases/{saleId}
+      // torna o efeito idempotente (retry/duplo-clique não conta de novo). PDV
+      // conta a visita (countVisit default true) — ao contrário do cardápio, que
+      // já contou na criação do pedido. Mesmo helper compartilhado, execução
+      // client-SDK. Best-effort: falha aqui não afeta a venda (já commitada).
+      if (saleClientId) {
+        try {
+          await recordClientPurchaseClient({
+            businessId: business.id,
+            clientId: saleClientId,
+            sourceId: saleRef.id,
+            amount: total,
+          });
+        } catch (err) {
+          console.warn('[pdv] recordClientPurchase falhou:', err);
         }
       }
 
@@ -954,6 +1132,7 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['sales'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['pdv-clients'] });
 
       setLastSaleId(docRef.id);
 
@@ -963,7 +1142,7 @@ export default function PDVModule() {
         pendingNfceRef.current = {
           saleId: docRef.id,
           cart: [...cart],
-          total,
+          discount: discountAmount,
           payments: [...payments],
           clientName: selectedClient?.name || '',
           cpf: cpfConsumidor,
@@ -976,7 +1155,7 @@ export default function PDVModule() {
         await emitNfce(
           docRef.id,
           cart,
-          total,
+          discountAmount,
           payments,
           selectedClient?.name || '',
           cpfConsumidor,
@@ -1033,12 +1212,15 @@ export default function PDVModule() {
         updatedAt: now,
       });
 
-      // 2. Restore stock for product items
-      const productLines = sale.items
-        .filter(item => item.productId)
-        .map(item => ({ productId: item.productId!, quantity: item.quantity }));
+      // 2. Restore stock for product items — SIMÉTRICO à baixa (mesma
+      // buildOrderStockLines): reverte tanto a linha base quanto os insumos de
+      // modificadores (linkedProductId) debitados na venda.
+      const productIndex = new Map(products.map(p => [p.id, p]));
+      const productLines = buildOrderStockLines(
+        { items: sale.items } as unknown as DeliveryOrder,
+        productIndex,
+      );
       if (productLines.length > 0) {
-        const productIndex = new Map(products.map(p => [p.id, p]));
         await restoreStock(db, productLines, {
           businessId: business.id,
           operatorId: user.uid,
@@ -1070,12 +1252,12 @@ export default function PDVModule() {
       // e usa o createdAt da mais recente como novo lastVisit (ou remove).
       if (sale.clientId) {
         try {
-          const clientDoc = await getDocs(
-            query(collection(db, 'clients'), where('businessId', '==', business.id)),
-          );
-          const client = clientDoc.docs.find(d => d.id === sale.clientId);
-          if (client) {
-            const data = client.data();
+          // EF-04: lookup direto por id (O(1)) em vez de full-scan + .find sobre
+          // toda a coleção. Confere businessId no retorno pra não reverter stats
+          // de cliente de outro tenant (R1).
+          const clientSnap = await getDoc(doc(db, 'clients', sale.clientId));
+          const data = clientSnap.exists() ? clientSnap.data() : null;
+          if (data && data.businessId === business.id) {
             // Recalcula lastVisit consultando demais sales válidas
             let newLastVisit: string | null | undefined = data.lastVisit;
             try {
@@ -1102,7 +1284,7 @@ export default function PDVModule() {
             };
             if (newLastVisit) updates.lastVisit = newLastVisit;
             else updates.lastVisit = deleteField();
-            await updateDoc(doc(db, 'clients', client.id), updates);
+            await updateDoc(doc(db, 'clients', sale.clientId), updates);
           }
         } catch (err) {
           console.warn('Failed to reverse client stats:', err);
@@ -1114,6 +1296,7 @@ export default function PDVModule() {
       queryClient.invalidateQueries({ queryKey: ['sales'] });
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
       queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['pdv-clients'] });
 
       setSelectedSale(null);
       setCancelConfirmSaleId(null);
@@ -1168,7 +1351,7 @@ export default function PDVModule() {
   const handleNfceRetry = useCallback(async () => {
     const ctx = pendingNfceRef.current;
     if (!ctx) return;
-    await emitNfce(ctx.saleId, ctx.cart, ctx.total, ctx.payments, ctx.clientName, ctx.cpf);
+    await emitNfce(ctx.saleId, ctx.cart, ctx.discount, ctx.payments, ctx.clientName, ctx.cpf);
   }, [emitNfce]);
 
   const handlePrintReceipt = useCallback(() => {
@@ -1656,7 +1839,13 @@ export default function PDVModule() {
                   ? (item as Product).salePrice
                   : (item as Service).price;
                 const inCartQty = cartItemCount(item.id);
-                const outOfStock = item.type === 'product' && (item as Product).currentStock <= 0;
+                // Espelha o público/cardápio: item configurável (modificadores) ou
+                // composto (BOM) NÃO é bloqueado pelo estoque-base — é montado sob
+                // demanda a partir dos insumos. Só produto simples com estoque 0 bloqueia.
+                const outOfStock = item.type === 'product'
+                  && !(item as Product).hasModifiers
+                  && !((item as Product).components?.length)
+                  && (item as Product).currentStock <= 0;
                 const productImageUrl = item.type === 'product' ? (item as Product).imageUrl : undefined;
                 return (
                   <motion.button
@@ -1668,7 +1857,7 @@ export default function PDVModule() {
                     transition={{ duration: 0.15, delay: index * 0.02 }}
                     whileHover={outOfStock ? {} : { y: -3, boxShadow: '0 12px 32px -8px rgba(0,0,0,0.12)' }}
                     whileTap={outOfStock ? {} : { scale: 0.97 }}
-                    onClick={() => !outOfStock && addToCart(item)}
+                    onClick={() => !outOfStock && handleCatalogClick(item)}
                     disabled={outOfStock}
                     className={cn(
                       'relative flex flex-col rounded-xl border transition-all duration-200 text-left group',
@@ -1742,7 +1931,7 @@ export default function PDVModule() {
                           >
                             <Minus size={13} />
                           </button>
-                        ) : item.type === 'product' ? (
+                        ) : item.type === 'product' && !(item as Product).hasModifiers && !((item as Product).components?.length) ? (
                           <span className={cn(
                             'text-[10px] font-medium rounded-md px-1.5 py-0.5',
                             (item as Product).currentStock <= (item as Product).minStock
@@ -2962,6 +3151,21 @@ export default function PDVModule() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Seletor de modificadores (produto configurável) */}
+      <AnimatePresence>
+        {modifierProduct && (
+          <PDVModifierPicker
+            key={modifierProduct.id}
+            product={modifierProduct}
+            onClose={() => setModifierProduct(null)}
+            onConfirm={({ selectedModifiers, unitPrice, basePrice }) => {
+              addConfiguredProduct(modifierProduct, selectedModifiers, unitPrice, basePrice);
+              setModifierProduct(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

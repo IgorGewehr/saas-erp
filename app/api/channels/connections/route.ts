@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
   // Permissão:
   //   - business: requer admin
   //   - user: qualquer operator+ (cria pra si mesmo)
-  const isAdmin = role === 'founder' || role === 'admin';
+  const isAdmin = (ROLE_HIERARCHY[role as UserRole] ?? 0) >= ROLE_HIERARCHY['admin'];
   if (ownerType === 'business' && !isAdmin) {
     return NextResponse.json({ error: 'Apenas admin pode criar canais da empresa' }, { status: 403 });
   }

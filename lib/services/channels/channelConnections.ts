@@ -14,6 +14,7 @@
  */
 
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { ROLE_HIERARCHY, type UserRole } from '@/lib/types';
 import type {
   ChannelConnection,
   ChannelConnectionType,
@@ -354,7 +355,7 @@ export function canUserAccessConnection(
   connection: Pick<ChannelConnection, 'ownerType' | 'ownerId'>,
   user: { uid: string; role?: string },
 ): boolean {
-  if (user.role === 'founder' || user.role === 'admin') return true;
+  if ((ROLE_HIERARCHY[user.role as UserRole] ?? 0) >= ROLE_HIERARCHY['admin']) return true;
   if (connection.ownerType === 'business') return true;
   if (connection.ownerType === 'user' && connection.ownerId === user.uid) return true;
   return false;
@@ -369,7 +370,7 @@ export function canUserManageConnection(
   connection: Pick<ChannelConnection, 'ownerType' | 'ownerId'>,
   user: { uid: string; role?: string },
 ): boolean {
-  if (user.role === 'founder' || user.role === 'admin') return true;
+  if ((ROLE_HIERARCHY[user.role as UserRole] ?? 0) >= ROLE_HIERARCHY['admin']) return true;
   if (connection.ownerType === 'user' && connection.ownerId === user.uid) return true;
   return false;
 }

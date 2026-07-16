@@ -7,6 +7,17 @@
  *
  * Stock deduction acontece em recebido→preparando (commit do pedido).
  * Cancelamento após stock deduction restaura stock.
+ *
+ * INVARIANTE DE PAGAMENTO (gate X1) — entrega de pedido ONLINE exige pago:
+ *   Um pedido ONLINE (paymentProvider==='mercadopago' OU paymentMethod
+ *   terminando em '_online') só pode transicionar para 'entregue' quando
+ *   paymentFsmStatus==='paid'. A entrega lança receita 'pago' (Transaction
+ *   determinística transactions/{orderId}_revenue, CAS em order.transactionId);
+ *   lançá-la sem pagamento confirmado contabilizaria dinheiro inexistente.
+ *   Dinheiro-na-entrega (não-online) está fora do gate e booka 'pago' na entrega.
+ *   O restauro de estoque no cancelamento é idempotente via stockRestoredAt
+ *   (não só stockDeductedAt) — após restauro automático (cron/webhook), o
+ *   caminho manual é no-op.
  */
 
 import { DELIVERY_ORDER_STATUSES, type DeliveryOrderStatus } from '../domain/deliveryOrder';
@@ -41,22 +52,24 @@ export const DELIVERY_ORDER_TRANSITION_EFFECTS: Partial<Record<`${DeliveryOrderS
   ],
   'pronto->saiu_entrega': ['Atualizar deliveryPersonId, deliveryPersonName'],
   'saiu_entrega->entregue': [
+    'GATE X1: se pedido ONLINE, exige paymentFsmStatus==="paid" (senão bloqueia)',
     'set deliveredAt',
-    'Cria Transaction receita idempotente (guard order.transactionId) → set transactionId',
+    'Cria Transaction receita idempotente — ID determinístico {orderId}_revenue + CAS order.transactionId, dentro de runTransaction → set transactionId',
     // TODO(auditoria P1.1/R5): promover a dispatchDomainEvent("deliveryOrder.delivered")
     // quando houver 2+ subscribers (atual: criação inline em OrdersModule + agent tools).
   ],
   'pronto->entregue': [
+    'GATE X1: se pedido ONLINE, exige paymentFsmStatus==="paid" (senão bloqueia)',
     'set deliveredAt (retirada no balcão)',
-    'Cria Transaction receita idempotente (guard order.transactionId) → set transactionId',
+    'Cria Transaction receita idempotente — ID determinístico {orderId}_revenue + CAS order.transactionId, dentro de runTransaction → set transactionId',
   ],
   'recebido->cancelado': ['Nenhum side-effect (stock não foi tocado)'],
   'preparando->cancelado': [
-    'stock.restoreStock(items) — clear stockDeductedAt',
+    'stock.restoreStock(itens + insumos via buildOrderStockLines) — CAS idempotente por stockRestoredAt',
     'Notificar cliente',
   ],
   'pronto->cancelado': [
-    'stock.restoreStock(items)',
+    'stock.restoreStock(itens + insumos via buildOrderStockLines) — CAS idempotente por stockRestoredAt',
     'Notificar cliente',
   ],
 };
