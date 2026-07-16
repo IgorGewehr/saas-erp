@@ -140,6 +140,10 @@ export interface Business {
   // Financial settings (notifications, etc.)
   financial?: {
     notificationSettings?: FinancialNotificationSettings;
+    /** Colchão mínimo que o hero "Você pode tirar até" (financial-v2/Visão
+     *  Geral) nunca oferece como livre — reserva de segurança configurável.
+     *  Default 0 (nenhum comportamento muda pra quem nunca configurou). */
+    cushionAmount?: number;
   };
   // Omnichannel (WhatsApp, Facebook, Instagram)
   channels?: ChannelCredentials;
@@ -464,6 +468,10 @@ export interface BusinessSettings {
   notificationServer?: NotificationServerConfig;
   /** Ativa a aba de Projetos no módulo financeiro */
   projectsEnabled?: boolean;
+  /** Liga o Financeiro v2 (app/components/features/financial-v2/) no lugar do
+   *  FinancialModule clássico. Aditivo/reversível — ver docs do módulo v2.
+   *  Default false: nenhum tenant existente muda de tela sem opt-in explícito. */
+  financialV2Enabled?: boolean;
 }
 
 /**
@@ -1248,6 +1256,12 @@ export interface Transaction {
   projectName?: string;
   appointmentId?: string; // Link back to the originating appointment (for commission transactions)
   deliveryOrderId?: string; // Link back to the originating delivery order (receita de delivery)
+  /** Vínculo com a assinatura que gerou esta cobrança (membershipBillingRunner).
+   *  Já era gravado no doc do Firestore — campo declarado aqui pra fechar R2
+   *  (financial-v2 usa isto pra derivar "assinatura em risco"). */
+  clientMembershipId?: string;
+  /** Plano cobrado (denormalizado, junto de clientMembershipId). */
+  membershipId?: string;
   // ── Cancellation audit (Fase 5c — Tier 2 status-driven) ──
   /** ISO timestamp do cancelamento. Setado quando `status` vira `cancelado`.
    *  Preserva doc pra historico financeiro/auditoria. */
@@ -1399,7 +1413,7 @@ export type AuditAction = 'create' | 'update' | 'delete' | 'pay' | 'cancel' | 'r
 export interface FinancialAuditLog {
   id: string;
   businessId: string;
-  entity: 'transaction' | 'bankAccount';
+  entity: 'transaction' | 'bankAccount' | 'cashSession';
   entityId: string;
   action: AuditAction;
   actorUid: string;
@@ -4310,6 +4324,10 @@ export interface ClientMembership {
   startDate: string;
   nextBillingDate?: string;
   usesThisCycle: number;
+  /** Quando o cancelamento aconteceu (YYYY-MM-DD) — financial-v2 gap g1, ver
+   *  lib/contracts/domain/membership.ts. Ausente em docs legados cancelados;
+   *  read-models fazem fallback pra updatedAt. */
+  cancelledAt?: string;
   createdAt: string;
   updatedAt: string;
 }
