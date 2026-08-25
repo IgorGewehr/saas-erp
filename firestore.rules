@@ -408,23 +408,28 @@ service cloud.firestore {
                   && isOwnBusiness()
                   && isOperator();
 
-      allow create: if isAuthenticated()
-                    && incomingBelongsToBusiness()
-                    && isManager()
-                    && isNonEmptyString(request.resource.data.name)
-                    && request.resource.data.currentStock == 0;
+      // Cadastro e manutenção do catálogo passam pela rota autenticada e pelo
+      // núcleo Admin SDK, que garantem unicidade de SKU/código por tenant.
+      allow create: if false;
 
       allow update: if isAuthenticated()
                     && isOwnBusiness()
-                    && isOperator()
+                    && isManager()
                     && incomingBelongsToBusiness()
-                    // Saldo é exclusivo do núcleo Admin SDK. Edição de cadastro
-                    // pode alterar os demais campos, mas não currentStock.
-                    && request.resource.data.currentStock == resource.data.currentStock;
+                    // Exceção transitória para o custo médio da importação de
+                    // compras. Todo o restante do catálogo é server-side.
+                    && request.resource.data.currentStock == resource.data.currentStock
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['costPrice', 'updatedAt']);
 
-      allow delete: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isManager();
+      // Produto referenciado nunca é apagado: a API aplica soft archive.
+      allow delete: if false;
+    }
+
+    // Claims determinísticos de SKU/código de barras. Somente Admin SDK para
+    // impedir que um cliente reserve, libere ou sequestre um identificador.
+    match /productIdentifiers/{identifierId} {
+      allow read, write: if false;
     }
 
     // ============================================

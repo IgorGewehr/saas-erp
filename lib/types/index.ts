@@ -1558,12 +1558,19 @@ export interface Partner {
 export interface Product {
   id: string;
   businessId: string;
+  schemaVersion?: 2;
+  kind?: 'simple' | 'variant' | 'composite';
   name: string;
   description?: string;
   sku?: string;
+  skuNormalized?: string;
   barcode?: string;
+  barcodeNormalized?: string;
   category: string;
   unit: string; // UN, KG, L, etc.
+  purchaseUnit?: string;
+  purchaseToStockFactor?: number;
+  costMethod?: 'moving_average' | 'last_cost';
   costPrice: number;
   salePrice: number;
   currentStock: number;
@@ -1584,7 +1591,11 @@ export interface Product {
     ipi?: { cst?: string; rate?: number; cEnq?: string };
   };
   isActive: boolean;
+  archivedAt?: string;
+  archivedBy?: string;
   imageUrl?: string;
+  images?: ProductImage[];
+  variants?: ProductVariant[];
   // Delivery / Cardápio (used when business.settings.useCase === 'pedidos')
   isDeliverable?: boolean;
   menuCategory?: string;        // Ex: "Pizzas" — legado (string livre) | continua suportado
@@ -1605,6 +1616,29 @@ export interface Product {
   components?: ProductComponent[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProductImage {
+  id: string;
+  url: string;
+  alt?: string;
+  sortOrder: number;
+  isPrimary?: boolean;
+}
+
+export interface ProductVariant {
+  id: string;
+  name: string;
+  attributes: Record<string, string>;
+  sku?: string;
+  barcode?: string;
+  salePrice: number;
+  costPrice: number;
+  currentStock: number;
+  minStock: number;
+  maxStock?: number;
+  trackStock: boolean;
+  isActive: boolean;
 }
 
 export interface ProductComponent {

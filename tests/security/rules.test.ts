@@ -120,6 +120,7 @@ describe('Firestore rules file coverage', () => {
     'appointments',
     'services',
     'products',
+    'productIdentifiers',
     'stockMovements',
     'sales',
     'transactions',
@@ -171,6 +172,16 @@ describe('Firestore rules file coverage', () => {
     )?.[0];
     expect(stockMovementBlock).toContain('allow create: if false');
     expect(rulesContent).toContain('match /stockOperations/{operationId}');
+  });
+
+  it('reserva cadastro, identificadores e exclusão de produtos ao servidor', () => {
+    const productBlock = rulesContent.match(
+      /match \/products\/\{productId\} \{[\s\S]*?\n    \}/,
+    )?.[0];
+    expect(productBlock).toContain('allow create: if false');
+    expect(productBlock).toContain("hasOnly(['costPrice', 'updatedAt'])");
+    expect(productBlock).toContain('allow delete: if false');
+    expect(rulesContent).toContain('match /productIdentifiers/{identifierId}');
   });
 
   it('defines the isOwnBusiness helper function', () => {

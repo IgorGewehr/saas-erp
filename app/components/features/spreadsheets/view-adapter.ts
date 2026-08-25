@@ -48,13 +48,26 @@ const CLIENT_COLUMNS: ColumnSpec<Client>[] = [
 const PRODUCT_COLUMNS: ColumnSpec<Product>[] = [
   { key: 'name',          label: 'Nome',          width: 240 },
   { key: 'sku',           label: 'SKU',           width: 110 },
+  { key: 'barcode',       label: 'Código barras', width: 140 },
   { key: 'category',      label: 'Categoria',     width: 130 },
   { key: 'salePrice',     label: 'Preço venda',   width: 120, format: (v) => typeof v === 'number' ? formatCurrency(v) : '' },
   { key: 'costPrice',     label: 'Preço custo',   width: 120, format: (v) => typeof v === 'number' ? formatCurrency(v) : '' },
+  {
+    key: 'margin',
+    label: 'Margem',
+    width: 90,
+    format: (_v, doc) => doc.salePrice > 0
+      ? `${(((doc.salePrice - doc.costPrice) / doc.salePrice) * 100).toFixed(1)}%`
+      : '0,0%',
+  },
   { key: 'currentStock',  label: 'Estoque atual', width: 110 },
   { key: 'minStock',      label: 'Estoque min',   width: 110 },
   { key: 'unit',          label: 'Un.',           width: 60 },
+  { key: 'purchaseUnit',  label: 'Un. compra',    width: 90, format: (v, doc) => String(v || doc.unit || '') },
+  { key: 'variants',      label: 'Variações',     width: 80, format: (v) => Array.isArray(v) ? String(v.length) : '0' },
+  { key: 'images',        label: 'Imagens',       width: 75, format: (v, doc) => Array.isArray(v) ? String(v.length) : (doc.imageUrl ? '1' : '0') },
   { key: 'isActive',      label: 'Ativo',         width: 70,  format: (v) => v === undefined || v === null ? '' : (v === false ? 'Não' : 'Sim') },
+  { key: 'updatedAt',     label: 'Atualizado',    width: 160, format: (v) => typeof v === 'string' ? formatDateTime(v) : '' },
 ];
 
 const TRANSACTION_COLUMNS: ColumnSpec<Transaction>[] = [

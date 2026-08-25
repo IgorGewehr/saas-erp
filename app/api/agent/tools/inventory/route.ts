@@ -22,6 +22,13 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Product, StockMovement } from '@/lib/types';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
+import type { ProductCatalogData, ProductCatalogPatch } from '@/lib/contracts/api/product-catalog';
+import {
+  archiveProductCatalogAdmin,
+  createProductCatalogAdmin,
+  ProductCatalogDuplicateIdentifierError,
+  updateProductCatalogAdmin,
+} from '@/lib/services/product-catalog-admin';
 
 type Action =
   | 'list'
@@ -112,7 +119,10 @@ export async function POST(req: NextRequest) {
     }
   } catch (err) {
     console.error('[agent.inventory] error', err);
-    return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: (err as Error).message },
+      { status: err instanceof ProductCatalogDuplicateIdentifierError ? 409 : 500 },
+    );
   }
 }
 
@@ -191,31 +201,53 @@ async function createProduct(businessId: string, p: CreateParams): Promise<Produ
   if (typeof p.salePrice !== 'number' || p.salePrice < 0) throw new Error('salePrice must be >= 0');
   if (typeof p.costPrice !== 'number' || p.costPrice < 0) throw new Error('costPrice must be >= 0');
 
-  const now = new Date().toISOString();
-  const ref = adminDb.collection('products').doc();
-  const product: Product = {
-    id: ref.id,
-    businessId,
+  const unit = p.unit || 'UN';
+  const data: ProductCatalogData = {
     name: p.name.slice(0, 200),
     description: p.description?.slice(0, 2000),
     sku: p.sku,
     barcode: p.barcode,
     category: p.category,
-    unit: p.unit || 'UN',
+    unit,
+    purchaseUnit: unit,
+    purchaseToStockFactor: 1,
+    costMethod: 'moving_average',
     costPrice: round(p.costPrice),
     salePrice: round(p.salePrice),
-    currentStock: typeof p.currentStock === 'number' ? p.currentStock : 0,
     minStock: typeof p.minStock === 'number' ? p.minStock : 0,
     isActive: true,
-    imageUrl: p.imageUrl,
+    images: p.imageUrl
+      ? [{ id: 'agent-primary', url: p.imageUrl, sortOrder: 0, isPrimary: true }]
+      : [],
+    variants: [],
     isDeliverable: !!p.isDeliverable,
+    menuAvailable: true,
+    trackStock: true,
     menuCategory: p.menuCategory,
     menuDescription: p.menuDescription?.slice(0, 400),
     preparationTime: p.preparationTime,
-    createdAt: now,
-    updatedAt: now,
+    components: [],
+    modifierGroups: [],
   };
-  await ref.set(product);
+  let product = await createProductCatalogAdmin({ db: adminDb, businessId, data });
+  const initialStock = typeof p.currentStock === 'number' ? p.currentStock : 0;
+  if (initialStock > 0) {
+    const operationKey = `agent:product:${product.id}:initial-stock`;
+    const stock = await applyStockOperationAdmin(adminDb, {
+      businessId,
+      type: 'entrada',
+      lines: [{ productId: product.id, quantity: initialStock }],
+      operatorId: 'agent',
+      operatorName: 'Agente IA',
+      reason: 'Estoque inicial via agente',
+      sourceType: 'agent',
+      sourceId: product.id,
+      idempotencyKey: operationKey,
+      expandBom: false,
+      negativeStockPolicy: 'prevent',
+    });
+    product = { ...product, currentStock: stock.adjustments[0]?.newStock ?? product.currentStock };
+  }
   return product;
 }
 
@@ -238,9 +270,31 @@ async function updateProduct(businessId: string, id: string, patch: Partial<Prod
   if (typeof clean.salePrice === 'number') clean.salePrice = round(clean.salePrice as number);
   if (typeof clean.costPrice === 'number') clean.costPrice = round(clean.costPrice as number);
 
-  clean.updatedAt = new Date().toISOString();
-  await ref.update(clean);
-  return { ...product, ...clean, id: snap.id } as Product;
+  const { imageUrl, ...metadata } = clean;
+  const catalogPatch: ProductCatalogPatch = {
+    ...metadata,
+    ...(imageUrl !== undefined
+      ? {
+          images: typeof imageUrl === 'string' && imageUrl
+            ? [{ id: 'agent-primary', url: imageUrl, sortOrder: 0, isPrimary: true }]
+            : [],
+        }
+      : {}),
+  } as ProductCatalogPatch;
+  if (catalogPatch.isActive === false) {
+    return archiveProductCatalogAdmin({
+      db: adminDb,
+      businessId,
+      productId: id,
+      actor: { uid: 'agent', name: 'Agente IA' },
+    });
+  }
+  return updateProductCatalogAdmin({
+    db: adminDb,
+    businessId,
+    productId: id,
+    patch: catalogPatch,
+  });
 }
 
 async function adjustStock(businessId: string, p: AdjustStockParams): Promise<{ product: Product; movement: StockMovement }> {

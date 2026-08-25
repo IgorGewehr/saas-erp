@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
@@ -6,6 +7,47 @@ import {
   UpdateProductBodySchema,
 } from '@/contracts/api/v1/products';
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
+import type { ProductCatalogData, ProductCatalogPatch } from '@/lib/contracts/api/product-catalog';
+import {
+  archiveProductCatalogAdmin,
+  createProductCatalogAdmin,
+  ProductCatalogDuplicateIdentifierError,
+  updateProductCatalogAdmin,
+} from '@/lib/services/product-catalog-admin';
+import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
+
+function toCatalogCreateData(body: ReturnType<typeof CreateProductBodySchema.parse>): ProductCatalogData {
+  return {
+    name: body.name.trim(),
+    description: body.description,
+    sku: body.sku,
+    barcode: body.barcode,
+    category: body.category,
+    unit: body.unit,
+    purchaseUnit: body.unit,
+    purchaseToStockFactor: 1,
+    costMethod: 'moving_average',
+    costPrice: body.costPrice,
+    salePrice: body.salePrice,
+    minStock: body.minStock,
+    maxStock: body.maxStock,
+    ncm: body.ncm,
+    cfop: body.cfop,
+    isActive: body.isActive,
+    images: body.imageUrl
+      ? [{ id: 'api-primary', url: body.imageUrl, sortOrder: 0, isPrimary: true }]
+      : [],
+    variants: [],
+    isDeliverable: body.isDeliverable,
+    menuAvailable: true,
+    trackStock: !body.components?.length,
+    menuCategory: body.menuCategory,
+    menuDescription: body.menuDescription,
+    preparationTime: body.preparationTime,
+    components: body.components ?? [],
+    modifierGroups: body.modifierGroups ?? [],
+  };
+}
 
 // ─── GET /api/v1/products ───────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -104,16 +146,30 @@ export async function POST(req: NextRequest) {
       adminDb,
       { businessId: auth.businessId, key: idempotencyKey, endpoint: 'POST /api/v1/products' },
       async () => {
-        const now = new Date().toISOString();
-        const productData: Record<string, any> = {
+        let product = await createProductCatalogAdmin({
+          db: adminDb,
           businessId: auth.businessId,
-          ...body,
-          name: body.name.trim(),
-          createdAt: now,
-          updatedAt: now,
-        };
-        const docRef = await adminDb.collection('products').add(productData);
-        return { id: docRef.id, ...productData };
+          data: toCatalogCreateData(body),
+        });
+        if (body.currentStock > 0) {
+          const stock = await applyStockOperationAdmin(adminDb, {
+            businessId: auth.businessId,
+            type: 'entrada',
+            lines: [{ productId: product.id, quantity: body.currentStock }],
+            operatorId: `api-key:${auth.keyId}`,
+            operatorName: 'API v1',
+            reason: 'Estoque inicial via API v1',
+            sourceType: 'api',
+            sourceId: product.id,
+            idempotencyKey: idempotencyKey
+              ? `api:v1:product:${idempotencyKey}:initial-stock`
+              : `api:v1:product:${product.id}:initial-stock`,
+            expandBom: false,
+            negativeStockPolicy: 'prevent',
+          });
+          product = { ...product, currentStock: stock.adjustments[0]?.newStock ?? 0 };
+        }
+        return product;
       },
     );
     return apiSuccess(
@@ -123,6 +179,9 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     if (err instanceof IdempotencyConflictError) {
       return apiError('Idempotency key in progress — retry in a moment', 409);
+    }
+    if (err instanceof ProductCatalogDuplicateIdentifierError) {
+      return apiError(err.message, 409);
     }
     console.error('[API v1/products POST]', err);
     return apiError(err instanceof Error ? err.message : 'Failed to create product', 500);
@@ -149,16 +208,44 @@ export async function PUT(req: NextRequest) {
   }
 
   try {
-    const docRef = adminDb.collection('products').doc(id);
-    const docSnap = await docRef.get();
-    if (!docSnap.exists || docSnap.data()?.businessId !== auth.businessId) {
-      return apiError('Product not found', 404);
+    const { currentStock, imageUrl, ...metadata } = parsed.data;
+    const patch: ProductCatalogPatch = {
+      ...metadata,
+      ...(imageUrl !== undefined
+        ? {
+            images: imageUrl
+              ? [{ id: 'api-primary', url: imageUrl, sortOrder: 0, isPrimary: true }]
+              : [],
+          }
+        : {}),
+    };
+    let product = await updateProductCatalogAdmin({
+      db: adminDb,
+      businessId: auth.businessId,
+      productId: id,
+      patch,
+    });
+    if (currentStock !== undefined && currentStock !== product.currentStock) {
+      const idempotencyKey = req.headers.get('x-idempotency-key') ?? randomUUID();
+      const stock = await applyStockOperationAdmin(adminDb, {
+        businessId: auth.businessId,
+        type: 'ajuste',
+        lines: [{ productId: id, quantity: currentStock }],
+        adjustmentMode: 'absolute',
+        operatorId: `api-key:${auth.keyId}`,
+        operatorName: 'API v1',
+        reason: 'Ajuste de estoque via API v1',
+        sourceType: 'api',
+        sourceId: id,
+        idempotencyKey: `api:v1:product:${id}:update:${idempotencyKey}`,
+        expandBom: false,
+        negativeStockPolicy: 'prevent',
+      });
+      product = { ...product, currentStock: stock.adjustments[0]?.newStock ?? product.currentStock };
     }
-    const updateData = { ...parsed.data, updatedAt: new Date().toISOString() };
-    await docRef.update(updateData);
-    const updated = await docRef.get();
-    return apiSuccess({ id: updated.id, ...updated.data() });
+    return apiSuccess(product);
   } catch (err) {
+    if (err instanceof ProductCatalogDuplicateIdentifierError) return apiError(err.message, 409);
     console.error('[API v1/products PUT]', err);
     return apiError(err instanceof Error ? err.message : 'Failed to update product', 500);
   }
@@ -188,9 +275,14 @@ export async function DELETE(req: NextRequest) {
       return apiError('Product not found', 404);
     }
 
-    await docRef.delete();
+    const product = await archiveProductCatalogAdmin({
+      db: adminDb,
+      businessId: auth.businessId,
+      productId: id,
+      actor: { uid: `api-key:${auth.keyId}`, name: 'API v1' },
+    });
 
-    return apiSuccess({ id, deleted: true });
+    return apiSuccess({ id, archived: true, product });
   } catch (error: any) {
     console.error('[API v1/products DELETE]', error);
     return apiError(error.message || 'Failed to delete product', 500);

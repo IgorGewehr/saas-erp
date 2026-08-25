@@ -55,6 +55,7 @@ import {
   Boxes,
   Truck,
   Send,
+  Archive,
 } from 'lucide-react';
 import {
   collection,
@@ -63,21 +64,24 @@ import {
   orderBy,
   limit,
   getDocs,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '@/lib/config/firebase';
+import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Product, StockMovement, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
+import type { ProductCatalogData } from '@/lib/contracts/api/product-catalog';
 import { notifyLowStock } from '@/lib/services/notifications';
 import {
   applyStockOperation,
   createStockIdempotencyKey,
 } from '@/lib/services/stock-server-client';
+import {
+  archiveCatalogProduct,
+  createCatalogIdempotencyKey,
+  createCatalogProduct,
+  replaceCatalogProductImages,
+  updateCatalogProduct,
+} from '@/lib/services/product-catalog-client';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -449,6 +453,7 @@ function StatCard({ icon, iconBg, label, value, subtitle }: StatCardProps) {
 
 interface ProductCardProps {
   product: Product;
+  lastMovement?: StockMovement;
   onEdit: (product: Product) => void;
   onDelete: (product: Product) => void;
   onMovement: (product: Product, type: MovementType) => void;
@@ -457,13 +462,14 @@ interface ProductCardProps {
 // Memoizado: handlers do parent são useCallback (estáveis), então cada card só
 // re-renderiza quando o próprio produto muda — não a cada estado do módulo.
 const ProductCard = React.memo(ProductCardBase);
-function ProductCardBase({ product, onEdit, onDelete, onMovement }: ProductCardProps) {
+function ProductCardBase({ product, lastMovement, onEdit, onDelete, onMovement }: ProductCardProps) {
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const catIcon = CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto;
   const stockPct = getStockPercentage(product.currentStock, product.maxStock);
   const stockColor = getStockColor(product.currentStock, product.maxStock);
   const low = isLowStock(product);
+  const margin = getMargin(product.costPrice, product.salePrice);
 
   return (
     <motion.div
@@ -533,7 +539,7 @@ function ProductCardBase({ product, onEdit, onDelete, onMovement }: ProductCardP
         </div>
 
         {/* Prices */}
-        <div className="flex items-center justify-between pt-2 border-t border-border/40">
+        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/40">
           <div>
             <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('inventory.cost', 'Custo')}</p>
             <p className="text-xs font-medium text-foreground">{formatCurrency(product.costPrice)}</p>
@@ -542,6 +548,19 @@ function ProductCardBase({ product, onEdit, onDelete, onMovement }: ProductCardP
             <p className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('inventory.salePrice', 'Venda')}</p>
             <p className="text-xs font-semibold text-foreground">{formatCurrency(product.salePrice)}</p>
           </div>
+          <div className="text-right">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Margem</p>
+            <p className={cn('text-xs font-semibold', margin >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+              {margin.toFixed(1)}%
+            </p>
+          </div>
+        </div>
+
+        <div className="text-[10px] text-muted-foreground leading-relaxed">
+          <p>Atualizado {formatDateTime(product.updatedAt)}</p>
+          <p className="truncate" title={lastMovement?.reason || 'Cadastro/edição do produto'}>
+            Origem: {lastMovement?.reason || 'Cadastro/edição'}
+          </p>
         </div>
 
         {/* Category Badge */}
@@ -582,9 +601,9 @@ function ProductCardBase({ product, onEdit, onDelete, onMovement }: ProductCardP
           <button
             onClick={() => onDelete(product)}
             className="flex items-center justify-center p-1.5 rounded-lg text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-            title={t('inventory.delete', 'Excluir')}
+            title={t('inventory.archive', 'Arquivar')}
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Archive className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -635,18 +654,20 @@ function SortableHeader({ label, field, sortConfig, onSort, className }: Sortabl
 
 interface ProductRowProps {
   product: Product;
+  lastMovement?: StockMovement;
   onEdit: (product: Product) => void;
   onDelete: (product: Product) => void;
   onMovement: (product: Product, type: MovementType) => void;
 }
 
 const ProductRow = React.memo(ProductRowBase);
-function ProductRowBase({ product, onEdit, onDelete, onMovement }: ProductRowProps) {
+function ProductRowBase({ product, lastMovement, onEdit, onDelete, onMovement }: ProductRowProps) {
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const low = isLowStock(product);
   const stockPct = getStockPercentage(product.currentStock, product.maxStock);
   const stockBarColor = getStockColor(product.currentStock, product.maxStock);
+  const margin = getMargin(product.costPrice, product.salePrice);
 
   return (
     <tr className={cn(
@@ -701,6 +722,15 @@ function ProductRowBase({ product, onEdit, onDelete, onMovement }: ProductRowPro
       {/* Preco Venda */}
       <td className="py-3 px-4">
         <span className="text-sm font-medium text-foreground">{formatCurrency(product.salePrice)}</span>
+        <p className={cn('text-[10px] font-medium', margin >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+          {margin.toFixed(1)}% margem
+        </p>
+        <p
+          className="text-[10px] text-muted-foreground max-w-36 truncate"
+          title={lastMovement?.reason || 'Cadastro/edição do produto'}
+        >
+          {lastMovement?.reason || `Atualizado ${formatDateTime(product.updatedAt)}`}
+        </p>
       </td>
       {/* Status */}
       <td className="py-3 px-4">
@@ -741,9 +771,9 @@ function ProductRowBase({ product, onEdit, onDelete, onMovement }: ProductRowPro
           <button
             onClick={() => onDelete(product)}
             className="p-1.5 rounded-md text-muted-foreground hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors"
-            title={t('inventory.delete', 'Excluir')}
+            title={t('inventory.archive', 'Arquivar')}
           >
-            <Trash2 className="w-4 h-4" />
+            <Archive className="w-4 h-4" />
           </button>
         </div>
       </td>
@@ -914,7 +944,7 @@ function CurrencyInput({ label, value, onChange, error, helperText, required }: 
 }
 
 // ==============================================
-// DELETE CONFIRMATION DIALOG
+// ARCHIVE CONFIRMATION DIALOG
 // ==============================================
 
 interface DeleteDialogProps {
@@ -942,20 +972,20 @@ function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: Del
           pb: 1,
         }}
       >
-        {t('inventory.deleteDialog.title', 'Excluir Produto')}
+        {t('inventory.archiveDialog.title', 'Arquivar Produto')}
       </DialogTitle>
       <Divider />
       <DialogContent sx={{ pt: 3 }}>
         <div className="flex flex-col items-center text-center py-4">
           <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-50 dark:bg-red-500/10 mb-4">
-            <Trash2 className="w-7 h-7 text-red-600 dark:text-red-400" />
+            <Archive className="w-7 h-7 text-red-600 dark:text-red-400" />
           </div>
           <p className="text-sm text-foreground">
-            {t('inventory.deleteDialog.confirm', 'Tem certeza que deseja excluir o produto')}{' '}
+            {t('inventory.archiveDialog.confirm', 'Tem certeza que deseja arquivar o produto')}{' '}
             <span className="font-semibold">{productName}</span>?
           </p>
           <p className="text-xs text-muted-foreground mt-2">
-            {t('inventory.deleteDialog.irreversible', 'Esta ação não pode ser desfeita.')}
+            {t('inventory.archiveDialog.reversible', 'O histórico será preservado e o produto poderá ser reativado pela edição.')}
           </p>
         </div>
       </DialogContent>
@@ -977,7 +1007,7 @@ function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: Del
           {isDeleting ? (
             <CircularProgress size={20} sx={{ color: 'white' }} />
           ) : (
-            t('inventory.delete', 'Excluir')
+            t('inventory.archive', 'Arquivar')
           )}
         </Button>
       </DialogActions>
@@ -2125,6 +2155,8 @@ export default function InventoryModule() {
   const [stockFilter, setStockFilter] = useState<StockStatusFilter>('all');
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [sortConfig, setSortConfig] = useState<LocalSortConfig>({ field: 'name', direction: 'asc' });
+  const [productPage, setProductPage] = useState(1);
+  const [productPageSize, setProductPageSize] = useState(24);
 
   // Dialog state
   const [productDialogOpen, setProductDialogOpen] = useState(false);
@@ -2222,19 +2254,13 @@ export default function InventoryModule() {
   });
 
   const hasMoreMovements = movements.length >= movementLimit;
-
-  // ==========================================
-  // IMAGE UPLOAD
-  // ==========================================
-
-  async function uploadProductImage(file: File, productId: string): Promise<string> {
-    if (!business?.id) throw new Error('Business not found');
-    const ext = file.name.split('.').pop() || 'jpg';
-    const fileName = `${productId}_${Date.now()}.${ext}`;
-    const storageRef = ref(storage, `products/${business.id}/${productId}/${fileName}`);
-    await uploadBytes(storageRef, file, { contentType: file.type || 'image/jpeg' });
-    return getDownloadURL(storageRef);
-  }
+  const lastMovementByProduct = useMemo(() => {
+    const map = new Map<string, StockMovement>();
+    for (const movement of movements) {
+      if (!map.has(movement.productId)) map.set(movement.productId, movement);
+    }
+    return map;
+  }, [movements]);
 
   // ==========================================
   // CRUD HANDLERS
@@ -2250,139 +2276,82 @@ export default function InventoryModule() {
     const maxStock = data.maxStock ? parseInt(data.maxStock) : undefined;
     const sku = data.sku.trim() || generateSKU();
 
-    if (editingProduct) {
-      // UPDATE
-      let imageUrl = data.existingImageUrl || editingProduct.imageUrl || '';
+    const removeExistingImage = Boolean(
+      editingProduct
+      && !data.imageFile
+      && !data.imagePreview
+      && !data.existingImageUrl,
+    );
+    const productData: ProductCatalogData = {
+      name: data.name.trim(),
+      description: data.description.trim() || undefined,
+      sku,
+      barcode: data.barcode.trim() || undefined,
+      category: data.category,
+      unit: data.unit,
+      purchaseUnit: editingProduct?.purchaseUnit || data.unit,
+      purchaseToStockFactor: editingProduct?.purchaseToStockFactor ?? 1,
+      costMethod: editingProduct?.costMethod ?? 'moving_average',
+      costPrice,
+      salePrice,
+      minStock,
+      maxStock,
+      ncm: data.ncm.trim() || undefined,
+      cfop: data.cfop.trim() || undefined,
+      cest: data.cest.trim() || undefined,
+      icmsOrigem: (data.icmsOrigem || undefined) as ProductCatalogData['icmsOrigem'],
+      gtin: data.gtin.trim() || undefined,
+      unidadeTrib: data.unidadeTrib.trim() || undefined,
+      gtinTrib: data.gtinTrib.trim() || undefined,
+      isActive: data.isActive,
+      ...(removeExistingImage ? { images: [] } : {}),
+      variants: editingProduct?.variants ?? [],
+      isDeliverable: data.isDeliverable,
+      menuAvailable: data.menuAvailable,
+      trackStock: data.trackStock,
+      menuCategory: data.isDeliverable ? (data.menuCategory.trim() || undefined) : undefined,
+      menuCategoryId: data.isDeliverable ? (data.menuCategoryId || undefined) : undefined,
+      menuDescription: data.isDeliverable ? (data.menuDescription.trim() || undefined) : undefined,
+      preparationTime: data.isDeliverable && data.preparationTime
+        ? Number(data.preparationTime)
+        : undefined,
+      components: data.components,
+      dietary: (data.isDeliverable ? data.dietary : []) as ProductCatalogData['dietary'],
+      modifierGroups: data.isDeliverable ? data.modifierGroups : [],
+    };
 
-      if (data.imageFile) {
-        imageUrl = await uploadProductImage(data.imageFile, editingProduct.id);
-      } else if (!data.existingImageUrl && !data.imagePreview) {
-        imageUrl = '';
-      }
-
-      const updateData: Record<string, unknown> = {
-        name: data.name.trim(),
-        description: data.description.trim() || undefined,
-        sku,
-        barcode: data.barcode.trim() || undefined,
-        category: data.category,
-        unit: data.unit,
-        costPrice,
-        salePrice,
-        minStock,
-        maxStock: maxStock ?? null,
-        ncm: data.ncm.trim() || undefined,
-        cfop: data.cfop.trim() || undefined,
-        cest: data.cest.trim() || undefined,
-        icmsOrigem: data.icmsOrigem || undefined,
-        gtin: data.gtin.trim() || undefined,
-        unidadeTrib: data.unidadeTrib.trim() || undefined,
-        gtinTrib: data.gtinTrib.trim() || undefined,
-        isActive: data.isActive,
-        imageUrl: imageUrl || null,
-        isDeliverable: data.isDeliverable,
-        menuAvailable: data.menuAvailable,
-        trackStock: data.trackStock,
-        menuCategory: data.isDeliverable ? (data.menuCategory.trim() || null) : null,
-        menuCategoryId: data.isDeliverable && data.menuCategoryId ? data.menuCategoryId : null,
-        menuDescription: data.isDeliverable ? (data.menuDescription.trim() || null) : null,
-        preparationTime: data.isDeliverable && data.preparationTime ? Number(data.preparationTime) : null,
-        components: data.isDeliverable && data.components.length > 0 ? data.components : null,
-        dietary: data.isDeliverable && data.dietary.length > 0 ? data.dietary : null,
-        modifierGroups: data.isDeliverable && data.modifierGroups.length > 0 ? data.modifierGroups : null,
-        hasModifiers: data.isDeliverable && data.modifierGroups.length > 0,
-        updatedAt: new Date().toISOString(),
-      };
-
-      // Remove undefined values
-      const cleanedData = Object.fromEntries(
-        Object.entries(updateData).filter(([, v]) => v !== undefined)
-      );
-
-      await updateDoc(doc(db, 'products', editingProduct.id), cleanedData);
-      if (currentStock !== (editingProduct.currentStock || 0)) {
-        await applyStockOperation({
+    const idempotencyKey = createCatalogIdempotencyKey(
+      editingProduct ? `product:${editingProduct.id}:update` : 'product:create',
+    );
+    let savedProduct = editingProduct
+      ? await updateCatalogProduct({
           businessId: business.id,
-          type: 'ajuste',
-          lines: [{ productId: editingProduct.id, quantity: currentStock }],
-          operatorName: user.name,
-          reason: 'Ajuste ao editar produto',
-          sourceType: 'manual',
-          idempotencyKey: createStockIdempotencyKey(`product:${editingProduct.id}:edit-stock`),
-          expandBom: false,
-          adjustmentMode: 'absolute',
-          negativeStockPolicy: 'prevent',
+          productId: editingProduct.id,
+          data: productData,
+          targetStock: currentStock,
+          idempotencyKey,
+        })
+      : await createCatalogProduct({
+          businessId: business.id,
+          data: productData,
+          initialStock: currentStock,
+          idempotencyKey,
         });
-      }
-      toast.success(t('inventory.toast.productUpdated', 'Produto atualizado com sucesso!'));
-    } else {
-      // CREATE
-      const productData: Record<string, unknown> = {
+
+    if (data.imageFile) {
+      savedProduct = await replaceCatalogProductImages({
         businessId: business.id,
-        name: data.name.trim(),
-        description: data.description.trim() || '',
-        sku,
-        barcode: data.barcode.trim() || '',
-        category: data.category,
-        unit: data.unit,
-        costPrice,
-        salePrice,
-        currentStock: 0,
-        minStock,
-        maxStock: maxStock ?? null,
-        ncm: data.ncm.trim() || '',
-        cfop: data.cfop.trim() || '',
-        cest: data.cest.trim() || '',
-        icmsOrigem: data.icmsOrigem || '0',
-        gtin: data.gtin.trim() || '',
-        unidadeTrib: data.unidadeTrib.trim() || '',
-        gtinTrib: data.gtinTrib.trim() || '',
-        isActive: data.isActive,
-        imageUrl: '',
-        isDeliverable: data.isDeliverable,
-        menuAvailable: data.menuAvailable,
-        trackStock: data.trackStock,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      if (data.isDeliverable) {
-        if (data.menuCategory.trim()) productData.menuCategory = data.menuCategory.trim();
-        if (data.menuCategoryId) productData.menuCategoryId = data.menuCategoryId;
-        if (data.menuDescription.trim()) productData.menuDescription = data.menuDescription.trim();
-        if (data.preparationTime) productData.preparationTime = Number(data.preparationTime);
-        if (data.components.length > 0) productData.components = data.components;
-        if (data.dietary.length > 0) productData.dietary = data.dietary;
-        if (data.modifierGroups.length > 0) {
-          productData.modifierGroups = data.modifierGroups;
-          productData.hasModifiers = true;
-        }
-      }
-
-      const docRef = await addDoc(collection(db, 'products'), productData);
-
-      // Upload image if provided
-      if (data.imageFile) {
-        const imageUrl = await uploadProductImage(data.imageFile, docRef.id);
-        await updateDoc(doc(db, 'products', docRef.id), { imageUrl });
-      }
-      if (currentStock > 0) {
-        await applyStockOperation({
-          businessId: business.id,
-          type: 'entrada',
-          lines: [{ productId: docRef.id, quantity: currentStock }],
-          operatorName: user.name,
-          reason: 'Estoque inicial do produto',
-          sourceType: 'manual',
-          idempotencyKey: `product:${docRef.id}:initial-stock`,
-          expandBom: false,
-          negativeStockPolicy: 'prevent',
-        });
-      }
-      toast.success(t('inventory.toast.productCreated', 'Produto cadastrado com sucesso!'));
+        productId: savedProduct.id,
+        files: [data.imageFile],
+        mode: 'replace',
+      });
     }
+
+    toast.success(editingProduct
+      ? t('inventory.toast.productUpdated', 'Produto atualizado com sucesso!')
+      : t('inventory.toast.productCreated', 'Produto cadastrado com sucesso!'));
     // products via onSnapshot — invalidação não é mais necessária.
-  }, [business?.id, user, editingProduct]);
+  }, [business?.id, user, editingProduct, t]);
 
   const handleSaveMovement = useCallback(async (data: MovementFormData) => {
     if (!business?.id || !user) return;
@@ -2441,14 +2410,16 @@ export default function InventoryModule() {
     if (!business?.id || !deletingProduct) return;
     setIsDeleting(true);
     try {
-      await deleteDoc(doc(db, 'products', deletingProduct.id));
-      toast.success(t('inventory.toast.productDeleted', 'Produto excluído com sucesso'));
+      await archiveCatalogProduct({ businessId: business.id, productId: deletingProduct.id });
+      toast.success(t('inventory.toast.productArchived', 'Produto arquivado com sucesso'));
       // products via onSnapshot — listener vai atualizar a lista automaticamente.
       setDeleteDialogOpen(false);
       setDeletingProduct(null);
     } catch (err) {
-      console.error('Error deleting product:', err);
-      toast.error(t('inventory.toast.deleteProductError', 'Erro ao excluir produto'));
+      console.error('Error archiving product:', err);
+      toast.error(err instanceof Error
+        ? err.message
+        : t('inventory.toast.archiveProductError', 'Erro ao arquivar produto'));
     } finally {
       setIsDeleting(false);
     }
@@ -2523,6 +2494,20 @@ export default function InventoryModule() {
     }).length;
     return { totalProducts, totalValue, lowStockCount, todayMovements };
   }, [activeProducts, movements]);
+
+  React.useEffect(() => {
+    setProductPage(1);
+  }, [searchQuery, categoryFilter, stockFilter, activeFilter, sortConfig, productPageSize]);
+
+  const totalProductPages = Math.max(1, Math.ceil(filteredProducts.length / productPageSize));
+  const safeProductPage = Math.min(productPage, totalProductPages);
+  const paginatedProducts = useMemo(
+    () => filteredProducts.slice(
+      (safeProductPage - 1) * productPageSize,
+      safeProductPage * productPageSize,
+    ),
+    [filteredProducts, productPageSize, safeProductPage],
+  );
 
   // ==========================================
   // UI HANDLERS
@@ -2801,10 +2786,11 @@ export default function InventoryModule() {
                   animate="visible"
                   className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
                 >
-                  {filteredProducts.map((product) => (
+                  {paginatedProducts.map((product) => (
                     <ProductCard
                       key={product.id}
                       product={product}
+                      lastMovement={lastMovementByProduct.get(product.id)}
                       onEdit={handleEditProduct}
                       onDelete={handleRequestDelete}
                       onMovement={handleMovement}
@@ -2860,10 +2846,11 @@ export default function InventoryModule() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredProducts.map((product) => (
+                      {paginatedProducts.map((product) => (
                         <ProductRow
                           key={product.id}
                           product={product}
+                          lastMovement={lastMovementByProduct.get(product.id)}
                           onEdit={handleEditProduct}
                           onDelete={handleRequestDelete}
                           onMovement={handleMovement}
@@ -2876,6 +2863,42 @@ export default function InventoryModule() {
             </motion.div>
           )}
         </AnimatePresence>
+        {filteredProducts.length > 0 && (
+          <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-muted-foreground">
+            <span>
+              Exibindo {(safeProductPage - 1) * productPageSize + 1}–{Math.min(safeProductPage * productPageSize, filteredProducts.length)} de {filteredProducts.length}
+            </span>
+            <div className="flex items-center gap-2">
+              <select
+                value={productPageSize}
+                onChange={(event) => setProductPageSize(Number(event.target.value))}
+                className="px-2 py-1.5 rounded-lg border border-border/60 bg-background text-foreground"
+                aria-label="Produtos por página"
+              >
+                <option value={12}>12 por página</option>
+                <option value={24}>24 por página</option>
+                <option value={48}>48 por página</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setProductPage((page) => Math.max(1, page - 1))}
+                disabled={safeProductPage <= 1}
+                className="px-3 py-1.5 rounded-lg border border-border/60 disabled:opacity-40"
+              >
+                Anterior
+              </button>
+              <span className="min-w-20 text-center">{safeProductPage} / {totalProductPages}</span>
+              <button
+                type="button"
+                onClick={() => setProductPage((page) => Math.min(totalProductPages, page + 1))}
+                disabled={safeProductPage >= totalProductPages}
+                className="px-3 py-1.5 rounded-lg border border-border/60 disabled:opacity-40"
+              >
+                Próxima
+              </button>
+            </div>
+          </div>
+        )}
       </motion.div>
 
       {/* ============ MOVEMENT HISTORY ============ */}
