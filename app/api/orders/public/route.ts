@@ -1,4 +1,4 @@
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -315,7 +315,14 @@ export async function POST(req: NextRequest) {
     // O resgate é idempotente pela chave do carrinho (X-Idempotency-Key) — retry
     // do mesmo carrinho não re-consome. orderRef é pré-gerado só para ancorar o
     // resgate/pedido; a persistência do pedido é o último passo (orderRef.set).
-    const orderRef = adminDb.collection('deliveryOrders').doc();
+    const orderRef = idempotencyKey
+      ? adminDb.collection('deliveryOrders').doc(
+          `public_${createHash('sha256')
+            .update(`${businessId}:${idempotencyKey}`)
+            .digest('hex')
+            .slice(0, 40)}`,
+        )
+      : adminDb.collection('deliveryOrders').doc();
     if (couponCode?.trim()) {
       const reserve = await reserveCouponAdmin(adminDb, {
         businessId,
@@ -402,6 +409,10 @@ export async function POST(req: NextRequest) {
           businessId,
           operatorId: 'public',
           operatorName: 'Cardápio online',
+          sourceType: 'order',
+          sourceId: orderRef.id,
+          sourceDocument: { collection: 'deliveryOrders', id: orderRef.id, existence: 'if-present' },
+          idempotencyKey: `order:${orderRef.id}:deduct`,
           reason: `Pedido #${orderNumber}`,
           productIndex: stockIndex,
           failOnInsufficientFor: guardedStockIds,

@@ -411,12 +411,16 @@ service cloud.firestore {
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
                     && isManager()
-                    && isNonEmptyString(request.resource.data.name);
+                    && isNonEmptyString(request.resource.data.name)
+                    && request.resource.data.currentStock == 0;
 
       allow update: if isAuthenticated()
                     && isOwnBusiness()
                     && isOperator()
-                    && incomingBelongsToBusiness();
+                    && incomingBelongsToBusiness()
+                    // Saldo é exclusivo do núcleo Admin SDK. Edição de cadastro
+                    // pode alterar os demais campos, mas não currentStock.
+                    && request.resource.data.currentStock == resource.data.currentStock;
 
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
@@ -431,14 +435,18 @@ service cloud.firestore {
                   && isOwnBusiness()
                   && isOperator();
 
-      allow create: if isAuthenticated()
-                    && incomingBelongsToBusiness()
-                    && isOperator()
-                    && request.resource.data.type in ['entrada', 'saida', 'ajuste'];
+      // Ledger é escrito exclusivamente pelo núcleo server-side (Admin SDK).
+      allow create: if false;
 
       // Stock movements are immutable (append-only ledger)
       allow update: if false;
       allow delete: if false;
+    }
+
+    // Chaves/resultados idempotentes do núcleo server-side de estoque.
+    // Somente Admin SDK: clientes não precisam ler nem escrever esta coleção.
+    match /stockOperations/{operationId} {
+      allow read, write: if false;
     }
 
     // ============================================

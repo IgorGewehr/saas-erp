@@ -14,32 +14,9 @@
  * Re-conclusão de um appointment já concluído não re-deduz.
  */
 
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '@/lib/config/firebase';
-import type { Product, Service } from '@/lib/types';
-import { deductStock, type StockDeductionLine, type StockAdjustment } from '@/lib/services/stock';
-
-/**
- * Carrega os Products referenciados por uma lista de IDs, filtrando por
- * businessId (R1). Produtos ausentes ou de outro tenant são silenciosamente
- * ignorados — o caller decide o que fazer com o índice resultante.
- */
-async function loadProductIndex(
-  productIds: string[],
-  businessId: string,
-): Promise<Map<string, Product>> {
-  const unique = [...new Set(productIds)].filter(Boolean);
-  const index = new Map<string, Product>();
-  if (unique.length === 0) return index;
-  const snaps = await Promise.all(unique.map(id => getDoc(doc(db, 'products', id))));
-  for (const snap of snaps) {
-    if (!snap.exists()) continue;
-    const data = snap.data() as Product;
-    if (data.businessId !== businessId) continue;
-    index.set(snap.id, { ...data, id: snap.id });
-  }
-  return index;
-}
+import type { Service } from '@/lib/types';
+import type { StockOperationAdjustment } from '@/lib/services/stock-core-admin';
+import { applyStockOperation } from '@/lib/services/stock-server-client';
 
 /**
  * Deduz do estoque os insumos declarados em `service.consumedComponents`.
@@ -55,26 +32,28 @@ export async function consumeServiceComponents(params: {
   operatorName: string;
   /** Appointment id — gravado em cada StockMovement para auditoria. */
   appointmentId: string;
-}): Promise<StockAdjustment[]> {
-  const { service, businessId, operatorId, operatorName, appointmentId } = params;
+}): Promise<StockOperationAdjustment[]> {
+  const { service, businessId, operatorName, appointmentId } = params;
 
   const components = service?.consumedComponents;
   if (!components?.length) return [];
 
-  const lines: StockDeductionLine[] = components.map(c => ({
+  const lines = components.map(c => ({
     productId: c.productId,
     quantity: c.quantity,
   }));
 
-  const productIndex = await loadProductIndex(lines.map(l => l.productId), businessId);
-  if (productIndex.size === 0) return [];
-
-  return deductStock(db, lines, {
+  const result = await applyStockOperation({
     businessId,
-    operatorId,
+    type: 'saida',
+    lines,
     operatorName,
+    sourceType: 'service',
     sourceId: appointmentId,
+    idempotencyKey: `appointment:${appointmentId}:consume-stock`,
     reason: `Insumos do serviço - ${service?.name ?? 'Atendimento'}`,
-    productIndex,
+    expandBom: true,
+    negativeStockPolicy: 'allow',
   });
+  return result.adjustments;
 }

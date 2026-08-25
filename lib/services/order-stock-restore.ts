@@ -88,7 +88,10 @@ export async function restoreOrderStockRecoverable(
     businessId,
     operatorId: 'system',
     operatorName: opts.operatorName,
+    sourceType: 'refund',
     sourceId: orderId,
+    sourceDocument: { collection: 'deliveryOrders', id: orderId, existence: 'required' },
+    idempotencyKey: `order:${orderId}:restore`,
     reason: `Estorno de estoque — ${opts.context} (pedido #${order.number ?? orderId})`,
     productIndex,
   });

@@ -74,7 +74,10 @@ import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Product, StockMovement, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
 import { notifyLowStock } from '@/lib/services/notifications';
-import { addStock, deductStock, restoreStock, type StockAdjustment } from '@/lib/services/stock';
+import {
+  applyStockOperation,
+  createStockIdempotencyKey,
+} from '@/lib/services/stock-server-client';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
@@ -2266,7 +2269,6 @@ export default function InventoryModule() {
         unit: data.unit,
         costPrice,
         salePrice,
-        currentStock,
         minStock,
         maxStock: maxStock ?? null,
         ncm: data.ncm.trim() || undefined,
@@ -2298,6 +2300,20 @@ export default function InventoryModule() {
       );
 
       await updateDoc(doc(db, 'products', editingProduct.id), cleanedData);
+      if (currentStock !== (editingProduct.currentStock || 0)) {
+        await applyStockOperation({
+          businessId: business.id,
+          type: 'ajuste',
+          lines: [{ productId: editingProduct.id, quantity: currentStock }],
+          operatorName: user.name,
+          reason: 'Ajuste ao editar produto',
+          sourceType: 'manual',
+          idempotencyKey: createStockIdempotencyKey(`product:${editingProduct.id}:edit-stock`),
+          expandBom: false,
+          adjustmentMode: 'absolute',
+          negativeStockPolicy: 'prevent',
+        });
+      }
       toast.success(t('inventory.toast.productUpdated', 'Produto atualizado com sucesso!'));
     } else {
       // CREATE
@@ -2311,7 +2327,7 @@ export default function InventoryModule() {
         unit: data.unit,
         costPrice,
         salePrice,
-        currentStock,
+        currentStock: 0,
         minStock,
         maxStock: maxStock ?? null,
         ncm: data.ncm.trim() || '',
@@ -2350,6 +2366,19 @@ export default function InventoryModule() {
         const imageUrl = await uploadProductImage(data.imageFile, docRef.id);
         await updateDoc(doc(db, 'products', docRef.id), { imageUrl });
       }
+      if (currentStock > 0) {
+        await applyStockOperation({
+          businessId: business.id,
+          type: 'entrada',
+          lines: [{ productId: docRef.id, quantity: currentStock }],
+          operatorName: user.name,
+          reason: 'Estoque inicial do produto',
+          sourceType: 'manual',
+          idempotencyKey: `product:${docRef.id}:initial-stock`,
+          expandBom: false,
+          negativeStockPolicy: 'prevent',
+        });
+      }
       toast.success(t('inventory.toast.productCreated', 'Produto cadastrado com sucesso!'));
     }
     // products via onSnapshot — invalidação não é mais necessária.
@@ -2363,48 +2392,32 @@ export default function InventoryModule() {
 
     const qty = parseInt(data.quantity) || 0;
     if (qty < 0) return;
-
-    // Roteia TODA movimentação manual por stock.ts: increment atômico + batch
-    // único (produto + stockMovement no mesmo writeBatch). Nada de write direto
-    // não-atômico aqui. Simetria com PDV/Pedidos.
-    const productIndex = new Map(products.map((p) => [p.id, p]));
-    const ctxBase = {
-      businessId: business.id,
-      operatorId: user.uid,
-      operatorName: user.name,
-      reason: data.reason || data.type,
-      productIndex,
-    };
-
-    // saída/ajuste-abaixo passam por deductStock, que expande BOM
-    // (expandComponents) e debita os insumos de produtos compostos — mesma
-    // regra da venda. entrada credita o SKU pai (igual à nota de compra);
-    // ajuste-acima usa restoreStock (inverso simétrico, também expande BOM).
-    let adjustments: StockAdjustment[] = [];
-    if (data.type === 'entrada') {
-      adjustments = await addStock(db, [{ productId: product.id, quantity: qty }], ctxBase);
-    } else if (data.type === 'saida') {
-      adjustments = await deductStock(db, [{ productId: product.id, quantity: qty }], ctxBase);
-    } else {
-      // ajuste: seta o estoque do PRÓPRIO SKU para o valor exato (qty). expandBom:false
-      // → em produto COMPOSTO mexe no saldo daquele doc, NÃO nos insumos (o ajuste
-      // manual visa o balanço daquele produto). Atômico via os mesmos helpers.
-      const ajusteCtx = { ...ctxBase, expandBom: false };
-      const delta = qty - (product.currentStock || 0);
-      if (delta > 0) {
-        adjustments = await restoreStock(db, [{ productId: product.id, quantity: delta }], ajusteCtx);
-      } else if (delta < 0) {
-        adjustments = await deductStock(db, [{ productId: product.id, quantity: -delta }], ajusteCtx);
-      }
+    if (data.type === 'ajuste' && qty === (product.currentStock || 0)) {
+      toast.info('O estoque já está nesse valor.');
+      return;
     }
+
+    // O servidor lê o saldo real e grava produto + movimento + idempotência na
+    // mesma transação. Ajuste usa alvo absoluto; entrada/saída usam magnitude.
+    const result = await applyStockOperation({
+      businessId: business.id,
+      operatorName: user.name,
+      type: data.type,
+      lines: [{ productId: product.id, quantity: qty }],
+      reason: data.reason || data.type,
+      sourceType: 'manual',
+      idempotencyKey: createStockIdempotencyKey(`inventory:${product.id}:${data.type}`),
+      expandBom: data.type === 'saida',
+      ...(data.type === 'ajuste' ? { adjustmentMode: 'absolute' as const } : {}),
+      negativeStockPolicy: 'prevent',
+    });
+    const adjustments = result.adjustments;
 
     toast.success(t('inventory.toast.movementCreated', 'Movimentação registrada com sucesso!'));
     // products via onSnapshot. stockMovements continua em useQuery local.
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
 
-    // Estoque baixo: reusa os alerts que o deductStock já calcula em memória
-    // (por insumo, em produto composto). Só o deductStock popula `alert` —
-    // entrada/restore sobem estoque e não geram alerta.
+    // Estoque baixo: alertas calculados no núcleo transacional do servidor.
     const stockAlerts = adjustments.flatMap((a) => (a.alert ? [a.alert] : []));
     if (stockAlerts.length > 0) {
       stockAlerts.forEach((alert) => {

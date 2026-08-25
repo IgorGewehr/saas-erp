@@ -43,7 +43,7 @@ export function assertTransitionDeliveryOrder(from: DeliveryOrderStatus, to: Del
 
 export const DELIVERY_ORDER_TRANSITION_EFFECTS: Partial<Record<`${DeliveryOrderStatus}->${DeliveryOrderStatus}`, string[]>> = {
   'recebido->preparando': [
-    'stock.deductStock(items) — set stockDeductedAt',
+    'stock.applyStockOperation(saida, items) — set stockDeductedAt',
     'Notificar operador via TeamChat',
   ],
   'preparando->pronto': [
@@ -65,11 +65,11 @@ export const DELIVERY_ORDER_TRANSITION_EFFECTS: Partial<Record<`${DeliveryOrderS
   ],
   'recebido->cancelado': ['Nenhum side-effect (stock não foi tocado)'],
   'preparando->cancelado': [
-    'stock.restoreStock(itens + insumos via buildOrderStockLines) — CAS idempotente por stockRestoredAt',
+    'stock.applyStockOperation(restauracao, itens + insumos) — CAS idempotente por stockRestoredAt',
     'Notificar cliente',
   ],
   'pronto->cancelado': [
-    'stock.restoreStock(itens + insumos via buildOrderStockLines) — CAS idempotente por stockRestoredAt',
+    'stock.applyStockOperation(restauracao, itens + insumos) — CAS idempotente por stockRestoredAt',
     'Notificar cliente',
   ],
 };

@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import { PaymentSchema, SaleStatusSchema } from '@/contracts/domain/sale';
+import { SelectedModifierSchema } from '@/contracts/domain/deliveryOrder';
 
 const SaleItemInputSchema = z.object({
   productId: z.string().optional(),
@@ -24,6 +25,8 @@ const SaleItemInputSchema = z.object({
   quantity: z.number().positive(),
   unitPrice: z.number().nonnegative(),
   discount: z.number().nonnegative().default(0),
+  basePrice: z.number().nonnegative().optional(),
+  selectedModifiers: z.array(SelectedModifierSchema).optional(),
   /** Server recomputa se ausente. */
   total: z.number().nonnegative().optional(),
 }).superRefine((it, ctx) => {

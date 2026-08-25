@@ -59,16 +59,17 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, setDoc, updateDoc, deleteDoc, doc, writeBatch, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, deleteField, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
-import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { checkStockAvailability } from '@/lib/services/stock';
+import { applyStockOperation } from '@/lib/services/stock-server-client';
+import type { StockOperationAdjustment } from '@/lib/services/stock-core-admin';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import PDVModifierPicker from './PDVModifierPicker';
 import { notifyLowStock } from '@/lib/services/notifications';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { resolveClientIdentityClient } from '@/lib/services/clients/resolveIdentity';
-import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
 import { db } from '@/lib/config/firebase';
 import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod, SelectedModifier, DeliveryOrder } from '@/lib/types';
 
@@ -146,6 +147,7 @@ export default function PDVModule() {
   // Idempotência NFC-e: chave estável por venda — retry manual da mesma venda
   // reusa a chave (dedup no servidor); regenerada após emissão autorizada.
   const nfceIdemKeyRef = useRef<string>(crypto.randomUUID());
+  const saleIdemKeyRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
 
   const loyaltyConfig = business?.settings?.loyalty;
@@ -654,6 +656,7 @@ export default function PDVModule() {
   }, [business?.id, user, gcSellValue, gcSellRecipient, gcSellPhone, gcSellExpiry]);
 
   const resetSale = useCallback(() => {
+    saleIdemKeyRef.current = null;
     setSaleComplete(false);
     setShowConfirmation(false);
     setCart([]);
@@ -875,12 +878,11 @@ export default function PDVModule() {
 
       const saleData = {
         businessId: business.id,
-        clientId: saleClientId,
-        clientName: selectedClient?.name || null,
+        ...(saleClientId ? { clientId: saleClientId } : {}),
+        ...(selectedClient?.name ? { clientName: selectedClient.name } : {}),
         items: cart.map(item => ({
-          id: generateId(),
-          productId: item.productId || null,
-          serviceId: item.serviceId || null,
+          ...(item.productId ? { productId: item.productId } : {}),
+          ...(item.serviceId ? { serviceId: item.serviceId } : {}),
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -903,12 +905,8 @@ export default function PDVModule() {
         updatedAt: now,
       };
 
-      // ── Atomic batch: sale + stock + transaction + client stats ──
-      const batch = writeBatch(db);
-      const saleRef = doc(collection(db, 'sales'));
-      batch.set(saleRef, saleData);
-
-      // Deduct stock into the same batch (supports composite products/BOM).
+      // Pré-checagem local para feedback rápido; a autoridade final é a
+      // transação server-side executada pelo checkout abaixo.
       const productIndex = new Map(products.map(p => [p.id, p]));
       // Fonte ÚNICA de linhas de estoque (mesma do cardápio público): linha base
       // por item + insumos de modificadores (linkedProductId × consumeQty × qty da
@@ -937,64 +935,37 @@ export default function PDVModule() {
         }
       }
 
-      // Capturado pra detectar cruzamento de minStock pós-commit. As gravações
-      // do deductStock vão no batch externo (commit lá embaixo); os alerts são
-      // calculados em memória no momento da chamada e ficam aqui pra disparar
-      // toast + notif só depois que o commit confirmar.
-      let stockAdjustments: Awaited<ReturnType<typeof deductStock>> = [];
-      if (stockLines.length > 0) {
-        stockAdjustments = await deductStock(db, stockLines, {
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name,
-          sourceId: saleRef.id,
-          reason: `Venda #${saleRef.id.substring(0, 6)}`,
-          productIndex,
-        }, batch);
-      }
-
-      // Financial transaction in the same batch.
-      // contactId espelha clientId — Client e CRMContact são a mesma coleção
-      // (lib/types:1832), então gravar ambos garante que relatórios Enterprise
-      // (CLV) que filtram por contactId capturem vendas do PDV também.
-      const txRef = doc(collection(db, 'transactions'));
-      batch.set(txRef, {
-        businessId: business.id,
-        type: 'receita',
-        category: 'Vendas',
-        description: `Venda ${selectedClient?.name ? `- ${selectedClient.name}` : ''}`,
-        amount: total,
-        dueDate: now.split('T')[0],
-        paymentDate: now.split('T')[0],
-        status: 'pago',
-        clientId: saleClientId,
-        contactId: saleClientId,
-        clientName: selectedClient?.name || null,
-        saleId: saleRef.id,
-        paymentMethod: payments[0]?.method || 'dinheiro',
-        createdAt: now,
-        updatedAt: now,
+      if (!firebaseUser) throw new Error('Sessão expirada. Entre novamente.');
+      if (!saleIdemKeyRef.current) saleIdemKeyRef.current = crypto.randomUUID();
+      const checkoutKey = saleIdemKeyRef.current;
+      const token = await firebaseUser.getIdToken();
+      const checkoutResponse = await fetch('/api/sales/checkout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+          'X-Idempotency-Key': checkoutKey,
+        },
+        body: JSON.stringify({
+          ...saleData,
+          commissionRate: user.commissionRate ?? 0,
+          idempotencyKey: checkoutKey,
+        }),
       });
-
-      // Client stats + lifecycle promotion in the same batch.
-      // Antes só atualizava totalSpent/visitCount/lastVisit. Não promovia
-      // status/lifecycleStage — lead que comprava continuava marcado como
-      // "qualificado" pra sempre. Após primeira venda paga, marca como
-      // 'ganho' / 'customer'.
-      // Promoção de status (lead → ganho) na mesma transação atômica da venda.
-      // As STATS de contagem (totalSpent/visitCount/lastVisit/lifecycleStage)
-      // saíram do batch e são aplicadas via recordClientPurchaseClient após o
-      // commit — idempotente por venda (guard clients/{id}/purchases/{saleId}),
-      // fechando o double-count em retry/duplo-clique.
-      if (saleClientId && selectedClient && selectedClient.status !== 'ganho') {
-        batch.update(doc(db, 'clients', saleClientId), { status: 'ganho', updatedAt: now });
+      const checkoutPayload = await checkoutResponse.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        data?: {
+          sale: { id: string };
+          stockAdjustments: StockOperationAdjustment[];
+        };
+      } | null;
+      if (!checkoutResponse.ok || !checkoutPayload?.ok || !checkoutPayload.data) {
+        throw new Error(checkoutPayload?.error || 'Não foi possível finalizar a venda.');
       }
 
-      // Commit all core operations atomically
-      await batch.commit();
-
-      // Use saleRef.id for downstream operations
-      const docRef = saleRef;
+      const stockAdjustments = checkoutPayload.data.stockAdjustments;
+      const docRef = { id: checkoutPayload.data.sale.id };
 
       // Estoque baixo: cruzou minStock? Dispara toast pro operador (imediato)
       // + notif persistente pros gestores. Best-effort — falha aqui não
@@ -1013,60 +984,8 @@ export default function PDVModule() {
           alerts: stockAlerts,
           actorId: user.uid,
           actorName: user.name,
-          sourceLabel: `Venda #${saleRef.id.substring(0, 6)}`,
+          sourceLabel: `Venda #${docRef.id.substring(0, 6)}`,
         });
-      }
-
-      // ── Commission transaction (non-critical — fires if operator has commissionRate > 0) ──
-      // P2.12: comissão gravada com ID DETERMINÍSTICO (`comm_sale_<saleId>`) via
-      // setDoc em vez de addDoc. Como o saleRef.id é único por venda, um re-clique
-      // ou retry pós-commit sobrescreve o mesmo doc em vez de criar uma 2ª comissão
-      // — fecha a janela de duplicação. A migração completa pro motor server-side
-      // (sales-server) segue como dívida; este guard idempotente cobre o risco real.
-      const commissionRate = user.commissionRate ?? 0;
-      if (commissionRate > 0 && total > 0) {
-        const commissionAmount = Math.round(total * commissionRate) / 100;
-        try {
-          await setDoc(doc(db, 'transactions', `comm_sale_${saleRef.id}`), {
-            businessId: business.id,
-            type: 'despesa',
-            category: 'Comissoes',
-            description: `Comissão ${user.name} — Venda #${saleRef.id.slice(0, 6)} (${commissionRate}%)`,
-            amount: commissionAmount,
-            dueDate: now.split('T')[0],
-            paymentDate: null,
-            status: 'pendente',
-            clientId: user.uid,
-            clientName: user.name,
-            saleId: saleRef.id,
-            operatorId: user.uid,
-            operatorName: user.name,
-            createdAt: now,
-            updatedAt: now,
-          });
-        } catch (err) {
-          console.warn('[pdv] commission transaction failed:', err);
-        }
-      }
-
-      // ── Client stats (idempotente por venda) ──────────────────────────────
-      // Reconhece a receita na ficha do cliente: totalSpent/visitCount/lastVisit
-      // + lifecycleStage='customer'. O guard clients/{id}/purchases/{saleId}
-      // torna o efeito idempotente (retry/duplo-clique não conta de novo). PDV
-      // conta a visita (countVisit default true) — ao contrário do cardápio, que
-      // já contou na criação do pedido. Mesmo helper compartilhado, execução
-      // client-SDK. Best-effort: falha aqui não afeta a venda (já commitada).
-      if (saleClientId) {
-        try {
-          await recordClientPurchaseClient({
-            businessId: business.id,
-            clientId: saleClientId,
-            sourceId: saleRef.id,
-            amount: total,
-          });
-        } catch (err) {
-          console.warn('[pdv] recordClientPurchase falhou:', err);
-        }
       }
 
       // ── Non-critical operations (loyalty/gift card — already use runTransaction internally) ──
@@ -1173,13 +1092,14 @@ export default function PDVModule() {
       }
     } catch (error) {
       console.error('Error finalizing sale:', error);
-      setSaleError('Erro ao finalizar venda. Tente novamente.');
+      setSaleError(error instanceof Error ? error.message : 'Erro ao finalizar venda. Tente novamente.');
     } finally {
       setIsSaving(false);
     }
-  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, tipAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce, resetSale]);
+  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, tipAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce, resetSale, firebaseUser]);
 
   const cancelSale = useCallback(() => {
+    saleIdemKeyRef.current = null;
     setCart([]);
     setPayments([]);
     giftCardRedemptions.current.clear();
@@ -1221,13 +1141,17 @@ export default function PDVModule() {
         productIndex,
       );
       if (productLines.length > 0) {
-        await restoreStock(db, productLines, {
+        await applyStockOperation({
           businessId: business.id,
-          operatorId: user.uid,
+          type: 'restauracao',
+          lines: productLines,
           operatorName: user.name,
+          sourceType: 'refund',
           sourceId: sale.id,
+          sourceDocument: { collection: 'sales', id: sale.id, existence: 'required' },
+          idempotencyKey: `sale:${sale.id}:restore`,
           reason: `Cancelamento venda #${sale.id.substring(0, 6)}`,
-          productIndex,
+          expandBom: true,
         });
       }
 

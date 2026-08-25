@@ -216,6 +216,7 @@ async function createOrderInner(businessId: string, params: CreateParams) {
   // (OrdersModule) e o cardápio público (orders/public). Antes este canal usava
   // um contador SEPARADO (counters/deliveryOrder) → números colidiam entre canais.
   const number = await allocateOrderNumberAdmin(adminDb, businessId);
+  const orderRef = adminDb.collection('deliveryOrders').doc();
 
   const now = new Date().toISOString();
   const estimatedDeliveryAt = new Date(Date.now() + (params.estimatedMinutes || 45) * 60000).toISOString();
@@ -234,8 +235,13 @@ async function createOrderInner(businessId: string, params: CreateParams) {
     businessId,
     operatorId: 'agent',
     operatorName: 'Agente IA',
+    sourceType: 'order',
+    sourceId: orderRef.id,
+    sourceDocument: { collection: 'deliveryOrders', id: orderRef.id, existence: 'if-present' },
+    idempotencyKey: `order:${orderRef.id}:deduct`,
     reason: `Pedido #${number}`,
     productIndex,
+    negativeStockPolicy: 'prevent',
   });
 
   // Identidade canônica do cliente quando veio só o telefone (sem clientId):
@@ -278,9 +284,9 @@ async function createOrderInner(businessId: string, params: CreateParams) {
     updatedAt: now,
   };
   const cleaned = Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== undefined));
-  const ref = await adminDb.collection('deliveryOrders').add(cleaned);
+  await orderRef.set(cleaned);
 
-  return { id: ref.id, number, total, subtotal, estimatedDeliveryAt };
+  return { id: orderRef.id, number, total, subtotal, estimatedDeliveryAt };
 }
 
 async function getOrder(businessId: string, orderId: string) {

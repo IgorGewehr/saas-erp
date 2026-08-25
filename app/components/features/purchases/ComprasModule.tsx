@@ -18,7 +18,7 @@ import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
 import { toast } from 'react-toastify';
-import { addStock } from '@/lib/services/stock';
+import { applyStockOperation } from '@/lib/services/stock-server-client';
 
 // ─── XML Parser (regex-based, no DOM needed) ─────────────────────────────────
 
@@ -583,13 +583,18 @@ export default function ComprasModule() {
         throw new Error('no_matches');
       }
 
-      await addStock(db, matched, {
+      const stockResult = await applyStockOperation({
         businessId: business.id,
-        operatorId: user.uid,
+        type: 'entrada',
+        lines: matched,
         operatorName: user.name,
-        purchaseId: note.id,
         reason: `NF-e ${note.numero}/${note.serie} — ${note.supplierName}`,
-        productIndex,
+        sourceType: 'purchase',
+        sourceId: note.id,
+        sourceDocument: { collection: 'purchaseNotes', id: note.id, existence: 'required' },
+        idempotencyKey: `purchase:${note.id}:stock-import`,
+        expandBom: false,
+        negativeStockPolicy: 'prevent',
       });
 
       // ── Custo médio móvel (CMV/margem) ──────────────────────────────────────
@@ -626,6 +631,7 @@ export default function ComprasModule() {
       await updateDoc(doc(db, 'purchaseNotes', note.id), {
         status: 'importada' as PurchaseNoteStatus,
         stockImportedAt: new Date().toISOString(),
+        stockMovementIds: stockResult.adjustments.map((item) => item.movementId),
         unmatchedItems: unmatched.length ? unmatched : undefined,
         updatedAt: new Date().toISOString(),
       });

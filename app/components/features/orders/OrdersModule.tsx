@@ -23,7 +23,8 @@ import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { toast } from 'react-toastify';
-import { deductStock, restoreStock, checkStockAvailability } from '@/lib/services/stock';
+import { checkStockAvailability } from '@/lib/services/stock';
+import { applyStockOperation } from '@/lib/services/stock-server-client';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import { allocateOrderNumber } from '@/lib/services/orderNumber';
 import { notifyLowStock } from '@/lib/services/notifications';
@@ -1656,13 +1657,17 @@ export default function OrdersModule() {
 
     const productIndex = new Map(products.map(p => [p.id, p]));
     const stockLines = buildOrderStockLines(claimedOrder, productIndex);
-    await restoreStock(db, stockLines, {
+    await applyStockOperation({
       businessId,
-      operatorId: user.uid,
+      type: 'restauracao',
+      lines: stockLines,
       operatorName: user.name,
+      sourceType: 'refund',
       sourceId: order.id,
+      sourceDocument: { collection: 'deliveryOrders', id: order.id, existence: 'required' },
+      idempotencyKey: `order:${order.id}:restore`,
       reason: `Cancelamento pedido #${order.number}`,
-      productIndex,
+      expandBom: true,
     });
     // Timestamp gravado SÓ APÓS concluir (ordem recuperável).
     await updateDoc(orderRef, { stockRestoredAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
@@ -1821,14 +1826,20 @@ export default function OrdersModule() {
         if (newStatus === 'preparando' && !order.stockDeductedAt) {
           const productIndex = new Map(products.map(p => [p.id, p]));
           const stockLines = buildOrderStockLines(order, productIndex);
-          const adjustments = await deductStock(db, stockLines, {
+          const stockResult = await applyStockOperation({
             businessId: business.id,
-            operatorId: user.uid,
+            type: 'saida',
+            lines: stockLines,
             operatorName: user.name,
+            sourceType: 'order',
             sourceId: order.id,
+            sourceDocument: { collection: 'deliveryOrders', id: order.id, existence: 'required' },
+            idempotencyKey: `order:${order.id}:deduct`,
             reason: `Pedido #${order.number}`,
-            productIndex,
+            expandBom: true,
+            negativeStockPolicy: 'prevent',
           });
+          const adjustments = stockResult.adjustments;
           stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
           appliedPatch.stockDeductedAt = now;
         }

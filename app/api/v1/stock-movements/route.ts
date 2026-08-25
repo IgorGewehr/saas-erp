@@ -1,8 +1,15 @@
+import { randomUUID } from 'crypto';
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import { CreateStockMovementBodySchema } from '@/contracts/api/v1/stock-movements';
-import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
+import {
+  applyStockOperationAdmin,
+  InsufficientStockError,
+  InvalidStockOperationError,
+  StockIdempotencyConflictError,
+  StockReferenceError,
+} from '@/lib/services/stock-core-admin';
 
 // ─── GET /api/v1/stock-movements ────────────────────────────────────────────
 export async function GET(req: NextRequest) {
@@ -76,67 +83,51 @@ export async function POST(req: NextRequest) {
   const idempotencyKey = req.headers.get('x-idempotency-key');
 
   try {
-    const result = await withIdempotency(
-      adminDb,
-      { businessId: auth.businessId, key: idempotencyKey, endpoint: 'POST /api/v1/stock-movements' },
-      async () => {
-        const productRef = adminDb.collection('products').doc(body.productId);
-        const productSnap = await productRef.get();
-        if (!productSnap.exists || productSnap.data()?.businessId !== auth.businessId) {
-          throw new Error('Product not found');
-        }
-        const productData = productSnap.data()!;
-        const previousStock: number = productData.currentStock ?? 0;
-        let newStock: number;
-        switch (body.type) {
-          case 'entrada':
-            newStock = previousStock + body.quantity;
-            break;
-          case 'saida':
-            if (body.quantity > previousStock) {
-              throw new Error(`Insufficient stock. Current: ${previousStock}, requested: ${body.quantity}`);
-            }
-            newStock = previousStock - body.quantity;
-            break;
-          case 'ajuste':
-            // semântica histórica: quantity é o novo valor absoluto
-            newStock = body.quantity;
-            break;
-        }
-        const now = new Date().toISOString();
-        const movementData: Record<string, any> = {
-          businessId: auth.businessId,
-          productId: body.productId,
-          productName: productData.name || '',
-          type: body.type,
-          quantity: body.quantity,
-          previousStock,
-          newStock,
-          reason: body.reason.trim(),
-          operatorId,
-          operatorName,
-          createdAt: now,
-        };
-        const batch = adminDb.batch();
-        const movementRef = adminDb.collection('stockMovements').doc();
-        batch.set(movementRef, movementData);
-        batch.update(productRef, { currentStock: newStock, updatedAt: now });
-        await batch.commit();
-        return {
-          id: movementRef.id,
-          ...movementData,
-          product: { id: body.productId, name: productData.name, previousStock, currentStock: newStock },
-        };
+    const coreKey = idempotencyKey ?? `api:${randomUUID()}`;
+    const result = await applyStockOperationAdmin(adminDb, {
+      businessId: auth.businessId,
+      type: body.type,
+      lines: [{ productId: body.productId, quantity: body.quantity }],
+      operatorId,
+      operatorName,
+      reason: body.reason.trim(),
+      sourceType: 'api',
+      sourceId: coreKey,
+      idempotencyKey: coreKey,
+      expandBom: false,
+      adjustmentMode: body.type === 'ajuste' ? 'absolute' : 'delta',
+      negativeStockPolicy: 'prevent',
+    });
+    const adjustment = result.adjustments[0];
+    const movementData = {
+      id: adjustment.movementId,
+      businessId: auth.businessId,
+      productId: adjustment.productId,
+      productName: adjustment.productName,
+      type: body.type,
+      // Mantém o contrato histórico da resposta v1: ajuste devolve o alvo absoluto.
+      quantity: body.quantity,
+      previousStock: adjustment.previousStock,
+      newStock: adjustment.newStock,
+      reason: body.reason.trim(),
+      operatorId,
+      operatorName,
+      product: {
+        id: adjustment.productId,
+        name: adjustment.productName,
+        previousStock: adjustment.previousStock,
+        currentStock: adjustment.newStock,
       },
-    );
+    };
     return apiSuccess(
-      { ...result.result, ...(result.replayed ? { _idempotent: true } : {}) },
+      { ...movementData, ...(result.replayed ? { _idempotent: true } : {}) },
       201,
     );
   } catch (err) {
-    if (err instanceof IdempotencyConflictError) {
-      return apiError('Idempotency key in progress — retry in a moment', 409);
-    }
+    if (err instanceof StockIdempotencyConflictError) return apiError(err.message, 409);
+    if (err instanceof InsufficientStockError) return apiError(err.message, 409);
+    if (err instanceof StockReferenceError) return apiError(err.message, 404);
+    if (err instanceof InvalidStockOperationError) return apiError(err.message, 400);
     console.error('[API v1/stock-movements POST]', err);
     return apiError(err instanceof Error ? err.message : 'Failed to create stock movement', 500);
   }

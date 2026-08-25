@@ -36,7 +36,7 @@ export function assertTransitionSale(from: SaleStatus, to: SaleStatus): void {
 /** Side-effects esperados por transição. Documentação para emitir eventos cross-módulo. */
 export const SALE_TRANSITION_EFFECTS: Partial<Record<`${SaleStatus}->${SaleStatus}`, string[]>> = {
   'aberta->finalizada': [
-    'stock.deductStock(items)',
+    'stock.applyStockOperation(saida, items)',
     'Emit event sale.finalized → criar Transaction receita',
     'Se fiscalDocId vazio: trigger emissão NFC-e',
     'loyalty.addPoints (se settings.loyalty.isEnabled)',
@@ -45,7 +45,7 @@ export const SALE_TRANSITION_EFFECTS: Partial<Record<`${SaleStatus}->${SaleStatu
     'Nenhum side-effect (stock ainda não foi tocado em sale=aberta)',
   ],
   'finalizada->cancelada': [
-    'stock.restoreStock(items) — devolver itens ao estoque',
+    'stock.applyStockOperation(restauracao, items) — devolver itens ao estoque',
     'Emit event sale.canceled → marcar Transaction estornada',
     'Se fiscalDocId existe: cancelamento NFC-e (/api/fiscal/cancel)',
     'loyalty.removePoints',

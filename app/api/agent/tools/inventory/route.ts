@@ -16,11 +16,12 @@
  *   - set_out_of_stock       zero out currentStock (for temporary runout)
  */
 
+import { randomUUID } from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { Product, StockMovement } from '@/lib/types';
-import { FieldValue } from 'firebase-admin/firestore';
+import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 
 type Action =
   | 'list'
@@ -57,6 +58,7 @@ interface AdjustStockParams {
   reason: string;               // required — "Ajuste manual", "Perda", etc.
   operatorId?: string;
   operatorName?: string;
+  idempotencyKey?: string;
 }
 
 const WRITEABLE: (keyof Product)[] = [
@@ -97,7 +99,14 @@ export async function POST(req: NextRequest) {
       case 'set_active':
         return NextResponse.json({ ok: true, data: await updateProduct(businessId, body.params.id as string, { isActive: body.params.isActive as boolean }) });
       case 'set_out_of_stock':
-        return NextResponse.json({ ok: true, data: await setOutOfStock(businessId, body.params.id as string) });
+        return NextResponse.json({
+          ok: true,
+          data: await setOutOfStock(
+            businessId,
+            body.params.id as string,
+            body.params.idempotencyKey as string | undefined,
+          ),
+        });
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
     }
@@ -246,39 +255,39 @@ async function adjustStock(businessId: string, p: AdjustStockParams): Promise<{ 
   if (product.businessId !== businessId) throw new Error('Cross-tenant access denied');
 
   const delta = Math.round(p.delta * 1000) / 1000;
-  const newStock = (product.currentStock || 0) + delta;
-  if (newStock < 0) throw new Error(`Stock would go negative: current=${product.currentStock} delta=${delta}`);
-
-  const now = new Date().toISOString();
-  const batch = adminDb.batch();
-
-  batch.update(ref, {
-    currentStock: FieldValue.increment(delta),
-    updatedAt: now,
+  const coreKey = p.idempotencyKey ?? `agent:inventory:${randomUUID()}`;
+  const result = await applyStockOperationAdmin(adminDb, {
+    businessId,
+    type: 'ajuste',
+    lines: [{ productId: p.productId, quantity: delta }],
+    operatorId: p.operatorId || 'agent',
+    operatorName: p.operatorName || 'Agente IA',
+    reason: p.reason.slice(0, 200),
+    sourceType: 'agent',
+    sourceId: coreKey,
+    idempotencyKey: coreKey,
+    expandBom: false,
+    negativeStockPolicy: 'prevent',
   });
-
-  // Audit row in stockMovements (immutable)
-  const mvRef = adminDb.collection('stockMovements').doc();
+  const adjustment = result.adjustments[0];
+  const now = new Date().toISOString();
   const movement: StockMovement = {
-    id: mvRef.id,
+    id: adjustment.movementId,
     businessId,
     productId: p.productId,
     productName: product.name,
-    type: delta > 0 ? 'entrada' : 'saida',
-    quantity: Math.abs(delta),
-    previousStock: product.currentStock || 0,
-    newStock,
+    type: 'ajuste',
+    quantity: delta,
+    previousStock: adjustment.previousStock,
+    newStock: adjustment.newStock,
     reason: p.reason.slice(0, 200),
     operatorId: p.operatorId || 'agent',
     operatorName: p.operatorName || 'Agente IA',
     createdAt: now,
   };
-  batch.set(mvRef, movement);
-
-  await batch.commit();
 
   return {
-    product: { ...product, currentStock: newStock, updatedAt: now, id: snap.id },
+    product: { ...product, currentStock: adjustment.newStock, updatedAt: now, id: snap.id },
     movement,
   };
 }
@@ -303,7 +312,11 @@ async function listLowStock(businessId: string, limit?: number): Promise<Product
   return low;
 }
 
-async function setOutOfStock(businessId: string, id: string): Promise<Product> {
+async function setOutOfStock(
+  businessId: string,
+  id: string,
+  idempotencyKey?: string,
+): Promise<Product> {
   if (!id) throw new Error('id required');
   const ref = adminDb.collection('products').doc(id);
   const snap = await ref.get();
@@ -311,34 +324,27 @@ async function setOutOfStock(businessId: string, id: string): Promise<Product> {
   const product = snap.data() as Product;
   if (product.businessId !== businessId) throw new Error('Cross-tenant access denied');
 
-  const now = new Date().toISOString();
-  const delta = -(product.currentStock || 0);
+  if ((product.currentStock || 0) === 0) return { ...product, id: snap.id };
 
-  if (delta === 0) return { ...product, id: snap.id };
-
-  // Audit via stockMovements (immutable trail)
-  const batch = adminDb.batch();
-  batch.update(ref, { currentStock: 0, updatedAt: now });
-
-  const mvRef = adminDb.collection('stockMovements').doc();
-  const movement: StockMovement = {
-    id: mvRef.id,
+  const coreKey = idempotencyKey ?? `agent:out-of-stock:${randomUUID()}`;
+  const result = await applyStockOperationAdmin(adminDb, {
     businessId,
-    productId: id,
-    productName: product.name,
     type: 'ajuste',
-    quantity: Math.abs(delta),
-    previousStock: product.currentStock || 0,
-    newStock: 0,
-    reason: 'Marcado como esgotado pelo agente',
+    lines: [{ productId: id, quantity: 0 }],
     operatorId: 'agent',
     operatorName: 'Agente IA',
-    createdAt: now,
-  };
-  batch.set(mvRef, movement);
-  await batch.commit();
+    reason: 'Marcado como esgotado pelo agente',
+    sourceType: 'agent',
+    sourceId: coreKey,
+    idempotencyKey: coreKey,
+    expandBom: false,
+    adjustmentMode: 'absolute',
+    negativeStockPolicy: 'prevent',
+  });
+  const adjustment = result.adjustments[0];
+  const now = new Date().toISOString();
 
-  return { ...product, currentStock: 0, updatedAt: now, id: snap.id };
+  return { ...product, currentStock: adjustment.newStock, updatedAt: now, id: snap.id };
 }
 
 function round(n: number): number {

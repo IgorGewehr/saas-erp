@@ -38,7 +38,7 @@ export const ORDER_TRANSITION_EFFECTS: Partial<Record<`${OrderStatus}->${OrderSt
   ],
   'confirmado->faturado': [
     'Emitir NF-e (/api/fiscal/emit)',
-    'stock.deductStock(items)',
+    'stock.applyStockOperation(saida, items)',
     'Emit event order.invoiced → criar Transaction receita',
   ],
   'faturado->enviado': ['Atualizar logistics tracking'],
@@ -47,7 +47,7 @@ export const ORDER_TRANSITION_EFFECTS: Partial<Record<`${OrderStatus}->${OrderSt
   'condicional->cancelado': ['Nenhum side-effect'],
   'confirmado->cancelado': ['Liberar reserva de estoque'],
   'faturado->cancelado': [
-    'stock.restoreStock(items)',
+    'stock.applyStockOperation(restauracao, items)',
     'Cancelar NF-e (/api/fiscal/cancel)',
     'Marcar Transaction estornada',
   ],

@@ -162,6 +162,17 @@ describe('Firestore rules file coverage', () => {
     expect(rulesContent).toContain('function belongsToBusiness(businessId)');
   });
 
+  it('reserva saldo e ledger de estoque ao núcleo server-side', () => {
+    expect(rulesContent).toContain(
+      'request.resource.data.currentStock == resource.data.currentStock',
+    );
+    const stockMovementBlock = rulesContent.match(
+      /match \/stockMovements\/\{movementId\} \{[\s\S]*?\n    \}/,
+    )?.[0];
+    expect(stockMovementBlock).toContain('allow create: if false');
+    expect(rulesContent).toContain('match /stockOperations/{operationId}');
+  });
+
   it('defines the isOwnBusiness helper function', () => {
     expect(rulesContent).toContain('function isOwnBusiness()');
   });

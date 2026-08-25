@@ -1,11 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 
-// FieldValue.increment é chamado na fase de ESCRITA do deductStockAdmin. O guard
-// de oversell lança ANTES de escrever, mas os testes de caminho-feliz chegam à
-// escrita — então stubamos FieldValue pra não depender do firebase-admin real.
-vi.mock('firebase-admin/firestore', () => ({
-  FieldValue: { increment: (n: number) => ({ __increment: n }) },
-}));
+vi.mock('firebase-admin/firestore', () => ({}));
 
 import {
   deductStockAdmin,
@@ -35,6 +30,7 @@ function product(id: string, currentStock: number, extra: Partial<Product> = {})
 /** Fake admin Firestore: só o necessário pra deductStockAdmin (runTransaction + tx.get/update/set). */
 function makeFakeDb(stock: Record<string, number>) {
   const writes: Array<{ coll: string; id: string; data: Record<string, unknown> }> = [];
+  const documents = new Map<string, Record<string, unknown>>();
   const db = {
     collection(coll: string) {
       return { doc(id: string) { return { id, _coll: coll }; } };
@@ -42,20 +38,29 @@ function makeFakeDb(stock: Record<string, number>) {
     async runTransaction<T>(cb: (tx: unknown) => Promise<T>): Promise<T> {
       const tx = {
         async get(ref: { id: string; _coll: string }) {
-          const has = ref._coll === 'products' && ref.id in stock;
-          return { exists: has, data: () => (has ? { currentStock: stock[ref.id] } : undefined) };
+          if (ref._coll === 'products' && ref.id in stock) {
+            return {
+              id: ref.id,
+              exists: true,
+              data: () => ({
+                businessId: 'biz1',
+                name: `Produto ${ref.id}`,
+                currentStock: stock[ref.id],
+                minStock: 0,
+              }),
+            };
+          }
+          const stored = documents.get(`${ref._coll}/${ref.id}`);
+          return { id: ref.id, exists: !!stored, data: () => stored };
         },
         update(ref: { id: string; _coll: string }, patch: Record<string, unknown>) {
-          // Aplica o FieldValue.increment stubado ao estoque mutável — assim uma
-          // 2ª dedução relê dentro da "tx" o saldo já debitado pela 1ª (modela a
-          // corrida serializada que o guard precisa fechar).
-          const inc = patch.currentStock as { __increment?: number } | undefined;
-          if (ref._coll === 'products' && inc && typeof inc.__increment === 'number') {
-            stock[ref.id] = (stock[ref.id] ?? 0) + inc.__increment;
+          if (ref._coll === 'products' && typeof patch.currentStock === 'number') {
+            stock[ref.id] = patch.currentStock;
           }
         },
         set(ref: { id: string; _coll: string }, data: Record<string, unknown>) {
           writes.push({ coll: ref._coll, id: ref.id, data });
+          documents.set(`${ref._coll}/${ref.id}`, data);
         },
       };
       return cb(tx);
@@ -101,7 +106,7 @@ describe('deductStockAdmin — guard de oversell (failOnInsufficientFor)', () =>
 
     expect(adj).toHaveLength(1);
     expect(adj[0]).toMatchObject({ productId: 'p1', previousStock: 5, newStock: 2 });
-    expect(writes).toHaveLength(1); // 1 stockMovement gravado
+    expect(writes.filter((write) => write.coll === 'stockMovements')).toHaveLength(1);
   });
 
   it('serializa corrida: a 2ª dedução da última unidade aborta lendo o saldo já debitado', async () => {

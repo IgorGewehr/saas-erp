@@ -5,6 +5,7 @@ interface AuthResult {
   uid: string;
   businessId: string;
   role: string;
+  name: string;
 }
 
 /**
@@ -42,6 +43,7 @@ export async function verifyAuth(
     const userData = userDoc.data()!;
     const businessId = userData.businessId as string;
     const role = (userData.role as string) || 'viewer';
+    const name = (userData.name as string) || (userData.displayName as string) || 'Usuário';
 
     if (!businessId) {
       return NextResponse.json({ error: 'User has no business assigned' }, { status: 403 });
@@ -52,7 +54,7 @@ export async function verifyAuth(
       return NextResponse.json({ error: 'Forbidden — business mismatch' }, { status: 403 });
     }
 
-    return { uid, businessId, role };
+    return { uid, businessId, role, name };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Token verification failed';
     console.error('[Auth] Token verification failed:', message);

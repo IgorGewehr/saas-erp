@@ -16,8 +16,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
-import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product, StockMovement } from '@/lib/types';
-import { FieldValue } from 'firebase-admin/firestore';
+import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
+import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 
 type Action = 'list' | 'get' | 'match_products' | 'apply_to_stock' | 'list_unmatched';
 
@@ -175,38 +175,38 @@ async function applyToStock(
     throw new Error('No products matched — review unmatched items first');
   }
 
-  // Batch: increment stock on each matched product + create stockMovement audit rows
   const now = new Date().toISOString();
+  const stockResult = await applyStockOperationAdmin(adminDb, {
+    businessId,
+    type: 'entrada',
+    lines: matched.map(({ item, product }) => ({
+      productId: product.id,
+      quantity: item.quantity,
+      ...(item.cProd ? { sourceLineId: item.cProd } : {}),
+    })),
+    operatorId: operatorId || 'agent',
+    operatorName: operatorName || 'Agente IA',
+    reason: `NF ${note.numero}/${note.serie} — ${note.supplierName}`,
+    sourceType: 'purchase',
+    sourceId: id,
+    sourceDocument: { collection: 'purchaseNotes', id, existence: 'required' },
+    idempotencyKey: `purchase:${id}:stock-import`,
+    expandBom: false,
+    negativeStockPolicy: 'prevent',
+  });
+  const movementIds = stockResult.adjustments.map((item) => item.movementId);
+
+  // Custos + status da nota ficam num batch próprio. Se ele falhar, o retry
+  // reaproveita a operação de estoque acima sem duplicar os saldos.
   const batch = adminDb.batch();
-  const movementIds: string[] = [];
 
   for (const { item, product } of matched) {
     const productRef = adminDb.collection('products').doc(product.id);
     batch.update(productRef, {
-      currentStock: FieldValue.increment(item.quantity),
       // Update cost price if it moved meaningfully (± 5%)
       costPrice: shouldUpdateCost(product.costPrice, item.unitPrice) ? item.unitPrice : product.costPrice,
       updatedAt: now,
     });
-
-    const mvRef = adminDb.collection('stockMovements').doc();
-    const movement: StockMovement = {
-      id: mvRef.id,
-      businessId,
-      productId: product.id,
-      productName: product.name,
-      type: 'entrada',
-      quantity: item.quantity,
-      previousStock: product.currentStock || 0,
-      newStock: (product.currentStock || 0) + item.quantity,
-      reason: `NF ${note.numero}/${note.serie} — ${note.supplierName}`,
-      purchaseId: id,
-      operatorId: operatorId || 'agent',
-      operatorName: operatorName || 'Agente IA',
-      createdAt: now,
-    };
-    batch.set(mvRef, movement);
-    movementIds.push(mvRef.id);
   }
 
   // Update note: idempotency stamp + unmatched items snapshot
@@ -223,7 +223,7 @@ async function applyToStock(
 
   return {
     note: { ...note, status: 'importada', stockImportedAt: now, stockMovementIds: movementIds, id: noteSnap.id },
-    movementsCreated: matched.length,
+    movementsCreated: movementIds.length,
     unmatchedCount: unmatched.length,
   };
 }

@@ -34,13 +34,19 @@
 import { createHash } from 'crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import { deductStockAdmin, loadProductIndex } from '@/lib/services/stock-admin';
+import {
+  deductStockAdmin,
+  loadProductIndex,
+  type StockAdjustmentAdmin,
+} from '@/lib/services/stock-admin';
+import { buildOrderStockLines } from '@/lib/services/stock-lines';
+import { recordClientPurchaseAdmin } from '@/lib/services/clients/recordPurchase';
 import { withIdempotency, type IdempotencyResult } from '@/contracts/_runtime/idempotency';
 import {
   CreateSaleWithSideEffectsInputSchema,
   type CreateSaleWithSideEffectsInput,
 } from '@/contracts/api/services/sale-server';
-import type { Sale } from '@/lib/types';
+import type { DeliveryOrder, Sale } from '@/lib/types';
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -51,6 +57,7 @@ export interface CreateSaleResult {
   transactionId: string;
   commissionTransactionId?: string;
   stockMovements: number;
+  stockAdjustments: StockAdjustmentAdmin[];
   /** True quando o resultado veio de um replay idempotente (não criou nada novo). */
   replayed: boolean;
 }
@@ -88,7 +95,7 @@ export async function createSaleWithSideEffects(
   const idemp: IdempotencyResult<Omit<CreateSaleResult, 'replayed'>> = await withIdempotency<Omit<CreateSaleResult, 'replayed'>>(
     db,
     { businessId, key, endpoint: 'service:createSaleWithSideEffects' },
-    async () => runCreate(db, input),
+    async () => runCreate(db, input, key),
   );
 
   return { ...idemp.result, replayed: idemp.replayed };
@@ -97,6 +104,7 @@ export async function createSaleWithSideEffects(
 async function runCreate(
   db: Firestore,
   input: CreateSaleWithSideEffectsInput,
+  idempotencyKey: string,
 ): Promise<Omit<CreateSaleResult, 'replayed'>> {
   const { businessId } = input;
   const now = new Date().toISOString();
@@ -112,6 +120,8 @@ async function runCreate(
     total: round2(item.total ?? item.quantity * item.unitPrice - item.discount),
     ...(item.productId ? { productId: item.productId } : {}),
     ...(item.serviceId ? { serviceId: item.serviceId } : {}),
+    ...(item.basePrice !== undefined ? { basePrice: item.basePrice } : {}),
+    ...(item.selectedModifiers?.length ? { selectedModifiers: item.selectedModifiers } : {}),
   }));
   const subtotal = round2(items.reduce((acc, it) => acc + it.total, 0));
   const total = round2(Math.max(subtotal - input.discount + (input.tip ?? 0), 0));
@@ -119,7 +129,12 @@ async function runCreate(
   // ── IDs determinísticos a partir do saleRef ──────────────────────────────
   // saleRef.id é gerado uma vez; transação de receita e comissão derivam dele,
   // então um replay (mesma idempotencyKey) não duplica documentos.
-  const saleRef = db.collection('sales').doc();
+  const saleRef = db.collection('sales').doc(
+    `sale_${createHash('sha256')
+      .update(`${businessId}:${idempotencyKey}`)
+      .digest('hex')
+      .slice(0, 40)}`,
+  );
   const saleId = saleRef.id;
   const txRef = db.collection('transactions').doc(`${saleId}_revenue`);
   const commissionRate = input.commissionRate ?? 0;
@@ -148,7 +163,7 @@ async function runCreate(
     operatorName: input.operatorName,
     createdAt: now,
     updatedAt: now,
-    ...(input.clientId ? { clientId: input.clientId } : {}),
+    ...(input.clientId ? { clientId: input.clientId, contactId: input.clientId } : {}),
     ...(input.clientName ? { clientName: input.clientName } : {}),
     ...(input.notes ? { notes: input.notes } : {}),
     ...(input.channelType ? { channelType: input.channelType } : {}),
@@ -160,12 +175,18 @@ async function runCreate(
   };
 
   // ── Estoque (atômico, próprio runTransaction) ────────────────────────────
-  const productLines = items
+  const productItemIds = items
     .filter((it) => !!it.productId)
-    .map((it) => ({ productId: it.productId as string, quantity: it.quantity }));
-  const productIndex = productLines.length
-    ? await loadProductIndex(db, productLines.map((l) => l.productId), businessId)
+    .map((it) => it.productId as string);
+  const productIndex = productItemIds.length
+    ? await loadProductIndex(db, productItemIds, businessId)
     : new Map();
+  const productLines = productItemIds.length
+    ? buildOrderStockLines(
+        { items } as unknown as DeliveryOrder,
+        productIndex,
+      )
+    : [];
 
   // ── Sale + Transaction de receita + comissão num batch atômico ───────────
   const batch = db.batch();
@@ -213,39 +234,52 @@ async function runCreate(
     });
   }
 
-  await batch.commit();
-
   let stockMovements = 0;
+  let stockAdjustments: StockAdjustmentAdmin[] = [];
   if (productLines.length > 0) {
     try {
       const adjustments = await deductStockAdmin(db, productLines, {
         businessId,
         operatorId: input.operatorId,
         operatorName: input.operatorName,
+        sourceType: 'sale',
         sourceId: saleId,
+        sourceDocument: { collection: 'sales', id: saleId, existence: 'if-present' },
+        idempotencyKey: `sale:${saleId}:deduct`,
         reason: `Venda #${saleId.substring(0, 6)}`,
         productIndex,
+        negativeStockPolicy: 'prevent',
       });
+      stockAdjustments = adjustments;
       stockMovements = adjustments.length;
     } catch (stockErr) {
       console.error('[sales-server] stock deduction failed:', stockErr);
-      throw new Error('Sale created but stock deduction failed');
+      throw stockErr;
     }
   }
 
-  // ── Stats do cliente (best-effort, não bloqueia a venda já commitada) ─────
+  // O estoque vem primeiro e é idempotente. Se este batch falhar, o retry
+  // reaproveita a mesma operação de estoque e tenta persistir a venda novamente.
+  await batch.commit();
+
+  // ── Stats do cliente (idempotente por saleId) ─────────────────────────────
   if (input.clientId) {
     try {
+      await recordClientPurchaseAdmin({
+        db,
+        businessId,
+        clientId: input.clientId,
+        sourceId: saleId,
+        amount: total,
+      });
       const clientRef = db.collection('clients').doc(input.clientId);
       const clientSnap = await clientRef.get();
-      if (clientSnap.exists && clientSnap.data()?.businessId === businessId) {
-        const data = clientSnap.data()!;
-        await clientRef.update({
-          totalSpent: (data.totalSpent || 0) + total,
-          visitCount: (data.visitCount || 0) + 1,
-          lastVisit: now,
-          updatedAt: now,
-        });
+      if (
+        clientSnap.exists &&
+        clientSnap.data()?.businessId === businessId &&
+        clientSnap.data()?.status !== 'ganho'
+      ) {
+        await clientRef.update({ status: 'ganho', updatedAt: now });
       }
     } catch (statErr) {
       console.warn('[sales-server] client stats update failed:', statErr);
@@ -257,5 +291,6 @@ async function runCreate(
     transactionId: txRef.id,
     ...(commissionRef ? { commissionTransactionId: commissionRef.id } : {}),
     stockMovements,
+    stockAdjustments,
   };
 }
