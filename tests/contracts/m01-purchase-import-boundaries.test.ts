@@ -29,6 +29,21 @@ describe('M01.5 purchase import boundaries', () => {
     expect(contract).toContain('Linha duplicada.');
   });
 
+  it('confirma a revisão somente pela rota autenticada e pelo núcleo idempotente', () => {
+    const route = readFileSync('app/api/purchase-notes/confirm/route.ts', 'utf8');
+    const agentRoute = readFileSync('app/api/agent/tools/purchase-notes/route.ts', 'utf8');
+    const core = readFileSync('lib/services/purchase-import-admin.ts', 'utf8');
+    const stock = readFileSync('lib/services/stock-core-admin.ts', 'utf8');
+    expect(route).toContain('verifyAuth(request, parsed.data.businessId)');
+    expect(route).toContain('confirmPurchaseNoteAdmin');
+    expect(core).toContain('PurchaseNoteClaimConflictError');
+    expect(core).toContain('purchase:${params.noteId}:line:${item.lineId}:entry');
+    expect(core).toContain('createProductCatalogAdmin');
+    expect(stock).toContain('costMethod: \'moving_average\'');
+    expect(agentRoute).toContain('confirmPurchaseNoteAdmin');
+    expect(agentRoute).toContain('note.schemaVersion === 2');
+  });
+
   it('recusa linhas duplicadas, combinações contraditórias e validade anterior à fabricação', () => {
     const base = {
       businessId: 'biz-1', noteId: 'note-1',

@@ -4,7 +4,7 @@ const optionalText = (max: number) => z.string().trim().max(max).optional();
 const optionalDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use o formato YYYY-MM-DD.').optional();
 
 export const PurchaseNoteReviewItemSchema = z.object({
-  lineId: z.string().min(1),
+  lineId: z.string().min(1).max(100),
   action: z.enum(['match', 'create', 'skip']),
   productId: z.string().min(1).optional(),
   variantId: z.string().min(1).optional(),

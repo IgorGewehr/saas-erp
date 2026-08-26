@@ -20,6 +20,7 @@ import type { PurchaseNote, PurchaseNoteStatus, Product } from '@/lib/types';
 import { toast } from 'react-toastify';
 import { applyStockOperation } from '@/lib/services/stock-server-client';
 import type { PreparedPurchaseNote } from '@/lib/services/purchase-import-admin';
+import { confirmPurchaseNote } from '@/lib/services/purchase-import-client';
 import SuppliersPanel from './SuppliersPanel';
 import PurchaseImportDialog from './PurchaseImportDialog';
 
@@ -43,9 +44,14 @@ function PurchasesTabs(props: { active: PurchasesArea; onChange: (area: Purchase
 // ─── Status config ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<PurchaseNoteStatus, { label: string; color: string; icon: typeof Clock }> = {
+  rascunho:   { label: 'Rascunho', color: 'bg-gray-100 text-gray-700 dark:bg-gray-500/20 dark:text-gray-300', icon: FileText },
   pendente:   { label: 'Pendente', color: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300', icon: Clock },
+  processando:{ label: 'Processando', color: 'bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-300', icon: RefreshCw },
   importada:  { label: 'Importada', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300', icon: CheckCircle2 },
+  parcial:    { label: 'Parcial', color: 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300', icon: AlertCircle },
+  falha:      { label: 'Falha', color: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300', icon: AlertCircle },
   cancelada:  { label: 'Cancelada', color: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300', icon: X },
+  revertida:  { label: 'Revertida', color: 'bg-gray-100 text-gray-700 dark:bg-gray-500/20 dark:text-gray-300', icon: RefreshCw },
 };
 
 // ─── Note Detail Panel ────────────────────────────────────────────────────────
@@ -55,18 +61,23 @@ function NoteDetailPanel({
   onClose,
   onPushToStock,
   onReview,
+  onConfirm,
   isPushingStock,
+  isConfirming,
 }: {
   note: PurchaseNote;
   onClose: () => void;
   onPushToStock?: (note: PurchaseNote) => void;
   onReview?: (note: PurchaseNote) => void;
+  onConfirm?: (note: PurchaseNote) => void;
   isPushingStock?: boolean;
+  isConfirming?: boolean;
 }) {
   const statusCfg = STATUS_CONFIG[note.status];
   const StatusIcon = statusCfg.icon;
   const usesSafeImport = note.schemaVersion === 2;
   const canPushToStock = !usesSafeImport && !note.stockImportedAt && note.status !== 'cancelada';
+  const canEditReview = usesSafeImport && ['rascunho', 'pendente'].includes(note.status) && !note.stockImportedAt;
 
   return (
     <motion.div
@@ -121,14 +132,25 @@ function NoteDetailPanel({
           <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Itens ({note.items.length})</p>
           <div className="space-y-1.5">
             {note.items.map((item, i) => (
-              <div key={i} className="flex items-start justify-between text-sm">
-                <div className="flex-1 min-w-0">
+              <div key={item.lineId ?? i} className="flex items-start justify-between gap-2 text-sm">
+                <div className="min-w-0 flex-1">
                   <p className="font-medium text-gray-900 dark:text-white truncate">{item.productName}</p>
                   <p className="text-xs text-gray-500 mt-0.5">
                     {item.quantity} {item.unit} · NCM: {item.ncm || '—'} · CFOP: {item.cfop || '—'}
                   </p>
+                  {item.error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{item.error}</p>}
                 </div>
-                <span className="font-semibold text-gray-700 dark:text-gray-300 ml-2 flex-shrink-0">{formatCurrency(item.total)}</span>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <span className="font-semibold text-gray-700 dark:text-gray-300">{formatCurrency(item.total)}</span>
+                  {item.importStatus && item.importStatus !== 'pending' && (
+                    <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold',
+                      item.importStatus === 'imported' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+                        : item.importStatus === 'error' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
+                          : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300')}>
+                      {item.importStatus === 'imported' ? 'Importado' : item.importStatus === 'error' ? 'Erro' : 'Ignorado'}
+                    </span>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -188,14 +210,25 @@ function NoteDetailPanel({
         )}
 
         {/* Push-to-stock action */}
-        {usesSafeImport && !note.stockImportedAt && note.status !== 'cancelada' && onReview && (
+        {canEditReview && onReview && (
           <div className="space-y-2 rounded-xl border border-blue-200 bg-blue-50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
             <p className="text-xs text-blue-700 dark:text-blue-300">
-              {note.reviewedAt ? 'Itens revisados. A confirmação segura da entrada será liberada na próxima etapa.' : 'Revise o destino de todos os itens antes de confirmar a entrada.'}
+              {note.reviewedAt ? 'Itens revisados. Confirme para criar produtos, atualizar custo e lançar o estoque.' : 'Revise o destino de todos os itens antes de confirmar a entrada.'}
             </p>
-            <button type="button" onClick={() => onReview(note)} className="w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700">
-              {note.reviewedAt ? 'Editar revisão dos itens' : 'Revisar itens'}
-            </button>
+            <div className={cn('grid gap-2', note.reviewedAt && 'sm:grid-cols-2')}>
+              <button type="button" onClick={() => onReview(note)} className="w-full rounded-lg border border-blue-300 px-3 py-2 text-sm font-semibold text-blue-700 hover:bg-blue-100 dark:border-blue-500/30 dark:text-blue-300 dark:hover:bg-blue-500/10">
+                {note.reviewedAt ? 'Editar revisão' : 'Revisar itens'}
+              </button>
+              {note.reviewedAt && onConfirm && <button type="button" onClick={() => onConfirm(note)} disabled={isConfirming} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50">
+                {isConfirming ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <CheckCircle2 className="h-4 w-4" />}
+                {isConfirming ? 'Confirmando...' : 'Confirmar entrada'}
+              </button>}
+            </div>
+          </div>
+        )}
+        {usesSafeImport && note.status === 'processando' && (
+          <div className="flex items-center gap-2 rounded-xl bg-blue-50 p-3 text-xs text-blue-700 dark:bg-blue-500/10 dark:text-blue-300">
+            <RefreshCw className="h-4 w-4 animate-spin" /> A entrada está sendo processada com segurança.
           </div>
         )}
         {canPushToStock && onPushToStock && (
@@ -405,6 +438,24 @@ export default function ComprasModule() {
     },
   });
 
+  const { mutate: confirmReviewedNote, isPending: isConfirming } = useMutation({
+    mutationFn: async (note: PurchaseNote) => {
+      if (!business?.id) throw new Error('Empresa não encontrada.');
+      return confirmPurchaseNote({ businessId: business.id, noteId: note.id });
+    },
+    onSuccess: (result) => {
+      setSelectedNote(result.note as unknown as PurchaseNote);
+      if (result.errorCount > 0) {
+        toast.warning(`${result.importedCount} item(ns) importado(s) e ${result.errorCount} com erro.`);
+      } else if (result.replayed) {
+        toast.info('Esta entrada já havia sido confirmada; nenhum saldo foi duplicado.');
+      } else {
+        toast.success(`${result.importedCount} item(ns) lançado(s) no estoque${result.skippedCount ? `; ${result.skippedCount} ignorado(s)` : ''}.`);
+      }
+    },
+    onError: (cause: Error) => toast.error(cause.message || 'Não foi possível confirmar a entrada.'),
+  });
+
   // ─── Filtered list ───────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = [...notes];
@@ -424,8 +475,8 @@ export default function ComprasModule() {
   // ─── KPIs ────────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
     const totalValue = notes.reduce((s, n) => s + n.totalValue, 0);
-    const imported = notes.filter(n => n.status === 'importada').length;
-    const pending = notes.filter(n => n.status === 'pendente').length;
+    const imported = notes.filter(n => n.status === 'importada' || n.status === 'parcial').length;
+    const pending = notes.filter(n => ['rascunho', 'pendente', 'processando'].includes(n.status)).length;
     const totalItems = notes.reduce((s, n) => s + n.items.length, 0);
     return { total: notes.length, totalValue, imported, pending, totalItems };
   }, [notes]);
@@ -579,7 +630,9 @@ export default function ComprasModule() {
                   setReviewingNote(note as unknown as PreparedPurchaseNote);
                   setShowImportModal(true);
                 }}
+                onConfirm={confirmReviewedNote}
                 isPushingStock={isPushingStock}
+                isConfirming={isConfirming}
               />
             </div>
           )}

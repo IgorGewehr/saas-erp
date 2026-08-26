@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import { PurchaseNoteV2Schema, type PurchaseNoteItemV2, type PurchaseNoteV2 } from '@/lib/contracts/domain/purchaseNoteV2';
 import type { ParsedPurchaseXml } from '@/lib/services/purchase-xml-parser';
@@ -9,9 +9,15 @@ import {
   type SupplierActor,
 } from '@/lib/services/supplier-admin';
 import type { SupplierCatalogPatch } from '@/lib/contracts/api/supplier-catalog';
-import { normalizeBarcode, normalizeSku } from '@/lib/services/product-catalog-admin';
+import {
+  createProductCatalogAdmin,
+  normalizeBarcode,
+  normalizeSku,
+} from '@/lib/services/product-catalog-admin';
 import type { Product } from '@/lib/types';
 import type { ReviewPurchaseNoteRequest } from '@/lib/contracts/api/purchase-note-review';
+import type { ProductCatalogData } from '@/lib/contracts/api/product-catalog';
+import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 
 export class PurchaseNoteDuplicateError extends Error {
   constructor(public readonly existingNoteId: string) {
@@ -64,15 +70,16 @@ function productSuggestions(item: PurchaseNoteItemV2, products: Product[]): NonN
   const suggestions: NonNullable<PurchaseNoteItemV2['matchSuggestions']> = [];
 
   for (const product of products) {
-    const activeVariants = (product.variants ?? []).filter((variant) => variant.isActive !== false);
-    const candidates = activeVariants.length
-      ? activeVariants.map((variant) => ({
+    const variants = product.variants ?? [];
+    const trackedVariants = variants.filter((variant) => variant.isActive !== false && variant.trackStock !== false);
+    const candidates = variants.length
+      ? trackedVariants.map((variant) => ({
         variantId: variant.id,
         name: `${product.name} — ${variant.name}`,
         sku: variant.sku,
         barcode: variant.barcode,
       }))
-      : [{ variantId: undefined, name: product.name, sku: product.sku, barcode: product.barcode ?? product.gtin }];
+      : product.trackStock === false ? [] : [{ variantId: undefined, name: product.name, sku: product.sku, barcode: product.barcode ?? product.gtin }];
     for (const candidate of candidates) {
       const reasons: string[] = [];
       let confidence = 0;
@@ -147,6 +154,25 @@ function legacyItem(item: PurchaseNoteItemV2): Record<string, unknown> {
     cofins: item.taxes?.cofins,
     ...(item.action !== 'pending' ? { importAction: item.action } : {}),
   };
+}
+
+function preparedDocument(
+  current: Record<string, unknown>,
+  canonical: PurchaseNoteV2,
+  extra: Record<string, unknown> = {},
+): PreparedPurchaseNote {
+  return withoutUndefined({
+    ...current,
+    ...canonical,
+    supplierName: canonical.supplier.name,
+    supplierCnpj: canonical.supplier.document,
+    supplierId: canonical.supplier.id,
+    items: canonical.items.map(legacyItem),
+    totalProducts: canonical.totals.products,
+    totalTaxes: canonical.totals.invoice - canonical.totals.products,
+    totalValue: canonical.totals.invoice,
+    ...extra,
+  }) as unknown as PreparedPurchaseNote;
 }
 
 export class PurchaseNoteNotReviewableError extends Error {
@@ -356,6 +382,9 @@ export async function reviewPurchaseNoteAdmin(params: {
         if (review.variantId && (!variant || variant.isActive === false)) {
           throw new PurchaseNoteNotReviewableError(`Variação inválida na linha ${item.lineId}.`);
         }
+        if ((variant ? variant.trackStock === false : product?.trackStock === false)) {
+          throw new PurchaseNoteNotReviewableError(`Controle de estoque desativado na linha ${item.lineId}.`);
+        }
         return {
           ...item,
           action: 'match' as const,
@@ -409,17 +438,297 @@ export async function reviewPurchaseNoteAdmin(params: {
       reviewedBy: params.actor.uid,
       updatedAt: now,
     });
-    const document = withoutUndefined({
-      ...snapshot.data(),
-      ...canonical,
-      items: canonical.items.map(legacyItem),
-      notes: canonical.notes,
-      reviewedAt: canonical.reviewedAt,
-      reviewedBy: canonical.reviewedBy,
+    const document = preparedDocument(snapshot.data() ?? {}, canonical, {
       reviewedByName: params.actor.name,
       updatedAt: now,
-    }) as unknown as PreparedPurchaseNote;
+    });
     tx.set(noteRef, document as unknown as Record<string, unknown>);
     return document;
+  });
+}
+
+const PURCHASE_CLAIM_TTL_MS = 5 * 60 * 1000;
+const TERMINAL_PURCHASE_STATUSES = new Set<PurchaseNoteV2['status']>(['importada', 'parcial', 'falha']);
+
+export class PurchaseNoteClaimConflictError extends Error {
+  constructor() {
+    super('Esta nota já está sendo confirmada por outro usuário.');
+    this.name = 'PurchaseNoteClaimConflictError';
+  }
+}
+
+export class PurchaseNoteNotReadyError extends Error {
+  constructor(message = 'Revise todos os itens antes de confirmar a entrada.') {
+    super(message);
+    this.name = 'PurchaseNoteNotReadyError';
+  }
+}
+
+class PurchaseNoteClaimLostError extends Error {
+  constructor() {
+    super('O processamento perdeu a posse da nota. Tente novamente em instantes.');
+    this.name = 'PurchaseNoteClaimLostError';
+  }
+}
+
+export interface PurchaseNoteConfirmationResult {
+  note: PreparedPurchaseNote;
+  replayed: boolean;
+  importedCount: number;
+  skippedCount: number;
+  errorCount: number;
+}
+
+function confirmationResult(note: PreparedPurchaseNote, replayed: boolean): PurchaseNoteConfirmationResult {
+  return {
+    note,
+    replayed,
+    importedCount: note.items.filter((item) => item.importStatus === 'imported').length,
+    skippedCount: note.items.filter((item) => item.importStatus === 'skipped').length,
+    errorCount: note.items.filter((item) => item.importStatus === 'error').length,
+  };
+}
+
+function purchaseProductId(businessId: string, noteId: string, lineId: string): string {
+  const digest = createHash('sha256').update(`${businessId}:${noteId}:${lineId}:purchase-product`).digest('hex');
+  return `purchase_product_${digest.slice(0, 40)}`;
+}
+
+async function ensurePurchaseProduct(params: {
+  db: Firestore;
+  businessId: string;
+  noteId: string;
+  item: PurchaseNoteItemV2;
+}): Promise<Product> {
+  if (!params.item.newProduct) throw new PurchaseNoteNotReadyError(`Dados do novo produto ausentes na linha ${params.item.lineId}.`);
+  const productId = purchaseProductId(params.businessId, params.noteId, params.item.lineId);
+  const productRef = params.db.collection('products').doc(productId);
+  const existing = await productRef.get();
+  if (existing.exists) {
+    if (existing.data()?.businessId !== params.businessId) throw new Error('Produto determinístico pertence a outro negócio.');
+    return { ...existing.data(), id: existing.id } as Product;
+  }
+  const draft = params.item.newProduct;
+  const data: ProductCatalogData = {
+    kind: 'simple',
+    name: draft.name,
+    category: draft.category,
+    unit: draft.unit,
+    purchaseUnit: params.item.purchaseUnit,
+    purchaseToStockFactor: params.item.conversionFactor,
+    costMethod: 'moving_average',
+    costPrice: params.item.landedUnitCost,
+    salePrice: 0,
+    minStock: 0,
+    trackStock: true,
+    isActive: true,
+    menuAvailable: false,
+    isDeliverable: false,
+    sku: draft.sku,
+    barcode: draft.barcode,
+    ncm: params.item.ncm,
+    cfop: params.item.cfop,
+    gtin: params.item.gtin,
+  };
+  try {
+    return await createProductCatalogAdmin({ db: params.db, businessId: params.businessId, productId, data });
+  } catch (cause) {
+    const raced = await productRef.get();
+    if (raced.exists && raced.data()?.businessId === params.businessId) {
+      return { ...raced.data(), id: raced.id } as Product;
+    }
+    throw cause;
+  }
+}
+
+async function persistPurchaseItemResult(params: {
+  db: Firestore;
+  noteId: string;
+  businessId: string;
+  claimToken: string;
+  lineId: string;
+  patch: Partial<PurchaseNoteItemV2>;
+}): Promise<void> {
+  const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
+  await params.db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(noteRef);
+    if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) throw new PurchaseNoteClaimLostError();
+    const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+    if (note.status !== 'processando' || note.importClaim?.token !== params.claimToken) {
+      throw new PurchaseNoteClaimLostError();
+    }
+    let found = false;
+    const items = note.items.map((item) => {
+      if (item.lineId !== params.lineId) return item;
+      found = true;
+      return { ...item, ...params.patch };
+    });
+    if (!found) throw new PurchaseNoteClaimLostError();
+    const now = new Date().toISOString();
+    const canonical = PurchaseNoteV2Schema.parse({ ...note, items, updatedAt: now });
+    tx.set(noteRef, preparedDocument(snapshot.data() ?? {}, canonical, { updatedAt: now }) as unknown as Record<string, unknown>);
+  });
+}
+
+function conciseError(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : 'Falha desconhecida ao importar o item.';
+  return message.replace(/\s+/g, ' ').trim().slice(0, 500) || 'Falha desconhecida ao importar o item.';
+}
+
+export async function confirmPurchaseNoteAdmin(params: {
+  db: Firestore;
+  businessId: string;
+  noteId: string;
+  actor: SupplierActor;
+}): Promise<PurchaseNoteConfirmationResult> {
+  const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
+  const claimToken = randomUUID();
+  const claimedAt = new Date();
+  const claimed = await params.db.runTransaction(async (tx): Promise<
+    { kind: 'terminal'; note: PreparedPurchaseNote } |
+    { kind: 'claimed'; note: PurchaseNoteV2 }
+  > => {
+    const snapshot = await tx.get(noteRef);
+    if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) {
+      throw new PurchaseNoteNotReadyError('Nota não encontrada.');
+    }
+    const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+    if (TERMINAL_PURCHASE_STATUSES.has(note.status)) {
+      return { kind: 'terminal', note: preparedDocument(snapshot.data() ?? {}, note) };
+    }
+    if (note.status === 'processando' && note.importClaim && Date.parse(note.importClaim.expiresAt) > claimedAt.getTime()) {
+      throw new PurchaseNoteClaimConflictError();
+    }
+    if (!['pendente', 'rascunho', 'processando'].includes(note.status) || !note.reviewedAt) {
+      throw new PurchaseNoteNotReadyError();
+    }
+    if (note.items.some((item) => item.action === 'pending')) throw new PurchaseNoteNotReadyError();
+    const expiresAt = new Date(claimedAt.getTime() + PURCHASE_CLAIM_TTL_MS).toISOString();
+    const canonical = PurchaseNoteV2Schema.parse({
+      ...note,
+      status: 'processando',
+      importClaim: {
+        token: claimToken,
+        claimedBy: params.actor.uid,
+        claimedAt: claimedAt.toISOString(),
+        expiresAt,
+      },
+      updatedAt: claimedAt.toISOString(),
+    });
+    tx.set(noteRef, preparedDocument(snapshot.data() ?? {}, canonical, {
+      importClaimedByName: params.actor.name,
+      updatedAt: claimedAt.toISOString(),
+    }) as unknown as Record<string, unknown>);
+    return { kind: 'claimed', note: canonical };
+  });
+
+  if (claimed.kind === 'terminal') return confirmationResult(claimed.note, true);
+
+  for (const item of claimed.note.items) {
+    if (item.importStatus === 'imported' || item.importStatus === 'skipped' || item.action === 'skip') continue;
+    let productId = item.productId;
+    let movementId: string | undefined;
+    try {
+      if (item.action === 'create') {
+        const product = await ensurePurchaseProduct({
+          db: params.db,
+          businessId: params.businessId,
+          noteId: params.noteId,
+          item,
+        });
+        productId = product.id;
+      }
+      if (!productId) throw new PurchaseNoteNotReadyError(`Produto ausente na linha ${item.lineId}.`);
+      const stock = await applyStockOperationAdmin(params.db, {
+        businessId: params.businessId,
+        type: 'entrada',
+        lines: [{
+          productId,
+          ...(item.variantId ? { variantId: item.variantId } : {}),
+          quantity: item.stockQuantity,
+          sourceLineId: item.lineId,
+          unitCost: item.landedUnitCost,
+        }],
+        operatorId: params.actor.uid,
+        operatorName: params.actor.name,
+        reason: `NF-e ${claimed.note.numero}/${claimed.note.serie} — ${claimed.note.supplier.name}`,
+        sourceType: 'purchase',
+        sourceId: params.noteId,
+        sourceDocument: { collection: 'purchaseNotes', id: params.noteId, existence: 'required' },
+        idempotencyKey: `purchase:${params.noteId}:line:${item.lineId}:entry`,
+        expandBom: false,
+        negativeStockPolicy: 'prevent',
+        requireActiveProducts: true,
+        requireTrackedProducts: true,
+      });
+      movementId = stock.adjustments[0]?.movementId;
+      if (!movementId) throw new Error('A entrada não gerou movimento de estoque.');
+    } catch (cause) {
+      if (cause instanceof PurchaseNoteClaimLostError) throw cause;
+      await persistPurchaseItemResult({
+        db: params.db,
+        noteId: params.noteId,
+        businessId: params.businessId,
+        claimToken,
+        lineId: item.lineId,
+        patch: {
+          ...(productId ? { productId } : {}),
+          importStatus: 'error',
+          error: conciseError(cause),
+        },
+      });
+      continue;
+    }
+    await persistPurchaseItemResult({
+      db: params.db,
+      noteId: params.noteId,
+      businessId: params.businessId,
+      claimToken,
+      lineId: item.lineId,
+      patch: {
+        productId,
+        importStatus: 'imported',
+        stockMovementId: movementId,
+        error: undefined,
+      },
+    });
+  }
+
+  return params.db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(noteRef);
+    if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) throw new PurchaseNoteClaimLostError();
+    const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+    if (note.status !== 'processando' || note.importClaim?.token !== claimToken) throw new PurchaseNoteClaimLostError();
+    const importedItems = note.items.filter((item) => item.importStatus === 'imported');
+    const errorItems = note.items.filter((item) => item.importStatus === 'error');
+    const status: PurchaseNoteV2['status'] = errorItems.length === 0
+      ? 'importada'
+      : importedItems.length > 0 ? 'parcial' : 'falha';
+    const now = new Date().toISOString();
+    const importError = errorItems.length
+      ? `${errorItems.length} item(ns) com erro: ${errorItems.map((item) => item.error).filter(Boolean).join(' | ')}`.slice(0, 2000)
+      : undefined;
+    const stockMovementIds = [...new Set(importedItems.map((item) => item.stockMovementId).filter((id): id is string => Boolean(id)))];
+    const canonical = PurchaseNoteV2Schema.parse({
+      ...note,
+      status,
+      importClaim: undefined,
+      stockMovementIds,
+      ...(status === 'importada' || status === 'parcial' ? {
+        stockImportedAt: note.stockImportedAt ?? now,
+        importedAt: note.importedAt ?? now,
+      } : {
+        stockImportedAt: undefined,
+      }),
+      importError,
+      updatedAt: now,
+    });
+    const document = preparedDocument(snapshot.data() ?? {}, canonical, {
+      importedBy: params.actor.uid,
+      importedByName: params.actor.name,
+      updatedAt: now,
+    });
+    tx.set(noteRef, document as unknown as Record<string, unknown>);
+    return confirmationResult(document, false);
   });
 }

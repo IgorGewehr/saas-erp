@@ -29,6 +29,11 @@ const StockMovementV2CanonicalSchema = z.object({
   quantity: z.number(),
   previousStock: z.number(),
   newStock: z.number(),
+  unitCost: z.number().nonnegative().optional(),
+  costTotal: z.number().nonnegative().optional(),
+  previousCost: z.number().nonnegative().optional(),
+  newCost: z.number().nonnegative().optional(),
+  costMethod: z.literal('moving_average').optional(),
   reason: z.string().min(1).max(500),
   sourceType: z.enum(STOCK_SOURCE_TYPES),
   sourceId: z.string().optional(),
@@ -62,6 +67,12 @@ const StockMovementV2CanonicalSchema = z.object({
       message: `saldo inconsistente; esperado ${expected}`,
       path: ['newStock'],
     });
+  }
+  if (movement.unitCost !== undefined && movement.costTotal !== undefined) {
+    const expectedCost = Math.abs(movement.quantity) * movement.unitCost;
+    if (Math.abs(movement.costTotal - expectedCost) > 0.011) {
+      ctx.addIssue({ code: 'custom', message: 'costTotal inconsistente', path: ['costTotal'] });
+    }
   }
   if (movement.sourceType !== 'manual' && movement.sourceType !== 'migration' && !movement.sourceId) {
     ctx.addIssue({

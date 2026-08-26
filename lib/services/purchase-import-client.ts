@@ -2,7 +2,10 @@
 
 import { auth } from '@/lib/config/firebase';
 import type { ReviewPurchaseNoteRequest } from '@/lib/contracts/api/purchase-note-review';
-import type { PreparedPurchaseNote } from '@/lib/services/purchase-import-admin';
+import type {
+  PreparedPurchaseNote,
+  PurchaseNoteConfirmationResult,
+} from '@/lib/services/purchase-import-admin';
 
 async function token(): Promise<string> {
   const value = await auth.currentUser?.getIdToken();
@@ -30,6 +33,17 @@ export async function preparePurchaseNote(businessId: string, file: File): Promi
 export async function savePurchaseNoteReview(input: ReviewPurchaseNoteRequest): Promise<PreparedPurchaseNote> {
   return payload(await fetch('/api/purchase-notes/review', {
     method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function confirmPurchaseNote(input: {
+  businessId: string;
+  noteId: string;
+}): Promise<PurchaseNoteConfirmationResult> {
+  return payload(await fetch('/api/purchase-notes/confirm', {
+    method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` },
     body: JSON.stringify(input),
   }));

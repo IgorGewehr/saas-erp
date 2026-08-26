@@ -1,7 +1,7 @@
 # M01.5 — Importação de compras
 
 > Data: 25/08/2026
-> Status: M01.5a e M01.5b concluídos; próximo: M01.5c.
+> Status: M01.5a, M01.5b e M01.5c concluídos; próximo: M01.5d.
 
 ## Resultado esperado
 
@@ -63,13 +63,22 @@ XML recebido
 
 ## M01.5c — Confirmação idempotente
 
-- Reivindicar a nota em transação com token, ator, horário e expiração.
-- Rejeitar claim concorrente ativo e permitir recuperação segura de claim expirado.
-- Criar produtos solicitados pelo mesmo núcleo do catálogo.
-- Executar uma entrada de estoque determinística por nota/linha.
-- Persistir `stockMovementId`, status e erro por item.
-- Atualizar custo médio ponderado usando saldo/custo anteriores e custo de aquisição.
-- Fechar a nota como `importada`, `parcial` ou `falha`, sem apagar resultados anteriores.
+- [x] Reivindicar a nota em transação com token, ator, horário e expiração de cinco minutos.
+- [x] Rejeitar claim concorrente ativo e permitir recuperação segura de claim expirado.
+- [x] Criar produtos solicitados pelo mesmo núcleo do catálogo, usando identificador determinístico por nota/linha.
+- [x] Executar uma entrada de estoque idempotente por nota/linha.
+- [x] Persistir `stockMovementId`, status e erro por item.
+- [x] Atualizar saldo e custo médio ponderado na mesma transação do movimento.
+- [x] Fechar a nota como `importada`, `parcial` ou `falha`, sem apagar resultados anteriores.
+- [x] Reutilizar a mesma confirmação segura quando a entrada for solicitada pelo agente.
+
+### Arquivos da entrega M01.5c
+
+- `app/api/purchase-notes/confirm/route.ts`: confirmação autenticada da entrada.
+- `lib/services/purchase-import-admin.ts`: claim, criação determinística, resultado por item e fechamento.
+- `lib/services/stock-core-admin.ts`: custo médio atômico junto ao saldo e ao ledger.
+- `lib/contracts/domain/stockMovementV2.ts`: memória de custo no movimento.
+- `app/components/features/purchases/ComprasModule.tsx`: confirmação e acompanhamento visual dos resultados.
 
 ## M01.5d — Reversão e recuperação
 
@@ -88,7 +97,7 @@ XML recebido
 
 1. XML inválido ou de outro destinatário não cria nota utilizável.
 2. A mesma chave de acesso não cria duas notas no mesmo tenant.
-3. Dois usuários não confirmam a mesma nota simultaneamente.
+3. Dois usuários não confirmam a mesma nota simultaneamente; claim expirado pode ser recuperado.
 4. Repetir uma confirmação não duplica saldo, produto, movimento ou custo.
 5. Cada item possui resultado e movimento rastreáveis.
 6. XML só pode ser baixado por usuário autenticado do mesmo tenant.

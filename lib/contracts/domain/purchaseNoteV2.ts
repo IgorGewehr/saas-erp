@@ -24,7 +24,7 @@ export const PURCHASE_NOTE_V2_STATUSES = [
 ] as const;
 
 export const PurchaseNoteItemV2Schema = z.object({
-  lineId: z.string().min(1),
+  lineId: z.string().min(1).max(100),
   supplierProductCode: z.string().optional(),
   productName: z.string().min(1),
   gtin: z.string().optional(),
@@ -179,10 +179,12 @@ const PurchaseNoteV2CanonicalSchema = z.object({
     });
   }
   const legacyAuditException = note.migration?.sourceVersion === 1 && note.migration.auditIncomplete;
+  const intentionallyWithoutStock = note.items.every((item) => item.importStatus === 'skipped');
   if (
     ['importada', 'parcial'].includes(note.status) &&
     note.stockMovementIds.length === 0 &&
-    !legacyAuditException
+    !legacyAuditException &&
+    !intentionallyWithoutStock
   ) {
     ctx.addIssue({
       code: 'custom',

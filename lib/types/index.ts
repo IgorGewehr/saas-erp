@@ -1736,6 +1736,11 @@ export interface StockMovement {
   quantity: number;
   previousStock: number;
   newStock: number;
+  unitCost?: number;
+  costTotal?: number;
+  previousCost?: number;
+  newCost?: number;
+  costMethod?: 'moving_average';
   reason: string;
   saleId?: string;
   purchaseId?: string;
@@ -3979,12 +3984,22 @@ export interface Order {
 // Compras / Purchase Notes
 // ============================================
 
-export type PurchaseNoteStatus = 'pendente' | 'importada' | 'cancelada';
+export type PurchaseNoteStatus =
+  | 'rascunho'
+  | 'pendente'
+  | 'processando'
+  | 'importada'
+  | 'parcial'
+  | 'falha'
+  | 'cancelada'
+  | 'revertida';
 
 export type PurchaseNoteItemAction = 'match' | 'create' | 'skip';
 
 export interface PurchaseNoteItem {
+  lineId?: string;
   productId?: string;          // matched product in our catalog
+  variantId?: string;
   productName: string;
   cProd?: string;              // supplier product code
   ncm?: string;
@@ -4000,6 +4015,21 @@ export interface PurchaseNoteItem {
   cofins?: number;
   // Import action
   importAction?: PurchaseNoteItemAction;
+  action?: 'pending' | PurchaseNoteItemAction;
+  stockUnit?: string;
+  conversionFactor?: number;
+  stockQuantity?: number;
+  landedUnitCost?: number;
+  importStatus?: 'pending' | 'imported' | 'skipped' | 'error';
+  stockMovementId?: string;
+  error?: string;
+  newProduct?: {
+    name: string;
+    category: string;
+    unit: string;
+    sku?: string;
+    barcode?: string;
+  };
 }
 
 export interface PurchaseNote {

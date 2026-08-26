@@ -18,6 +18,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
+import { confirmPurchaseNoteAdmin } from '@/lib/services/purchase-import-admin';
 
 type Action = 'list' | 'get' | 'match_products' | 'apply_to_stock' | 'list_unmatched';
 
@@ -166,6 +167,19 @@ async function applyToStock(
   if (!noteSnap.exists) throw new Error('Note not found');
   const note = noteSnap.data() as PurchaseNote;
   if (note.businessId !== businessId) throw new Error('Cross-tenant access denied');
+  if (note.schemaVersion === 2) {
+    const confirmed = await confirmPurchaseNoteAdmin({
+      db: adminDb,
+      businessId,
+      noteId: id,
+      actor: { uid: operatorId || 'agent', name: operatorName || 'Agente IA' },
+    });
+    return {
+      note: confirmed.note as unknown as PurchaseNote,
+      movementsCreated: confirmed.importedCount,
+      unmatchedCount: confirmed.errorCount,
+    };
+  }
   if (note.stockImportedAt) throw new Error('Already imported to stock — cannot re-apply');
 
   // Match products

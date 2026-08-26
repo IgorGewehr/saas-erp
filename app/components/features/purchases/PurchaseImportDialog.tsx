@@ -60,14 +60,15 @@ function initialDraft(item: PurchaseNoteItemV2): ItemDraft {
 
 function productOptions(products: Product[]): ProductOption[] {
   return products.flatMap((product) => {
-    const variants = (product.variants ?? []).filter((variant) => variant.isActive !== false);
-    if (variants.length) return variants.map((variant) => ({
+    const allVariants = product.variants ?? [];
+    const variants = allVariants.filter((variant) => variant.isActive !== false && variant.trackStock !== false);
+    if (allVariants.length) return variants.map((variant) => ({
       key: `${product.id}::${variant.id}`,
       productId: product.id,
       variantId: variant.id,
       label: `${product.name} — ${variant.name}`,
     }));
-    return [{ key: `${product.id}::`, productId: product.id, label: product.name }];
+    return product.trackStock === false ? [] : [{ key: `${product.id}::`, productId: product.id, label: product.name }];
   });
 }
 

@@ -39,6 +39,8 @@ export interface StockOperationLine {
    */
   quantity: number;
   sourceLineId?: string;
+  /** Custo de aquisição por unidade de estoque. Exclusivo para entrada sem expansão de BOM. */
+  unitCost?: number;
 }
 
 export type StockSourceCollection =
@@ -73,6 +75,10 @@ export interface StockOperationInput {
   adjustmentMode?: 'delta' | 'absolute';
   /** Default allow, para compatibilidade. Novos fluxos críticos devem usar prevent. */
   negativeStockPolicy?: 'allow' | 'prevent';
+  /** Quando true, rejeita produto arquivado dentro da mesma transação do saldo. */
+  requireActiveProducts?: boolean;
+  /** Quando true, rejeita produto/variação configurado para não controlar estoque. */
+  requireTrackedProducts?: boolean;
   /** Compatibilidade gradual: impede negativo apenas nas linhas selecionadas. */
   strictProductIds?: ReadonlySet<string>;
 }
@@ -85,6 +91,9 @@ export interface StockOperationAdjustment {
   delta: number;
   previousStock: number;
   newStock: number;
+  unitCost?: number;
+  previousCost?: number;
+  newCost?: number;
   alert?: StockAlert;
 }
 
@@ -105,6 +114,8 @@ interface AggregatedLine {
   quantity: number;
   sourceLineIds: Set<string>;
   strict: boolean;
+  incomingCostTotal: number;
+  costedQuantity: number;
 }
 
 export class InvalidStockOperationError extends Error {
@@ -160,6 +171,10 @@ function roundStock(value: number): number {
   return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
+function roundCost(value: number): number {
+  return Math.round((value + Number.EPSILON) * 10_000) / 10_000;
+}
+
 function validateInput(input: StockOperationInput): void {
   if (!input.businessId.trim()) throw new InvalidStockOperationError('businessId é obrigatório.');
   if (!input.operatorId.trim()) throw new InvalidStockOperationError('operatorId é obrigatório.');
@@ -194,6 +209,12 @@ function validateInput(input: StockOperationInput): void {
     if (input.type !== 'ajuste' && line.quantity <= 0) {
       throw new InvalidStockOperationError(`lines[${index}].quantity deve ser positiva.`);
     }
+    if (line.unitCost !== undefined && (!Number.isFinite(line.unitCost) || line.unitCost < 0)) {
+      throw new InvalidStockOperationError(`lines[${index}].unitCost deve ser um número não negativo.`);
+    }
+    if (line.unitCost !== undefined && (input.type !== 'entrada' || input.expandBom !== false)) {
+      throw new InvalidStockOperationError('unitCost só pode ser usado em entrada com expandBom=false.');
+    }
   }
 }
 
@@ -204,6 +225,7 @@ function fingerprint(input: StockOperationInput): string {
       variantId: line.variantId ?? '',
       quantity: roundStock(line.quantity),
       sourceLineId: line.sourceLineId ?? '',
+      unitCost: line.unitCost === undefined ? null : roundCost(line.unitCost),
     }))
     .sort((a, b) =>
       `${a.productId}:${a.variantId}:${a.sourceLineId}:${a.quantity}`.localeCompare(
@@ -220,6 +242,8 @@ function fingerprint(input: StockOperationInput): string {
     expandBom: input.expandBom !== false,
     adjustmentMode: input.adjustmentMode ?? 'delta',
     negativeStockPolicy: input.negativeStockPolicy ?? 'allow',
+    requireActiveProducts: input.requireActiveProducts === true,
+    requireTrackedProducts: input.requireTrackedProducts === true,
     strictProductIds: [...(input.strictProductIds ?? [])].sort(),
   }));
 }
@@ -290,8 +314,14 @@ function aggregateLines(
         quantity: 0,
         sourceLineIds: new Set<string>(),
         strict: false,
+        incomingCostTotal: 0,
+        costedQuantity: 0,
       };
       current.quantity = roundStock(current.quantity + line.quantity);
+      if (sourceLine.unitCost !== undefined) {
+        current.incomingCostTotal += line.quantity * sourceLine.unitCost;
+        current.costedQuantity = roundStock(current.costedQuantity + line.quantity);
+      }
       if (sourceLine.sourceLineId) current.sourceLineIds.add(sourceLine.sourceLineId);
       current.strict = current.strict ||
         input.strictProductIds?.has(sourceLine.productId) === true ||
@@ -357,6 +387,9 @@ export async function applyStockOperationAdmin(
       if (data.businessId !== input.businessId) {
         throw new StockReferenceError(`Produto ${productId} pertence a outro negócio.`);
       }
+      if (input.requireActiveProducts && data.isActive === false) {
+        throw new StockReferenceError(`Produto inativo: ${productId}.`);
+      }
       productIndex.set(productId, { ...data, id: snap.id });
     }
 
@@ -403,6 +436,10 @@ export async function applyStockOperationAdmin(
       if (variant && variant.isActive === false) {
         throw new StockReferenceError(`Variação inativa: ${product.name}/${variant.name}.`);
       }
+      const productName = variant ? `${product.name} — ${variant.name}` : product.name;
+      if (input.requireTrackedProducts && (variant ? variant.trackStock === false : product.trackStock === false)) {
+        throw new StockReferenceError(`Controle de estoque desativado: ${productName}.`);
+      }
       const previousStock = variant
         ? (Number.isFinite(variant.currentStock) ? variant.currentStock : 0)
         : (Number.isFinite(product.currentStock) ? product.currentStock : 0);
@@ -413,9 +450,19 @@ export async function applyStockOperationAdmin(
         input.adjustmentMode ?? 'delta',
       ));
       const newStock = roundStock(previousStock + delta);
-      const productName = variant ? `${product.name} — ${variant.name}` : product.name;
       const minStock = variant?.minStock ?? product.minStock ?? 0;
-      return { line, product, variant, productName, minStock, previousStock, delta, newStock };
+      const unitCost = line.costedQuantity > 0 && Math.abs(line.costedQuantity - line.quantity) <= 1e-6
+        ? roundCost(line.incomingCostTotal / line.costedQuantity)
+        : undefined;
+      const previousCost = variant
+        ? (Number.isFinite(variant.costPrice) ? variant.costPrice : 0)
+        : (Number.isFinite(product.costPrice) ? product.costPrice : 0);
+      const newCost = unitCost === undefined
+        ? previousCost
+        : roundCost(previousStock > 0 && newStock > 0
+          ? ((previousStock * previousCost) + (delta * unitCost)) / newStock
+          : unitCost);
+      return { line, product, variant, productName, minStock, previousStock, delta, newStock, unitCost, previousCost, newCost };
     });
 
     const effectiveReads = reads.filter(({ delta }) => delta !== 0);
@@ -439,7 +486,7 @@ export async function applyStockOperationAdmin(
     const now = new Date().toISOString();
     const adjustments: StockOperationAdjustment[] = [];
     const productPatches = new Map<string, Record<string, unknown>>();
-    for (const { line, product, variant, productName, minStock, previousStock, delta, newStock } of effectiveReads) {
+    for (const { line, product, variant, productName, minStock, previousStock, delta, newStock, unitCost, previousCost, newCost } of effectiveReads) {
       const targetKey = `${product.id}:${line.variantId ?? ''}`;
       const movementId = `stockmv_${hash(`${operationId}:${targetKey}`).slice(0, 40)}`;
       const movementRef = db.collection('stockMovements').doc(movementId);
@@ -458,10 +505,15 @@ export async function applyStockOperationAdmin(
           ?? (product.variants ?? []).map((item) => ({ ...item }));
         const variantIndex = variants.findIndex((item) => item.id === line.variantId);
         if (variantIndex < 0) throw new StockReferenceError(`Variação não encontrada: ${line.variantId}.`);
-        variants[variantIndex] = { ...variants[variantIndex], currentStock: newStock };
+        variants[variantIndex] = {
+          ...variants[variantIndex],
+          currentStock: newStock,
+          ...(unitCost !== undefined ? { costPrice: newCost } : {}),
+        };
         productPatch.variants = variants;
       } else {
         productPatch.currentStock = newStock;
+        if (unitCost !== undefined) productPatch.costPrice = newCost;
       }
       productPatches.set(product.id, productPatch);
 
@@ -475,6 +527,13 @@ export async function applyStockOperationAdmin(
         quantity: input.type === 'ajuste' ? delta : Math.abs(delta),
         previousStock,
         newStock,
+        ...(unitCost !== undefined ? {
+          unitCost,
+          costTotal: roundCost(Math.abs(delta) * unitCost),
+          previousCost,
+          newCost,
+          costMethod: 'moving_average',
+        } : {}),
         reason: input.reason.trim(),
         sourceType: input.sourceType,
         ...(input.sourceId ? { sourceId: input.sourceId } : {}),
@@ -495,6 +554,7 @@ export async function applyStockOperationAdmin(
         delta,
         previousStock,
         newStock,
+        ...(unitCost !== undefined ? { unitCost, previousCost, newCost } : {}),
         ...(alert ? { alert } : {}),
       });
     }

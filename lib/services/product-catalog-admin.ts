@@ -343,8 +343,11 @@ export async function createProductCatalogAdmin(params: {
   db: Firestore;
   businessId: string;
   data: ProductCatalogData;
+  /** Identificador determinístico para fluxos internos idempotentes, como entrada de compra. */
+  productId?: string;
 }): Promise<Product> {
-  const ref = params.db.collection('products').doc();
+  const products = params.db.collection('products');
+  const ref = params.productId ? products.doc(params.productId) : products.doc();
   const now = new Date().toISOString();
   const product = buildProductDocument({
     id: ref.id,

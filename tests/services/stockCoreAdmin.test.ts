@@ -166,6 +166,34 @@ describe('applyStockOperationAdmin', () => {
     expect(fake.list('stockMovements')).toHaveLength(1);
   });
 
+  it('atualiza saldo e custo médio da entrada na mesma transação e preserva o replay', async () => {
+    const fake = makeFakeDb([product('p1', 10, { costPrice: 2 })]);
+    const input = baseInput({
+      type: 'entrada',
+      lines: [{ productId: 'p1', quantity: 5, sourceLineId: 'line-1', unitCost: 8 }],
+      sourceType: 'purchase',
+      sourceId: 'purchase-1',
+      sourceDocument: undefined,
+      idempotencyKey: 'purchase:purchase-1:line:line-1:entry',
+      reason: 'NF-e 1/1',
+      expandBom: false,
+      requireActiveProducts: true,
+    });
+
+    const first = await applyStockOperationAdmin(fake.db, input);
+    const replay = await applyStockOperationAdmin(fake.db, input);
+
+    expect(first.adjustments[0]).toMatchObject({
+      previousStock: 10, newStock: 15, unitCost: 8, previousCost: 2, newCost: 4,
+    });
+    expect(replay.replayed).toBe(true);
+    expect(fake.get('products/p1')).toMatchObject({ currentStock: 15, costPrice: 4 });
+    expect(fake.list('stockMovements')).toHaveLength(1);
+    expect(fake.list('stockMovements')[0].data).toMatchObject({
+      unitCost: 8, costTotal: 40, previousCost: 2, newCost: 4, costMethod: 'moving_average',
+    });
+  });
+
   it('mantém o replay quando apenas o rótulo humano da origem muda', async () => {
     const fake = makeFakeDb([product('p1', 10)]);
     const first = await applyStockOperationAdmin(fake.db, baseInput());
@@ -331,6 +359,33 @@ describe('applyStockOperationAdmin', () => {
     expect(stored.variants?.find((variant) => variant.id === 'azul-p')?.currentStock).toBe(7);
     expect(stored.variants?.find((variant) => variant.id === 'preta-m')?.currentStock).toBe(2);
     expect(fake.list('stockMovements').map((movement) => movement.data.variantId).sort()).toEqual(['azul-p', 'preta-m']);
+  });
+
+  it('calcula custo médio da variação sem alterar custo ou saldo do produto principal', async () => {
+    const fake = makeFakeDb([product('camiseta', 0, {
+      costPrice: 9,
+      kind: 'variant',
+      variants: [
+        { id: 'azul-p', name: 'Azul P', attributes: { cor: 'Azul', tamanho: 'P' }, salePrice: 50, costPrice: 20, currentStock: 3, minStock: 1, trackStock: true, isActive: true },
+      ],
+    })]);
+
+    const result = await applyStockOperationAdmin(fake.db, baseInput({
+      type: 'entrada',
+      lines: [{ productId: 'camiseta', variantId: 'azul-p', quantity: 2, unitCost: 50 }],
+      sourceType: 'purchase',
+      sourceId: 'purchase-variant',
+      idempotencyKey: 'purchase:variant:entry',
+      reason: 'Compra por variação',
+      expandBom: false,
+      requireActiveProducts: true,
+    }));
+
+    expect(result.adjustments[0]).toMatchObject({ variantId: 'azul-p', previousCost: 20, newCost: 32 });
+    const stored = fake.get('products/camiseta') as unknown as Product;
+    expect(stored.currentStock).toBe(0);
+    expect(stored.costPrice).toBe(9);
+    expect(stored.variants?.[0]).toMatchObject({ currentStock: 5, costPrice: 32 });
   });
 
   it('impede saldo negativo em uma variação sem alterar as demais', async () => {
