@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.4 concluídos; próximo: M01.5`
+  - Status: `Em implementação — M01.0 a M01.4 e M01.5a concluídos; próximo: M01.5b`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -327,12 +327,12 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 
 ### M01.5 — Importação de compras
 
-- [ ] Mover parsing e validação decisiva do XML para o servidor.
-- [ ] Validar chave de acesso, emitente, destinatário, totais e itens.
-- [ ] Armazenar o XML original com acesso autorizado e trilha de auditoria.
-- [ ] Criar ou atualizar fornecedor pelo documento da NF-e.
+- [x] Mover parsing e validação decisiva do XML para o servidor.
+- [x] Validar chave de acesso, emitente, destinatário, totais e itens.
+- [x] Armazenar o XML original com acesso autorizado e trilha de auditoria.
+- [x] Criar ou atualizar fornecedor pelo documento da NF-e.
 - [ ] Apresentar para cada item as ações `vincular`, `criar produto` ou `ignorar`.
-- [ ] Sugerir match por código do fornecedor, SKU, GTIN, NCM e nome normalizado.
+- [x] Sugerir match por código do fornecedor, SKU, GTIN, NCM e nome normalizado.
 - [ ] Permitir corrigir unidade, quantidade, custo, lote e validade antes de confirmar.
 - [ ] Implementar claim transacional para impedir duas importações simultâneas.
 - [ ] Usar movimentos determinísticos/idempotentes por nota e item.
@@ -340,6 +340,8 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 - [ ] Gravar `stockMovementIds` e resultado item a item na nota.
 - [ ] Suportar resultado completo, parcial, falha recuperável e cancelamento.
 - [ ] Definir reversão controlada sem apagar histórico.
+
+**M01.5a concluído:** preparação server-side, validação do destinatário e da estrutura fiscal, XML privado com hash, fornecedor V2, rateio preliminar e sugestões de produto. O plano e as próximas subetapas estão em `docs/paridade/M01_IMPORTACAO_COMPRAS.md`.
 
 **Saída:** entrada de compra repetível com segurança, sem duplicar saldo ou custo.
 

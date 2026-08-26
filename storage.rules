@@ -70,10 +70,16 @@ service firebase.storage {
     // rules causes circular reads via the users/{uid} allow read rule, producing
     // silent storage/unauthorized denials. Tenant isolation is enforced at the
     // app layer (businessId comes from useAuth()).
-    match /businesses/{businessId}/{path=**} {
-      allow read:   if isAuthenticated();
-      allow write:  if isAuthenticated() && isUnderSize(10);
-      allow delete: if isAuthenticated();
+    // XML fiscal original é privado e só passa pelas rotas server-side, que
+    // validam autenticação, papel e businessId antes do download.
+    match /businesses/{businessId}/purchase-notes/{path=**} {
+      allow read, write: if false;
+    }
+
+    match /businesses/{businessId}/{category}/{path=**} {
+      allow read:   if isAuthenticated() && category != 'purchase-notes';
+      allow write:  if isAuthenticated() && category != 'purchase-notes' && isUnderSize(10);
+      allow delete: if isAuthenticated() && category != 'purchase-notes';
     }
 
     // ── Product images ────────────────────────────────────────────────────────

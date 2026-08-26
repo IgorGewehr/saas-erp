@@ -441,6 +441,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Claim determinístico da chave de acesso da NF-e. Somente Admin SDK.
+    match /purchaseNoteIdentifiers/{identifierId} {
+      allow read, write: if false;
+    }
+
     // Claims determinísticos de SKU/código de barras. Somente Admin SDK para
     // impedir que um cliente reserve, libere ou sequestre um identificador.
     match /productIdentifiers/{identifierId} {

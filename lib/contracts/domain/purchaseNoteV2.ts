@@ -50,6 +50,13 @@ export const PurchaseNoteItemV2Schema = z.object({
   }).optional(),
   action: z.enum(['pending', 'match', 'create', 'skip']),
   productId: z.string().optional(),
+  matchSuggestions: z.array(z.object({
+    productId: z.string().min(1),
+    variantId: z.string().min(1).optional(),
+    productName: z.string().min(1),
+    confidence: z.number().min(0).max(1),
+    reasons: z.array(z.string()),
+  })).max(5).optional(),
   stockUnit: z.string().min(1).max(20),
   conversionFactor: z.number().positive(),
   stockQuantity: z.number().positive(),
@@ -105,6 +112,7 @@ const PurchaseNoteV2CanonicalSchema = z.object({
     document: z.string().regex(/^(\d{11}|\d{14})$/),
     name: z.string().min(1),
   }),
+  recipientDocument: z.string().regex(/^(\d{11}|\d{14})$/).optional(),
   items: z.array(PurchaseNoteItemV2Schema).min(1),
   totals: z.object({
     products: z.number().nonnegative(),
@@ -129,6 +137,9 @@ const PurchaseNoteV2CanonicalSchema = z.object({
   revertedAt: z.string().optional(),
   importError: z.string().optional(),
   xmlStoragePath: z.string().optional(),
+  xmlSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  originalFileName: z.string().max(255).optional(),
+  validationWarnings: z.array(z.string()).optional(),
   financial: z.object({
     transactionId: z.string().optional(),
     bankAccountId: z.string().optional(),
