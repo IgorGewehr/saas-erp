@@ -6,7 +6,7 @@ import {
   ShoppingBag, Upload, Search, X, FileText, CheckCircle2, AlertCircle,
   Building2, Calendar, Package, DollarSign, TrendingDown, Clock,
   ChevronDown, ChevronRight, RefreshCw, Eye, Download, Filter,
-  BarChart3, ArrowUpRight, Truck,
+  BarChart3, ArrowUpRight, Truck, Undo2,
 } from 'lucide-react';
 import {
   collection, query, where, getDocs, updateDoc, doc, onSnapshot, writeBatch,
@@ -20,7 +20,7 @@ import type { PurchaseNote, PurchaseNoteStatus, Product } from '@/lib/types';
 import { toast } from 'react-toastify';
 import { applyStockOperation } from '@/lib/services/stock-server-client';
 import type { PreparedPurchaseNote } from '@/lib/services/purchase-import-admin';
-import { confirmPurchaseNote } from '@/lib/services/purchase-import-client';
+import { confirmPurchaseNote, reversePurchaseNote } from '@/lib/services/purchase-import-client';
 import SuppliersPanel from './SuppliersPanel';
 import PurchaseImportDialog from './PurchaseImportDialog';
 
@@ -62,22 +62,30 @@ function NoteDetailPanel({
   onPushToStock,
   onReview,
   onConfirm,
+  onRetry,
+  onReverse,
   isPushingStock,
   isConfirming,
+  isReversing,
 }: {
   note: PurchaseNote;
   onClose: () => void;
   onPushToStock?: (note: PurchaseNote) => void;
   onReview?: (note: PurchaseNote) => void;
   onConfirm?: (note: PurchaseNote) => void;
+  onRetry?: (note: PurchaseNote) => void;
+  onReverse?: (note: PurchaseNote) => void;
   isPushingStock?: boolean;
   isConfirming?: boolean;
+  isReversing?: boolean;
 }) {
   const statusCfg = STATUS_CONFIG[note.status];
   const StatusIcon = statusCfg.icon;
   const usesSafeImport = note.schemaVersion === 2;
   const canPushToStock = !usesSafeImport && !note.stockImportedAt && note.status !== 'cancelada';
   const canEditReview = usesSafeImport && ['rascunho', 'pendente'].includes(note.status) && !note.stockImportedAt;
+  const canRetry = usesSafeImport && ['parcial', 'falha'].includes(note.status) && note.items.some((item) => item.importStatus === 'error');
+  const canReverse = usesSafeImport && ['importada', 'parcial'].includes(note.status) && !note.reversalClaim;
 
   return (
     <motion.div
@@ -144,10 +152,11 @@ function NoteDetailPanel({
                   <span className="font-semibold text-gray-700 dark:text-gray-300">{formatCurrency(item.total)}</span>
                   {item.importStatus && item.importStatus !== 'pending' && (
                     <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold',
-                      item.importStatus === 'imported' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
+                      item.reversalMovementId ? 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
+                        : item.importStatus === 'imported' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'
                         : item.importStatus === 'error' ? 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300'
                           : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300')}>
-                      {item.importStatus === 'imported' ? 'Importado' : item.importStatus === 'error' ? 'Erro' : 'Ignorado'}
+                      {item.reversalMovementId ? 'Revertido' : item.importStatus === 'imported' ? 'Importado' : item.importStatus === 'error' ? 'Erro' : 'Ignorado'}
                     </span>
                   )}
                 </div>
@@ -231,6 +240,33 @@ function NoteDetailPanel({
             <RefreshCw className="h-4 w-4 animate-spin" /> A entrada está sendo processada com segurança.
           </div>
         )}
+        {usesSafeImport && note.reversalClaim && (
+          <div className="flex items-center gap-2 rounded-xl bg-blue-50 p-3 text-xs text-blue-700 dark:bg-blue-500/10 dark:text-blue-300">
+            <RefreshCw className="h-4 w-4 animate-spin" /> A reversão está sendo processada com segurança.
+          </div>
+        )}
+        {note.reversalError && (
+          <div className="rounded-xl bg-red-50 p-3 text-xs text-red-700 dark:bg-red-500/10 dark:text-red-300">
+            <strong>Reversão pendente:</strong> {note.reversalError}
+          </div>
+        )}
+        {note.status === 'revertida' && note.reversalReason && (
+          <div className="rounded-xl bg-gray-50 p-3 text-xs text-gray-600 dark:bg-gray-800/60 dark:text-gray-300">
+            <strong>Motivo da reversão:</strong> {note.reversalReason}
+          </div>
+        )}
+        {canRetry && onRetry && (
+          <button type="button" onClick={() => onRetry(note)} disabled={isConfirming} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:opacity-50">
+            {isConfirming ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : <RefreshCw className="h-4 w-4" />}
+            {isConfirming ? 'Reprocessando...' : 'Tentar novamente itens com erro'}
+          </button>
+        )}
+        {canReverse && onReverse && (
+          <button type="button" onClick={() => onReverse(note)} disabled={isReversing} className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-red-300 px-3 py-2 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-50 dark:border-red-500/30 dark:text-red-300 dark:hover:bg-red-500/10">
+            {isReversing ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-red-300/30 border-t-red-500" /> : <Undo2 className="h-4 w-4" />}
+            {isReversing ? 'Revertendo...' : 'Reverter entrada no estoque'}
+          </button>
+        )}
         {canPushToStock && onPushToStock && (
           <button
             type="button"
@@ -245,7 +281,7 @@ function NoteDetailPanel({
         {note.stockImportedAt && (
           <div className="flex items-center gap-2 text-xs text-emerald-600 dark:text-emerald-400">
             <CheckCircle2 className="w-3.5 h-3.5" />
-            <span>Lançado em {formatDate(note.stockImportedAt)}</span>
+            <span>{note.status === 'revertida' ? 'Entrada original lançada' : 'Lançado'} em {formatDate(note.stockImportedAt)}</span>
           </div>
         )}
       </div>
@@ -439,9 +475,9 @@ export default function ComprasModule() {
   });
 
   const { mutate: confirmReviewedNote, isPending: isConfirming } = useMutation({
-    mutationFn: async (note: PurchaseNote) => {
+    mutationFn: async ({ note, retryFailed }: { note: PurchaseNote; retryFailed?: boolean }) => {
       if (!business?.id) throw new Error('Empresa não encontrada.');
-      return confirmPurchaseNote({ businessId: business.id, noteId: note.id });
+      return confirmPurchaseNote({ businessId: business.id, noteId: note.id, retryFailed });
     },
     onSuccess: (result) => {
       setSelectedNote(result.note as unknown as PurchaseNote);
@@ -455,6 +491,31 @@ export default function ComprasModule() {
     },
     onError: (cause: Error) => toast.error(cause.message || 'Não foi possível confirmar a entrada.'),
   });
+
+  const { mutate: reverseImportedNote, isPending: isReversing } = useMutation({
+    mutationFn: async ({ note, reason }: { note: PurchaseNote; reason: string }) => {
+      if (!business?.id) throw new Error('Empresa não encontrada.');
+      return reversePurchaseNote({ businessId: business.id, noteId: note.id, reason });
+    },
+    onSuccess: (result) => {
+      setSelectedNote(result.note as unknown as PurchaseNote);
+      toast.success(result.replayed
+        ? 'Esta compra já havia sido revertida; nenhum movimento foi duplicado.'
+        : `${result.reversedCount} entrada(s) revertida(s) por movimentos compensatórios.`);
+    },
+    onError: (cause: Error) => toast.error(cause.message || 'Não foi possível reverter a entrada.'),
+  });
+
+  const requestReversal = (note: PurchaseNote) => {
+    const reason = window.prompt('Informe o motivo da reversão (mínimo de 5 caracteres):')?.trim();
+    if (reason === undefined) return;
+    if (reason.length < 5 || reason.length > 500) {
+      toast.error('Informe um motivo entre 5 e 500 caracteres.');
+      return;
+    }
+    if (!window.confirm('A entrada será compensada no estoque e o histórico será preservado. Deseja continuar?')) return;
+    reverseImportedNote({ note, reason });
+  };
 
   // ─── Filtered list ───────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -630,9 +691,12 @@ export default function ComprasModule() {
                   setReviewingNote(note as unknown as PreparedPurchaseNote);
                   setShowImportModal(true);
                 }}
-                onConfirm={confirmReviewedNote}
+                onConfirm={(note) => confirmReviewedNote({ note })}
+                onRetry={(note) => confirmReviewedNote({ note, retryFailed: true })}
+                onReverse={requestReversal}
                 isPushingStock={isPushingStock}
                 isConfirming={isConfirming}
+                isReversing={isReversing}
               />
             </div>
           )}

@@ -5,6 +5,7 @@ import type { ReviewPurchaseNoteRequest } from '@/lib/contracts/api/purchase-not
 import type {
   PreparedPurchaseNote,
   PurchaseNoteConfirmationResult,
+  PurchaseNoteReversalResult,
 } from '@/lib/services/purchase-import-admin';
 
 async function token(): Promise<string> {
@@ -41,8 +42,21 @@ export async function savePurchaseNoteReview(input: ReviewPurchaseNoteRequest): 
 export async function confirmPurchaseNote(input: {
   businessId: string;
   noteId: string;
+  retryFailed?: boolean;
 }): Promise<PurchaseNoteConfirmationResult> {
   return payload(await fetch('/api/purchase-notes/confirm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function reversePurchaseNote(input: {
+  businessId: string;
+  noteId: string;
+  reason: string;
+}): Promise<PurchaseNoteReversalResult> {
+  return payload(await fetch('/api/purchase-notes/reverse', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` },
     body: JSON.stringify(input),

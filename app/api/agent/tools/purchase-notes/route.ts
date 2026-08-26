@@ -11,6 +11,7 @@
  *   - apply_to_stock     create stockMovements (entrada) for matched items.
  *                        Idempotent: sets `stockImportedAt`, blocks re-apply.
  *   - list_unmatched     notes with unmatched items pending review
+ *   - reverse_stock      reverse a V2 import with compensating movements
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -18,9 +19,9 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
-import { confirmPurchaseNoteAdmin } from '@/lib/services/purchase-import-admin';
+import { confirmPurchaseNoteAdmin, reversePurchaseNoteAdmin } from '@/lib/services/purchase-import-admin';
 
-type Action = 'list' | 'get' | 'match_products' | 'apply_to_stock' | 'list_unmatched';
+type Action = 'list' | 'get' | 'match_products' | 'apply_to_stock' | 'list_unmatched' | 'reverse_stock';
 
 export async function POST(req: NextRequest) {
   let ctx;
@@ -47,6 +48,14 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: true, data: await applyToStock(businessId, body.params.id as string, body.params.operatorId as string | undefined, body.params.operatorName as string | undefined) });
       case 'list_unmatched':
         return NextResponse.json({ ok: true, data: await listUnmatched(businessId, body.params.limit as number | undefined) });
+      case 'reverse_stock':
+        return NextResponse.json({ ok: true, data: await reverseStock(
+          businessId,
+          body.params.id as string,
+          body.params.reason as string,
+          body.params.operatorId as string | undefined,
+          body.params.operatorName as string | undefined,
+        ) });
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
     }
@@ -173,6 +182,7 @@ async function applyToStock(
       businessId,
       noteId: id,
       actor: { uid: operatorId || 'agent', name: operatorName || 'Agente IA' },
+      retryFailed: note.status === 'parcial' || note.status === 'falha',
     });
     return {
       note: confirmed.note as unknown as PurchaseNote,
@@ -239,6 +249,32 @@ async function applyToStock(
     note: { ...note, status: 'importada', stockImportedAt: now, stockMovementIds: movementIds, id: noteSnap.id },
     movementsCreated: movementIds.length,
     unmatchedCount: unmatched.length,
+  };
+}
+
+async function reverseStock(
+  businessId: string,
+  id: string,
+  reason: string,
+  operatorId?: string,
+  operatorName?: string,
+): Promise<{ note: PurchaseNote; movementsReversed: number }> {
+  if (!id) throw new Error('id required');
+  const snapshot = await adminDb.collection('purchaseNotes').doc(id).get();
+  if (!snapshot.exists) throw new Error('Note not found');
+  const note = snapshot.data() as PurchaseNote;
+  if (note.businessId !== businessId) throw new Error('Cross-tenant access denied');
+  if (note.schemaVersion !== 2) throw new Error('Only V2 purchase notes support safe automatic reversal');
+  const reversed = await reversePurchaseNoteAdmin({
+    db: adminDb,
+    businessId,
+    noteId: id,
+    reason,
+    actor: { uid: operatorId || 'agent', name: operatorName || 'Agente IA' },
+  });
+  return {
+    note: reversed.note as unknown as PurchaseNote,
+    movementsReversed: reversed.reversedCount,
   };
 }
 

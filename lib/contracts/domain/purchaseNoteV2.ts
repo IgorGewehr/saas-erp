@@ -71,6 +71,8 @@ export const PurchaseNoteItemV2Schema = z.object({
   landedUnitCost: z.number().nonnegative(),
   importStatus: z.enum(['pending', 'imported', 'skipped', 'error']),
   stockMovementId: z.string().optional(),
+  reversalMovementId: z.string().optional(),
+  reversedAt: z.string().optional(),
   error: z.string().optional(),
   lot: z.object({
     code: z.string().min(1),
@@ -102,6 +104,13 @@ export const PurchaseNoteItemV2Schema = z.object({
       code: 'custom',
       message: 'item importado exige stockMovementId',
       path: ['stockMovementId'],
+    });
+  }
+  if (item.reversalMovementId && (item.importStatus !== 'imported' || !item.reversedAt)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'item revertido exige importStatus=imported e reversedAt',
+      path: ['reversalMovementId'],
     });
   }
 });
@@ -139,10 +148,20 @@ const PurchaseNoteV2CanonicalSchema = z.object({
     claimedAt: z.string().min(1),
     expiresAt: z.string().min(1),
   }).optional(),
+  reversalClaim: z.object({
+    token: z.string().min(1),
+    claimedBy: z.string().min(1),
+    claimedAt: z.string().min(1),
+    expiresAt: z.string().min(1),
+  }).optional(),
   stockImportedAt: z.string().optional(),
   stockMovementIds: z.array(z.string()),
+  reversalMovementIds: z.array(z.string()).default([]),
   importedAt: z.string().optional(),
   revertedAt: z.string().optional(),
+  reversedBy: z.string().optional(),
+  reversalReason: z.string().min(5).max(500).optional(),
+  reversalError: z.string().max(2000).optional(),
   importError: z.string().optional(),
   xmlStoragePath: z.string().optional(),
   xmlSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
@@ -266,6 +285,9 @@ export function normalizePurchaseNoteToV2(input: unknown): unknown {
     },
     status,
     stockMovementIds: movementIds,
+    reversalMovementIds: Array.isArray(source.reversalMovementIds)
+      ? source.reversalMovementIds.filter((id): id is string => typeof id === 'string')
+      : [],
     ...(isLegacy
       ? {
           migration: {

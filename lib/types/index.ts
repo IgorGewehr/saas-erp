@@ -1741,6 +1741,8 @@ export interface StockMovement {
   previousCost?: number;
   newCost?: number;
   costMethod?: 'moving_average';
+  costRestored?: boolean;
+  reversalOfMovementId?: string;
   reason: string;
   saleId?: string;
   purchaseId?: string;
@@ -4022,6 +4024,8 @@ export interface PurchaseNoteItem {
   landedUnitCost?: number;
   importStatus?: 'pending' | 'imported' | 'skipped' | 'error';
   stockMovementId?: string;
+  reversalMovementId?: string;
+  reversedAt?: string;
   error?: string;
   newProduct?: {
     name: string;
@@ -4060,10 +4064,22 @@ export interface PurchaseNote {
   reviewedBy?: string;
   reviewedByName?: string;
   importedAt?: string;
+  revertedAt?: string;
+  reversedBy?: string;
+  reversedByName?: string;
+  reversalReason?: string;
+  reversalError?: string;
+  reversalClaim?: {
+    token: string;
+    claimedBy: string;
+    claimedAt: string;
+    expiresAt: string;
+  };
   // Stock import tracking — set when items are pushed to inventory as stockMovements.
   // Once present, re-importing is blocked (idempotency).
   stockImportedAt?: string;
   stockMovementIds?: string[];          // ids of stockMovements created for this note
+  reversalMovementIds?: string[];       // movimentos compensatórios; o ledger original é preservado
   unmatchedItems?: Array<{ productName: string; quantity: number; cProd?: string }>;
   createdAt: string;
   updatedAt: string;

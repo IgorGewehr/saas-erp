@@ -1,7 +1,7 @@
 # M01.5 — Importação de compras
 
-> Data: 25/08/2026
-> Status: M01.5a, M01.5b e M01.5c concluídos; próximo: M01.5d.
+> Data: 26/08/2026
+> Status: M01.5a, M01.5b, M01.5c e M01.5d concluídos; próximo: M01.6.
 
 ## Resultado esperado
 
@@ -21,6 +21,8 @@ XML recebido
     → entrada idempotente no estoque
     → custo médio e resultado por item
   → importada | parcial | falha recuperável
+    → reprocessar somente itens com erro
+    → reversão auditável por movimentos compensatórios
 ```
 
 ## M01.5a — Ingestão e preparação
@@ -82,10 +84,23 @@ XML recebido
 
 ## M01.5d — Reversão e recuperação
 
-- Permitir nova tentativa apenas para itens pendentes/com erro, reutilizando as mesmas chaves.
-- Reverter por movimentos compensatórios, nunca apagando ledger.
-- Restaurar custo somente quando houver memória de cálculo segura; caso contrário, sinalizar revisão.
-- Bloquear reversão quando dependências posteriores exigirem tratamento manual.
+- [x] Permitir nova tentativa apenas para itens com erro, reutilizando as mesmas chaves.
+- [x] Recuperar claims expirados de importação e reversão sem duplicar movimentos.
+- [x] Reverter por movimentos compensatórios, nunca apagando ledger.
+- [x] Restaurar custo somente quando houver memória de cálculo segura; caso contrário, sinalizar revisão.
+- [x] Bloquear reversão quando dependências posteriores exigirem tratamento manual.
+- [x] Disponibilizar retentativa e reversão para a interface e para o agente autorizado.
+
+### Arquivos da entrega M01.5d
+
+- `app/api/purchase-notes/reverse/route.ts`: reversão autenticada, com motivo obrigatório e erros operacionais explícitos.
+- `lib/contracts/api/purchase-note-confirm.ts`: intenção explícita de reprocessar somente falhas.
+- `lib/contracts/api/purchase-note-reverse.ts`: contrato estrito da reversão.
+- `lib/services/purchase-import-admin.ts`: retomada por item, claim de reversão, validação de dependências e fechamento auditável.
+- `lib/services/stock-core-admin.ts`: pré-condições exatas e restauração atômica de saldo/custo.
+- `lib/contracts/domain/stockMovementV2.ts`: vínculo entre movimento compensatório e movimento original.
+- `app/components/features/purchases/ComprasModule.tsx`: ações e estados de reprocessamento/reversão.
+- `app/api/agent/tools/purchase-notes/route.ts`: mesmos caminhos seguros para o agente.
 
 ## Fora deste marco
 
@@ -103,3 +118,6 @@ XML recebido
 6. XML só pode ser baixado por usuário autenticado do mesmo tenant.
 7. Notas legadas continuam legíveis durante a migração.
 8. Uma nota V2 não utiliza o lançamento legado enquanto a confirmação idempotente não estiver concluída.
+9. Reprocessar uma nota parcial ou com falha tenta somente itens com erro e reaproveita as chaves originais.
+10. Reverter preserva os movimentos originais, cria saídas compensatórias e restaura custo apenas com memória exata.
+11. Movimentos posteriores, saldo/custo divergente ou auditoria incompleta bloqueiam a reversão automática.

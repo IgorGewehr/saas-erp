@@ -17,7 +17,11 @@ import {
 import type { Product } from '@/lib/types';
 import type { ReviewPurchaseNoteRequest } from '@/lib/contracts/api/purchase-note-review';
 import type { ProductCatalogData } from '@/lib/contracts/api/product-catalog';
-import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
+import { StockMovementV2Schema, type StockMovementV2 } from '@/lib/contracts/domain/stockMovementV2';
+import {
+  applyStockOperationAdmin,
+  StockDependencyConflictError,
+} from '@/lib/services/stock-core-admin';
 
 export class PurchaseNoteDuplicateError extends Error {
   constructor(public readonly existingNoteId: string) {
@@ -448,7 +452,7 @@ export async function reviewPurchaseNoteAdmin(params: {
 }
 
 const PURCHASE_CLAIM_TTL_MS = 5 * 60 * 1000;
-const TERMINAL_PURCHASE_STATUSES = new Set<PurchaseNoteV2['status']>(['importada', 'parcial', 'falha']);
+const RETRYABLE_PURCHASE_STATUSES = new Set<PurchaseNoteV2['status']>(['parcial', 'falha']);
 
 export class PurchaseNoteClaimConflictError extends Error {
   constructor() {
@@ -580,6 +584,7 @@ export async function confirmPurchaseNoteAdmin(params: {
   businessId: string;
   noteId: string;
   actor: SupplierActor;
+  retryFailed?: boolean;
 }): Promise<PurchaseNoteConfirmationResult> {
   const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
   const claimToken = randomUUID();
@@ -593,13 +598,21 @@ export async function confirmPurchaseNoteAdmin(params: {
       throw new PurchaseNoteNotReadyError('Nota não encontrada.');
     }
     const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
-    if (TERMINAL_PURCHASE_STATUSES.has(note.status)) {
+    const retryingFailedItems = Boolean(
+      params.retryFailed &&
+      RETRYABLE_PURCHASE_STATUSES.has(note.status) &&
+      note.items.some((item) => item.importStatus === 'error'),
+    );
+    if (note.status === 'importada' || (RETRYABLE_PURCHASE_STATUSES.has(note.status) && !retryingFailedItems)) {
       return { kind: 'terminal', note: preparedDocument(snapshot.data() ?? {}, note) };
+    }
+    if (note.reversalClaim) {
+      throw new PurchaseNoteNotReadyError('A nota possui uma reversão em andamento e não pode ser reprocessada.');
     }
     if (note.status === 'processando' && note.importClaim && Date.parse(note.importClaim.expiresAt) > claimedAt.getTime()) {
       throw new PurchaseNoteClaimConflictError();
     }
-    if (!['pendente', 'rascunho', 'processando'].includes(note.status) || !note.reviewedAt) {
+    if (!['pendente', 'rascunho', 'processando', 'parcial', 'falha'].includes(note.status) || !note.reviewedAt) {
       throw new PurchaseNoteNotReadyError();
     }
     if (note.items.some((item) => item.action === 'pending')) throw new PurchaseNoteNotReadyError();
@@ -731,4 +744,326 @@ export async function confirmPurchaseNoteAdmin(params: {
     tx.set(noteRef, document as unknown as Record<string, unknown>);
     return confirmationResult(document, false);
   });
+}
+
+export class PurchaseNoteReversalConflictError extends Error {
+  constructor() {
+    super('Esta nota já está sendo revertida por outro usuário.');
+    this.name = 'PurchaseNoteReversalConflictError';
+  }
+}
+
+export class PurchaseNoteNotReversibleError extends Error {
+  constructor(message = 'Somente compras importadas ou parcialmente importadas podem ser revertidas.') {
+    super(message);
+    this.name = 'PurchaseNoteNotReversibleError';
+  }
+}
+
+export class PurchaseNoteReversalBlockedError extends Error {
+  readonly code = 'PURCHASE_REVERSAL_BLOCKED' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'PurchaseNoteReversalBlockedError';
+  }
+}
+
+class PurchaseNoteReversalClaimLostError extends Error {
+  constructor() {
+    super('O processamento perdeu a posse da reversão. Tente novamente em instantes.');
+    this.name = 'PurchaseNoteReversalClaimLostError';
+  }
+}
+
+export interface PurchaseNoteReversalResult {
+  note: PreparedPurchaseNote;
+  replayed: boolean;
+  reversedCount: number;
+}
+
+interface PurchaseReversalTarget {
+  item: PurchaseNoteItemV2;
+  movement: StockMovementV2;
+}
+
+function reversalTargetKey(movement: Pick<StockMovementV2, 'productId' | 'variantId'>): string {
+  return `${movement.productId}:${movement.variantId ?? ''}`;
+}
+
+function reversalResult(note: PreparedPurchaseNote, replayed: boolean): PurchaseNoteReversalResult {
+  return {
+    note,
+    replayed,
+    reversedCount: note.reversalMovementIds.length,
+  };
+}
+
+async function loadPurchaseReversalTargets(params: {
+  db: Firestore;
+  businessId: string;
+  note: PurchaseNoteV2;
+}): Promise<PurchaseReversalTarget[]> {
+  const importedItems = params.note.items.filter((item) => item.importStatus === 'imported');
+  const targets = await Promise.all(importedItems.map(async (item): Promise<PurchaseReversalTarget> => {
+    if (!item.stockMovementId || !item.productId) {
+      throw new PurchaseNoteReversalBlockedError(`A linha ${item.lineId} não possui trilha completa de estoque para reversão automática.`);
+    }
+    const snapshot = await params.db.collection('stockMovements').doc(item.stockMovementId).get();
+    if (!snapshot.exists) {
+      throw new PurchaseNoteReversalBlockedError(`O movimento original da linha ${item.lineId} não foi encontrado.`);
+    }
+    const raw = snapshot.data() ?? {};
+    const parsed = StockMovementV2Schema.safeParse({ ...raw, id: snapshot.id });
+    if (!parsed.success) {
+      throw new PurchaseNoteReversalBlockedError(`O movimento original da linha ${item.lineId} não possui auditoria válida.`);
+    }
+    const movement = parsed.data;
+    const sameVariant = (movement.variantId ?? '') === (item.variantId ?? '');
+    if (
+      raw.schemaVersion !== 2 || movement.balanceAccuracy !== 'exact' || movement.businessId !== params.businessId ||
+      movement.type !== 'entrada' || movement.sourceType !== 'purchase' || movement.sourceId !== params.note.id ||
+      movement.sourceLineId !== item.lineId || movement.productId !== item.productId || !sameVariant
+    ) {
+      throw new PurchaseNoteReversalBlockedError(`A origem do movimento da linha ${item.lineId} não permite reversão automática.`);
+    }
+    if (movement.previousCost === undefined || movement.newCost === undefined) {
+      throw new PurchaseNoteReversalBlockedError(`A linha ${item.lineId} não possui memória de custo; faça a reversão com revisão manual.`);
+    }
+    return { item, movement };
+  }));
+
+  const originals = new Set(targets.map(({ movement }) => movement.id));
+  const byTarget = new Map<string, PurchaseReversalTarget[]>();
+  for (const target of targets) {
+    const key = reversalTargetKey(target.movement);
+    byTarget.set(key, [...(byTarget.get(key) ?? []), target]);
+  }
+
+  await Promise.all([...byTarget.values()].map(async (group) => {
+    const firstTimestamp = Math.min(...group.map(({ movement }) => Date.parse(movement.createdAt)));
+    if (!Number.isFinite(firstTimestamp)) {
+      throw new PurchaseNoteReversalBlockedError('A trilha original não possui data confiável para validar dependências.');
+    }
+    const sample = group[0].movement;
+    const snapshot = await params.db.collection('stockMovements').where('productId', '==', sample.productId).get();
+    const dependency = snapshot.docs.find((document) => {
+      const movement = document.data();
+      if (movement.businessId !== params.businessId || (movement.variantId ?? '') !== (sample.variantId ?? '')) return false;
+      if (originals.has(document.id)) return false;
+      const isOwnReversal = movement.sourceType === 'purchase' && movement.sourceId === params.note.id &&
+        typeof movement.reversalOfMovementId === 'string' && originals.has(movement.reversalOfMovementId);
+      if (isOwnReversal) return false;
+      const createdAt = typeof movement.createdAt === 'string' ? Date.parse(movement.createdAt) : Number.NaN;
+      return !Number.isFinite(createdAt) || createdAt >= firstTimestamp;
+    });
+    if (dependency) {
+      throw new PurchaseNoteReversalBlockedError('Há movimentos posteriores de estoque; a reversão exige revisão manual.');
+    }
+  }));
+
+  return targets.sort((left, right) =>
+    Date.parse(right.movement.createdAt) - Date.parse(left.movement.createdAt) ||
+    right.movement.id.localeCompare(left.movement.id),
+  );
+}
+
+async function persistPurchaseItemReversal(params: {
+  db: Firestore;
+  businessId: string;
+  noteId: string;
+  claimToken: string;
+  lineId: string;
+  reversalMovementId: string;
+}): Promise<void> {
+  const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
+  await params.db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(noteRef);
+    if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) throw new PurchaseNoteReversalClaimLostError();
+    const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+    if (note.reversalClaim?.token !== params.claimToken || !['importada', 'parcial'].includes(note.status)) {
+      throw new PurchaseNoteReversalClaimLostError();
+    }
+    const now = new Date().toISOString();
+    let found = false;
+    const items = note.items.map((item) => {
+      if (item.lineId !== params.lineId) return item;
+      found = true;
+      return { ...item, reversalMovementId: params.reversalMovementId, reversedAt: now };
+    });
+    if (!found) throw new PurchaseNoteReversalClaimLostError();
+    const canonical = PurchaseNoteV2Schema.parse({
+      ...note,
+      items,
+      reversalMovementIds: [...new Set([...note.reversalMovementIds, params.reversalMovementId])],
+      updatedAt: now,
+    });
+    tx.set(noteRef, preparedDocument(snapshot.data() ?? {}, canonical, { updatedAt: now }) as unknown as Record<string, unknown>);
+  });
+}
+
+async function releasePurchaseReversalClaim(params: {
+  db: Firestore;
+  businessId: string;
+  noteId: string;
+  claimToken: string;
+  cause: unknown;
+}): Promise<void> {
+  const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
+  await params.db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(noteRef);
+    if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) return;
+    const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+    if (note.reversalClaim?.token !== params.claimToken) return;
+    const now = new Date().toISOString();
+    const canonical = PurchaseNoteV2Schema.parse({
+      ...note,
+      reversalClaim: undefined,
+      reversalError: conciseError(params.cause),
+      updatedAt: now,
+    });
+    tx.set(noteRef, preparedDocument(snapshot.data() ?? {}, canonical, {
+      reversalClaimedByName: undefined,
+      updatedAt: now,
+    }) as unknown as Record<string, unknown>);
+  });
+}
+
+export async function reversePurchaseNoteAdmin(params: {
+  db: Firestore;
+  businessId: string;
+  noteId: string;
+  reason: string;
+  actor: SupplierActor;
+}): Promise<PurchaseNoteReversalResult> {
+  const reason = params.reason.trim();
+  if (reason.length < 5 || reason.length > 500) {
+    throw new PurchaseNoteNotReversibleError('Informe um motivo de reversão entre 5 e 500 caracteres.');
+  }
+  const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
+  const claimToken = randomUUID();
+  const claimedAt = new Date();
+  const claimed = await params.db.runTransaction(async (tx): Promise<
+    { kind: 'terminal'; note: PreparedPurchaseNote } |
+    { kind: 'claimed'; note: PurchaseNoteV2 }
+  > => {
+    const snapshot = await tx.get(noteRef);
+    if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) {
+      throw new PurchaseNoteNotReversibleError('Nota não encontrada.');
+    }
+    const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+    if (note.status === 'revertida') return { kind: 'terminal', note: preparedDocument(snapshot.data() ?? {}, note) };
+    if (note.reversalClaim && Date.parse(note.reversalClaim.expiresAt) > claimedAt.getTime()) {
+      throw new PurchaseNoteReversalConflictError();
+    }
+    if (!['importada', 'parcial'].includes(note.status) || note.importClaim) {
+      throw new PurchaseNoteNotReversibleError();
+    }
+    const now = claimedAt.toISOString();
+    const canonical = PurchaseNoteV2Schema.parse({
+      ...note,
+      reversalClaim: {
+        token: claimToken,
+        claimedBy: params.actor.uid,
+        claimedAt: now,
+        expiresAt: new Date(claimedAt.getTime() + PURCHASE_CLAIM_TTL_MS).toISOString(),
+      },
+      reversalError: undefined,
+      updatedAt: now,
+    });
+    tx.set(noteRef, preparedDocument(snapshot.data() ?? {}, canonical, {
+      reversalClaimedByName: params.actor.name,
+      updatedAt: now,
+    }) as unknown as Record<string, unknown>);
+    return { kind: 'claimed', note: canonical };
+  });
+
+  if (claimed.kind === 'terminal') return reversalResult(claimed.note, true);
+
+  try {
+    const targets = await loadPurchaseReversalTargets({ db: params.db, businessId: params.businessId, note: claimed.note });
+    for (const { item, movement } of targets) {
+      if (item.reversalMovementId) continue;
+      let result;
+      try {
+        result = await applyStockOperationAdmin(params.db, {
+          businessId: params.businessId,
+          type: 'saida',
+          lines: [{
+            productId: movement.productId,
+            ...(movement.variantId ? { variantId: movement.variantId } : {}),
+            quantity: Math.abs(movement.quantity),
+            sourceLineId: item.lineId,
+            expectedCurrentStock: movement.newStock,
+            costRestoration: {
+              expectedCurrentCost: movement.newCost!,
+              targetCost: movement.previousCost!,
+            },
+            reversalOfMovementId: movement.id,
+          }],
+          operatorId: params.actor.uid,
+          operatorName: params.actor.name,
+          reason: `Reversão NF-e ${claimed.note.numero}/${claimed.note.serie}: ${reason}`,
+          sourceType: 'purchase',
+          sourceId: params.noteId,
+          sourceDocument: { collection: 'purchaseNotes', id: params.noteId, existence: 'required' },
+          idempotencyKey: `purchase:${params.noteId}:line:${item.lineId}:reversal`,
+          expandBom: false,
+          negativeStockPolicy: 'prevent',
+        });
+      } catch (cause) {
+        if (cause instanceof StockDependencyConflictError) {
+          throw new PurchaseNoteReversalBlockedError(`${cause.message} A reversão exige revisão manual.`);
+        }
+        throw cause;
+      }
+      const reversalMovementId = result.adjustments[0]?.movementId;
+      if (!reversalMovementId) throw new Error(`A reversão da linha ${item.lineId} não gerou movimento compensatório.`);
+      await persistPurchaseItemReversal({
+        db: params.db,
+        businessId: params.businessId,
+        noteId: params.noteId,
+        claimToken,
+        lineId: item.lineId,
+        reversalMovementId,
+      });
+    }
+
+    return await params.db.runTransaction(async (tx) => {
+      const snapshot = await tx.get(noteRef);
+      if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) throw new PurchaseNoteReversalClaimLostError();
+      const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+      if (note.reversalClaim?.token !== claimToken || !['importada', 'parcial'].includes(note.status)) {
+        throw new PurchaseNoteReversalClaimLostError();
+      }
+      const missingReversal = note.items.some((item) => item.importStatus === 'imported' && !item.reversalMovementId);
+      if (missingReversal) throw new PurchaseNoteReversalClaimLostError();
+      const now = new Date().toISOString();
+      const canonical = PurchaseNoteV2Schema.parse({
+        ...note,
+        status: 'revertida',
+        reversalClaim: undefined,
+        reversalError: undefined,
+        revertedAt: now,
+        reversedBy: params.actor.uid,
+        reversalReason: reason,
+        updatedAt: now,
+      });
+      const document = preparedDocument(snapshot.data() ?? {}, canonical, {
+        reversedByName: params.actor.name,
+        reversalClaimedByName: undefined,
+        updatedAt: now,
+      });
+      tx.set(noteRef, document as unknown as Record<string, unknown>);
+      return reversalResult(document, false);
+    });
+  } catch (cause) {
+    await releasePurchaseReversalClaim({
+      db: params.db,
+      businessId: params.businessId,
+      noteId: params.noteId,
+      claimToken,
+      cause,
+    }).catch(() => undefined);
+    throw cause;
+  }
 }

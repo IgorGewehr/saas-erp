@@ -34,6 +34,8 @@ const StockMovementV2CanonicalSchema = z.object({
   previousCost: z.number().nonnegative().optional(),
   newCost: z.number().nonnegative().optional(),
   costMethod: z.literal('moving_average').optional(),
+  costRestored: z.boolean().optional(),
+  reversalOfMovementId: z.string().min(1).optional(),
   reason: z.string().min(1).max(500),
   sourceType: z.enum(STOCK_SOURCE_TYPES),
   sourceId: z.string().optional(),
@@ -79,6 +81,16 @@ const StockMovementV2CanonicalSchema = z.object({
       code: 'custom',
       message: `${movement.sourceType} exige sourceId`,
       path: ['sourceId'],
+    });
+  }
+  if (movement.costRestored && (
+    movement.type !== 'saida' || !movement.reversalOfMovementId ||
+    movement.previousCost === undefined || movement.newCost === undefined
+  )) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'costRestored exige saída compensatória com memória de custo',
+      path: ['costRestored'],
     });
   }
 });

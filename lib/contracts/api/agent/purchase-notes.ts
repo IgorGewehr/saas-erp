@@ -74,12 +74,24 @@ export const PurchaseNotesListUnmatchedDataSchema = z.array(z.object({
   unmatchedItems: z.array(PurchaseItemShape),
 }));
 
+export const PurchaseNotesReverseStockParamsSchema = z.object({
+  id: DocIdSchema,
+  reason: z.string().trim().min(5).max(500),
+  operatorId: z.string().default('agent'),
+  operatorName: z.string().default('Agente IA'),
+});
+export const PurchaseNotesReverseStockDataSchema = z.object({
+  note: PurchaseNoteShape,
+  movementsReversed: z.number().int().nonnegative(),
+});
+
 export const PurchaseNotesToolRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list'),            params: PurchaseNotesListParamsSchema }),
   z.object({ action: z.literal('get'),             params: PurchaseNotesGetParamsSchema }),
   z.object({ action: z.literal('match_products'),  params: PurchaseNotesMatchProductsParamsSchema }),
   z.object({ action: z.literal('apply_to_stock'),  params: PurchaseNotesApplyToStockParamsSchema }),
   z.object({ action: z.literal('list_unmatched'),  params: PurchaseNotesListUnmatchedParamsSchema }),
+  z.object({ action: z.literal('reverse_stock'),   params: PurchaseNotesReverseStockParamsSchema }),
 ]);
 
 export const PURCHASE_NOTES_DATA_SCHEMAS = {
@@ -88,4 +100,5 @@ export const PURCHASE_NOTES_DATA_SCHEMAS = {
   match_products: PurchaseNotesMatchProductsDataSchema,
   apply_to_stock: PurchaseNotesApplyToStockDataSchema,
   list_unmatched: PurchaseNotesListUnmatchedDataSchema,
+  reverse_stock:  PurchaseNotesReverseStockDataSchema,
 } as const;

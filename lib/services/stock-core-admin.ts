@@ -41,6 +41,12 @@ export interface StockOperationLine {
   sourceLineId?: string;
   /** Custo de aquisição por unidade de estoque. Exclusivo para entrada sem expansão de BOM. */
   unitCost?: number;
+  /** Pré-condição de saldo usada por reversões seguras. */
+  expectedCurrentStock?: number;
+  /** Restauração auditável de custo usada por movimento compensatório. */
+  costRestoration?: { expectedCurrentCost: number; targetCost: number };
+  /** Movimento de entrada compensado por esta linha. */
+  reversalOfMovementId?: string;
 }
 
 export type StockSourceCollection =
@@ -116,6 +122,9 @@ interface AggregatedLine {
   strict: boolean;
   incomingCostTotal: number;
   costedQuantity: number;
+  expectedCurrentStock?: number;
+  costRestoration?: { expectedCurrentCost: number; targetCost: number };
+  reversalOfMovementId?: string;
 }
 
 export class InvalidStockOperationError extends Error {
@@ -139,6 +148,14 @@ export class StockIdempotencyConflictError extends Error {
   constructor(public readonly idempotencyKey: string) {
     super('A chave de idempotência já foi usada por outra operação de estoque.');
     this.name = 'StockIdempotencyConflictError';
+  }
+}
+
+export class StockDependencyConflictError extends Error {
+  readonly code = 'STOCK_DEPENDENCY_CONFLICT' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'StockDependencyConflictError';
   }
 }
 
@@ -215,6 +232,20 @@ function validateInput(input: StockOperationInput): void {
     if (line.unitCost !== undefined && (input.type !== 'entrada' || input.expandBom !== false)) {
       throw new InvalidStockOperationError('unitCost só pode ser usado em entrada com expandBom=false.');
     }
+    if (line.expectedCurrentStock !== undefined && !Number.isFinite(line.expectedCurrentStock)) {
+      throw new InvalidStockOperationError(`lines[${index}].expectedCurrentStock deve ser finito.`);
+    }
+    if (line.costRestoration && (
+      !Number.isFinite(line.costRestoration.expectedCurrentCost) || line.costRestoration.expectedCurrentCost < 0 ||
+      !Number.isFinite(line.costRestoration.targetCost) || line.costRestoration.targetCost < 0
+    )) {
+      throw new InvalidStockOperationError(`lines[${index}].costRestoration possui custo inválido.`);
+    }
+    if ((line.expectedCurrentStock !== undefined || line.costRestoration || line.reversalOfMovementId) && (
+      input.type !== 'saida' || input.expandBom !== false || input.lines.length !== 1
+    )) {
+      throw new InvalidStockOperationError('Pré-condições de reversão exigem uma única saída com expandBom=false.');
+    }
   }
 }
 
@@ -226,6 +257,12 @@ function fingerprint(input: StockOperationInput): string {
       quantity: roundStock(line.quantity),
       sourceLineId: line.sourceLineId ?? '',
       unitCost: line.unitCost === undefined ? null : roundCost(line.unitCost),
+      expectedCurrentStock: line.expectedCurrentStock === undefined ? null : roundStock(line.expectedCurrentStock),
+      costRestoration: line.costRestoration ? {
+        expectedCurrentCost: roundCost(line.costRestoration.expectedCurrentCost),
+        targetCost: roundCost(line.costRestoration.targetCost),
+      } : null,
+      reversalOfMovementId: line.reversalOfMovementId ?? '',
     }))
     .sort((a, b) =>
       `${a.productId}:${a.variantId}:${a.sourceLineId}:${a.quantity}`.localeCompare(
@@ -316,6 +353,9 @@ function aggregateLines(
         strict: false,
         incomingCostTotal: 0,
         costedQuantity: 0,
+        expectedCurrentStock: sourceLine.expectedCurrentStock,
+        costRestoration: sourceLine.costRestoration,
+        reversalOfMovementId: sourceLine.reversalOfMovementId,
       };
       current.quantity = roundStock(current.quantity + line.quantity);
       if (sourceLine.unitCost !== undefined) {
@@ -443,6 +483,15 @@ export async function applyStockOperationAdmin(
       const previousStock = variant
         ? (Number.isFinite(variant.currentStock) ? variant.currentStock : 0)
         : (Number.isFinite(product.currentStock) ? product.currentStock : 0);
+      if (line.expectedCurrentStock !== undefined && Math.abs(previousStock - line.expectedCurrentStock) > 1e-6) {
+        throw new StockDependencyConflictError(`O saldo de ${productName} mudou após a compra.`);
+      }
+      const previousCost = variant
+        ? (Number.isFinite(variant.costPrice) ? variant.costPrice : 0)
+        : (Number.isFinite(product.costPrice) ? product.costPrice : 0);
+      if (line.costRestoration && Math.abs(previousCost - line.costRestoration.expectedCurrentCost) > 0.0001) {
+        throw new StockDependencyConflictError(`O custo de ${productName} mudou após a compra.`);
+      }
       const delta = roundStock(deltaFor(
         input.type,
         line.quantity,
@@ -454,15 +503,14 @@ export async function applyStockOperationAdmin(
       const unitCost = line.costedQuantity > 0 && Math.abs(line.costedQuantity - line.quantity) <= 1e-6
         ? roundCost(line.incomingCostTotal / line.costedQuantity)
         : undefined;
-      const previousCost = variant
-        ? (Number.isFinite(variant.costPrice) ? variant.costPrice : 0)
-        : (Number.isFinite(product.costPrice) ? product.costPrice : 0);
-      const newCost = unitCost === undefined
-        ? previousCost
+      const newCost = line.costRestoration
+        ? roundCost(line.costRestoration.targetCost)
+        : unitCost === undefined ? previousCost
         : roundCost(previousStock > 0 && newStock > 0
           ? ((previousStock * previousCost) + (delta * unitCost)) / newStock
           : unitCost);
-      return { line, product, variant, productName, minStock, previousStock, delta, newStock, unitCost, previousCost, newCost };
+      const changesCost = unitCost !== undefined || Boolean(line.costRestoration);
+      return { line, product, variant, productName, minStock, previousStock, delta, newStock, unitCost, previousCost, newCost, changesCost };
     });
 
     const effectiveReads = reads.filter(({ delta }) => delta !== 0);
@@ -486,7 +534,7 @@ export async function applyStockOperationAdmin(
     const now = new Date().toISOString();
     const adjustments: StockOperationAdjustment[] = [];
     const productPatches = new Map<string, Record<string, unknown>>();
-    for (const { line, product, variant, productName, minStock, previousStock, delta, newStock, unitCost, previousCost, newCost } of effectiveReads) {
+    for (const { line, product, variant, productName, minStock, previousStock, delta, newStock, unitCost, previousCost, newCost, changesCost } of effectiveReads) {
       const targetKey = `${product.id}:${line.variantId ?? ''}`;
       const movementId = `stockmv_${hash(`${operationId}:${targetKey}`).slice(0, 40)}`;
       const movementRef = db.collection('stockMovements').doc(movementId);
@@ -508,12 +556,12 @@ export async function applyStockOperationAdmin(
         variants[variantIndex] = {
           ...variants[variantIndex],
           currentStock: newStock,
-          ...(unitCost !== undefined ? { costPrice: newCost } : {}),
+          ...(changesCost ? { costPrice: newCost } : {}),
         };
         productPatch.variants = variants;
       } else {
         productPatch.currentStock = newStock;
-        if (unitCost !== undefined) productPatch.costPrice = newCost;
+        if (changesCost) productPatch.costPrice = newCost;
       }
       productPatches.set(product.id, productPatch);
 
@@ -534,6 +582,13 @@ export async function applyStockOperationAdmin(
           newCost,
           costMethod: 'moving_average',
         } : {}),
+        ...(line.costRestoration ? {
+          previousCost,
+          newCost,
+          costMethod: 'moving_average',
+          costRestored: true,
+        } : {}),
+        ...(line.reversalOfMovementId ? { reversalOfMovementId: line.reversalOfMovementId } : {}),
         reason: input.reason.trim(),
         sourceType: input.sourceType,
         ...(input.sourceId ? { sourceId: input.sourceId } : {}),
@@ -554,7 +609,7 @@ export async function applyStockOperationAdmin(
         delta,
         previousStock,
         newStock,
-        ...(unitCost !== undefined ? { unitCost, previousCost, newCost } : {}),
+        ...(changesCost ? { ...(unitCost !== undefined ? { unitCost } : {}), previousCost, newCost } : {}),
         ...(alert ? { alert } : {}),
       });
     }

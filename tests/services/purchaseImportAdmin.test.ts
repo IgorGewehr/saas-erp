@@ -7,6 +7,8 @@ import {
   PurchaseNoteClaimConflictError,
   PurchaseNoteDuplicateError,
   PurchaseNoteNotReviewableError,
+  PurchaseNoteReversalBlockedError,
+  reversePurchaseNoteAdmin,
   reviewPurchaseNoteAdmin,
 } from '@/lib/services/purchase-import-admin';
 import { parsePurchaseNFeXml } from '@/lib/services/purchase-xml-parser';
@@ -281,6 +283,137 @@ describe('purchase import preparation core', () => {
     expect(result.note.status).toBe('parcial');
     expect(result.note.stockMovementIds).toHaveLength(1);
     expect(result.note.items.map((item) => item.importStatus)).toEqual(['imported', 'error']);
+
+    const existing = fake.list('products').find((item) => item.id === 'product-1')!.value;
+    fake.seed('products', 'product-1', { ...existing, sku: 'SKU-LIBERADO' });
+    const retried = await confirmPurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor, retryFailed: true,
+    });
+
+    expect(retried).toMatchObject({ replayed: false, importedCount: 2, errorCount: 0 });
+    expect(retried.note.status).toBe('importada');
+    expect(retried.note.items.map((item) => item.importStatus)).toEqual(['imported', 'imported']);
+    expect(fake.list('stockMovements')).toHaveLength(2);
+    expect(fake.list('stockOperations')).toHaveLength(2);
+    expect(fake.list('products').find((item) => item.id === 'product-1')?.value.currentStock).toBe(10);
+  });
+
+  it('reverte saldo e custo por movimento compensatório sem apagar o ledger nem duplicar no replay', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    fake.seed('products', 'product-1', {
+      id: 'product-1', businessId: 'biz-1', isActive: true, trackStock: true,
+      name: 'Café em grãos', sku: 'FORN-001', unit: 'KG', currentStock: 10,
+      costPrice: 2, salePrice: 10, minStock: 0,
+    });
+    const prepared = await preparePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: 'note-reverse', parsed,
+      xmlStoragePath: 'businesses/biz-1/purchase-notes/note-reverse/original.xml', originalFileName: 'reverse.xml', actor,
+    });
+    await reviewPurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor,
+      items: [
+        { lineId: prepared.items[0].lineId, action: 'match', productId: 'product-1', conversionFactor: 1, landedUnitCost: 8 },
+        { lineId: prepared.items[1].lineId, action: 'skip', conversionFactor: 1, landedUnitCost: prepared.items[1].landedUnitCost },
+      ],
+    });
+    const confirmed = await confirmPurchaseNoteAdmin({ db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor });
+    fake.seed('purchaseNotes', prepared.id, {
+      ...confirmed.note,
+      reversalClaim: {
+        token: 'expired-reversal', claimedBy: 'other-user',
+        claimedAt: '2026-01-01T00:00:00.000Z', expiresAt: '2026-01-01T00:05:00.000Z',
+      },
+    });
+
+    const reversed = await reversePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, reason: 'Compra lançada em duplicidade', actor,
+    });
+    const replay = await reversePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, reason: 'Repetição segura da solicitação', actor,
+    });
+
+    expect(confirmed.note).toMatchObject({ status: 'importada', stockMovementIds: [expect.any(String)] });
+    expect(reversed).toMatchObject({ replayed: false, reversedCount: 1 });
+    expect(reversed.note).toMatchObject({
+      status: 'revertida', reversedBy: 'user-1', reversalReason: 'Compra lançada em duplicidade',
+      reversalMovementIds: [expect.any(String)],
+    });
+    expect(reversed.note.items[0]).toMatchObject({ reversalMovementId: expect.any(String), reversedAt: expect.any(String) });
+    expect(replay).toMatchObject({ replayed: true, reversedCount: 1 });
+    expect(fake.list('products').find((item) => item.id === 'product-1')?.value).toMatchObject({ currentStock: 10, costPrice: 2 });
+    expect(fake.list('stockMovements')).toHaveLength(2);
+    expect(fake.list('stockOperations')).toHaveLength(2);
+    expect(fake.list('stockMovements').find((item) => item.value.reversalOfMovementId)?.value).toMatchObject({
+      type: 'saida', costRestored: true, previousCost: 5, newCost: 2,
+    });
+  });
+
+  it('bloqueia reversão quando existe movimento posterior e libera o claim com diagnóstico', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    fake.seed('products', 'product-1', {
+      id: 'product-1', businessId: 'biz-1', isActive: true, trackStock: true,
+      name: 'Café em grãos', sku: 'FORN-001', unit: 'KG', currentStock: 10,
+      costPrice: 2, salePrice: 10, minStock: 0,
+    });
+    const prepared = await preparePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: 'note-dependent', parsed,
+      xmlStoragePath: 'businesses/biz-1/purchase-notes/note-dependent/original.xml', originalFileName: 'dependent.xml', actor,
+    });
+    await reviewPurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor,
+      items: [
+        { lineId: prepared.items[0].lineId, action: 'match', productId: 'product-1', conversionFactor: 1, landedUnitCost: 8 },
+        { lineId: prepared.items[1].lineId, action: 'skip', conversionFactor: 1, landedUnitCost: prepared.items[1].landedUnitCost },
+      ],
+    });
+    await confirmPurchaseNoteAdmin({ db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor });
+    fake.seed('stockMovements', 'later-sale', {
+      businessId: 'biz-1', productId: 'product-1', type: 'saida', createdAt: '2099-01-01T00:00:00.000Z',
+    });
+
+    await expect(reversePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, reason: 'Correção com dependência posterior', actor,
+    })).rejects.toBeInstanceOf(PurchaseNoteReversalBlockedError);
+
+    const note = fake.list('purchaseNotes').find((item) => item.id === prepared.id)?.value;
+    expect(note).toMatchObject({ status: 'importada', reversalError: expect.stringContaining('movimentos posteriores') });
+    expect(note?.reversalClaim).toBeUndefined();
+    expect(fake.list('products').find((item) => item.id === 'product-1')?.value).toMatchObject({ currentStock: 20, costPrice: 5 });
+    expect(fake.list('stockMovements')).toHaveLength(2);
+  });
+
+  it('exige revisão manual quando o movimento original não possui memória de custo', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    fake.seed('products', 'product-1', {
+      id: 'product-1', businessId: 'biz-1', isActive: true, trackStock: true,
+      name: 'Café em grãos', sku: 'FORN-001', unit: 'KG', currentStock: 10,
+      costPrice: 2, salePrice: 10, minStock: 0,
+    });
+    const prepared = await preparePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: 'note-no-cost-memory', parsed,
+      xmlStoragePath: 'businesses/biz-1/purchase-notes/note-no-cost-memory/original.xml', originalFileName: 'memory.xml', actor,
+    });
+    await reviewPurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor,
+      items: [
+        { lineId: prepared.items[0].lineId, action: 'match', productId: 'product-1', conversionFactor: 1, landedUnitCost: 8 },
+        { lineId: prepared.items[1].lineId, action: 'skip', conversionFactor: 1, landedUnitCost: prepared.items[1].landedUnitCost },
+      ],
+    });
+    const confirmed = await confirmPurchaseNoteAdmin({ db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor });
+    const originalId = confirmed.note.stockMovementIds[0];
+    const original = fake.list('stockMovements').find((item) => item.id === originalId)!.value;
+    const { previousCost: _previousCost, newCost: _newCost, ...withoutCostMemory } = original;
+    fake.seed('stockMovements', originalId, withoutCostMemory);
+
+    await expect(reversePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, reason: 'Teste sem memória de custo', actor,
+    })).rejects.toThrow('memória de custo');
+    expect(fake.list('stockMovements')).toHaveLength(1);
+    expect(fake.list('products').find((item) => item.id === 'product-1')?.value).toMatchObject({ currentStock: 20, costPrice: 5 });
   });
 
   it('bloqueia um segundo claim ativo da mesma nota', async () => {

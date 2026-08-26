@@ -3,6 +3,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import {
   applyStockOperationAdmin,
   InsufficientStockError,
+  StockDependencyConflictError,
   StockIdempotencyConflictError,
   StockReferenceError,
   type StockOperationInput,
@@ -192,6 +193,52 @@ describe('applyStockOperationAdmin', () => {
     expect(fake.list('stockMovements')[0].data).toMatchObject({
       unitCost: 8, costTotal: 40, previousCost: 2, newCost: 4, costMethod: 'moving_average',
     });
+  });
+
+  it('restaura saldo e custo por saída compensatória com pré-condições exatas', async () => {
+    const fake = makeFakeDb([product('p1', 15, { costPrice: 4 })]);
+
+    const result = await applyStockOperationAdmin(fake.db, baseInput({
+      type: 'saida',
+      lines: [{
+        productId: 'p1', quantity: 5, sourceLineId: 'line-1', expectedCurrentStock: 15,
+        costRestoration: { expectedCurrentCost: 4, targetCost: 2 },
+        reversalOfMovementId: 'stockmv-original',
+      }],
+      sourceType: 'purchase',
+      sourceId: 'purchase-1',
+      idempotencyKey: 'purchase:purchase-1:line:line-1:reversal',
+      reason: 'Reversão NF-e 1/1',
+      expandBom: false,
+    }));
+
+    expect(result.adjustments[0]).toMatchObject({ previousStock: 15, newStock: 10, previousCost: 4, newCost: 2 });
+    expect(fake.get('products/p1')).toMatchObject({ currentStock: 10, costPrice: 2 });
+    expect(fake.list('stockMovements')[0].data).toMatchObject({
+      type: 'saida', costRestored: true, reversalOfMovementId: 'stockmv-original', previousCost: 4, newCost: 2,
+    });
+  });
+
+  it('bloqueia compensação quando saldo ou custo já mudou', async () => {
+    const fake = makeFakeDb([product('p1', 15, { costPrice: 4 })]);
+
+    await expect(applyStockOperationAdmin(fake.db, baseInput({
+      type: 'saida',
+      lines: [{
+        productId: 'p1', quantity: 5, expectedCurrentStock: 14,
+        costRestoration: { expectedCurrentCost: 4, targetCost: 2 },
+        reversalOfMovementId: 'stockmv-original',
+      }],
+      sourceType: 'purchase',
+      sourceId: 'purchase-1',
+      idempotencyKey: 'purchase:purchase-1:line:line-1:reversal-conflict',
+      reason: 'Reversão NF-e 1/1',
+      expandBom: false,
+    }))).rejects.toBeInstanceOf(StockDependencyConflictError);
+
+    expect(fake.get('products/p1')).toMatchObject({ currentStock: 15, costPrice: 4 });
+    expect(fake.list('stockMovements')).toHaveLength(0);
+    expect(fake.list('stockOperations')).toHaveLength(0);
   });
 
   it('mantém o replay quando apenas o rótulo humano da origem muda', async () => {

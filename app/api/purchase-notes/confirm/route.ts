@@ -28,6 +28,7 @@ export async function POST(request: NextRequest) {
       businessId: auth.businessId,
       noteId: parsed.data.noteId,
       actor: { uid: auth.uid, name: auth.name },
+      retryFailed: parsed.data.retryFailed,
     });
     return NextResponse.json({ ok: true, data: result });
   } catch (cause) {

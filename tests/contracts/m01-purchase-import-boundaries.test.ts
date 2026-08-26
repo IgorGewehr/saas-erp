@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ReviewPurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-review';
+import { ConfirmPurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-confirm';
+import { ReversePurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-reverse';
 
 describe('M01.5 purchase import boundaries', () => {
   it('mantém parsing e persistência decisivos fora do componente visual', () => {
@@ -42,6 +44,26 @@ describe('M01.5 purchase import boundaries', () => {
     expect(stock).toContain('costMethod: \'moving_average\'');
     expect(agentRoute).toContain('confirmPurchaseNoteAdmin');
     expect(agentRoute).toContain('note.schemaVersion === 2');
+  });
+
+  it('reprocessa somente erros e reverte por rota autenticada com ledger compensatório', () => {
+    const confirmRoute = readFileSync('app/api/purchase-notes/confirm/route.ts', 'utf8');
+    const reverseRoute = readFileSync('app/api/purchase-notes/reverse/route.ts', 'utf8');
+    const core = readFileSync('lib/services/purchase-import-admin.ts', 'utf8');
+    const stock = readFileSync('lib/services/stock-core-admin.ts', 'utf8');
+    const module = readFileSync('app/components/features/purchases/ComprasModule.tsx', 'utf8');
+    expect(ConfirmPurchaseNoteRequestSchema.parse({ businessId: 'biz-1', noteId: 'note-1', retryFailed: true }).retryFailed).toBe(true);
+    expect(ReversePurchaseNoteRequestSchema.safeParse({ businessId: 'biz-1', noteId: 'note-1', reason: 'Duplicidade' }).success).toBe(true);
+    expect(ReversePurchaseNoteRequestSchema.safeParse({ businessId: 'biz-1', noteId: 'note-1', reason: 'x', extra: true }).success).toBe(false);
+    expect(confirmRoute).toContain('retryFailed: parsed.data.retryFailed');
+    expect(reverseRoute).toContain('verifyAuth(request, parsed.data.businessId)');
+    expect(reverseRoute).toContain('reversePurchaseNoteAdmin');
+    expect(core).toContain('purchase:${params.noteId}:line:${item.lineId}:reversal');
+    expect(core).toContain('PurchaseNoteReversalBlockedError');
+    expect(stock).toContain('reversalOfMovementId');
+    expect(stock).toContain('costRestored: true');
+    expect(module).toContain('Tentar novamente itens com erro');
+    expect(module).toContain('Reverter entrada no estoque');
   });
 
   it('recusa linhas duplicadas, combinações contraditórias e validade anterior à fabricação', () => {

@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.4 e M01.5a–c concluídos; próximo: M01.5d`
+  - Status: `Em implementação — M01.0 a M01.5 concluídos; próximo: M01.6`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -340,14 +340,16 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 - [x] Atualizar custo médio ponderado com frete, seguro, desconto, ST, IPI e outras despesas rateadas.
 - [x] Gravar `stockMovementIds` e resultado item a item na nota.
 - [x] Suportar resultado completo, parcial e falha recuperável.
-- [ ] Implementar cancelamento e recuperação/reprocessamento dos itens com erro.
-- [ ] Definir reversão controlada sem apagar histórico.
+- [x] Implementar cancelamento controlado da entrada e recuperação/reprocessamento dos itens com erro.
+- [x] Definir reversão controlada sem apagar histórico.
 
 **M01.5a concluído:** preparação server-side, validação do destinatário e da estrutura fiscal, XML privado com hash, fornecedor V2, rateio preliminar e sugestões de produto. O plano e as próximas subetapas estão em `docs/paridade/M01_IMPORTACAO_COMPRAS.md`.
 
 **M01.5b concluído:** editor por item com vínculo/criação/descarte explícitos, variações, conversão, custo e lote; revisão validada e persistida no servidor; retomada de rascunho e bloqueio do lançamento legado para notas V2.
 
 **M01.5c concluído:** claim transacional com expiração, criação determinística de produtos, movimento idempotente por linha, custo médio atômico e fechamento completo/parcial/falha com rastreabilidade individual.
+
+**M01.5d concluído:** retentativa exclusiva dos itens com erro usando as mesmas chaves; cancelamento da entrada por movimentos compensatórios; restauração de saldo/custo com memória exata; bloqueio seguro diante de dependências posteriores; interface e agente no mesmo núcleo autenticado.
 
 **Saída:** entrada de compra repetível com segurança, sem duplicar saldo ou custo.
 
@@ -466,3 +468,4 @@ O M02 — Vendas, PDV, Pedidos e Cardápio — só deve iniciar sua implementaç
 | 25/08/2026 | Começar por Catálogo, Estoque, Fornecedores e Compras | É a base transacional de vendas, custos, financeiro e fiscal |
 | 25/08/2026 | Manter recursos industriais fora do núcleo do AEVO | Evitar complexidade sem demanda de pequenos negócios |
 | 25/08/2026 | Tratar lote/validade como capacidade opcional | Há valor para alguns segmentos sem exigir processo industrial |
+| 26/08/2026 | Cancelar entrada de compra por compensação, sem excluir movimentos | Preservar auditoria e impedir restauração insegura de saldo/custo |
