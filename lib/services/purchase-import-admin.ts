@@ -14,7 +14,7 @@ import {
   normalizeBarcode,
   normalizeSku,
 } from '@/lib/services/product-catalog-admin';
-import type { Product } from '@/lib/types';
+import type { BankAccount, Product, Transaction } from '@/lib/types';
 import type { ReviewPurchaseNoteRequest } from '@/lib/contracts/api/purchase-note-review';
 import type { ProductCatalogData } from '@/lib/contracts/api/product-catalog';
 import { StockMovementV2Schema, type StockMovementV2 } from '@/lib/contracts/domain/stockMovementV2';
@@ -160,7 +160,7 @@ function legacyItem(item: PurchaseNoteItemV2): Record<string, unknown> {
   };
 }
 
-function preparedDocument(
+export function preparedDocument(
   current: Record<string, unknown>,
   canonical: PurchaseNoteV2,
   extra: Record<string, unknown> = {},
@@ -786,6 +786,58 @@ interface PurchaseReversalTarget {
   movement: StockMovementV2;
 }
 
+function assertFinancialTransactionForReversal(params: {
+  note: PurchaseNoteV2;
+  transaction: Transaction;
+}): void {
+  const expectedAmount = Math.round((params.note.totals.invoice + Number.EPSILON) * 100) / 100;
+  const transaction = params.transaction;
+  if (
+    transaction.businessId !== params.note.businessId || transaction.type !== 'despesa' ||
+    transaction.purchaseNoteId !== params.note.id || transaction.sourceType !== 'purchase' ||
+    Math.abs(transaction.amount - expectedAmount) > 0.001
+  ) {
+    throw new PurchaseNoteReversalBlockedError('O vínculo financeiro da compra está inconsistente e exige revisão manual.');
+  }
+  if (params.note.financial?.status === 'paid' && transaction.status !== 'pago') {
+    throw new PurchaseNoteReversalBlockedError('A despesa paga foi alterada fora da compra; revise o financeiro antes da reversão.');
+  }
+  if (params.note.financial?.status === 'payable_created' && !['pendente', 'atrasado', 'pago', 'cancelado'].includes(transaction.status)) {
+    throw new PurchaseNoteReversalBlockedError('A conta a pagar foi alterada fora da compra; revise o financeiro antes da reversão.');
+  }
+  if (transaction.status === 'pago' && !(params.note.financial?.bankAccountId ?? transaction.bankAccountId)) {
+    throw new PurchaseNoteReversalBlockedError('A despesa foi paga sem indicar a conta debitada; revise o financeiro antes da reversão.');
+  }
+}
+
+async function validatePurchaseFinancialReversal(params: {
+  db: Firestore;
+  businessId: string;
+  note: PurchaseNoteV2;
+}): Promise<void> {
+  const financial = params.note.financial;
+  if (!financial || financial.status === 'not_requested' || financial.status === 'reversed') return;
+  if (!financial.transactionId) {
+    throw new PurchaseNoteReversalBlockedError('A compra não possui o identificador do lançamento financeiro.');
+  }
+  const transactionSnapshot = await params.db.collection('transactions').doc(financial.transactionId).get();
+  if (!transactionSnapshot.exists) {
+    throw new PurchaseNoteReversalBlockedError('O lançamento financeiro da compra não foi encontrado.');
+  }
+  const transaction = { ...transactionSnapshot.data(), id: transactionSnapshot.id } as Transaction;
+  assertFinancialTransactionForReversal({ note: params.note, transaction });
+  if (transaction.status === 'pago') {
+    const bankAccountId = financial.bankAccountId ?? transaction.bankAccountId;
+    if (!bankAccountId) {
+      throw new PurchaseNoteReversalBlockedError('A compra paga não possui conta financeira para recompor o saldo.');
+    }
+    const bankSnapshot = await params.db.collection('bankAccounts').doc(bankAccountId).get();
+    if (!bankSnapshot.exists || bankSnapshot.data()?.businessId !== params.businessId || !Number.isFinite(bankSnapshot.data()?.balance)) {
+      throw new PurchaseNoteReversalBlockedError('A conta da compra paga não está disponível para recompor o saldo.');
+    }
+  }
+}
+
 function reversalTargetKey(movement: Pick<StockMovementV2, 'productId' | 'variantId'>): string {
   return `${movement.productId}:${movement.variantId ?? ''}`;
 }
@@ -980,6 +1032,7 @@ export async function reversePurchaseNoteAdmin(params: {
   if (claimed.kind === 'terminal') return reversalResult(claimed.note, true);
 
   try {
+    await validatePurchaseFinancialReversal({ db: params.db, businessId: params.businessId, note: claimed.note });
     const targets = await loadPurchaseReversalTargets({ db: params.db, businessId: params.businessId, note: claimed.note });
     for (const { item, movement } of targets) {
       if (item.reversalMovementId) continue;
@@ -1035,9 +1088,52 @@ export async function reversePurchaseNoteAdmin(params: {
       if (note.reversalClaim?.token !== claimToken || !['importada', 'parcial'].includes(note.status)) {
         throw new PurchaseNoteReversalClaimLostError();
       }
+      const financial = note.financial;
+      const financialTransactionRef = financial?.transactionId
+        ? params.db.collection('transactions').doc(financial.transactionId)
+        : undefined;
+      const financialTransactionSnapshot = financialTransactionRef ? await tx.get(financialTransactionRef) : undefined;
+      const financialTransaction = financialTransactionSnapshot?.exists
+        ? { ...financialTransactionSnapshot.data(), id: financialTransactionSnapshot.id } as Transaction
+        : undefined;
+      const financialBankAccountId = financialTransaction?.status === 'pago'
+        ? (financial?.bankAccountId ?? financialTransaction.bankAccountId)
+        : undefined;
+      const financialBankAccountRef = financialBankAccountId
+        ? params.db.collection('bankAccounts').doc(financialBankAccountId)
+        : undefined;
+      const financialBankAccountSnapshot = financialBankAccountRef ? await tx.get(financialBankAccountRef) : undefined;
+      const now = new Date().toISOString();
       const missingReversal = note.items.some((item) => item.importStatus === 'imported' && !item.reversalMovementId);
       if (missingReversal) throw new PurchaseNoteReversalClaimLostError();
-      const now = new Date().toISOString();
+      if (financial && !['not_requested', 'reversed'].includes(financial.status)) {
+        if (!financialTransactionRef || !financialTransaction) {
+          throw new PurchaseNoteReversalBlockedError('O lançamento financeiro da compra não foi encontrado.');
+        }
+        assertFinancialTransactionForReversal({ note, transaction: financialTransaction });
+        if (financialTransaction.status === 'pago') {
+          if (!financialBankAccountRef || !financialBankAccountSnapshot?.exists) {
+            throw new PurchaseNoteReversalBlockedError('A conta da compra paga não está disponível para recompor o saldo.');
+          }
+          const account = { ...financialBankAccountSnapshot.data(), id: financialBankAccountSnapshot.id } as BankAccount;
+          if (account.businessId !== params.businessId || !Number.isFinite(account.balance)) {
+            throw new PurchaseNoteReversalBlockedError('A conta da compra paga não está disponível para recompor o saldo.');
+          }
+          tx.update(financialBankAccountRef, {
+            balance: Math.round((account.balance + financialTransaction.amount + Number.EPSILON) * 100) / 100,
+            updatedAt: now,
+          });
+        }
+      }
+      if (financialTransactionRef && financialTransaction && financial?.status !== 'reversed') {
+        tx.update(financialTransactionRef, {
+          status: 'cancelado',
+          cancelledAt: now,
+          cancelledBy: params.actor.uid,
+          cancelledByName: params.actor.name,
+          updatedAt: now,
+        });
+      }
       const canonical = PurchaseNoteV2Schema.parse({
         ...note,
         status: 'revertida',
@@ -1046,6 +1142,13 @@ export async function reversePurchaseNoteAdmin(params: {
         revertedAt: now,
         reversedBy: params.actor.uid,
         reversalReason: reason,
+        ...(financial ? {
+          financial: {
+            ...financial,
+            ...(financialBankAccountId ? { bankAccountId: financialBankAccountId } : {}),
+            status: 'reversed',
+          },
+        } : {}),
         updatedAt: now,
       });
       const document = preparedDocument(snapshot.data() ?? {}, canonical, {

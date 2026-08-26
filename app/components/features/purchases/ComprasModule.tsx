@@ -23,6 +23,7 @@ import type { PreparedPurchaseNote } from '@/lib/services/purchase-import-admin'
 import { confirmPurchaseNote, reversePurchaseNote } from '@/lib/services/purchase-import-client';
 import SuppliersPanel from './SuppliersPanel';
 import PurchaseImportDialog from './PurchaseImportDialog';
+import PurchaseFinancialDialog from './PurchaseFinancialDialog';
 
 type PurchasesArea = 'notes' | 'suppliers';
 
@@ -64,6 +65,7 @@ function NoteDetailPanel({
   onConfirm,
   onRetry,
   onReverse,
+  onFinancial,
   isPushingStock,
   isConfirming,
   isReversing,
@@ -75,6 +77,7 @@ function NoteDetailPanel({
   onConfirm?: (note: PurchaseNote) => void;
   onRetry?: (note: PurchaseNote) => void;
   onReverse?: (note: PurchaseNote) => void;
+  onFinancial?: (note: PurchaseNote) => void;
   isPushingStock?: boolean;
   isConfirming?: boolean;
   isReversing?: boolean;
@@ -86,6 +89,7 @@ function NoteDetailPanel({
   const canEditReview = usesSafeImport && ['rascunho', 'pendente'].includes(note.status) && !note.stockImportedAt;
   const canRetry = usesSafeImport && ['parcial', 'falha'].includes(note.status) && note.items.some((item) => item.importStatus === 'error');
   const canReverse = usesSafeImport && ['importada', 'parcial'].includes(note.status) && !note.reversalClaim;
+  const canLinkFinancial = canReverse && (!note.financial || note.financial.status === 'not_requested');
 
   return (
     <motion.div
@@ -267,6 +271,21 @@ function NoteDetailPanel({
             {isReversing ? 'Revertendo...' : 'Reverter entrada no estoque'}
           </button>
         )}
+        {canLinkFinancial && onFinancial && (
+          <button type="button" onClick={() => onFinancial(note)} className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700">
+            <DollarSign className="h-4 w-4" /> Organizar financeiro da compra
+          </button>
+        )}
+        {note.financial && note.financial.status !== 'not_requested' && (
+          <div className={cn('rounded-xl p-3 text-xs',
+            note.financial.status === 'reversed' ? 'bg-gray-50 text-gray-600 dark:bg-gray-800/60 dark:text-gray-300'
+              : 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300')}>
+            <strong>Financeiro:</strong>{' '}
+            {note.financial.status === 'paid' ? 'compra registrada como paga'
+              : note.financial.status === 'payable_created' ? 'conta a pagar criada'
+                : 'lançamento revertido'}
+          </div>
+        )}
         {canPushToStock && onPushToStock && (
           <button
             type="button"
@@ -300,6 +319,7 @@ export default function ComprasModule() {
   const [selectedNote, setSelectedNote] = useState<PurchaseNote | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [reviewingNote, setReviewingNote] = useState<PreparedPurchaseNote | null>(null);
+  const [financialNote, setFinancialNote] = useState<PurchaseNote | null>(null);
 
   // ─── Data — onSnapshot (sync multi-user) ───────────────────────────────────
   // ANTES: useQuery + getDocs com staleTime 2min. Comprador A importava NF-e
@@ -694,6 +714,7 @@ export default function ComprasModule() {
                 onConfirm={(note) => confirmReviewedNote({ note })}
                 onRetry={(note) => confirmReviewedNote({ note, retryFailed: true })}
                 onReverse={requestReversal}
+                onFinancial={setFinancialNote}
                 isPushingStock={isPushingStock}
                 isConfirming={isConfirming}
                 isReversing={isReversing}
@@ -721,6 +742,17 @@ export default function ComprasModule() {
           />
         )}
       </AnimatePresence>
+      {financialNote && business?.id && (
+        <PurchaseFinancialDialog
+          businessId={business.id}
+          note={financialNote}
+          onClose={() => setFinancialNote(null)}
+          onCompleted={(note) => {
+            setFinancialNote(null);
+            setSelectedNote(note);
+          }}
+        />
+      )}
     </div>
   );
 }

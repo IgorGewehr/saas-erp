@@ -2,6 +2,8 @@
 
 import { auth } from '@/lib/config/firebase';
 import type { ReviewPurchaseNoteRequest } from '@/lib/contracts/api/purchase-note-review';
+import type { LinkPurchaseFinancialRequest } from '@/lib/contracts/api/purchase-note-financial';
+import type { PurchaseFinancialResult } from '@/lib/services/purchase-financial-admin';
 import type {
   PreparedPurchaseNote,
   PurchaseNoteConfirmationResult,
@@ -57,6 +59,14 @@ export async function reversePurchaseNote(input: {
   reason: string;
 }): Promise<PurchaseNoteReversalResult> {
   return payload(await fetch('/api/purchase-notes/reverse', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` },
+    body: JSON.stringify(input),
+  }));
+}
+
+export async function linkPurchaseFinancial(input: LinkPurchaseFinancialRequest): Promise<PurchaseFinancialResult> {
+  return payload(await fetch('/api/purchase-notes/financial', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${await token()}` },
     body: JSON.stringify(input),

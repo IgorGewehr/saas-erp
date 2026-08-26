@@ -217,6 +217,20 @@ const PurchaseNoteV2CanonicalSchema = z.object({
   if (note.status === 'revertida' && !note.revertedAt) {
     ctx.addIssue({ code: 'custom', message: 'status=revertida exige revertedAt', path: ['revertedAt'] });
   }
+  if (note.financial && ['payable_created', 'paid', 'reversed'].includes(note.financial.status) && !note.financial.transactionId) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `financial.status=${note.financial.status} exige transactionId`,
+      path: ['financial', 'transactionId'],
+    });
+  }
+  if (note.financial?.status === 'paid' && !note.financial.bankAccountId) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'financial.status=paid exige bankAccountId',
+      path: ['financial', 'bankAccountId'],
+    });
+  }
 });
 
 function normalizeLegacyItem(item: unknown, index: number, imported: boolean): unknown {

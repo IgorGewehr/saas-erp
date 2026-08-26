@@ -95,6 +95,7 @@ describe('M01.1 — ProductV2Schema', () => {
       ).success,
     ).toBe(false);
   });
+
 });
 describe('M01.1 — SupplierSchema', () => {
   it('normaliza pontuação do CNPJ legado e preserva rastreabilidade', () => {
@@ -216,6 +217,22 @@ describe('M01.1 — PurchaseNoteV2Schema', () => {
         status: 'processando',
       }).success,
     ).toBe(false);
+  });
+
+  it('exige referências auditáveis quando o financeiro foi vinculado', () => {
+    const normalized = PurchaseNoteV2Schema.parse(legacyUiNote);
+    expect(PurchaseNoteV2Schema.safeParse({
+      ...normalized,
+      financial: { status: 'payable_created' },
+    }).success).toBe(false);
+    expect(PurchaseNoteV2Schema.safeParse({
+      ...normalized,
+      financial: { status: 'paid', transactionId: 'transaction-1' },
+    }).success).toBe(false);
+    expect(PurchaseNoteV2Schema.safeParse({
+      ...normalized,
+      financial: { status: 'paid', transactionId: 'transaction-1', bankAccountId: 'bank-1' },
+    }).success).toBe(true);
   });
 });
 

@@ -1256,6 +1256,11 @@ export interface Transaction {
   projectName?: string;
   appointmentId?: string; // Link back to the originating appointment (for commission transactions)
   deliveryOrderId?: string; // Link back to the originating delivery order (receita de delivery)
+  purchaseNoteId?: string; // Link back to the originating purchase note (despesa de compra)
+  supplierId?: string;
+  supplierName?: string;
+  sourceType?: 'purchase' | 'manual' | 'sale' | 'order' | 'service' | 'agent' | 'api';
+  idempotencyKey?: string;
   /** Vínculo com a assinatura que gerou esta cobrança (membershipBillingRunner).
    *  Já era gravado no doc do Firestore — campo declarado aqui pra fechar R2
    *  (financial-v2 usa isto pra derivar "assinatura em risco"). */
@@ -4080,6 +4085,11 @@ export interface PurchaseNote {
   stockImportedAt?: string;
   stockMovementIds?: string[];          // ids of stockMovements created for this note
   reversalMovementIds?: string[];       // movimentos compensatórios; o ledger original é preservado
+  financial?: {
+    transactionId?: string;
+    bankAccountId?: string;
+    status: 'not_requested' | 'payable_created' | 'paid' | 'reversed';
+  };
   unmatchedItems?: Array<{ productName: string; quantity: number; cProd?: string }>;
   createdAt: string;
   updatedAt: string;

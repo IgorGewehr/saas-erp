@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ReviewPurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-review';
 import { ConfirmPurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-confirm';
 import { ReversePurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-reverse';
+import { LinkPurchaseFinancialRequestSchema } from '@/lib/contracts/api/purchase-note-financial';
 
 describe('M01.5 purchase import boundaries', () => {
   it('mantém parsing e persistência decisivos fora do componente visual', () => {
@@ -94,5 +95,32 @@ describe('M01.5 purchase import boundaries', () => {
     expect(firestoreRules).toMatch(/match \/purchaseNoteIdentifiers\/\{identifierId\}[\s\S]*?allow read, write: if false;/);
     expect(storageRules).toMatch(/match \/businesses\/\{businessId\}\/purchase-notes\/\{path=\*\*\}[\s\S]*?allow read, write: if false;/);
     expect(storageRules).toContain("category != 'purchase-notes'");
+  });
+
+  it('vincula o financeiro por contrato estrito e núcleo transacional idempotente', () => {
+    const route = readFileSync('app/api/purchase-notes/financial/route.ts', 'utf8');
+    const core = readFileSync('lib/services/purchase-financial-admin.ts', 'utf8');
+    const reversal = readFileSync('lib/services/purchase-import-admin.ts', 'utf8');
+    const module = readFileSync('app/components/features/purchases/ComprasModule.tsx', 'utf8');
+
+    expect(LinkPurchaseFinancialRequestSchema.safeParse({
+      businessId: 'biz-1', noteId: 'note-1', mode: 'payable', dueDate: '2026-09-25', paymentMethod: 'boleto',
+    }).success).toBe(true);
+    expect(LinkPurchaseFinancialRequestSchema.safeParse({
+      businessId: 'biz-1', noteId: 'note-1', mode: 'paid', paymentDate: '2026-08-26',
+    }).success).toBe(false);
+    expect(LinkPurchaseFinancialRequestSchema.safeParse({
+      businessId: 'biz-1', noteId: 'note-1', mode: 'payable', dueDate: '2026-09-25', amount: 1,
+    }).success).toBe(false);
+    expect(route).toContain('verifyAuth(request, parsed.data.businessId)');
+    expect(route).toContain('linkPurchaseFinancialAdmin');
+    expect(core).toContain('deterministicTransactionId');
+    expect(core).toContain('note.totals.invoice');
+    expect(core).toContain('tx.create(transactionRef');
+    expect(core).toContain('bankAccount.balance - amount');
+    expect(reversal).toContain("status: 'cancelado'");
+    expect(reversal).toContain("status: 'reversed'");
+    expect(module).toContain('PurchaseFinancialDialog');
+    expect(module).toContain('Organizar financeiro da compra');
   });
 });

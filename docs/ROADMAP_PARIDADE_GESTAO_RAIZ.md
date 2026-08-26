@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.5 concluídos; próximo: M01.6`
+  - Status: `Em implementação — M01.0 a M01.6a concluídos; próximo: M01.6b`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -355,13 +355,15 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 
 ### M01.6 — Integrações financeira, fiscal e operacional
 
-- [ ] Oferecer criação de conta a pagar usando o valor total real da NF-e.
-- [ ] Suportar compra já paga com seleção obrigatória da conta debitada.
-- [ ] Vincular transação financeira à nota e ao fornecedor.
-- [ ] Evitar duplicidade de lançamentos em reprocessamentos.
+- [x] Oferecer criação de conta a pagar usando o valor total real da NF-e.
+- [x] Suportar compra já paga com seleção obrigatória da conta debitada.
+- [x] Vincular transação financeira à nota e ao fornecedor.
+- [x] Evitar duplicidade de lançamentos em reprocessamentos.
 - [ ] Integrar consulta/sincronização de NF-e recebidas quando o fiscal estiver configurado.
 - [ ] Emitir eventos auditáveis de compra importada, estoque alterado e custo atualizado.
 - [ ] Disponibilizar as mesmas capacidades autorizadas para o agente e API v1.
+
+**M01.6a concluído:** integração financeira idempotente e transacional, com conta a pagar, compra paga, débito bancário atômico, reversão auditável e ação na tela de Compras. Detalhes em `docs/paridade/M01_INTEGRACOES_COMPRAS.md`.
 
 **Saída:** compra refletida corretamente em estoque, custo e financeiro.
 
