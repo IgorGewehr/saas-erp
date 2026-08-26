@@ -50,6 +50,14 @@ export const PurchaseNoteItemV2Schema = z.object({
   }).optional(),
   action: z.enum(['pending', 'match', 'create', 'skip']),
   productId: z.string().optional(),
+  variantId: z.string().optional(),
+  newProduct: z.object({
+    name: z.string().min(1).max(200),
+    category: z.string().min(1).max(100),
+    unit: z.string().min(1).max(20),
+    sku: z.string().max(80).optional(),
+    barcode: z.string().max(80).optional(),
+  }).optional(),
   matchSuggestions: z.array(z.object({
     productId: z.string().min(1),
     variantId: z.string().min(1).optional(),
@@ -140,6 +148,9 @@ const PurchaseNoteV2CanonicalSchema = z.object({
   xmlSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   originalFileName: z.string().max(255).optional(),
   validationWarnings: z.array(z.string()).optional(),
+  notes: z.string().max(2000).optional(),
+  reviewedAt: z.string().optional(),
+  reviewedBy: z.string().optional(),
   financial: z.object({
     transactionId: z.string().optional(),
     bankAccountId: z.string().optional(),

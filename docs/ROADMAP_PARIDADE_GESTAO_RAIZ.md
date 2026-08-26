@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.4 e M01.5a concluídos; próximo: M01.5b`
+  - Status: `Em implementação — M01.0 a M01.4 e M01.5a–b concluídos; próximo: M01.5c`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -331,9 +331,9 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 - [x] Validar chave de acesso, emitente, destinatário, totais e itens.
 - [x] Armazenar o XML original com acesso autorizado e trilha de auditoria.
 - [x] Criar ou atualizar fornecedor pelo documento da NF-e.
-- [ ] Apresentar para cada item as ações `vincular`, `criar produto` ou `ignorar`.
+- [x] Apresentar para cada item as ações `vincular`, `criar produto` ou `ignorar`.
 - [x] Sugerir match por código do fornecedor, SKU, GTIN, NCM e nome normalizado.
-- [ ] Permitir corrigir unidade, quantidade, custo, lote e validade antes de confirmar.
+- [x] Permitir corrigir unidade/fator, quantidade de estoque, custo, lote e validade antes de confirmar.
 - [ ] Implementar claim transacional para impedir duas importações simultâneas.
 - [ ] Usar movimentos determinísticos/idempotentes por nota e item.
 - [ ] Atualizar custo médio ponderado com frete, seguro, desconto, ST, IPI e outras despesas rateadas.
@@ -342,6 +342,8 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 - [ ] Definir reversão controlada sem apagar histórico.
 
 **M01.5a concluído:** preparação server-side, validação do destinatário e da estrutura fiscal, XML privado com hash, fornecedor V2, rateio preliminar e sugestões de produto. O plano e as próximas subetapas estão em `docs/paridade/M01_IMPORTACAO_COMPRAS.md`.
+
+**M01.5b concluído:** editor por item com vínculo/criação/descarte explícitos, variações, conversão, custo e lote; revisão validada e persistida no servidor; retomada de rascunho e bloqueio do lançamento legado para notas V2.
 
 **Saída:** entrada de compra repetível com segurança, sem duplicar saldo ou custo.
 

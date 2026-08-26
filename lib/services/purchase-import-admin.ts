@@ -11,6 +11,7 @@ import {
 import type { SupplierCatalogPatch } from '@/lib/contracts/api/supplier-catalog';
 import { normalizeBarcode, normalizeSku } from '@/lib/services/product-catalog-admin';
 import type { Product } from '@/lib/types';
+import type { ReviewPurchaseNoteRequest } from '@/lib/contracts/api/purchase-note-review';
 
 export class PurchaseNoteDuplicateError extends Error {
   constructor(public readonly existingNoteId: string) {
@@ -63,15 +64,15 @@ function productSuggestions(item: PurchaseNoteItemV2, products: Product[]): NonN
   const suggestions: NonNullable<PurchaseNoteItemV2['matchSuggestions']> = [];
 
   for (const product of products) {
-    const candidates = [
-      { variantId: undefined, name: product.name, sku: product.sku, barcode: product.barcode ?? product.gtin },
-      ...(product.variants ?? []).filter((variant) => variant.isActive !== false).map((variant) => ({
+    const activeVariants = (product.variants ?? []).filter((variant) => variant.isActive !== false);
+    const candidates = activeVariants.length
+      ? activeVariants.map((variant) => ({
         variantId: variant.id,
         name: `${product.name} — ${variant.name}`,
         sku: variant.sku,
         barcode: variant.barcode,
-      })),
-    ];
+      }))
+      : [{ variantId: undefined, name: product.name, sku: product.sku, barcode: product.barcode ?? product.gtin }];
     for (const candidate of candidates) {
       const reasons: string[] = [];
       let confidence = 0;
@@ -144,7 +145,15 @@ function legacyItem(item: PurchaseNoteItemV2): Record<string, unknown> {
     ipi: item.taxes?.ipi,
     pis: item.taxes?.pis,
     cofins: item.taxes?.cofins,
+    ...(item.action !== 'pending' ? { importAction: item.action } : {}),
   };
+}
+
+export class PurchaseNoteNotReviewableError extends Error {
+  constructor(message = 'A nota não está disponível para revisão.') {
+    super(message);
+    this.name = 'PurchaseNoteNotReviewableError';
+  }
 }
 
 export async function findPurchaseNoteByAccessKeyAdmin(
@@ -294,4 +303,123 @@ export async function preparePurchaseNoteAdmin(params: {
     });
   });
   return document;
+}
+
+export async function reviewPurchaseNoteAdmin(params: {
+  db: Firestore;
+  businessId: string;
+  noteId: string;
+  items: ReviewPurchaseNoteRequest['items'];
+  notes?: string;
+  actor: SupplierActor;
+}): Promise<PreparedPurchaseNote> {
+  const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
+  return params.db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(noteRef);
+    if (!snapshot.exists || snapshot.data()?.businessId !== params.businessId) {
+      throw new PurchaseNoteNotReviewableError('Nota não encontrada.');
+    }
+    const note = PurchaseNoteV2Schema.parse({ ...snapshot.data(), id: snapshot.id });
+    if (!['rascunho', 'pendente'].includes(note.status) || note.stockImportedAt || note.importClaim) {
+      throw new PurchaseNoteNotReviewableError();
+    }
+    if (params.items.length !== note.items.length) {
+      throw new PurchaseNoteNotReviewableError('Revise todos os itens da nota.');
+    }
+    const reviewByLine = new Map(params.items.map((item) => [item.lineId, item]));
+    if (note.items.some((item) => !reviewByLine.has(item.lineId))) {
+      throw new PurchaseNoteNotReviewableError('A revisão não corresponde aos itens da nota.');
+    }
+
+    const products = new Map<string, Product>();
+    for (const review of params.items) {
+      if (review.action !== 'match' || !review.productId || products.has(review.productId)) continue;
+      const productSnapshot = await tx.get(params.db.collection('products').doc(review.productId));
+      if (!productSnapshot.exists || productSnapshot.data()?.businessId !== params.businessId) {
+        throw new PurchaseNoteNotReviewableError(`Produto inválido na linha ${review.lineId}.`);
+      }
+      const product = { ...productSnapshot.data(), id: productSnapshot.id } as Product;
+      if (product.isActive === false) throw new PurchaseNoteNotReviewableError(`Produto inativo na linha ${review.lineId}.`);
+      products.set(product.id, product);
+    }
+
+    const reviewedItems = note.items.map((item) => {
+      const review = reviewByLine.get(item.lineId)!;
+      if (review.action === 'match') {
+        const product = products.get(review.productId!);
+        const variant = review.variantId
+          ? product?.variants?.find((candidate) => candidate.id === review.variantId)
+          : undefined;
+        if (!review.variantId && product?.variants?.some((candidate) => candidate.isActive !== false)) {
+          throw new PurchaseNoteNotReviewableError(`Selecione uma variação na linha ${item.lineId}.`);
+        }
+        if (review.variantId && (!variant || variant.isActive === false)) {
+          throw new PurchaseNoteNotReviewableError(`Variação inválida na linha ${item.lineId}.`);
+        }
+        return {
+          ...item,
+          action: 'match' as const,
+          productId: product!.id,
+          ...(variant ? { variantId: variant.id } : {}),
+          newProduct: undefined,
+          stockUnit: product!.unit,
+          conversionFactor: review.conversionFactor,
+          stockQuantity: item.purchaseQuantity * review.conversionFactor,
+          landedUnitCost: review.landedUnitCost,
+          importStatus: 'pending' as const,
+          lot: review.lot,
+          error: undefined,
+        };
+      }
+      if (review.action === 'create') {
+        return {
+          ...item,
+          action: 'create' as const,
+          productId: undefined,
+          variantId: undefined,
+          newProduct: review.newProduct,
+          stockUnit: review.newProduct!.unit,
+          conversionFactor: review.conversionFactor,
+          stockQuantity: item.purchaseQuantity * review.conversionFactor,
+          landedUnitCost: review.landedUnitCost,
+          importStatus: 'pending' as const,
+          lot: review.lot,
+          error: undefined,
+        };
+      }
+      return {
+        ...item,
+        action: 'skip' as const,
+        productId: undefined,
+        variantId: undefined,
+        newProduct: undefined,
+        conversionFactor: 1,
+        stockQuantity: item.purchaseQuantity,
+        importStatus: 'skipped' as const,
+        lot: undefined,
+        error: undefined,
+      };
+    });
+    const now = new Date().toISOString();
+    const canonical = PurchaseNoteV2Schema.parse({
+      ...note,
+      items: reviewedItems,
+      notes: params.notes || undefined,
+      reviewedAt: now,
+      reviewedBy: params.actor.uid,
+      updatedAt: now,
+    });
+    const document = withoutUndefined({
+      ...snapshot.data(),
+      ...canonical,
+      items: canonical.items.map(legacyItem),
+      notes: canonical.notes,
+      reviewedAt: canonical.reviewedAt,
+      reviewedBy: canonical.reviewedBy,
+      reviewedByName: params.actor.name,
+      updatedAt: now,
+    }) as unknown as PreparedPurchaseNote;
+    tx.set(noteRef, document as unknown as Record<string, unknown>);
+    return document;
+  });
 }

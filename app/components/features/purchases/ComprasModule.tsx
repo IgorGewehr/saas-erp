@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShoppingBag, Upload, Search, X, FileText, CheckCircle2, AlertCircle,
@@ -9,18 +9,19 @@ import {
   BarChart3, ArrowUpRight, Truck,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, getDocs, addDoc, updateDoc, doc, onSnapshot, writeBatch,
+  collection, query, where, getDocs, updateDoc, doc, onSnapshot, writeBatch,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useMutation } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
-import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
+import type { PurchaseNote, PurchaseNoteStatus, Product } from '@/lib/types';
 import { toast } from 'react-toastify';
 import { applyStockOperation } from '@/lib/services/stock-server-client';
+import type { PreparedPurchaseNote } from '@/lib/services/purchase-import-admin';
 import SuppliersPanel from './SuppliersPanel';
-import { listSuppliersPage } from '@/lib/services/supplier-client';
+import PurchaseImportDialog from './PurchaseImportDialog';
 
 type PurchasesArea = 'notes' | 'suppliers';
 
@@ -39,97 +40,6 @@ function PurchasesTabs(props: { active: PurchasesArea; onChange: (area: Purchase
   );
 }
 
-// ─── XML Parser (regex-based, no DOM needed) ─────────────────────────────────
-
-function tag(xml: string, name: string): string {
-  const m = xml.match(new RegExp(`<(?:[^:>]+:)?${name}[^>]*>([\\s\\S]*?)</(?:[^:>]+:)?${name}>`, 'i'));
-  return m ? m[1].trim() : '';
-}
-
-function allTags(xml: string, name: string): string[] {
-  const re = new RegExp(`<(?:[^:>]+:)?${name}[^>]*>([\\s\\S]*?)</(?:[^:>]+:)?${name}>`, 'gi');
-  const results: string[] = [];
-  let m;
-  while ((m = re.exec(xml)) !== null) results.push(m[1].trim());
-  return results;
-}
-
-function tagAttr(xml: string, name: string, attr: string): string {
-  const m = xml.match(new RegExp(`<(?:[^:>]+:)?${name}[^\\s>]*\\s[^>]*${attr}="([^"]*)"`, 'i'));
-  return m ? m[1] : '';
-}
-
-interface ParsedNFe {
-  accessKey: string;
-  numero: string;
-  serie: string;
-  issueDate: string;
-  supplierName: string;
-  supplierCnpj: string;
-  items: PurchaseNoteItem[];
-  totalProducts: number;
-  totalTaxes: number;
-  totalValue: number;
-}
-
-function parseNFeXml(xml: string): ParsedNFe | null {
-  try {
-    const ide = tag(xml, 'ide');
-    const emit = tag(xml, 'emit');
-    const total = tag(xml, 'total');
-    const icmsTot = tag(xml, 'ICMSTot');
-
-    const numero = tag(ide, 'nNF');
-    const serie = tag(ide, 'serie');
-    const issueDate = tag(ide, 'dhEmi') || tag(ide, 'dEmi');
-
-    const supplierName = tag(emit, 'xNome') || tag(emit, 'xFant');
-    const supplierCnpj = tag(emit, 'CNPJ');
-
-    // Access key from infNFe Id or chNFe
-    const accessKeyMatch = xml.match(/chNFe[^>]*>(\d{44})</);
-    const accessKeyFromId = xml.match(/Id="NFe(\d{44})"/);
-    const accessKey = accessKeyMatch ? accessKeyMatch[1] : (accessKeyFromId ? accessKeyFromId[1] : '');
-
-    // Items
-    const detBlocks = allTags(xml, 'det');
-    const items: PurchaseNoteItem[] = detBlocks.map(det => {
-      const prod = tag(det, 'prod');
-      const imposto = tag(det, 'imposto');
-      const icmsBlock = tag(imposto, 'ICMS');
-      const pisBlock = tag(imposto, 'PIS');
-      const cofinsBlock = tag(imposto, 'COFINS');
-      const ipiBlock = tag(imposto, 'IPI');
-
-      return {
-        cProd: tag(prod, 'cProd'),
-        productName: tag(prod, 'xProd'),
-        ncm: tag(prod, 'NCM'),
-        cfop: tag(prod, 'CFOP'),
-        unit: tag(prod, 'uCom') || 'UN',
-        quantity: parseFloat(tag(prod, 'qCom') || '0'),
-        unitPrice: parseFloat(tag(prod, 'vUnCom') || '0'),
-        total: parseFloat(tag(prod, 'vProd') || '0'),
-        icms: parseFloat(tag(icmsBlock, 'vICMS') || '0') || undefined,
-        ipi: parseFloat(tag(ipiBlock, 'vIPI') || '0') || undefined,
-        pis: parseFloat(tag(pisBlock, 'vPIS') || '0') || undefined,
-        cofins: parseFloat(tag(cofinsBlock, 'vCOFINS') || '0') || undefined,
-      };
-    });
-
-    const totalProducts = parseFloat(tag(icmsTot, 'vProd') || '0');
-    const totalTaxes = parseFloat(tag(icmsTot, 'vNF') || '0') - totalProducts;
-    const totalValue = parseFloat(tag(icmsTot, 'vNF') || '0');
-
-    if (!numero || !supplierCnpj) return null;
-
-    return { accessKey, numero, serie, issueDate: issueDate.split('T')[0], supplierName, supplierCnpj, items, totalProducts, totalTaxes, totalValue };
-  } catch (err) {
-    console.error('[Compras] XML parse error:', err);
-    return null;
-  }
-}
-
 // ─── Status config ────────────────────────────────────────────────────────────
 
 const STATUS_CONFIG: Record<PurchaseNoteStatus, { label: string; color: string; icon: typeof Clock }> = {
@@ -138,220 +48,25 @@ const STATUS_CONFIG: Record<PurchaseNoteStatus, { label: string; color: string; 
   cancelada:  { label: 'Cancelada', color: 'bg-red-100 text-red-700 dark:bg-red-500/20 dark:text-red-300', icon: X },
 };
 
-// ─── XML Upload Zone ──────────────────────────────────────────────────────────
-
-function XmlUploadZone({ onParsed }: { onParsed: (data: ParsedNFe, xml: string) => void }) {
-  const [isDragging, setIsDragging] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const processFile = async (file: File) => {
-    if (!file.name.endsWith('.xml')) {
-      toast.error('Apenas arquivos XML são suportados');
-      return;
-    }
-    setIsProcessing(true);
-    try {
-      const xml = await file.text();
-      const parsed = parseNFeXml(xml);
-      if (!parsed) {
-        toast.error('Arquivo XML inválido ou não reconhecido como NF-e');
-        return;
-      }
-      onParsed(parsed, xml);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) processFile(file);
-  }, []);
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) processFile(file);
-    e.target.value = '';
-  };
-
-  return (
-    <div
-      onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-      onDragLeave={() => setIsDragging(false)}
-      onDrop={handleDrop}
-      className={cn(
-        'relative flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-2xl cursor-pointer transition-all',
-        isDragging
-          ? 'border-red-400 bg-red-50 dark:bg-red-500/10'
-          : 'border-gray-200 dark:border-gray-700 hover:border-red-300 dark:hover:border-red-700 hover:bg-gray-50/50 dark:hover:bg-gray-800/30'
-      )}
-      onClick={() => fileInputRef.current?.click()}
-    >
-      <input ref={fileInputRef} type="file" accept=".xml" className="hidden" onChange={handleFileChange} />
-      {isProcessing ? (
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 border-2 border-red-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm text-gray-500">Processando XML...</p>
-        </div>
-      ) : (
-        <>
-          <div className={cn('w-14 h-14 rounded-2xl flex items-center justify-center mb-3 transition-colors',
-            isDragging ? 'bg-red-100 dark:bg-red-500/20' : 'bg-gray-100 dark:bg-gray-800')}>
-            <Upload className={cn('w-7 h-7 transition-colors', isDragging ? 'text-red-500' : 'text-gray-400')} />
-          </div>
-          <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-1">
-            Arraste o XML da NF-e ou clique para selecionar
-          </p>
-          <p className="text-xs text-gray-400 dark:text-gray-500">
-            Suporte a NF-e versão 4.0 · Arquivo .xml
-          </p>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ─── Import Preview ───────────────────────────────────────────────────────────
-
-function ImportPreview({
-  parsed,
-  xml,
-  onConfirm,
-  onCancel,
-  isSaving,
-}: {
-  parsed: ParsedNFe;
-  xml: string;
-  onConfirm: (note: Omit<PurchaseNote, 'id'>) => void;
-  onCancel: () => void;
-  isSaving: boolean;
-}) {
-  const [notes, setNotes] = useState('');
-
-  const handleConfirm = () => {
-    const now = new Date().toISOString();
-    onConfirm({
-      accessKey: parsed.accessKey,
-      numero: parsed.numero,
-      serie: parsed.serie,
-      issueDate: parsed.issueDate,
-      supplierName: parsed.supplierName,
-      supplierCnpj: parsed.supplierCnpj,
-      items: parsed.items,
-      totalProducts: parsed.totalProducts,
-      totalTaxes: parsed.totalTaxes,
-      totalValue: parsed.totalValue,
-      status: 'pendente',
-      notes: notes || undefined,
-      xml,
-      createdAt: now,
-      updatedAt: now,
-    } as Omit<PurchaseNote, 'id'>);
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-5"
-    >
-      {/* Supplier */}
-      <div className="surface rounded-xl p-4">
-        <div className="flex items-start gap-3">
-          <div className="w-10 h-10 rounded-lg bg-blue-50 dark:bg-blue-500/10 flex items-center justify-center flex-shrink-0">
-            <Building2 className="w-5 h-5 text-blue-500" />
-          </div>
-          <div>
-            <p className="font-semibold text-gray-900 dark:text-white">{parsed.supplierName}</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400">CNPJ: {parsed.supplierCnpj}</p>
-          </div>
-          <div className="ml-auto text-right">
-            <p className="text-xs text-gray-400">NF-e nº {parsed.numero}-{parsed.serie}</p>
-            <p className="text-xs text-gray-400">{formatDate(parsed.issueDate)}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Items */}
-      <div>
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Itens ({parsed.items.length})</p>
-        <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-          {parsed.items.map((item, i) => (
-            <div key={i} className="flex items-center justify-between py-1.5 px-3 bg-gray-50 dark:bg-gray-800/60 rounded-lg">
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{item.productName}</p>
-                <p className="text-xs text-gray-500">{item.quantity} {item.unit} × {formatCurrency(item.unitPrice)}</p>
-              </div>
-              <span className="text-sm font-semibold text-gray-700 dark:text-gray-300 ml-3">{formatCurrency(item.total)}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Totals */}
-      <div className="surface rounded-xl p-4 space-y-1.5">
-        <div className="flex justify-between text-sm">
-          <span className="text-gray-500">Produtos</span>
-          <span className="text-gray-700 dark:text-gray-300">{formatCurrency(parsed.totalProducts)}</span>
-        </div>
-        {parsed.totalTaxes > 0 && (
-          <div className="flex justify-between text-sm">
-            <span className="text-gray-500">Impostos</span>
-            <span className="text-gray-700 dark:text-gray-300">{formatCurrency(parsed.totalTaxes)}</span>
-          </div>
-        )}
-        <div className="flex justify-between font-semibold text-base pt-1.5 border-t border-gray-100 dark:border-gray-800">
-          <span className="text-gray-900 dark:text-white">Total NF-e</span>
-          <span className="text-red-600 dark:text-red-400">{formatCurrency(parsed.totalValue)}</span>
-        </div>
-      </div>
-
-      {/* Notes */}
-      <div>
-        <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Observações</label>
-        <textarea
-          value={notes}
-          onChange={e => setNotes(e.target.value)}
-          rows={2}
-          className="w-full bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-400 resize-none transition-all"
-          placeholder="Observações opcionais sobre esta nota..."
-        />
-      </div>
-
-      <div className="flex gap-3">
-        <button onClick={onCancel}
-          className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
-          Cancelar
-        </button>
-        <button onClick={handleConfirm} disabled={isSaving}
-          className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-          {isSaving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-          Importar nota
-        </button>
-      </div>
-    </motion.div>
-  );
-}
-
 // ─── Note Detail Panel ────────────────────────────────────────────────────────
 
 function NoteDetailPanel({
   note,
   onClose,
   onPushToStock,
+  onReview,
   isPushingStock,
 }: {
   note: PurchaseNote;
   onClose: () => void;
   onPushToStock?: (note: PurchaseNote) => void;
+  onReview?: (note: PurchaseNote) => void;
   isPushingStock?: boolean;
 }) {
   const statusCfg = STATUS_CONFIG[note.status];
   const StatusIcon = statusCfg.icon;
-  const canPushToStock = !note.stockImportedAt && note.status !== 'cancelada';
+  const usesSafeImport = note.schemaVersion === 2;
+  const canPushToStock = !usesSafeImport && !note.stockImportedAt && note.status !== 'cancelada';
 
   return (
     <motion.div
@@ -473,6 +188,16 @@ function NoteDetailPanel({
         )}
 
         {/* Push-to-stock action */}
+        {usesSafeImport && !note.stockImportedAt && note.status !== 'cancelada' && onReview && (
+          <div className="space-y-2 rounded-xl border border-blue-200 bg-blue-50 p-3 dark:border-blue-500/20 dark:bg-blue-500/10">
+            <p className="text-xs text-blue-700 dark:text-blue-300">
+              {note.reviewedAt ? 'Itens revisados. A confirmação segura da entrada será liberada na próxima etapa.' : 'Revise o destino de todos os itens antes de confirmar a entrada.'}
+            </p>
+            <button type="button" onClick={() => onReview(note)} className="w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700">
+              {note.reviewedAt ? 'Editar revisão dos itens' : 'Revisar itens'}
+            </button>
+          </div>
+        )}
         {canPushToStock && onPushToStock && (
           <button
             type="button"
@@ -505,7 +230,7 @@ export default function ComprasModule() {
   const [filterStatus, setFilterStatus] = useState<PurchaseNoteStatus | 'all'>('all');
   const [selectedNote, setSelectedNote] = useState<PurchaseNote | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
-  const [parsedXml, setParsedXml] = useState<{ data: ParsedNFe; xml: string } | null>(null);
+  const [reviewingNote, setReviewingNote] = useState<PreparedPurchaseNote | null>(null);
 
   // ─── Data — onSnapshot (sync multi-user) ───────────────────────────────────
   // ANTES: useQuery + getDocs com staleTime 2min. Comprador A importava NF-e
@@ -680,47 +405,6 @@ export default function ComprasModule() {
     },
   });
 
-  // ─── Import mutation ─────────────────────────────────────────────────────────
-  const { mutate: importNote, isPending: isImporting } = useMutation({
-    mutationFn: async (note: Omit<PurchaseNote, 'id'>) => {
-      // Check for duplicate by accessKey
-      if (note.accessKey) {
-        const existing = notes.find(n => n.accessKey === note.accessKey);
-        if (existing) throw new Error('duplicate');
-      }
-      let supplierId = note.supplierId;
-      if (!supplierId && note.supplierCnpj && business?.id) {
-        let cursor: string | null = null;
-        do {
-          const page = await listSuppliersPage({ businessId: business.id, cursor, limit: 200 });
-          supplierId = page.suppliers.find((supplier) =>
-            (supplier.document ?? supplier.cnpj ?? '').replace(/\D/g, '') === note.supplierCnpj.replace(/\D/g, ''),
-          )?.id;
-          cursor = supplierId || !page.hasMore ? null : page.nextCursor;
-        } while (!supplierId && cursor);
-      }
-      await addDoc(collection(db, 'purchaseNotes'), {
-        ...note,
-        businessId: business!.id,
-        ...(supplierId ? { supplierId } : {}),
-      });
-    },
-    onSuccess: () => {
-      // notes vem via onSnapshot — não precisa invalidar.
-      toast.success('Nota importada com sucesso!');
-      setShowImportModal(false);
-      setParsedXml(null);
-    },
-    onError: (err: Error) => {
-      if (err.message === 'duplicate') {
-        toast.error('Esta NF-e já foi importada anteriormente');
-      } else {
-        toast.error('Erro ao importar nota');
-        console.error('[Compras] Import error:', err);
-      }
-    },
-  });
-
   // ─── Filtered list ───────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = [...notes];
@@ -745,15 +429,6 @@ export default function ComprasModule() {
     const totalItems = notes.reduce((s, n) => s + n.items.length, 0);
     return { total: notes.length, totalValue, imported, pending, totalItems };
   }, [notes]);
-
-  const handleParsed = (data: ParsedNFe, xml: string) => {
-    setParsedXml({ data, xml });
-  };
-
-  const handleCancelParsed = () => {
-    setParsedXml(null);
-    setShowImportModal(false);
-  };
 
   if (activeArea === 'suppliers') {
     return (
@@ -784,7 +459,10 @@ export default function ComprasModule() {
           </p>
         </div>
         <button
-          onClick={() => setShowImportModal(true)}
+          onClick={() => {
+            setReviewingNote(null);
+            setShowImportModal(true);
+          }}
           className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
         >
           <Upload className="w-4 h-4" />
@@ -897,6 +575,10 @@ export default function ComprasModule() {
                 note={selectedNote}
                 onClose={() => setSelectedNote(null)}
                 onPushToStock={pushToStock}
+                onReview={(note) => {
+                  setReviewingNote(note as unknown as PreparedPurchaseNote);
+                  setShowImportModal(true);
+                }}
                 isPushingStock={isPushingStock}
               />
             </div>
@@ -906,51 +588,20 @@ export default function ComprasModule() {
 
       {/* Import modal */}
       <AnimatePresence>
-        {showImportModal && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={e => { if (e.target === e.currentTarget && !parsedXml) { setShowImportModal(false); } }}>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-              className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-2xl shadow-2xl">
-              <div className="sticky top-0 z-10 bg-white dark:bg-gray-900 border-b border-gray-100 dark:border-gray-800 px-6 py-4 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-lg bg-red-50 dark:bg-red-500/10 flex items-center justify-center">
-                    <Upload className="w-4 h-4 text-red-500" />
-                  </div>
-                  <h2 className="font-semibold text-gray-900 dark:text-white">Importar NF-e</h2>
-                </div>
-                <button onClick={handleCancelParsed}
-                  className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-6">
-                {!parsedXml ? (
-                  <>
-                    <div className="mb-4 p-3 rounded-lg bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
-                      <p className="text-xs text-blue-600 dark:text-blue-400">
-                        Selecione o arquivo XML da NF-e fornecida pelo seu fornecedor.
-                        O sistema irá extrair automaticamente os dados da nota.
-                      </p>
-                    </div>
-                    <XmlUploadZone onParsed={handleParsed} />
-                  </>
-                ) : (
-                  <ImportPreview
-                    parsed={parsedXml.data}
-                    xml={parsedXml.xml}
-                    onConfirm={importNote}
-                    onCancel={handleCancelParsed}
-                    isSaving={isImporting}
-                  />
-                )}
-              </div>
-            </motion.div>
-          </motion.div>
+        {showImportModal && business?.id && (
+          <PurchaseImportDialog
+            businessId={business.id}
+            initialNote={reviewingNote}
+            onClose={() => {
+              setShowImportModal(false);
+              setReviewingNote(null);
+            }}
+            onCompleted={(note) => {
+              setShowImportModal(false);
+              setReviewingNote(null);
+              setSelectedNote(note as unknown as PurchaseNote);
+            }}
+          />
         )}
       </AnimatePresence>
     </div>

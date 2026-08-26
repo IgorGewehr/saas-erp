@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { ReviewPurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-review';
 
 describe('M01.5 purchase import boundaries', () => {
   it('mantém parsing e persistência decisivos fora do componente visual', () => {
@@ -10,6 +11,38 @@ describe('M01.5 purchase import boundaries', () => {
     expect(route).toContain('preparePurchaseNoteAdmin');
     expect(route).toContain('expectedRecipientDocument');
     expect(module).not.toContain('preparePurchaseNoteAdmin');
+    expect(module).not.toContain('parseNFeXml');
+    expect(module).not.toContain("addDoc(collection(db, 'purchaseNotes')");
+    expect(module).toContain('PurchaseImportDialog');
+  });
+
+  it('salva a revisão integral por uma rota autenticada e um contrato estrito', () => {
+    const dialog = readFileSync('app/components/features/purchases/PurchaseImportDialog.tsx', 'utf8');
+    const route = readFileSync('app/api/purchase-notes/review/route.ts', 'utf8');
+    const contract = readFileSync('lib/contracts/api/purchase-note-review.ts', 'utf8');
+    expect(dialog).toContain("action: 'match'");
+    expect(dialog).toContain("action: 'create'");
+    expect(dialog).toContain("action: 'skip'");
+    expect(route).toContain('verifyAuth(request, parsed.data.businessId)');
+    expect(route).toContain('reviewPurchaseNoteAdmin');
+    expect(contract).toContain("z.enum(['match', 'create', 'skip'])");
+    expect(contract).toContain('Linha duplicada.');
+  });
+
+  it('recusa linhas duplicadas, combinações contraditórias e validade anterior à fabricação', () => {
+    const base = {
+      businessId: 'biz-1', noteId: 'note-1',
+      items: [{ lineId: '1', action: 'skip', conversionFactor: 1, landedUnitCost: 10 }],
+    };
+    expect(ReviewPurchaseNoteRequestSchema.safeParse({ ...base, items: [...base.items, ...base.items] }).success).toBe(false);
+    expect(ReviewPurchaseNoteRequestSchema.safeParse({
+      ...base,
+      items: [{ ...base.items[0], action: 'match', productId: 'product-1', newProduct: { name: 'Novo', category: 'Geral', unit: 'UN' } }],
+    }).success).toBe(false);
+    expect(ReviewPurchaseNoteRequestSchema.safeParse({
+      ...base,
+      items: [{ ...base.items[0], action: 'create', newProduct: { name: 'Novo', category: 'Geral', unit: 'UN' }, lot: { code: 'L1', manufacturedAt: '2027-01-01', expiresAt: '2026-01-01' } }],
+    }).success).toBe(false);
   });
 
   it('protege XML por tenant e cria claim determinístico de chave', () => {

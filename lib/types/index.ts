@@ -4004,6 +4004,7 @@ export interface PurchaseNoteItem {
 
 export interface PurchaseNote {
   id: string;
+  schemaVersion?: 2;
   businessId: string;
   accessKey: string;            // chave de acesso 44 digits
   numero: string;
@@ -4025,6 +4026,9 @@ export interface PurchaseNote {
   xml?: string;
   // Notes
   notes?: string;
+  reviewedAt?: string;
+  reviewedBy?: string;
+  reviewedByName?: string;
   importedAt?: string;
   // Stock import tracking — set when items are pushed to inventory as stockMovements.
   // Once present, re-importing is blocked (idempotency).

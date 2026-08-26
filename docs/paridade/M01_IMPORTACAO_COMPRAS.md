@@ -1,7 +1,7 @@
 # M01.5 — Importação de compras
 
 > Data: 25/08/2026
-> Status: M01.5a concluído; próximo: M01.5b.
+> Status: M01.5a e M01.5b concluídos; próximo: M01.5c.
 
 ## Resultado esperado
 
@@ -46,10 +46,20 @@ XML recebido
 
 ## M01.5b — Revisão por item
 
-- Migrar o modal de Compras para consumir a preparação server-side.
-- Exibir as ações explícitas `vincular`, `criar produto` e `ignorar` em cada item.
-- Permitir escolher variação, corrigir unidade/fator, quantidade, custo, lote e validade.
-- Validar toda a seleção novamente no servidor; a interface é apenas editora da intenção.
+- [x] Migrar o modal de Compras para consumir a preparação server-side.
+- [x] Exibir as ações explícitas `vincular`, `criar produto` e `ignorar` em cada item.
+- [x] Permitir escolher variação, corrigir unidade/fator, quantidade de estoque, custo, lote e validade.
+- [x] Permitir fechar e retomar uma revisão já preparada, sem reenviar o XML.
+- [x] Validar novamente no servidor tenant, produto, variação, datas, itens completos e combinações de ação.
+- [x] Bloquear o lançamento legado para notas V2; a entrada só será liberada pela confirmação idempotente do M01.5c.
+
+### Arquivos da entrega M01.5b
+
+- `app/components/features/purchases/PurchaseImportDialog.tsx`: upload, sugestões e editor explícito por item.
+- `lib/contracts/api/purchase-note-review.ts`: contrato estrito da intenção de revisão.
+- `app/api/purchase-notes/review/route.ts`: gravação autenticada da revisão.
+- `lib/services/purchase-import-admin.ts`: validação transacional de produto/variação e persistência canônica.
+- `lib/services/purchase-import-client.ts`: cliente das etapas de preparação e revisão.
 
 ## M01.5c — Confirmação idempotente
 
@@ -83,3 +93,4 @@ XML recebido
 5. Cada item possui resultado e movimento rastreáveis.
 6. XML só pode ser baixado por usuário autenticado do mesmo tenant.
 7. Notas legadas continuam legíveis durante a migração.
+8. Uma nota V2 não utiliza o lançamento legado enquanto a confirmação idempotente não estiver concluída.

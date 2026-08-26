@@ -4,6 +4,8 @@ import type { Firestore } from 'firebase-admin/firestore';
 import {
   preparePurchaseNoteAdmin,
   PurchaseNoteDuplicateError,
+  PurchaseNoteNotReviewableError,
+  reviewPurchaseNoteAdmin,
 } from '@/lib/services/purchase-import-admin';
 import { parsePurchaseNFeXml } from '@/lib/services/purchase-xml-parser';
 
@@ -130,5 +132,79 @@ describe('purchase import preparation core', () => {
       xmlStoragePath: 'businesses/biz-2/purchase-notes/note-3/original.xml', originalFileName: 'c.xml', actor,
     });
     expect(fake.list('purchaseNotes')).toHaveLength(2);
+  });
+
+  it('salva a decisão de todos os itens sem movimentar estoque', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    fake.seed('products', 'product-1', {
+      id: 'product-1', businessId: 'biz-1', isActive: true, name: 'Café em grãos', sku: 'FORN-001',
+      barcode: '7891234567895', ncm: '09012100', unit: 'G', purchaseUnit: 'KG', purchaseToStockFactor: 1000,
+    });
+    const prepared = await preparePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: 'note-reviewed', parsed,
+      xmlStoragePath: 'businesses/biz-1/purchase-notes/note-reviewed/original.xml', originalFileName: 'review.xml', actor,
+    });
+
+    const reviewed = await reviewPurchaseNoteAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      noteId: prepared.id,
+      actor,
+      notes: 'Revisão conferida',
+      items: [
+        {
+          lineId: prepared.items[0].lineId,
+          action: 'match',
+          productId: 'product-1',
+          conversionFactor: 1000,
+          landedUnitCost: 0.0321,
+          lot: { code: 'LOTE-CAFÉ', expiresAt: '2027-08-25' },
+        },
+        {
+          lineId: prepared.items[1].lineId,
+          action: 'create',
+          conversionFactor: 10,
+          landedUnitCost: 6,
+          newProduct: { name: 'Caixa para transporte', category: 'Embalagens', unit: 'UN', sku: 'FORN-002' },
+        },
+      ],
+    });
+
+    expect(reviewed).toMatchObject({
+      id: 'note-reviewed', status: 'pendente', reviewedBy: 'user-1', reviewedByName: 'Gestor',
+      notes: 'Revisão conferida', stockMovementIds: [],
+    });
+    expect(reviewed.items[0]).toMatchObject({
+      action: 'match', importAction: 'match', productId: 'product-1', stockUnit: 'G',
+      conversionFactor: 1000, stockQuantity: 10000, importStatus: 'pending', lot: { code: 'LOTE-CAFÉ' },
+    });
+    expect(reviewed.items[1]).toMatchObject({
+      action: 'create', importAction: 'create', stockUnit: 'UN', conversionFactor: 10,
+      stockQuantity: 50, newProduct: { category: 'Embalagens' }, importStatus: 'pending',
+    });
+    expect(fake.list('stockMovements')).toHaveLength(0);
+  });
+
+  it('rejeita vínculo com produto de outro tenant', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    const prepared = await preparePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: 'note-tenant', parsed,
+      xmlStoragePath: 'businesses/biz-1/purchase-notes/note-tenant/original.xml', originalFileName: 'tenant.xml', actor,
+    });
+    fake.seed('products', 'foreign-product', {
+      id: 'foreign-product', businessId: 'biz-2', isActive: true, name: 'Produto externo', unit: 'UN',
+    });
+
+    await expect(reviewPurchaseNoteAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      noteId: prepared.id,
+      actor,
+      items: prepared.items.map((item, index) => index === 0
+        ? { lineId: item.lineId, action: 'match' as const, productId: 'foreign-product', conversionFactor: 1, landedUnitCost: item.landedUnitCost }
+        : { lineId: item.lineId, action: 'skip' as const, conversionFactor: 1, landedUnitCost: item.landedUnitCost }),
+    })).rejects.toBeInstanceOf(PurchaseNoteNotReviewableError);
   });
 });
