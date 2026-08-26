@@ -298,4 +298,57 @@ describe('applyStockOperationAdmin', () => {
     }))).rejects.toBeInstanceOf(StockReferenceError);
     expect(fake.get('products/p1')?.currentStock).toBe(10);
   });
+
+  it('movimenta múltiplas variações do mesmo produto sem sobrescrever saldos', async () => {
+    const fake = makeFakeDb([product('camiseta', 0, {
+      kind: 'variant',
+      variants: [
+        { id: 'azul-p', name: 'Azul P', attributes: { cor: 'Azul', tamanho: 'P' }, salePrice: 50, costPrice: 20, currentStock: 3, minStock: 1, trackStock: true, isActive: true },
+        { id: 'preta-m', name: 'Preta M', attributes: { cor: 'Preta', tamanho: 'M' }, salePrice: 55, costPrice: 22, currentStock: 5, minStock: 2, trackStock: true, isActive: true },
+      ],
+    })]);
+
+    const result = await applyStockOperationAdmin(fake.db, baseInput({
+      type: 'ajuste',
+      lines: [
+        { productId: 'camiseta', variantId: 'azul-p', quantity: 7 },
+        { productId: 'camiseta', variantId: 'preta-m', quantity: 2 },
+      ],
+      sourceType: 'manual',
+      sourceId: undefined,
+      idempotencyKey: 'manual:camiseta:variants',
+      reason: 'Contagem por grade',
+      expandBom: false,
+      adjustmentMode: 'absolute',
+    }));
+
+    expect(result.adjustments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ variantId: 'azul-p', previousStock: 3, newStock: 7 }),
+      expect.objectContaining({ variantId: 'preta-m', previousStock: 5, newStock: 2 }),
+    ]));
+    const stored = fake.get('products/camiseta') as unknown as Product;
+    expect(stored.currentStock).toBe(0);
+    expect(stored.variants?.find((variant) => variant.id === 'azul-p')?.currentStock).toBe(7);
+    expect(stored.variants?.find((variant) => variant.id === 'preta-m')?.currentStock).toBe(2);
+    expect(fake.list('stockMovements').map((movement) => movement.data.variantId).sort()).toEqual(['azul-p', 'preta-m']);
+  });
+
+  it('impede saldo negativo em uma variação sem alterar as demais', async () => {
+    const fake = makeFakeDb([product('tenis', 0, {
+      kind: 'variant',
+      variants: [
+        { id: 'tam-40', name: '40', attributes: { tamanho: '40' }, salePrice: 100, costPrice: 50, currentStock: 1, minStock: 0, trackStock: true, isActive: true },
+        { id: 'tam-41', name: '41', attributes: { tamanho: '41' }, salePrice: 100, costPrice: 50, currentStock: 4, minStock: 0, trackStock: true, isActive: true },
+      ],
+    })]);
+
+    await expect(applyStockOperationAdmin(fake.db, baseInput({
+      lines: [{ productId: 'tenis', variantId: 'tam-40', quantity: 2 }],
+      sourceId: 'sale-variant',
+      idempotencyKey: 'sale:variant:stock',
+      expandBom: false,
+    }))).rejects.toBeInstanceOf(InsufficientStockError);
+    const stored = fake.get('products/tenis') as unknown as Product;
+    expect(stored.variants?.map((variant) => variant.currentStock)).toEqual([1, 4]);
+  });
 });

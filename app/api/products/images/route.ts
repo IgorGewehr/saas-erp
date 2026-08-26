@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { NextResponse, type NextRequest } from 'next/server';
 import { ProductImagesMutationSchema } from '@/lib/contracts/api/product-catalog';
+import { ProductImageV2Schema } from '@/lib/contracts/domain/productV2';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import {
   getProductCatalogAdmin,
@@ -47,6 +48,22 @@ export async function POST(request: NextRequest) {
     if (!CONTENT_TYPES[file.type]) return error('Use apenas imagens JPG, PNG ou WebP.', 400);
     if (file.size <= 0 || file.size > MAX_IMAGE_SIZE) return error('Cada imagem deve ter no máximo 5MB.', 400);
   }
+  const existingRaw = formData.get('existingImages');
+  let existingValue: unknown = [];
+  if (existingRaw) {
+    try {
+      existingValue = JSON.parse(String(existingRaw));
+    } catch {
+      return error('Lista de imagens existentes inválida.', 400);
+    }
+  }
+  const existingParsed = existingRaw
+    ? ProductImageV2Schema.array().max(8).safeParse(existingValue)
+    : { success: true as const, data: [] };
+  if (!existingParsed.success) return error('Lista de imagens existentes inválida.', 400);
+  if (existingParsed.data.length + files.length > 8) {
+    return error('Cada produto aceita no máximo 8 imagens.', 400);
+  }
 
   try {
     await getProductCatalogAdmin(adminDb, auth.businessId, parsed.data.productId);
@@ -71,7 +88,7 @@ export async function POST(request: NextRequest) {
       db: adminDb,
       businessId: auth.businessId,
       productId: parsed.data.productId,
-      images,
+      images: parsed.data.mode === 'replace' ? [...existingParsed.data, ...images] : images,
       mode: parsed.data.mode,
     });
     return NextResponse.json({ ok: true, data: product });

@@ -67,4 +67,20 @@ describe('M01.2 — boundaries server-side de estoque', () => {
 
     expect(result.items[0].selectedModifiers?.[0].selectedOptions[0].optionId).toBe('queijo-extra');
   });
+
+  it('aceita ajuste absoluto auditável de uma variação', () => {
+    const result = StockOperationRequestSchema.parse({
+      businessId: 'biz1',
+      type: 'ajuste',
+      lines: [{ productId: 'camiseta', variantId: 'azul-p', quantity: 8 }],
+      operatorName: 'Operador',
+      reason: 'Inventário da grade',
+      sourceType: 'manual',
+      idempotencyKey: 'inventory:camiseta:azul-p:1',
+      expandBom: false,
+      adjustmentMode: 'absolute',
+      negativeStockPolicy: 'prevent',
+    });
+    expect(result.lines[0].variantId).toBe('azul-p');
+  });
 });

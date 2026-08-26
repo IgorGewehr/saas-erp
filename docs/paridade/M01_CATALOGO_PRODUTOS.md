@@ -1,7 +1,7 @@
 # M01.3 — Catálogo de produtos
 
 > Data: 25/08/2026
-> Status: M01.3a concluído; M01.3b pendente.
+> Status: M01.3 concluído.
 
 ## Objetivo desta rodada
 
@@ -38,6 +38,21 @@ O saldo inicial e qualquer alteração de `currentStock` continuam passando por 
 - A listagem possui paginação local configurável em 12, 24 ou 48 itens.
 - O modo planilha continua somente leitura e agora inclui código de barras, margem, unidade de compra, quantidades de imagens/variações e data de atualização.
 
+## M01.3b — imagens, variações e escala
+
+- Editor de até oito imagens por produto, com remoção, reordenação das imagens existentes e definição da primeira como principal.
+- Upload em lote preservando imagens existentes e o campo legado `imageUrl`.
+- Editor de variações com atributos livres, SKU, código de barras, custo, preço, mínimo, máximo, status e saldo próprios.
+- Estoque de variação incorporado ao núcleo transacional: `variantId` participa da impressão digital idempotente, do ledger e do cálculo de saldo.
+- Várias variações do mesmo produto podem ser movimentadas na mesma transação sem sobrescrever umas às outras.
+- O cadastro não consegue gravar saldo de variação diretamente; novos saldos começam em zero e passam por movimentos auditáveis.
+- Conversão de produto simples com saldo para produto com variações exige zerar antes o saldo principal.
+- Categoria do catálogo aceita valores livres e reutiliza categorias já cadastradas.
+- Importação CSV aceita cabeçalhos em português ou inglês, até mil produtos e apresenta erros por linha sem interromper os itens válidos.
+- Modelo CSV pode ser baixado da própria tela.
+- A tela administrativa usa paginação server-side de cem itens por lote, com cursor e limite máximo de duzentos por requisição.
+- Busca, filtros e paginação visual continuam atuando sobre os lotes carregados; novos lotes são solicitados sob demanda.
+
 ## Segurança
 
 As Firestore Rules negam criação e exclusão direta de produtos. Atualizações diretas aceitam apenas `costPrice` e `updatedAt`, necessárias temporariamente pelo fluxo legado de importação de compras. `currentStock`, SKU, código de barras e demais metadados ficam sob autoridade do servidor.
@@ -54,10 +69,6 @@ As Firestore Rules negam criação e exclusão direta de produtos. Atualizaçõe
 - Verificação de que o componente visual não chama escrita de produto nem upload direto.
 - Verificação estática das regras de segurança.
 
-## Próxima rodada — M01.3b
+## Próxima etapa — M01.4
 
-1. editor visual de múltiplas imagens com ordenação e imagem principal;
-2. editor de variações com atributos, SKU, código, preços e estoque;
-3. categorias livres e gerenciamento de catálogo;
-4. importação CSV com pré-validação e relatório de erros;
-5. paginação server-side sem listener ilimitado.
+O próximo módulo é Fornecedores: tela operacional, serviço compartilhado entre UI/API/agente, unicidade de documento por tenant e vínculos com compras e produtos.

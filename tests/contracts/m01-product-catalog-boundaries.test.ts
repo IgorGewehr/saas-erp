@@ -79,4 +79,17 @@ describe('M01.3a — boundaries server-side do catálogo', () => {
     expect(source).toContain('createCatalogProduct');
     expect(source).toContain('archiveCatalogProduct');
   });
+
+  it('mantém paginação do catálogo no servidor com limite máximo', () => {
+    const route = fs.readFileSync(path.resolve(process.cwd(), 'app/api/products/route.ts'), 'utf8');
+    const inventory = fs.readFileSync(
+      path.resolve(process.cwd(), 'app/components/features/inventory/InventoryModule.tsx'),
+      'utf8',
+    );
+    expect(route).toContain("Math.min(Math.max(Number(request.nextUrl.searchParams.get('limit')) || 100, 1), 200)");
+    expect(route).toContain(".orderBy('__name__')");
+    expect(route).toContain('.startAfter(cursor)');
+    expect(inventory).toContain('useInfiniteQuery');
+    expect(inventory).not.toContain("onSnapshot(\n      query(\n        collection(db, 'products')");
+  });
 });

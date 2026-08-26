@@ -30,6 +30,7 @@ function clone<T>(value: T): T {
 function makeFakeDb() {
   const documents = new Map<string, Record<string, unknown>>();
   let sequence = 0;
+  let beforeTransaction: (() => void) | undefined;
 
   const snapshot = (collection: string, id: string): FakeSnapshot => {
     const data = documents.get(`${collection}/${id}`);
@@ -75,6 +76,8 @@ function makeFakeDb() {
       };
     },
     async runTransaction<T>(handler: (tx: unknown) => Promise<T>): Promise<T> {
+      beforeTransaction?.();
+      beforeTransaction = undefined;
       const pending: Array<
         | { kind: 'set' | 'create'; ref: FakeRef; data: Record<string, unknown> }
         | { kind: 'delete'; ref: FakeRef }
@@ -109,6 +112,13 @@ function makeFakeDb() {
       return [...documents.entries()]
         .filter(([path]) => path.startsWith(`${collection}/`))
         .map(([path, data]) => ({ id: path.slice(collection.length + 1), data: clone(data) }));
+    },
+    patchBeforeNextTransaction(path: string, patch: Record<string, unknown>) {
+      beforeTransaction = () => {
+        const current = documents.get(path);
+        if (!current) throw new Error(`Documento ausente: ${path}`);
+        documents.set(path, { ...current, ...clone(patch) });
+      };
     },
   };
 }
@@ -199,6 +209,25 @@ describe('product catalog admin core', () => {
     expect(fake.list('productIdentifiers').every((claim) => claim.data.productId === created.id)).toBe(true);
   });
 
+  it('reconstrói metadados dentro da transação sem sobrescrever saldo concorrente', async () => {
+    const fake = makeFakeDb();
+    const created = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData() });
+    fake.patchBeforeNextTransaction(`products/${created.id}`, {
+      currentStock: 7,
+      updatedAt: '2026-08-25T18:00:00.000Z',
+    });
+
+    const updated = await updateProductCatalogAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      productId: created.id,
+      patch: { salePrice: 21 },
+    });
+    expect(updated.currentStock).toBe(7);
+    expect(updated.salePrice).toBe(21);
+    expect(fake.list('products')[0].data.currentStock).toBe(7);
+  });
+
   it('arquiva sem apagar produto nem liberar seus identificadores', async () => {
     const fake = makeFakeDb();
     const created = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData() });
@@ -213,6 +242,43 @@ describe('product catalog admin core', () => {
     expect(archived.archivedAt).toBeTruthy();
     expect(fake.list('products')).toHaveLength(1);
     expect(fake.list('productIdentifiers')).toHaveLength(2);
+  });
+
+  it('reserva identificadores de variação e não aceita saldo aninhado fora do núcleo de estoque', async () => {
+    const fake = makeFakeDb();
+    const created = await createProductCatalogAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      data: productData({
+        sku: undefined,
+        barcode: undefined,
+        variants: [{
+          id: 'v1',
+          name: 'Pacote 250g',
+          attributes: { peso: '250g' },
+          sku: 'CAFE-250',
+          barcode: '250250',
+          salePrice: 18,
+          costPrice: 10,
+          currentStock: 12,
+          minStock: 2,
+          trackStock: true,
+          isActive: true,
+        }],
+      }),
+    });
+    expect(created.kind).toBe('variant');
+    expect(created.trackStock).toBe(false);
+    expect(created.variants?.[0].currentStock).toBe(0);
+    expect(fake.list('productIdentifiers')).toHaveLength(2);
+
+    const updated = await updateProductCatalogAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      productId: created.id,
+      patch: { variants: [{ ...created.variants![0], currentStock: 99, salePrice: 20 }] },
+    });
+    expect(updated.variants?.[0]).toMatchObject({ currentStock: 0, salePrice: 20 });
   });
 
   it('rejeita colisão entre o SKU principal e uma variação', async () => {

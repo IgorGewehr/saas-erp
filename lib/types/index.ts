@@ -1730,6 +1730,7 @@ export interface StockMovement {
   id: string;
   businessId: string;
   productId: string;
+  variantId?: string;
   productName: string;
   type: 'entrada' | 'saida' | 'ajuste';
   quantity: number;
@@ -4145,6 +4146,7 @@ export type NotificationType =
  */
 export interface StockAlert {
   productId: string;
+  variantId?: string;
   productName: string;
   previousStock: number;
   newStock: number;

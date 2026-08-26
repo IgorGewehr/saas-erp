@@ -34,6 +34,13 @@ export class ProductCatalogDuplicateIdentifierError extends Error {
   }
 }
 
+export class ProductCatalogVariantStockError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProductCatalogVariantStockError';
+  }
+}
+
 export function normalizeSku(value?: string | null): string | undefined {
   const normalized = value?.normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase();
   return normalized || undefined;
@@ -122,7 +129,31 @@ function buildProductDocument(params: {
   }
 
   const components = Array.isArray(merged.components) ? merged.components : [];
-  const variants = Array.isArray(merged.variants) ? merged.variants : [];
+  const requestedVariants = Array.isArray(merged.variants) ? merged.variants : [];
+  const existingVariants: NonNullable<Product['variants']> = Array.isArray(existing.variants)
+    ? existing.variants as NonNullable<Product['variants']>
+    : [];
+  const existingVariantById = new Map(existingVariants.map((variant) => [variant.id, variant]));
+  for (const oldVariant of existingVariants) {
+    if (!requestedVariants.some((variant) => variant && typeof variant === 'object' && 'id' in variant && variant.id === oldVariant.id)
+      && oldVariant.currentStock !== 0) {
+      throw new ProductCatalogVariantStockError(
+        `A variação ${oldVariant.name} possui estoque e deve ser zerada antes de ser removida.`,
+      );
+    }
+  }
+  if (existingVariants.length === 0 && requestedVariants.length > 0 && Number(existing.currentStock ?? 0) !== 0) {
+    throw new ProductCatalogVariantStockError(
+      'Zere o estoque principal antes de transformar o produto em produto com variações.',
+    );
+  }
+  const variants = requestedVariants.map((rawVariant) => {
+    const variant = rawVariant as NonNullable<Product['variants']>[number];
+    return {
+      ...variant,
+      currentStock: existingVariantById.get(variant.id)?.currentStock ?? 0,
+    };
+  });
   const images = normalizeImages(Array.isArray(merged.images) ? merged.images as ProductImageV2[] : []);
   const kind = components.length > 0 ? 'composite' : variants.length > 0 ? 'variant' : 'simple';
   const isActive = merged.isActive !== false;
@@ -144,7 +175,7 @@ function buildProductDocument(params: {
     salePrice: merged.salePrice ?? 0,
     currentStock: merged.currentStock ?? 0,
     minStock: merged.minStock ?? 0,
-    trackStock: kind === 'composite' ? false : merged.trackStock !== false,
+    trackStock: kind === 'simple' ? merged.trackStock !== false : false,
     isActive,
     menuAvailable: merged.menuAvailable !== false,
     imageUrl: primaryImage?.url,
@@ -335,19 +366,78 @@ export async function updateProductCatalogAdmin(params: {
   patch: ProductCatalogPatch;
 }): Promise<Product> {
   const existing = await getProductCatalogAdmin(params.db, params.businessId, params.productId);
-  const now = new Date().toISOString();
-  const product = buildProductDocument({
+  const candidate = buildProductDocument({
     id: existing.id,
     businessId: params.businessId,
     existing: existing as unknown as Record<string, unknown>,
     patch: params.patch,
-    now,
+    now: new Date().toISOString(),
   });
-  const identifiers = identifiersForProduct(product);
+  const identifiers = identifiersForProduct(candidate);
   assertNoInternalDuplicateIdentifiers(identifiers);
   await assertNoLegacyDuplicate(params.db, params.businessId, identifiers, params.productId);
-  await writeProductAndClaims({ db: params.db, product, previous: existing });
-  return product;
+
+  const productRef = params.db.collection('products').doc(params.productId);
+  return params.db.runTransaction(async (tx) => {
+    const currentSnapshot = await tx.get(productRef);
+    if (!currentSnapshot.exists || currentSnapshot.data()?.businessId !== params.businessId) {
+      throw new ProductCatalogNotFoundError();
+    }
+    const current = { ...(currentSnapshot.data() as Product), id: currentSnapshot.id };
+    const product = buildProductDocument({
+      id: current.id,
+      businessId: params.businessId,
+      existing: current as unknown as Record<string, unknown>,
+      patch: params.patch,
+      now: new Date().toISOString(),
+    });
+    const nextIdentifiers = identifiersForProduct(product);
+    const previousIdentifiers = identifiersForProduct(current);
+    assertNoInternalDuplicateIdentifiers(nextIdentifiers);
+
+    const nextByKey = new Map(nextIdentifiers.map((identifier) => [
+      `${identifier.type}:${identifier.value}`,
+      identifier,
+    ]));
+    const previousByKey = new Map(previousIdentifiers.map((identifier) => [
+      `${identifier.type}:${identifier.value}`,
+      identifier,
+    ]));
+    const allIdentifiers = new Map([...previousByKey, ...nextByKey]);
+    const claimSnapshots = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+    for (const [key, identifier] of allIdentifiers) {
+      const ref = params.db.collection('productIdentifiers').doc(identifierClaimId(params.businessId, identifier));
+      claimSnapshots.set(key, await tx.get(ref));
+    }
+    for (const [key, identifier] of nextByKey) {
+      const claim = claimSnapshots.get(key);
+      if (claim?.exists && claim.data()?.productId !== product.id) {
+        throw new ProductCatalogDuplicateIdentifierError(identifier.type, identifier.value);
+      }
+    }
+
+    tx.set(productRef, product as unknown as Record<string, unknown>);
+    for (const [key, identifier] of previousByKey) {
+      if (nextByKey.has(key)) continue;
+      const ref = params.db.collection('productIdentifiers').doc(identifierClaimId(params.businessId, identifier));
+      const claim = claimSnapshots.get(key);
+      if (claim?.exists && claim.data()?.productId === product.id) tx.delete(ref);
+    }
+    for (const identifier of nextIdentifiers) {
+      const key = `${identifier.type}:${identifier.value}`;
+      const ref = params.db.collection('productIdentifiers').doc(identifierClaimId(params.businessId, identifier));
+      tx.set(ref, withoutUndefined({
+        businessId: params.businessId,
+        productId: product.id,
+        variantId: identifier.variantId,
+        type: identifier.type,
+        value: identifier.value,
+        updatedAt: product.updatedAt,
+        createdAt: claimSnapshots.get(key)?.data()?.createdAt ?? product.createdAt,
+      }));
+    }
+    return product;
+  });
 }
 
 export async function archiveProductCatalogAdmin(params: {

@@ -11,6 +11,7 @@ import {
   createProductCatalogAdmin,
   ProductCatalogDuplicateIdentifierError,
   ProductCatalogNotFoundError,
+  ProductCatalogVariantStockError,
   updateProductCatalogAdmin,
 } from '@/lib/services/product-catalog-admin';
 import {
@@ -30,9 +31,49 @@ function canManageProducts(role: string): boolean {
   return (ROLE_HIERARCHY[role as UserRole] ?? 0) >= ROLE_HIERARCHY.manager;
 }
 
+export async function GET(request: NextRequest) {
+  const businessId = request.nextUrl.searchParams.get('businessId') ?? '';
+  const pageSize = Math.min(Math.max(Number(request.nextUrl.searchParams.get('limit')) || 100, 1), 200);
+  const cursor = request.nextUrl.searchParams.get('cursor');
+  if (!businessId) return error('businessId é obrigatório.', 400);
+
+  const auth = await verifyAuth(request, businessId);
+  if (isAuthError(auth)) return auth;
+  if ((ROLE_HIERARCHY[auth.role as UserRole] ?? 0) < ROLE_HIERARCHY.operator) {
+    return error('Sem permissão para consultar produtos.', 403);
+  }
+
+  try {
+    let query: FirebaseFirestore.Query = adminDb
+      .collection('products')
+      .where('businessId', '==', auth.businessId)
+      .orderBy('__name__')
+      .limit(pageSize + 1);
+    if (cursor) query = query.startAfter(cursor);
+    const snapshot = await query.get();
+    const hasMore = snapshot.docs.length > pageSize;
+    const docs = snapshot.docs.slice(0, pageSize);
+    const products = docs.map((doc) => ({ ...doc.data(), id: doc.id }));
+    return NextResponse.json({
+      ok: true,
+      data: {
+        products,
+        hasMore,
+        nextCursor: hasMore ? docs.at(-1)?.id ?? null : null,
+      },
+    });
+  } catch (cause) {
+    console.error('[products] list failed', cause);
+    return error('Não foi possível carregar o catálogo.', 500);
+  }
+}
+
 function catalogError(cause: unknown) {
   if (cause instanceof ProductCatalogDuplicateIdentifierError) {
     return error(cause.message, 409, 'DUPLICATE_IDENTIFIER');
+  }
+  if (cause instanceof ProductCatalogVariantStockError) {
+    return error(cause.message, 409, 'VARIANT_STOCK_CONFLICT');
   }
   if (cause instanceof ProductCatalogNotFoundError || cause instanceof StockReferenceError) {
     return error(cause.message, 404, 'PRODUCT_NOT_FOUND');

@@ -32,6 +32,7 @@ export type StockSourceType =
 
 export interface StockOperationLine {
   productId: string;
+  variantId?: string;
   /**
    * entrada/saida/restauracao: magnitude positiva.
    * ajuste: delta assinado (positivo ou negativo).
@@ -78,6 +79,7 @@ export interface StockOperationInput {
 
 export interface StockOperationAdjustment {
   productId: string;
+  variantId?: string;
   productName: string;
   movementId: string;
   delta: number;
@@ -99,6 +101,7 @@ interface StoredStockOperationResult {
 
 interface AggregatedLine {
   productId: string;
+  variantId?: string;
   quantity: number;
   sourceLineIds: Set<string>;
   strict: boolean;
@@ -130,6 +133,7 @@ export class StockIdempotencyConflictError extends Error {
 
 export interface StockShortage {
   productId: string;
+  variantId?: string;
   productName: string;
   requested: number;
   available: number;
@@ -197,12 +201,13 @@ function fingerprint(input: StockOperationInput): string {
   const lines = input.lines
     .map((line) => ({
       productId: line.productId,
+      variantId: line.variantId ?? '',
       quantity: roundStock(line.quantity),
       sourceLineId: line.sourceLineId ?? '',
     }))
     .sort((a, b) =>
-      `${a.productId}:${a.sourceLineId}:${a.quantity}`.localeCompare(
-        `${b.productId}:${b.sourceLineId}:${b.quantity}`,
+      `${a.productId}:${a.variantId}:${a.sourceLineId}:${a.quantity}`.localeCompare(
+        `${b.productId}:${b.variantId}:${b.sourceLineId}:${b.quantity}`,
       ),
     );
   return hash(JSON.stringify({
@@ -220,15 +225,17 @@ function fingerprint(input: StockOperationInput): string {
 }
 
 function detectStockCrossing(
-  product: Product,
+  product: Pick<Product, 'id' | 'name' | 'minStock'>,
   previousStock: number,
   newStock: number,
+  variantId?: string,
 ): StockAlert | undefined {
   const minStock = product.minStock ?? 0;
   if (minStock <= 0 || newStock >= previousStock) return undefined;
   if (previousStock > minStock && newStock <= minStock) {
     return {
       productId: product.id,
+      ...(variantId ? { variantId } : {}),
       productName: product.name,
       previousStock,
       newStock,
@@ -264,16 +271,22 @@ function aggregateLines(
   const shouldExpand = input.expandBom !== false;
 
   for (const sourceLine of input.lines) {
-    const expanded = shouldExpand
+    const expanded = shouldExpand && !sourceLine.variantId
       ? expandBomLines(
           [{ productId: sourceLine.productId, quantity: sourceLine.quantity }],
           productIndex as unknown as Map<string, BomProductLite>,
         )
-      : [{ productId: sourceLine.productId, quantity: sourceLine.quantity }];
+      : [{
+          productId: sourceLine.productId,
+          ...(sourceLine.variantId ? { variantId: sourceLine.variantId } : {}),
+          quantity: sourceLine.quantity,
+        }];
 
     for (const line of expanded) {
-      const current = bucket.get(line.productId) ?? {
+      const key = `${line.productId}:${'variantId' in line ? line.variantId ?? '' : ''}`;
+      const current = bucket.get(key) ?? {
         productId: line.productId,
+        ...('variantId' in line && line.variantId ? { variantId: line.variantId } : {}),
         quantity: 0,
         sourceLineIds: new Set<string>(),
         strict: false,
@@ -283,11 +296,13 @@ function aggregateLines(
       current.strict = current.strict ||
         input.strictProductIds?.has(sourceLine.productId) === true ||
         input.strictProductIds?.has(line.productId) === true;
-      bucket.set(line.productId, current);
+      bucket.set(key, current);
     }
   }
 
-  return [...bucket.values()].sort((a, b) => a.productId.localeCompare(b.productId));
+  return [...bucket.values()].sort((a, b) =>
+    `${a.productId}:${a.variantId ?? ''}`.localeCompare(`${b.productId}:${b.variantId ?? ''}`),
+  );
 }
 
 function movementType(type: StockOperationType): 'entrada' | 'saida' | 'ajuste' {
@@ -379,7 +394,18 @@ export async function applyStockOperationAdmin(
     const reads = aggregated.map((line) => {
       const product = productIndex.get(line.productId);
       if (!product) throw new StockReferenceError(`Produto expandido não encontrado: ${line.productId}.`);
-      const previousStock = Number.isFinite(product.currentStock) ? product.currentStock : 0;
+      const variant = line.variantId
+        ? product.variants?.find((item) => item.id === line.variantId)
+        : undefined;
+      if (line.variantId && !variant) {
+        throw new StockReferenceError(`Variação não encontrada: ${product.name}/${line.variantId}.`);
+      }
+      if (variant && variant.isActive === false) {
+        throw new StockReferenceError(`Variação inativa: ${product.name}/${variant.name}.`);
+      }
+      const previousStock = variant
+        ? (Number.isFinite(variant.currentStock) ? variant.currentStock : 0)
+        : (Number.isFinite(product.currentStock) ? product.currentStock : 0);
       const delta = roundStock(deltaFor(
         input.type,
         line.quantity,
@@ -387,7 +413,9 @@ export async function applyStockOperationAdmin(
         input.adjustmentMode ?? 'delta',
       ));
       const newStock = roundStock(previousStock + delta);
-      return { line, product, previousStock, delta, newStock };
+      const productName = variant ? `${product.name} — ${variant.name}` : product.name;
+      const minStock = variant?.minStock ?? product.minStock ?? 0;
+      return { line, product, variant, productName, minStock, previousStock, delta, newStock };
     });
 
     const effectiveReads = reads.filter(({ delta }) => delta !== 0);
@@ -399,9 +427,10 @@ export async function applyStockOperationAdmin(
         newStock < 0 &&
         (input.negativeStockPolicy === 'prevent' || line.strict),
       )
-      .map(({ product, previousStock, delta }) => ({
+      .map(({ line, product, productName, previousStock, delta }) => ({
         productId: product.id,
-        productName: product.name,
+        ...(line.variantId ? { variantId: line.variantId } : {}),
+        productName,
         requested: Math.abs(delta),
         available: previousStock,
       }));
@@ -409,22 +438,39 @@ export async function applyStockOperationAdmin(
 
     const now = new Date().toISOString();
     const adjustments: StockOperationAdjustment[] = [];
-    for (const { line, product, previousStock, delta, newStock } of effectiveReads) {
-      const movementId = `stockmv_${hash(`${operationId}:${product.id}`).slice(0, 40)}`;
+    const productPatches = new Map<string, Record<string, unknown>>();
+    for (const { line, product, variant, productName, minStock, previousStock, delta, newStock } of effectiveReads) {
+      const targetKey = `${product.id}:${line.variantId ?? ''}`;
+      const movementId = `stockmv_${hash(`${operationId}:${targetKey}`).slice(0, 40)}`;
       const movementRef = db.collection('stockMovements').doc(movementId);
-      const movementIdempotencyKey = `stock:${operationHash.slice(0, 32)}:${hash(product.id).slice(0, 16)}`;
+      const movementIdempotencyKey = `stock:${operationHash.slice(0, 32)}:${hash(targetKey).slice(0, 16)}`;
       const sourceLineId = line.sourceLineIds.size === 1 ? [...line.sourceLineIds][0] : undefined;
-      const alert = detectStockCrossing(product, previousStock, newStock);
+      const alert = detectStockCrossing(
+        { id: product.id, name: productName, minStock },
+        previousStock,
+        newStock,
+        line.variantId,
+      );
 
-      tx.update(db.collection('products').doc(product.id), {
-        currentStock: newStock,
-        updatedAt: now,
-      });
+      const productPatch = productPatches.get(product.id) ?? { updatedAt: now };
+      if (variant && line.variantId) {
+        const variants = (productPatch.variants as Product['variants'] | undefined)
+          ?? (product.variants ?? []).map((item) => ({ ...item }));
+        const variantIndex = variants.findIndex((item) => item.id === line.variantId);
+        if (variantIndex < 0) throw new StockReferenceError(`Variação não encontrada: ${line.variantId}.`);
+        variants[variantIndex] = { ...variants[variantIndex], currentStock: newStock };
+        productPatch.variants = variants;
+      } else {
+        productPatch.currentStock = newStock;
+      }
+      productPatches.set(product.id, productPatch);
+
       tx.set(movementRef, {
         schemaVersion: 2,
         businessId: input.businessId,
         productId: product.id,
-        productName: product.name,
+        ...(line.variantId ? { variantId: line.variantId } : {}),
+        productName,
         type: movementType(input.type),
         quantity: input.type === 'ajuste' ? delta : Math.abs(delta),
         previousStock,
@@ -443,13 +489,18 @@ export async function applyStockOperationAdmin(
 
       adjustments.push({
         productId: product.id,
-        productName: product.name,
+        ...(line.variantId ? { variantId: line.variantId } : {}),
+        productName,
         movementId,
         delta,
         previousStock,
         newStock,
         ...(alert ? { alert } : {}),
       });
+    }
+
+    for (const [productId, patch] of productPatches) {
+      tx.update(db.collection('products').doc(productId), patch);
     }
 
     const storedResult: StoredStockOperationResult = { operationId, adjustments };

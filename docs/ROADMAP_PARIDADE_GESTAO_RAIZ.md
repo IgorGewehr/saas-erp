@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0, M01.1, M01.2 e M01.3a concluídos; próximo: M01.3b`
+  - Status: `Em implementação — M01.0, M01.1, M01.2 e M01.3 concluídos; próximo: M01.4`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -299,15 +299,15 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 - [x] Validar unicidade de SKU e código de barras dentro do `businessId`.
 - [x] Implementar inativação/arquivamento em vez de exclusão física de item referenciado.
 - [x] Preservar produto simples, receita/BOM, cardápio e modificadores.
-- [ ] Adicionar múltiplas imagens de forma compatível.
-- [ ] Adicionar variações para os segmentos que necessitam, com SKU, código, preço e estoque próprios.
-- [ ] Melhorar categorias, filtros, importação/exportação e paginação do catálogo.
+- [x] Adicionar múltiplas imagens de forma compatível.
+- [x] Adicionar variações para os segmentos que necessitam, com SKU, código, preço e estoque próprios.
+- [x] Melhorar categorias, filtros, importação/exportação e paginação do catálogo.
 - [x] Exibir margem, custo, saldo, estoque mínimo e origem da última atualização.
 - [x] Manter o modo planilha, ajustando-o aos novos contratos.
 
-**M01.3a concluído:** núcleo compartilhado pela UI, API v1 e agente; claims de SKU/código por tenant; upload autenticado; estoque inicial auditável; soft archive; indicadores e planilha V2. Detalhes em `docs/paridade/M01_CATALOGO_PRODUTOS.md`.
+**M01.3a concluído:** núcleo compartilhado pela UI, API v1 e agente; claims de SKU/código por tenant; upload autenticado; estoque inicial auditável; soft archive; indicadores e planilha V2.
 
-**M01.3b seguinte:** editor de múltiplas imagens e variações, categorias livres, importação CSV e paginação server-side.
+**M01.3b concluído:** editor de até oito imagens, variações com saldo auditável, categorias livres, importação CSV com relatório por linha e paginação server-side. Detalhes em `docs/paridade/M01_CATALOGO_PRODUTOS.md`.
 
 **Saída:** catálogo modular, seguro e adequado a varejo/alimentação.
 

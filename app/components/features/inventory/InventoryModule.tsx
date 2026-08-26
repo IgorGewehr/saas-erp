@@ -22,6 +22,7 @@ import {
   Switch,
   FormControlLabel,
   CircularProgress,
+  Autocomplete,
 } from '@mui/material';
 import {
   Package,
@@ -48,7 +49,6 @@ import {
   ClipboardList,
   Image as ImageIcon,
   Upload,
-  Camera,
   FileSpreadsheet,
   Tag,
   FileText,
@@ -56,6 +56,8 @@ import {
   Truck,
   Send,
   Archive,
+  FileUp,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   collection,
@@ -67,8 +69,16 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Product, StockMovement, ProductComponent, ProductModifierGroup, MenuCategory } from '@/lib/types';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import type {
+  Product,
+  ProductImage,
+  ProductVariant,
+  StockMovement,
+  ProductComponent,
+  ProductModifierGroup,
+  MenuCategory,
+} from '@/lib/types';
 import type { ProductCatalogData } from '@/lib/contracts/api/product-catalog';
 import { notifyLowStock } from '@/lib/services/notifications';
 import {
@@ -79,6 +89,7 @@ import {
   archiveCatalogProduct,
   createCatalogIdempotencyKey,
   createCatalogProduct,
+  listCatalogProductsPage,
   replaceCatalogProductImages,
   updateCatalogProduct,
 } from '@/lib/services/product-catalog-client';
@@ -95,6 +106,12 @@ import MenuCategoriesManager from './MenuCategoriesManager';
 import NcmSelector from '@/app/components/features/fiscal/NcmSelector';
 import { onSnapshot } from 'firebase/firestore';
 import { Sparkles } from 'lucide-react';
+import {
+  importProductCsvRows,
+  parseProductCsv,
+  type ProductCsvImportResult,
+  type ProductCsvRow,
+} from '@/lib/services/product-csv-import';
 
 // ==============================================
 // TYPES
@@ -138,9 +155,10 @@ interface ProductFormData {
   unidadeTrib: string;
   gtinTrib: string;
   isActive: boolean;
-  imageFile: File | null;
-  imagePreview: string;
-  existingImageUrl: string;
+  imageFiles: File[];
+  imagePreviews: string[];
+  existingImages: ProductImage[];
+  variants: ProductVariant[];
   // Delivery / Cardápio
   isDeliverable: boolean;
   // Raw (semântica do type): true/ausente = disponível / controla estoque.
@@ -158,6 +176,7 @@ interface ProductFormData {
 interface MovementFormData {
   type: MovementType;
   productId: string;
+  variantId: string;
   quantity: string;
   reason: string;
   notes: string;
@@ -210,9 +229,10 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   unidadeTrib: '',
   gtinTrib: '',
   isActive: true,
-  imageFile: null,
-  imagePreview: '',
-  existingImageUrl: '',
+  imageFiles: [],
+  imagePreviews: [],
+  existingImages: [],
+  variants: [],
   isDeliverable: false,
   menuAvailable: true,
   trackStock: true,
@@ -228,6 +248,7 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
 const EMPTY_MOVEMENT_FORM: MovementFormData = {
   type: 'entrada',
   productId: '',
+  variantId: '',
   quantity: '',
   reason: '',
   notes: '',
@@ -320,8 +341,20 @@ function getStockTextColor(current: number, min: number): string {
   return 'text-emerald-600 dark:text-emerald-400';
 }
 
+function getProductStockSnapshot(product: Product): { current: number; min: number; max?: number } {
+  if (!product.variants?.length) {
+    return { current: product.currentStock, min: product.minStock, max: product.maxStock };
+  }
+  const activeVariants = product.variants.filter((variant) => variant.isActive);
+  const current = activeVariants.reduce((sum, variant) => sum + variant.currentStock, 0);
+  const min = activeVariants.reduce((sum, variant) => sum + variant.minStock, 0);
+  const maxValues = activeVariants.map((variant) => variant.maxStock).filter((value): value is number => value !== undefined);
+  return { current, min, ...(maxValues.length === activeVariants.length ? { max: maxValues.reduce((sum, value) => sum + value, 0) } : {}) };
+}
+
 function isLowStock(product: Product): boolean {
-  return product.currentStock <= product.minStock && product.isActive;
+  const stock = getProductStockSnapshot(product);
+  return stock.current <= stock.min && product.isActive;
 }
 
 function getMargin(cost: number, sale: number): number {
@@ -466,8 +499,9 @@ function ProductCardBase({ product, lastMovement, onEdit, onDelete, onMovement }
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const catIcon = CATEGORY_ICONS[product.category] || CATEGORY_ICONS.Produto;
-  const stockPct = getStockPercentage(product.currentStock, product.maxStock);
-  const stockColor = getStockColor(product.currentStock, product.maxStock);
+  const stock = getProductStockSnapshot(product);
+  const stockPct = getStockPercentage(stock.current, stock.max);
+  const stockColor = getStockColor(stock.current, stock.max);
   const low = isLowStock(product);
   const margin = getMargin(product.costPrice, product.salePrice);
 
@@ -518,8 +552,8 @@ function ProductCardBase({ product, lastMovement, onEdit, onDelete, onMovement }
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-xs text-muted-foreground">{t('inventory.stock', 'Estoque')}</span>
-            <span className={cn('text-sm font-bold', getStockTextColor(product.currentStock, product.minStock))}>
-              {product.currentStock} {product.unit}
+            <span className={cn('text-sm font-bold', getStockTextColor(stock.current, stock.min))}>
+              {stock.current} {product.unit}
             </span>
           </div>
           <div className="w-full h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
@@ -531,9 +565,9 @@ function ProductCardBase({ product, lastMovement, onEdit, onDelete, onMovement }
             />
           </div>
           <div className="flex items-center justify-between mt-1">
-            <span className="text-[10px] text-muted-foreground">Min: {product.minStock}</span>
-            {product.maxStock && (
-              <span className="text-[10px] text-muted-foreground">Max: {product.maxStock}</span>
+            <span className="text-[10px] text-muted-foreground">Min: {stock.min}</span>
+            {stock.max !== undefined && (
+              <span className="text-[10px] text-muted-foreground">Max: {stock.max}</span>
             )}
           </div>
         </div>
@@ -568,6 +602,11 @@ function ProductCardBase({ product, lastMovement, onEdit, onDelete, onMovement }
           <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold', catColor.bg, catColor.text)}>
             {product.category}
           </span>
+          {product.variants?.length ? (
+            <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400">
+              {product.variants.length} variações
+            </span>
+          ) : null}
           {!product.isActive && (
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
               {t('inventory.inactive', 'Inativo')}
@@ -665,8 +704,9 @@ function ProductRowBase({ product, lastMovement, onEdit, onDelete, onMovement }:
   const { t } = useTranslation();
   const catColor = CATEGORY_COLORS[product.category] || CATEGORY_COLORS.Produto;
   const low = isLowStock(product);
-  const stockPct = getStockPercentage(product.currentStock, product.maxStock);
-  const stockBarColor = getStockColor(product.currentStock, product.maxStock);
+  const stock = getProductStockSnapshot(product);
+  const stockPct = getStockPercentage(stock.current, stock.max);
+  const stockBarColor = getStockColor(stock.current, stock.max);
   const margin = getMargin(product.costPrice, product.salePrice);
 
   return (
@@ -711,9 +751,10 @@ function ProductRowBase({ product, lastMovement, onEdit, onDelete, onMovement }:
       {/* Estoque Atual */}
       <td className="py-3 px-4">
         <div className="space-y-1">
-          <span className={cn('text-sm font-bold', getStockTextColor(product.currentStock, product.minStock))}>
-            {product.currentStock} {product.unit}
+          <span className={cn('text-sm font-bold', getStockTextColor(stock.current, stock.min))}>
+            {stock.current} {product.unit}
           </span>
+          {product.variants?.length ? <p className="text-[10px] text-blue-600">{product.variants.length} variações</p> : null}
           <div className="w-20 h-1.5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
             <div className={cn('h-full rounded-full', stockBarColor)} style={{ width: `${stockPct}%` }} />
           </div>
@@ -785,36 +826,36 @@ function ProductRowBase({ product, lastMovement, onEdit, onDelete, onMovement }:
 // IMAGE UPLOAD DROP ZONE
 // ==============================================
 
-interface ImageDropZoneProps {
-  preview: string;
-  existingUrl: string;
-  onFileSelect: (file: File) => void;
-  onRemove: () => void;
+interface ProductImagesEditorProps {
+  existingImages: ProductImage[];
+  files: File[];
+  previews: string[];
+  onFilesSelect: (files: File[]) => void;
+  onRemoveExisting: (id: string) => void;
+  onRemoveFile: (index: number) => void;
+  onMoveExisting: (index: number, direction: -1 | 1) => void;
   error?: string;
 }
 
-function ImageDropZone({ preview, existingUrl, onFileSelect, onRemove, error }: ImageDropZoneProps) {
+function ProductImagesEditor({
+  existingImages,
+  files,
+  previews,
+  onFilesSelect,
+  onRemoveExisting,
+  onRemoveFile,
+  onMoveExisting,
+  error,
+}: ProductImagesEditorProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
 
-  const displayUrl = preview || existingUrl;
-
-  function handleFile(file: File) {
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
-      return;
-    }
-    if (file.size > MAX_IMAGE_SIZE) {
-      return;
-    }
-    onFileSelect(file);
-  }
-
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFile(file);
+    const dropped = Array.from(e.dataTransfer.files);
+    if (dropped.length > 0) onFilesSelect(dropped);
   }
 
   function handleDragOver(e: React.DragEvent) {
@@ -827,78 +868,221 @@ function ImageDropZone({ preview, existingUrl, onFileSelect, onRemove, error }: 
   }
 
   function handleInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) handleFile(file);
+    const selected = Array.from(e.target.files ?? []);
+    if (selected.length > 0) onFilesSelect(selected);
+    e.target.value = '';
   }
 
-  if (displayUrl) {
-    return (
-      <div className="relative">
-        <div className="relative w-full h-40 rounded-xl overflow-hidden border border-border/60 bg-gray-50 dark:bg-gray-800">
-          <img src={displayUrl} alt="Preview" className="w-full h-full object-contain" />
-          <div className="absolute inset-0 bg-black/0 hover:bg-black/40 transition-colors flex items-center justify-center opacity-0 hover:opacity-100">
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="px-3 py-1.5 rounded-lg bg-white/90 text-sm font-medium text-gray-700 hover:bg-white transition-colors"
-              >
-                <Camera className="w-4 h-4 inline mr-1" />
-                {t('inventory.image.change', 'Trocar')}
-              </button>
-              <button
-                type="button"
-                onClick={onRemove}
-                className="px-3 py-1.5 rounded-lg bg-red-500/90 text-sm font-medium text-white hover:bg-red-500 transition-colors"
-              >
-                <Trash2 className="w-4 h-4 inline mr-1" />
-                {t('inventory.image.remove', 'Remover')}
-              </button>
-            </div>
-          </div>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept={ACCEPTED_IMAGE_TYPES.join(',')}
-          onChange={handleInputChange}
-          className="hidden"
-        />
-      </div>
-    );
-  }
+  const total = existingImages.length + files.length;
 
   return (
-    <div>
-      <div
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onClick={() => fileInputRef.current?.click()}
-        className={cn(
-          'flex flex-col items-center justify-center h-40 rounded-xl border-2 border-dashed cursor-pointer transition-all',
-          isDragging
-            ? 'border-red-400 bg-red-50/50 dark:bg-red-500/5'
-            : 'border-border/60 hover:border-red-300 dark:hover:border-red-500/40 bg-gray-50/50 dark:bg-gray-800/50 hover:bg-red-50/30 dark:hover:bg-red-500/5',
-          error && 'border-red-400',
-        )}
-      >
-        <Upload className="w-8 h-8 text-muted-foreground/60 mb-2" />
-        <p className="text-sm font-medium text-muted-foreground">
-          {t('inventory.image.dragOrClick', 'Arraste uma imagem ou clique para selecionar')}
-        </p>
-        <p className="text-xs text-muted-foreground/60 mt-1">
-          {t('inventory.image.formats', 'JPG, PNG ou WebP - Max 5MB')}
-        </p>
-      </div>
-      {error && <p className="text-xs text-red-500 mt-1">{error}</p>}
+    <div className="space-y-3">
+      {total > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {existingImages.map((image, index) => (
+            <div key={image.id} className="relative aspect-square rounded-xl overflow-hidden border border-border/60 bg-muted/30 group">
+              <img src={image.url} alt={image.alt || `Imagem ${index + 1}`} className="w-full h-full object-cover" />
+              {index === 0 && (
+                <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-emerald-600 text-white text-[9px] font-bold">
+                  Principal
+                </span>
+              )}
+              <div className="absolute inset-x-1.5 bottom-1.5 flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button type="button" disabled={index === 0} onClick={() => onMoveExisting(index, -1)} className="p-1 rounded bg-white/90 text-gray-700 disabled:opacity-40" title="Mover para esquerda">
+                  <ArrowUp className="w-3 h-3 -rotate-90" />
+                </button>
+                <button type="button" disabled={index === existingImages.length - 1} onClick={() => onMoveExisting(index, 1)} className="p-1 rounded bg-white/90 text-gray-700 disabled:opacity-40" title="Mover para direita">
+                  <ArrowDown className="w-3 h-3 -rotate-90" />
+                </button>
+                <button type="button" onClick={() => onRemoveExisting(image.id)} className="p-1 rounded bg-red-600 text-white" title="Remover imagem">
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+          {files.map((file, index) => (
+            <div key={`${file.name}-${file.lastModified}-${index}`} className="relative aspect-square rounded-xl overflow-hidden border border-blue-300 dark:border-blue-700 bg-muted/30 group">
+              <img src={previews[index]} alt={file.name} className="w-full h-full object-cover" />
+              {existingImages.length === 0 && index === 0 && (
+                <span className="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded-md bg-blue-600 text-white text-[9px] font-bold">
+                  Nova principal
+                </span>
+              )}
+              <button type="button" onClick={() => onRemoveFile(index)} className="absolute right-1.5 bottom-1.5 p-1 rounded bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-opacity" title="Remover arquivo">
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {total < 8 && (
+        <div
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onClick={() => fileInputRef.current?.click()}
+          className={cn(
+            'flex flex-col items-center justify-center h-28 rounded-xl border-2 border-dashed cursor-pointer transition-all',
+            isDragging
+              ? 'border-red-400 bg-red-50/50 dark:bg-red-500/5'
+              : 'border-border/60 hover:border-red-300 dark:hover:border-red-500/40 bg-gray-50/50 dark:bg-gray-800/50',
+            error && 'border-red-400',
+          )}
+        >
+          <Upload className="w-6 h-6 text-muted-foreground/60 mb-1" />
+          <p className="text-sm font-medium text-muted-foreground">
+            {t('inventory.image.dragOrClickMany', 'Arraste imagens ou clique para selecionar')}
+          </p>
+          <p className="text-xs text-muted-foreground/60 mt-1">
+            JPG, PNG ou WebP · até 5MB cada · {total}/8
+          </p>
+        </div>
+      )}
+      {error && <p className="text-xs text-red-500">{error}</p>}
       <input
         ref={fileInputRef}
         type="file"
+        multiple
         accept={ACCEPTED_IMAGE_TYPES.join(',')}
         onChange={handleInputChange}
         className="hidden"
       />
+      </div>
+  );
+}
+
+// ==============================================
+// PRODUCT VARIANTS EDITOR
+// ==============================================
+
+function formatVariantAttributes(attributes: Record<string, string>): string {
+  return Object.entries(attributes).map(([key, value]) => `${key}=${value}`).join('; ');
+}
+
+function parseVariantAttributes(value: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  for (const part of value.split(';')) {
+    const [rawKey, ...rawValue] = part.split('=');
+    const key = rawKey?.trim();
+    const parsedValue = rawValue.join('=').trim();
+    if (key && parsedValue) attributes[key] = parsedValue;
+  }
+  return attributes;
+}
+
+interface ProductVariantsEditorProps {
+  variants: ProductVariant[];
+  onChange: (variants: ProductVariant[]) => void;
+  defaultCost: number;
+  defaultSale: number;
+}
+
+function VariantAttributesInput({
+  attributes,
+  onChange,
+}: {
+  attributes: Record<string, string>;
+  onChange: (attributes: Record<string, string>) => void;
+}) {
+  const [value, setValue] = useState(() => formatVariantAttributes(attributes));
+  React.useEffect(() => setValue(formatVariantAttributes(attributes)), [attributes]);
+  return (
+    <TextField
+      size="small"
+      fullWidth
+      label="Atributos"
+      placeholder="Cor=Azul; Tamanho=M"
+      value={value}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={() => onChange(parseVariantAttributes(value))}
+    />
+  );
+}
+
+function ProductVariantsEditor({ variants, onChange, defaultCost, defaultSale }: ProductVariantsEditorProps) {
+  function updateVariant(index: number, patch: Partial<ProductVariant>) {
+    onChange(variants.map((variant, itemIndex) => itemIndex === index ? { ...variant, ...patch } : variant));
+  }
+
+  function addVariant() {
+    const id = globalThis.crypto?.randomUUID?.()
+      ?? `variant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    onChange([...variants, {
+      id,
+      name: `Variação ${variants.length + 1}`,
+      attributes: {},
+      sku: '',
+      barcode: '',
+      salePrice: defaultSale,
+      costPrice: defaultCost,
+      currentStock: 0,
+      minStock: 0,
+      trackStock: true,
+      isActive: true,
+    }]);
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-foreground">Variações do produto</p>
+          <p className="text-xs text-muted-foreground">
+            Cada variação possui SKU, código, preço e estoque próprios. Use atributos como Cor=Azul; Tamanho=M.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={addVariant}
+          className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-red-600 border border-red-200 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/30"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Adicionar
+        </button>
+      </div>
+
+      {variants.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border/70 p-5 text-center text-xs text-muted-foreground">
+          Produto simples, sem variações.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {variants.map((variant, index) => (
+            <div key={variant.id} className="rounded-xl border border-border/70 bg-muted/20 p-3 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-bold text-muted-foreground">Variação {index + 1}</span>
+                <div className="flex items-center gap-2">
+                  <FormControlLabel
+                    control={<Switch size="small" checked={variant.isActive} onChange={(event) => updateVariant(index, { isActive: event.target.checked })} />}
+                    label={<span className="text-xs">Ativa</span>}
+                    sx={{ marginRight: 0 }}
+                  />
+                  <IconButton size="small" onClick={() => onChange(variants.filter((_, itemIndex) => itemIndex !== index))} title="Remover variação">
+                    <Trash2 size={15} />
+                  </IconButton>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <TextField size="small" label="Nome" required value={variant.name} onChange={(event) => updateVariant(index, { name: event.target.value })} />
+                <TextField size="small" label="SKU" value={variant.sku || ''} onChange={(event) => updateVariant(index, { sku: event.target.value })} />
+                <TextField size="small" label="Código de barras" value={variant.barcode || ''} onChange={(event) => updateVariant(index, { barcode: event.target.value })} />
+              </div>
+              <VariantAttributesInput
+                attributes={variant.attributes}
+                onChange={(attributes) => updateVariant(index, { attributes })}
+              />
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <TextField size="small" type="number" label="Custo" value={variant.costPrice} onChange={(event) => updateVariant(index, { costPrice: Math.max(0, Number(event.target.value) || 0) })} slotProps={{ htmlInput: { min: 0, step: 0.01 } }} />
+                <TextField size="small" type="number" label="Venda" value={variant.salePrice} onChange={(event) => updateVariant(index, { salePrice: Math.max(0, Number(event.target.value) || 0) })} slotProps={{ htmlInput: { min: 0, step: 0.01 } }} />
+                <TextField size="small" type="number" label="Estoque" value={variant.currentStock} onChange={(event) => updateVariant(index, { currentStock: Math.max(0, Number(event.target.value) || 0) })} slotProps={{ htmlInput: { min: 0 } }} />
+                <TextField size="small" type="number" label="Mínimo" value={variant.minStock} onChange={(event) => updateVariant(index, { minStock: Math.max(0, Number(event.target.value) || 0) })} slotProps={{ htmlInput: { min: 0 } }} />
+                <TextField size="small" type="number" label="Máximo" value={variant.maxStock ?? ''} onChange={(event) => updateVariant(index, { maxStock: event.target.value === '' ? undefined : Math.max(0, Number(event.target.value) || 0) })} slotProps={{ htmlInput: { min: 0 } }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1016,6 +1200,166 @@ function DeleteDialog({ open, onClose, onConfirm, productName, isDeleting }: Del
 }
 
 // ==============================================
+// CSV IMPORT DIALOG
+// ==============================================
+
+function ProductCsvImportDialog({
+  open,
+  onClose,
+  businessId,
+  onImported,
+}: {
+  open: boolean;
+  onClose: () => void;
+  businessId: string;
+  onImported: () => Promise<void> | void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [rows, setRows] = useState<ProductCsvRow[]>([]);
+  const [parseError, setParseError] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const [progress, setProgress] = useState({ processed: 0, total: 0 });
+  const [result, setResult] = useState<ProductCsvImportResult | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    setFile(null);
+    setRows([]);
+    setParseError('');
+    setProgress({ processed: 0, total: 0 });
+    setResult(null);
+  }, [open]);
+
+  async function handleFile(selected: File) {
+    setFile(selected);
+    setResult(null);
+    try {
+      const parsedRows = parseProductCsv(await selected.text());
+      setRows(parsedRows);
+      setParseError('');
+    } catch (cause) {
+      setRows([]);
+      setParseError(cause instanceof Error ? cause.message : 'Não foi possível ler o CSV.');
+    }
+  }
+
+  async function handleImport() {
+    if (!file || rows.length === 0) return;
+    setIsImporting(true);
+    try {
+      const operationId = `${file.name}:${file.size}:${file.lastModified}`
+        .replace(/[^a-zA-Z0-9:._-]/g, '-')
+        .slice(0, 120);
+      const importResult = await importProductCsvRows({
+        businessId,
+        rows,
+        operationId,
+        onProgress: (processed, total) => setProgress({ processed, total }),
+      });
+      setResult(importResult);
+      await onImported();
+      if (importResult.imported > 0) toast.success(`${importResult.imported} produtos importados.`);
+    } finally {
+      setIsImporting(false);
+    }
+  }
+
+  function downloadTemplate() {
+    const csv = 'nome,sku,codigoBarras,categoria,unidade,precoCusto,precoVenda,estoque,estoqueMinimo,ncm\nCafé Especial,CAFE-001,7891234567890,Alimentos,UN,"10,50","18,90",20,5,09012100\n';
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'modelo-importacao-produtos.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const validCount = rows.filter((row) => row.data).length;
+  const invalidRows = rows.filter((row) => row.error);
+
+  return (
+    <Dialog open={open} onClose={isImporting ? undefined : onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
+      <DialogTitle sx={{ fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700 }}>
+        Importar produtos por CSV
+      </DialogTitle>
+      <Divider />
+      <DialogContent sx={{ pt: 3 }}>
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row gap-3 sm:items-center sm:justify-between">
+            <p className="text-sm text-muted-foreground">
+              Até 1.000 linhas. O arquivo é validado antes do envio e cada produto mantém sua própria idempotência.
+            </p>
+            <button type="button" onClick={downloadTemplate} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-xs font-semibold">
+              <Download className="w-3.5 h-3.5" />
+              Baixar modelo
+            </button>
+          </div>
+
+          <label className="flex flex-col items-center justify-center h-32 rounded-xl border-2 border-dashed border-border hover:border-red-300 cursor-pointer bg-muted/20">
+            <FileUp className="w-7 h-7 text-muted-foreground mb-2" />
+            <span className="text-sm font-medium">{file?.name || 'Selecionar arquivo CSV'}</span>
+            <span className="text-xs text-muted-foreground mt-1">Separador por vírgula ou ponto e vírgula</span>
+            <input type="file" accept=".csv,text/csv" className="hidden" onChange={(event) => {
+              const selected = event.target.files?.[0];
+              if (selected) void handleFile(selected);
+            }} />
+          </label>
+
+          {parseError && <p className="text-sm text-red-600">{parseError}</p>}
+          {rows.length > 0 && (
+            <div className="rounded-xl border border-border p-4 space-y-3">
+              <div className="flex flex-wrap gap-3 text-sm">
+                <span className="font-semibold text-emerald-600">{validCount} válidas</span>
+                <span className={cn('font-semibold', invalidRows.length ? 'text-red-600' : 'text-muted-foreground')}>
+                  {invalidRows.length} com erro
+                </span>
+              </div>
+              {invalidRows.length > 0 && (
+                <div className="max-h-36 overflow-auto text-xs text-red-600 space-y-1">
+                  {invalidRows.slice(0, 20).map((row) => <p key={row.rowNumber}>Linha {row.rowNumber}: {row.error}</p>)}
+                  {invalidRows.length > 20 && <p>…e mais {invalidRows.length - 20} erros.</p>}
+                </div>
+              )}
+            </div>
+          )}
+
+          {isImporting && (
+            <div className="space-y-2">
+              <div className="h-2 rounded-full bg-muted overflow-hidden">
+                <div className="h-full bg-red-500 transition-all" style={{ width: `${progress.total ? (progress.processed / progress.total) * 100 : 0}%` }} />
+              </div>
+              <p className="text-xs text-muted-foreground text-center">{progress.processed} de {progress.total}</p>
+            </div>
+          )}
+
+          {result && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 p-4">
+              <p className="flex items-center gap-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
+                <CheckCircle2 className="w-4 h-4" />
+                {result.imported} importados; {result.errors.length} não importados.
+              </p>
+              {result.errors.length > 0 && (
+                <div className="mt-2 max-h-32 overflow-auto text-xs text-red-600 space-y-1">
+                  {result.errors.map((item) => <p key={`${item.rowNumber}-${item.message}`}>Linha {item.rowNumber}: {item.message}</p>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+      <Divider />
+      <DialogActions sx={{ px: 3, py: 2 }}>
+        <Button onClick={onClose} disabled={isImporting}>Fechar</Button>
+        <Button variant="contained" onClick={handleImport} disabled={isImporting || validCount === 0 || Boolean(result)} sx={{ backgroundColor: '#DC2626' }}>
+          {isImporting ? <CircularProgress size={20} sx={{ color: 'white' }} /> : `Importar ${validCount}`}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// ==============================================
 // STOCK MOVEMENT DIALOG
 // ==============================================
 
@@ -1041,6 +1385,7 @@ function StockMovementDialog({
     ...EMPTY_MOVEMENT_FORM,
     type: initialType || 'entrada',
     productId: initialProduct?.id || '',
+    variantId: initialProduct?.variants?.find((variant) => variant.isActive)?.id || '',
   });
   const [isSaving, setIsSaving] = useState(false);
 
@@ -1050,17 +1395,21 @@ function StockMovementDialog({
         ...EMPTY_MOVEMENT_FORM,
         type: initialType || 'entrada',
         productId: initialProduct?.id || '',
+        variantId: initialProduct?.variants?.find((variant) => variant.isActive)?.id || '',
       });
     }
   }, [open, initialProduct, initialType]);
 
   const selectedProduct = products.find((p) => p.id === form.productId);
+  const selectedVariant = selectedProduct?.variants?.find((variant) => variant.id === form.variantId);
+  const selectedCurrentStock = selectedVariant?.currentStock ?? selectedProduct?.currentStock ?? 0;
+  const selectedMinStock = selectedVariant?.minStock ?? selectedProduct?.minStock ?? 0;
   const qty = parseInt(form.quantity) || 0;
   const newStock = selectedProduct
     ? form.type === 'entrada'
-      ? selectedProduct.currentStock + qty
+      ? selectedCurrentStock + qty
       : form.type === 'saida'
-        ? Math.max(0, selectedProduct.currentStock - qty)
+        ? Math.max(0, selectedCurrentStock - qty)
         : qty
     : 0;
 
@@ -1141,15 +1490,28 @@ function StockMovementDialog({
           <FormControl fullWidth size="small">
             <InputLabel>{t('inventory.movement.product', 'Produto')}</InputLabel>
             <Select
-              value={form.productId}
-              onChange={(e) => setForm((f) => ({ ...f, productId: e.target.value }))}
+              value={form.productId ? `${form.productId}::${form.variantId}` : ''}
+              onChange={(e) => {
+                const [productId, variantId = ''] = e.target.value.split('::');
+                setForm((f) => ({ ...f, productId, variantId }));
+              }}
               label={t('inventory.movement.product', 'Produto')}
             >
-              {products.filter((p) => p.isActive).map((p) => (
-                <MenuItem key={p.id} value={p.id}>
-                  {p.name} ({p.currentStock} {p.unit})
-                </MenuItem>
-              ))}
+              {products.filter((p) => p.isActive).flatMap((product) => {
+                const variants = product.variants?.filter((variant) => variant.isActive) ?? [];
+                if (variants.length === 0) {
+                  return [(
+                    <MenuItem key={product.id} value={`${product.id}::`}>
+                      {product.name} ({product.currentStock} {product.unit})
+                    </MenuItem>
+                  )];
+                }
+                return variants.map((variant) => (
+                  <MenuItem key={`${product.id}:${variant.id}`} value={`${product.id}::${variant.id}`}>
+                    {product.name} — {variant.name} ({variant.currentStock} {product.unit})
+                  </MenuItem>
+                ));
+              })}
             </Select>
           </FormControl>
 
@@ -1158,9 +1520,10 @@ function StockMovementDialog({
             <div className="flex items-center gap-4 p-3 rounded-lg bg-muted/40 border border-border/40">
               <div className="flex-1">
                 <p className="text-xs text-muted-foreground">{t('inventory.movement.currentStock', 'Estoque Atual')}</p>
-                <p className={cn('text-lg font-bold', getStockTextColor(selectedProduct.currentStock, selectedProduct.minStock))}>
-                  {selectedProduct.currentStock} {selectedProduct.unit}
+                <p className={cn('text-lg font-bold', getStockTextColor(selectedCurrentStock, selectedMinStock))}>
+                  {selectedCurrentStock} {selectedProduct.unit}
                 </p>
+                {selectedVariant && <p className="text-[10px] text-blue-600">{selectedVariant.name}</p>}
               </div>
               {form.quantity && (
                 <>
@@ -1258,10 +1621,11 @@ interface ProductDialogProps {
   allProducts?: Product[];
   deliveryEnabled?: boolean;
   menuCategories?: MenuCategory[];
+  catalogCategories?: string[];
   onOpenCategoriesManager?: () => void;
 }
 
-function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliveryEnabled = false, menuCategories = [], onOpenCategoriesManager }: ProductDialogProps) {
+function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliveryEnabled = false, menuCategories = [], catalogCategories = CATEGORIES, onOpenCategoriesManager }: ProductDialogProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<ProductFormData>(EMPTY_PRODUCT_FORM);
   const [isSaving, setIsSaving] = useState(false);
@@ -1279,6 +1643,11 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
         const saleFormatted = product.salePrice
           ? (product.salePrice).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
           : '';
+        const existingImages = product.images?.length
+          ? [...product.images].sort((a, b) => a.sortOrder - b.sortOrder)
+          : product.imageUrl
+            ? [{ id: 'legacy-primary', url: product.imageUrl, sortOrder: 0, isPrimary: true }]
+            : [];
         setForm({
           name: product.name,
           description: product.description || '',
@@ -1299,9 +1668,13 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
           unidadeTrib: product.unidadeTrib || '',
           gtinTrib: product.gtinTrib || '',
           isActive: product.isActive,
-          imageFile: null,
-          imagePreview: '',
-          existingImageUrl: product.imageUrl || '',
+          imageFiles: [],
+          imagePreviews: [],
+          existingImages,
+          variants: product.variants ? product.variants.map((variant) => ({
+            ...variant,
+            attributes: { ...variant.attributes },
+          })) : [],
           isDeliverable: product.isDeliverable ?? false,
           menuAvailable: product.menuAvailable !== false,
           trackStock: product.trackStock !== false,
@@ -1324,6 +1697,7 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
   function validate(): boolean {
     const newErrors: Record<string, string> = {};
     if (!form.name.trim()) newErrors.name = t('inventory.productForm.errors.nameRequired', 'Nome obrigatório');
+    if (!form.category.trim()) newErrors.category = 'Categoria obrigatória';
     const costNum = currencyDisplayToNumber(form.costPrice);
     const saleNum = currencyDisplayToNumber(form.salePrice);
     if (costNum < 0) newErrors.costPrice = t('inventory.productForm.errors.invalidCostPrice', 'Preço de custo inválido');
@@ -1332,6 +1706,13 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
     if (form.minStock === '' || parseInt(form.minStock) < 0) newErrors.minStock = t('inventory.productForm.errors.invalidMinStock', 'Estoque mínimo inválido');
     if (form.ncm && form.ncm.replace(/\D/g, '').length !== 0 && form.ncm.replace(/\D/g, '').length !== 8) {
       newErrors.ncm = t('inventory.productForm.errors.ncmLength', 'NCM deve ter 8 dígitos');
+    }
+    if (form.variants.some((variant) => !variant.name.trim())) {
+      newErrors.variants = 'Todas as variações precisam de nome.';
+    } else if (form.variants.some((variant) => !variant.isActive && variant.currentStock !== 0)) {
+      newErrors.variants = 'Zere o estoque antes de inativar uma variação.';
+    } else if (product && !product.variants?.length && product.currentStock !== 0 && form.variants.length > 0) {
+      newErrors.variants = 'Zere o estoque principal e salve antes de adicionar variações.';
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -1360,25 +1741,62 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
     if (errors[field]) setErrors((e) => ({ ...e, [field]: '' }));
   }
 
-  function handleFileSelect(file: File) {
-    if (!ACCEPTED_IMAGE_TYPES.includes(file.type)) {
+  function handleFilesSelect(files: File[]) {
+    const invalidType = files.some((file) => !ACCEPTED_IMAGE_TYPES.includes(file.type));
+    if (invalidType) {
       setImageError(t('inventory.image.invalidFormat', 'Formato inválido. Use JPG, PNG ou WebP.'));
       return;
     }
-    if (file.size > MAX_IMAGE_SIZE) {
-      setImageError(t('inventory.image.tooLarge', 'Imagem muito grande. Máximo 5MB.'));
+    const tooLarge = files.some((file) => file.size > MAX_IMAGE_SIZE);
+    if (tooLarge) {
+      setImageError(t('inventory.image.tooLarge', 'Cada imagem deve ter no máximo 5MB.'));
+      return;
+    }
+    if (form.existingImages.length + form.imageFiles.length + files.length > 8) {
+      setImageError('Cada produto aceita no máximo 8 imagens.');
       return;
     }
     setImageError('');
-    const preview = URL.createObjectURL(file);
-    setForm((f) => ({ ...f, imageFile: file, imagePreview: preview, existingImageUrl: '' }));
+    const previews = files.map((file) => URL.createObjectURL(file));
+    setForm((current) => ({
+      ...current,
+      imageFiles: [...current.imageFiles, ...files],
+      imagePreviews: [...current.imagePreviews, ...previews],
+    }));
   }
 
-  function handleImageRemove() {
-    if (form.imagePreview) {
-      URL.revokeObjectURL(form.imagePreview);
-    }
-    setForm((f) => ({ ...f, imageFile: null, imagePreview: '', existingImageUrl: '' }));
+  function handleRemoveExistingImage(id: string) {
+    setForm((current) => ({
+      ...current,
+      existingImages: current.existingImages.filter((image) => image.id !== id),
+    }));
+  }
+
+  function handleRemoveNewImage(index: number) {
+    const preview = form.imagePreviews[index];
+    if (preview) URL.revokeObjectURL(preview);
+    setForm((current) => ({
+      ...current,
+      imageFiles: current.imageFiles.filter((_, itemIndex) => itemIndex !== index),
+      imagePreviews: current.imagePreviews.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  }
+
+  function handleMoveExistingImage(index: number, direction: -1 | 1) {
+    setForm((current) => {
+      const target = index + direction;
+      if (target < 0 || target >= current.existingImages.length) return current;
+      const images = [...current.existingImages];
+      [images[index], images[target]] = [images[target], images[index]];
+      return {
+        ...current,
+        existingImages: images.map((image, imageIndex) => ({
+          ...image,
+          sortOrder: imageIndex,
+          isPrimary: imageIndex === 0,
+        })),
+      };
+    });
   }
 
   return (
@@ -1412,11 +1830,14 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
       }
     >
           <ModernSection icon={ImageIcon} title={t('inventory.productForm.productImage', 'Imagem do Produto')}>
-            <ImageDropZone
-              preview={form.imagePreview}
-              existingUrl={form.existingImageUrl}
-              onFileSelect={handleFileSelect}
-              onRemove={handleImageRemove}
+            <ProductImagesEditor
+              existingImages={form.existingImages}
+              files={form.imageFiles}
+              previews={form.imagePreviews}
+              onFilesSelect={handleFilesSelect}
+              onRemoveExisting={handleRemoveExistingImage}
+              onRemoveFile={handleRemoveNewImage}
+              onMoveExisting={handleMoveExistingImage}
               error={imageError}
             />
           </ModernSection>
@@ -1461,18 +1882,23 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                 fullWidth
                 size="small"
               />
-              <FormControl fullWidth size="small">
-                <InputLabel>{t('inventory.productForm.category', 'Categoria')}</InputLabel>
-                <Select
-                  value={form.category}
-                  onChange={(e) => updateField('category', e.target.value)}
-                  label={t('inventory.productForm.category', 'Categoria')}
-                >
-                  {CATEGORIES.map((cat) => (
-                    <MenuItem key={cat} value={cat}>{cat}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+              <Autocomplete
+                freeSolo
+                options={catalogCategories}
+                value={form.category}
+                onChange={(_event, value) => updateField('category', value || '')}
+                onInputChange={(_event, value) => updateField('category', value)}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    size="small"
+                    label={t('inventory.productForm.category', 'Categoria')}
+                    error={Boolean(errors.category)}
+                    helperText={errors.category}
+                    required
+                  />
+                )}
+              />
               <FormControl fullWidth size="small">
                 <InputLabel>{t('inventory.productForm.unit', 'Unidade')}</InputLabel>
                 <Select
@@ -1522,6 +1948,21 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
             </div>
           </ModernSection>
 
+          <ModernSection icon={Boxes} title="Variações" meta={<ModernPill tone="slate">opcional</ModernPill>}>
+            <ProductVariantsEditor
+              variants={form.variants}
+              onChange={(variants) => setForm((current) => ({ ...current, variants }))}
+              defaultCost={costVal}
+              defaultSale={saleVal}
+            />
+            {isEditing && !product?.variants?.length && (product?.currentStock ?? 0) !== 0 && form.variants.length > 0 && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Para ativar variações neste produto, primeiro salve o estoque principal como zero; isso preserva a trilha de movimentações.
+              </p>
+            )}
+            {errors.variants && <p className="text-xs text-red-600 dark:text-red-400">{errors.variants}</p>}
+          </ModernSection>
+
           <ModernSection icon={Boxes} title={t('inventory.productForm.stockSection', 'Estoque')}>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <TextField
@@ -1533,6 +1974,7 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                 helperText={errors.currentStock}
                 fullWidth
                 required
+                disabled={form.variants.length > 0}
                 size="small"
                 slotProps={{ htmlInput: { min: 0 } }}
               />
@@ -2172,6 +2614,7 @@ export default function InventoryModule() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [categoriesManagerOpen, setCategoriesManagerOpen] = useState(false);
   const [showSpreadsheetView, setShowSpreadsheetView] = useState(false);
+  const [csvImportOpen, setCsvImportOpen] = useState(false);
   const [menuCategories, setMenuCategories] = useState<MenuCategory[]>([]);
 
   const deliveryEnabled = business?.settings?.useCase === 'pedidos';
@@ -2199,42 +2642,33 @@ export default function InventoryModule() {
   // FIRESTORE QUERIES
   // ==========================================
 
-  // Real-time listener (refactor sync multi-user):
-  //
-  // ANTES: useQuery + getDocs com staleTime 5min. Operador A ajustava estoque
-  // ou cadastrava produto, operador B (PDV/Cardápio em outra sessão) só via
-  // mudança após refetch (window focus ou mutation própria).
-  //
-  // AGORA: onSnapshot. Mudanças propagam em tempo real pra todos os clients
-  // — crítico no PDV multiuser, onde estoque desatualizado leva a venda
-  // de produto sem saldo.
-  const [products, setProducts] = useState<Product[]>([]);
-  const [productsLoading, setProductsLoading] = useState(true);
-  React.useEffect(() => {
-    if (!business?.id) { setProductsLoading(false); return; }
-    setProductsLoading(true);
-    // Single-field — sort client-side (evita composite index
-    // products/businessId+name).
-    const q = query(
-      collection(db, 'products'),
-      where('businessId', '==', business.id),
-    );
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list = snap.docs
-          .map((d) => ({ ...d.data(), id: d.id } as Product))
-          .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        setProducts(list);
-        setProductsLoading(false);
-      },
-      (err) => {
-        console.error('[Inventory] products snapshot error:', err);
-        setProductsLoading(false);
-      },
-    );
-    return () => unsub();
-  }, [business?.id]);
+  // Catálogo paginado no servidor. PDV/Cardápio mantêm seus listeners próprios;
+  // esta tela administrativa evita um listener ilimitado conforme o catálogo cresce.
+  const {
+    data: productPages,
+    isLoading: productsLoading,
+    fetchNextPage: fetchNextProductPage,
+    hasNextPage: hasNextProductPage,
+    isFetchingNextPage: isFetchingNextProductPage,
+  } = useInfiniteQuery({
+    queryKey: ['catalogProducts', business?.id],
+    queryFn: ({ pageParam }) => {
+      if (!business?.id) return Promise.resolve({ products: [], hasMore: false, nextCursor: null });
+      return listCatalogProductsPage({ businessId: business.id, cursor: pageParam, limit: 100 });
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+    enabled: Boolean(business?.id),
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: true,
+  });
+  const products = useMemo(() => {
+    const byId = new Map<string, Product>();
+    for (const page of productPages?.pages ?? []) {
+      page.products.forEach((product) => byId.set(product.id, product));
+    }
+    return [...byId.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [productPages]);
 
   const { data: movements = [], isLoading: movementsLoading } = useQuery({
     queryKey: ['stockMovements', business?.id, movementLimit],
@@ -2271,17 +2705,11 @@ export default function InventoryModule() {
 
     const costPrice = currencyDisplayToNumber(data.costPrice);
     const salePrice = currencyDisplayToNumber(data.salePrice);
-    const currentStock = parseInt(data.currentStock) || 0;
+    const currentStock = data.variants.length > 0 ? 0 : (parseInt(data.currentStock) || 0);
     const minStock = parseInt(data.minStock) || 0;
     const maxStock = data.maxStock ? parseInt(data.maxStock) : undefined;
     const sku = data.sku.trim() || generateSKU();
 
-    const removeExistingImage = Boolean(
-      editingProduct
-      && !data.imageFile
-      && !data.imagePreview
-      && !data.existingImageUrl,
-    );
     const productData: ProductCatalogData = {
       name: data.name.trim(),
       description: data.description.trim() || undefined,
@@ -2304,8 +2732,18 @@ export default function InventoryModule() {
       unidadeTrib: data.unidadeTrib.trim() || undefined,
       gtinTrib: data.gtinTrib.trim() || undefined,
       isActive: data.isActive,
-      ...(removeExistingImage ? { images: [] } : {}),
-      variants: editingProduct?.variants ?? [],
+      images: data.existingImages.map((image, index) => ({
+        ...image,
+        sortOrder: index,
+        isPrimary: index === 0,
+      })),
+      variants: data.variants.map((variant) => ({
+        ...variant,
+        name: variant.name.trim(),
+        sku: variant.sku?.trim() || undefined,
+        barcode: variant.barcode?.trim() || undefined,
+        currentStock: editingProduct?.variants?.find((current) => current.id === variant.id)?.currentStock ?? 0,
+      })),
       isDeliverable: data.isDeliverable,
       menuAvailable: data.menuAvailable,
       trackStock: data.trackStock,
@@ -2338,11 +2776,47 @@ export default function InventoryModule() {
           idempotencyKey,
         });
 
-    if (data.imageFile) {
+    const previousVariantStock = new Map(
+      (editingProduct?.variants ?? []).map((variant) => [variant.id, variant.currentStock]),
+    );
+    const variantStockLines = data.variants
+      .filter((variant) => variant.currentStock !== (previousVariantStock.get(variant.id) ?? 0))
+      .map((variant) => ({
+        productId: savedProduct.id,
+        variantId: variant.id,
+        quantity: variant.currentStock,
+      }));
+    if (variantStockLines.length > 0) {
+      const stock = await applyStockOperation({
+        businessId: business.id,
+        type: 'ajuste',
+        lines: variantStockLines,
+        operatorName: user.name,
+        reason: editingProduct ? 'Ajuste ao editar variações' : 'Estoque inicial das variações',
+        sourceType: 'manual',
+        idempotencyKey: `${idempotencyKey}:variant-stock`,
+        expandBom: false,
+        adjustmentMode: 'absolute',
+        negativeStockPolicy: 'prevent',
+      });
+      const stockByVariant = new Map(
+        stock.adjustments.map((adjustment) => [adjustment.variantId, adjustment.newStock]),
+      );
+      savedProduct = {
+        ...savedProduct,
+        variants: (savedProduct.variants ?? []).map((variant) => ({
+          ...variant,
+          currentStock: stockByVariant.get(variant.id) ?? variant.currentStock,
+        })),
+      };
+    }
+
+    if (data.imageFiles.length > 0) {
       savedProduct = await replaceCatalogProductImages({
         businessId: business.id,
         productId: savedProduct.id,
-        files: [data.imageFile],
+        files: data.imageFiles,
+        existingImages: data.existingImages,
         mode: 'replace',
       });
     }
@@ -2350,18 +2824,23 @@ export default function InventoryModule() {
     toast.success(editingProduct
       ? t('inventory.toast.productUpdated', 'Produto atualizado com sucesso!')
       : t('inventory.toast.productCreated', 'Produto cadastrado com sucesso!'));
-    // products via onSnapshot — invalidação não é mais necessária.
-  }, [business?.id, user, editingProduct, t]);
+    await queryClient.invalidateQueries({ queryKey: ['catalogProducts', business.id] });
+  }, [business?.id, user, editingProduct, t, queryClient]);
 
   const handleSaveMovement = useCallback(async (data: MovementFormData) => {
     if (!business?.id || !user) return;
 
     const product = products.find((p) => p.id === data.productId);
     if (!product) return;
+    const variant = data.variantId
+      ? product.variants?.find((item) => item.id === data.variantId)
+      : undefined;
+    if (data.variantId && !variant) return;
+    const currentStock = variant?.currentStock ?? product.currentStock ?? 0;
 
     const qty = parseInt(data.quantity) || 0;
     if (qty < 0) return;
-    if (data.type === 'ajuste' && qty === (product.currentStock || 0)) {
+    if (data.type === 'ajuste' && qty === currentStock) {
       toast.info('O estoque já está nesse valor.');
       return;
     }
@@ -2372,11 +2851,15 @@ export default function InventoryModule() {
       businessId: business.id,
       operatorName: user.name,
       type: data.type,
-      lines: [{ productId: product.id, quantity: qty }],
+      lines: [{
+        productId: product.id,
+        ...(variant ? { variantId: variant.id } : {}),
+        quantity: qty,
+      }],
       reason: data.reason || data.type,
       sourceType: 'manual',
-      idempotencyKey: createStockIdempotencyKey(`inventory:${product.id}:${data.type}`),
-      expandBom: data.type === 'saida',
+      idempotencyKey: createStockIdempotencyKey(`inventory:${product.id}:${variant?.id ?? 'root'}:${data.type}`),
+      expandBom: variant ? false : data.type === 'saida',
       ...(data.type === 'ajuste' ? { adjustmentMode: 'absolute' as const } : {}),
       negativeStockPolicy: 'prevent',
     });
@@ -2385,6 +2868,7 @@ export default function InventoryModule() {
     toast.success(t('inventory.toast.movementCreated', 'Movimentação registrada com sucesso!'));
     // products via onSnapshot. stockMovements continua em useQuery local.
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
+    queryClient.invalidateQueries({ queryKey: ['catalogProducts', business.id] });
 
     // Estoque baixo: alertas calculados no núcleo transacional do servidor.
     const stockAlerts = adjustments.flatMap((a) => (a.alert ? [a.alert] : []));
@@ -2412,7 +2896,7 @@ export default function InventoryModule() {
     try {
       await archiveCatalogProduct({ businessId: business.id, productId: deletingProduct.id });
       toast.success(t('inventory.toast.productArchived', 'Produto arquivado com sucesso'));
-      // products via onSnapshot — listener vai atualizar a lista automaticamente.
+      await queryClient.invalidateQueries({ queryKey: ['catalogProducts', business.id] });
       setDeleteDialogOpen(false);
       setDeletingProduct(null);
     } catch (err) {
@@ -2423,13 +2907,18 @@ export default function InventoryModule() {
     } finally {
       setIsDeleting(false);
     }
-  }, [business?.id, deletingProduct]);
+  }, [business?.id, deletingProduct, queryClient, t]);
 
   // ==========================================
   // COMPUTED VALUES
   // ==========================================
 
   const activeProducts = useMemo(() => products.filter((p) => p.isActive), [products]);
+  const catalogCategories = useMemo(
+    () => [...new Set([...CATEGORIES, ...products.map((product) => product.category).filter(Boolean)])]
+      .sort((a, b) => a.localeCompare(b)),
+    [products],
+  );
 
   const filteredProducts = useMemo(() => {
     let result = [...products];
@@ -2442,6 +2931,12 @@ export default function InventoryModule() {
           p.name.toLowerCase().includes(q) ||
           (p.sku && p.sku.toLowerCase().includes(q)) ||
           (p.barcode && p.barcode.includes(q)) ||
+          p.variants?.some((variant) =>
+            variant.name.toLowerCase().includes(q)
+            || variant.sku?.toLowerCase().includes(q)
+            || variant.barcode?.includes(q)
+            || Object.values(variant.attributes).some((value) => value.toLowerCase().includes(q)),
+          ) ||
           p.category.toLowerCase().includes(q),
       );
     }
@@ -2454,11 +2949,17 @@ export default function InventoryModule() {
     // Stock status filter
     if (stockFilter !== 'all') {
       if (stockFilter === 'sem_estoque') {
-        result = result.filter((p) => p.currentStock <= 0);
+        result = result.filter((p) => getProductStockSnapshot(p).current <= 0);
       } else if (stockFilter === 'estoque_baixo') {
-        result = result.filter((p) => p.currentStock > 0 && p.currentStock <= p.minStock);
+        result = result.filter((p) => {
+          const stock = getProductStockSnapshot(p);
+          return stock.current > 0 && stock.current <= stock.min;
+        });
       } else if (stockFilter === 'em_estoque') {
-        result = result.filter((p) => p.currentStock > p.minStock);
+        result = result.filter((p) => {
+          const stock = getProductStockSnapshot(p);
+          return stock.current > stock.min;
+        });
       }
     }
 
@@ -2475,7 +2976,7 @@ export default function InventoryModule() {
       if (field === 'name') return a.name.localeCompare(b.name) * dir;
       if (field === 'sku') return (a.sku || '').localeCompare(b.sku || '') * dir;
       if (field === 'category') return a.category.localeCompare(b.category) * dir;
-      if (field === 'currentStock') return (a.currentStock - b.currentStock) * dir;
+      if (field === 'currentStock') return (getProductStockSnapshot(a).current - getProductStockSnapshot(b).current) * dir;
       if (field === 'costPrice') return (a.costPrice - b.costPrice) * dir;
       if (field === 'salePrice') return (a.salePrice - b.salePrice) * dir;
       return 0;
@@ -2486,7 +2987,15 @@ export default function InventoryModule() {
 
   const stats = useMemo(() => {
     const totalProducts = activeProducts.length;
-    const totalValue = activeProducts.reduce((sum, p) => sum + p.costPrice * p.currentStock, 0);
+    const totalValue = activeProducts.reduce((sum, product) => {
+      if (product.variants?.length) {
+        return sum + product.variants.reduce(
+          (variantSum, variant) => variantSum + variant.costPrice * variant.currentStock,
+          0,
+        );
+      }
+      return sum + product.costPrice * product.currentStock;
+    }, 0);
     const lowStockCount = activeProducts.filter((p) => isLowStock(p)).length;
     const todayMovements = movements.filter((m) => {
       const today = new Date().toISOString().slice(0, 10);
@@ -2566,6 +3075,16 @@ export default function InventoryModule() {
             </p>
           </div>
         </div>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={() => setCsvImportOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-border text-sm font-medium"
+          >
+            <FileUp className="w-4 h-4" />
+            Importar CSV
+          </button>
+        </div>
         <EmptyState onAdd={handleNewProduct} />
         <ProductDialog
           open={productDialogOpen}
@@ -2578,9 +3097,16 @@ export default function InventoryModule() {
           allProducts={products}
           deliveryEnabled={deliveryEnabled}
           menuCategories={menuCategories}
+          catalogCategories={catalogCategories}
           onOpenCategoriesManager={() => setCategoriesManagerOpen(true)}
         />
         <MenuCategoriesManager open={categoriesManagerOpen} onClose={() => setCategoriesManagerOpen(false)} />
+        <ProductCsvImportDialog
+          open={csvImportOpen}
+          onClose={() => setCsvImportOpen(false)}
+          businessId={business?.id || ''}
+          onImported={() => queryClient.invalidateQueries({ queryKey: ['catalogProducts', business?.id] })}
+        />
       </div>
     );
   }
@@ -2616,6 +3142,13 @@ export default function InventoryModule() {
               )}
             </button>
           )}
+          <button
+            onClick={() => setCsvImportOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-medium hover:border-red-300 dark:hover:border-red-700 transition-all"
+          >
+            <FileUp className="w-4 h-4 text-blue-500" />
+            Importar CSV
+          </button>
           <button
             onClick={() => setShowSpreadsheetView(true)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-medium hover:border-red-300 dark:hover:border-red-700 hover:bg-red-50/50 dark:hover:bg-red-900/10 transition-all"
@@ -2656,7 +3189,7 @@ export default function InventoryModule() {
             className="appearance-none pl-3 pr-9 py-2.5 rounded-lg border border-border/60 bg-white/70 dark:bg-gray-900/70 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-300 transition-all cursor-pointer"
           >
             <option value="all">{t('inventory.filter.allCategories', 'Todas Categorias')}</option>
-            {CATEGORIES.map((cat) => (
+            {catalogCategories.map((cat) => (
               <option key={cat} value={cat}>{cat}</option>
             ))}
           </select>
@@ -2897,6 +3430,16 @@ export default function InventoryModule() {
                 Próxima
               </button>
             </div>
+            {hasNextProductPage && (
+              <button
+                type="button"
+                onClick={() => void fetchNextProductPage()}
+                disabled={isFetchingNextProductPage}
+                className="px-3 py-1.5 rounded-lg border border-blue-200 text-blue-700 dark:text-blue-400 disabled:opacity-50"
+              >
+                {isFetchingNextProductPage ? 'Carregando…' : 'Carregar mais do servidor'}
+              </button>
+            )}
           </div>
         )}
       </motion.div>
@@ -2952,10 +3495,18 @@ export default function InventoryModule() {
         allProducts={products}
         deliveryEnabled={deliveryEnabled}
         menuCategories={menuCategories}
+        catalogCategories={catalogCategories}
         onOpenCategoriesManager={() => setCategoriesManagerOpen(true)}
       />
 
       <MenuCategoriesManager open={categoriesManagerOpen} onClose={() => setCategoriesManagerOpen(false)} />
+
+      <ProductCsvImportDialog
+        open={csvImportOpen}
+        onClose={() => setCsvImportOpen(false)}
+        businessId={business?.id || ''}
+        onImported={() => queryClient.invalidateQueries({ queryKey: ['catalogProducts', business?.id] })}
+      />
 
       <StockMovementDialog
         open={movementDialogOpen}

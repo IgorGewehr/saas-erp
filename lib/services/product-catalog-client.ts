@@ -2,13 +2,19 @@
 
 import { auth } from '@/lib/config/firebase';
 import type { ProductCatalogData, ProductCatalogPatch } from '@/lib/contracts/api/product-catalog';
-import type { Product } from '@/lib/types';
+import type { Product, ProductImage } from '@/lib/types';
 
 interface ProductApiResponse {
   ok: boolean;
   data?: Product;
   error?: string;
   code?: string;
+}
+
+export interface ProductCatalogPage {
+  products: Product[];
+  hasMore: boolean;
+  nextCursor: string | null;
 }
 
 export function createCatalogIdempotencyKey(prefix: string): string {
@@ -44,6 +50,30 @@ async function productRequest(
   return payload.data;
 }
 
+export async function listCatalogProductsPage(input: {
+  businessId: string;
+  cursor?: string | null;
+  limit?: number;
+}): Promise<ProductCatalogPage> {
+  const params = new URLSearchParams({
+    businessId: input.businessId,
+    limit: String(input.limit ?? 100),
+  });
+  if (input.cursor) params.set('cursor', input.cursor);
+  const response = await fetch(`/api/products?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${await token()}` },
+  });
+  const payload = await response.json().catch(() => null) as {
+    ok?: boolean;
+    data?: ProductCatalogPage;
+    error?: string;
+  } | null;
+  if (!response.ok || !payload?.ok || !payload.data) {
+    throw new Error(payload?.error || 'Não foi possível carregar o catálogo.');
+  }
+  return payload.data;
+}
+
 export async function createCatalogProduct(input: {
   businessId: string;
   data: ProductCatalogData;
@@ -74,6 +104,7 @@ export async function replaceCatalogProductImages(input: {
   businessId: string;
   productId: string;
   files: File[];
+  existingImages?: ProductImage[];
   mode?: 'append' | 'replace';
 }): Promise<Product> {
   if (input.files.length === 0) throw new Error('Selecione ao menos uma imagem.');
@@ -81,6 +112,7 @@ export async function replaceCatalogProductImages(input: {
   form.set('businessId', input.businessId);
   form.set('productId', input.productId);
   form.set('mode', input.mode ?? 'replace');
+  if (input.existingImages) form.set('existingImages', JSON.stringify(input.existingImages));
   input.files.forEach((file) => form.append('files', file));
   const response = await fetch('/api/products/images', {
     method: 'POST',
