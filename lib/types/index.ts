@@ -4042,15 +4042,25 @@ export interface PurchaseNote {
 export interface Supplier {
   id: string;
   businessId: string;
+  schemaVersion?: 2;
+  documentType?: 'cpf' | 'cnpj';
+  document?: string;
   razaoSocial: string;
   nomeFantasia?: string;
-  cnpj: string;
+  cnpj?: string;
   inscricaoEstadual?: string;
   phone?: string;
   email?: string;
   endereco?: Address;
   notes?: string;
+  paymentTerms?: string;
+  leadTimeDays?: number;
+  minimumOrderValue?: number;
+  minimumOrderQuantity?: number;
+  orderMultiple?: number;
   isActive: boolean;
+  archivedAt?: string;
+  archivedBy?: string;
   totalPurchases?: number;
   lastPurchaseAt?: string;
   createdAt: string;

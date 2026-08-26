@@ -290,6 +290,21 @@ service cloud.firestore {
     }
 
     // ============================================
+    // SUPPLIERS (cadastro e trilha somente pelo núcleo server-side)
+    // ============================================
+    match /suppliers/{supplierId} {
+      allow read, create, update, delete: if false;
+    }
+
+    match /supplierIdentifiers/{identifierId} {
+      allow read, write: if false;
+    }
+
+    match /supplierHistory/{historyId} {
+      allow read, write: if false;
+    }
+
+    // ============================================
     // PURCHASE NOTES COLLECTION (compras / NF-e de entrada)
     // ============================================
     match /purchaseNotes/{noteId} {

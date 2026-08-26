@@ -302,6 +302,15 @@
       ]
     },
     {
+      "collectionGroup": "supplierHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "supplierId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "purchaseNotes",
       "queryScope": "COLLECTION",
       "fields": [

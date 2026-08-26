@@ -28,6 +28,8 @@ const SupplierCanonicalSchema = z.object({
   businessId: z.string().min(1),
   documentType: z.enum(SUPPLIER_DOCUMENT_TYPES),
   document: z.string().regex(/^(\d{11}|\d{14})$/, 'CPF/CNPJ deve estar normalizado'),
+  /** Compatibilidade de leitura com os consumidores V1. Ausente para CPF. */
+  cnpj: z.string().regex(/^\d{14}$/).optional(),
   razaoSocial: z.string().min(1).max(200),
   nomeFantasia: z.string().max(200).optional(),
   inscricaoEstadual: z.string().max(40).optional(),
@@ -41,6 +43,8 @@ const SupplierCanonicalSchema = z.object({
   minimumOrderQuantity: z.number().nonnegative().optional(),
   orderMultiple: z.number().positive().optional(),
   isActive: z.boolean(),
+  archivedAt: z.string().optional(),
+  archivedBy: z.string().optional(),
   totalPurchases: z.number().nonnegative().optional(),
   lastPurchaseAt: z.string().optional(),
   migration: z.object({
@@ -70,6 +74,7 @@ export function normalizeSupplierToV2(input: unknown): unknown {
     schemaVersion: SUPPLIER_V2_VERSION,
     document,
     documentType: source.documentType ?? (document.length === 11 ? 'cpf' : 'cnpj'),
+    cnpj: document.length === 14 ? document : undefined,
     razaoSocial: source.razaoSocial ?? source.name,
     isActive: source.isActive ?? true,
     ...(isLegacy

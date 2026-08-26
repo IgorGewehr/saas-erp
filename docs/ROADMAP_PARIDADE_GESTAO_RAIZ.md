@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0, M01.1, M01.2 e M01.3 concluídos; próximo: M01.4`
+  - Status: `Em implementação — M01.0 a M01.4 concluídos; próximo: M01.5`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -313,13 +313,15 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 
 ### M01.4 — Fornecedores
 
-- [ ] Criar módulo/tela de fornecedores acessível pelo menu de Compras.
-- [ ] Implementar listar, buscar, criar, editar, inativar e visualizar histórico.
-- [ ] Reutilizar um serviço único entre UI, API e agente.
-- [ ] Incluir razão social, fantasia, CNPJ/CPF, contatos, endereço e observações.
-- [ ] Incluir condições de pagamento, prazo médio, pedido mínimo e múltiplo de compra como campos opcionais.
-- [ ] Relacionar fornecedor com notas, produtos e movimentações de compra.
-- [ ] Impedir duplicidade por documento normalizado dentro do tenant.
+- [x] Criar módulo/tela de fornecedores acessível pelo menu de Compras.
+- [x] Implementar listar, buscar, criar, editar, inativar e visualizar histórico.
+- [x] Reutilizar um serviço único entre UI, API e agente.
+- [x] Incluir razão social, fantasia, CNPJ/CPF, contatos, endereço e observações.
+- [x] Incluir condições de pagamento, prazo médio, pedido mínimo e múltiplo de compra como campos opcionais.
+- [x] Relacionar fornecedor com notas, produtos e movimentações de compra.
+- [x] Impedir duplicidade por documento normalizado dentro do tenant.
+
+**M01.4 concluído:** núcleo transacional V2, claims de documento por tenant, trilha de auditoria, tela operacional em Compras e relações com notas, produtos e movimentos. Detalhes em `docs/paridade/M01_FORNECEDORES.md`.
 
 **Saída:** cadastro operacional de fornecedores conectado ao fluxo de compras.
 

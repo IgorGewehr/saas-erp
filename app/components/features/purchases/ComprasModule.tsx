@@ -19,6 +19,25 @@ import { cn } from '@/lib/utils';
 import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
 import { toast } from 'react-toastify';
 import { applyStockOperation } from '@/lib/services/stock-server-client';
+import SuppliersPanel from './SuppliersPanel';
+import { listSuppliersPage } from '@/lib/services/supplier-client';
+
+type PurchasesArea = 'notes' | 'suppliers';
+
+function PurchasesTabs(props: { active: PurchasesArea; onChange: (area: PurchasesArea) => void }) {
+  return (
+    <div className="mb-5 inline-flex w-fit rounded-xl bg-gray-100 p-1 dark:bg-gray-800/80">
+      <button onClick={() => props.onChange('notes')} className={cn(
+        'rounded-lg px-4 py-2 text-sm font-medium transition',
+        props.active === 'notes' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white',
+      )}>Notas de compra</button>
+      <button onClick={() => props.onChange('suppliers')} className={cn(
+        'rounded-lg px-4 py-2 text-sm font-medium transition',
+        props.active === 'suppliers' ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-white' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white',
+      )}>Fornecedores</button>
+    </div>
+  );
+}
 
 // ─── XML Parser (regex-based, no DOM needed) ─────────────────────────────────
 
@@ -480,6 +499,7 @@ function NoteDetailPanel({
 
 export default function ComprasModule() {
   const { business, user } = useAuth();
+  const [activeArea, setActiveArea] = useState<PurchasesArea>('notes');
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<PurchaseNoteStatus | 'all'>('all');
@@ -668,9 +688,21 @@ export default function ComprasModule() {
         const existing = notes.find(n => n.accessKey === note.accessKey);
         if (existing) throw new Error('duplicate');
       }
+      let supplierId = note.supplierId;
+      if (!supplierId && note.supplierCnpj && business?.id) {
+        let cursor: string | null = null;
+        do {
+          const page = await listSuppliersPage({ businessId: business.id, cursor, limit: 200 });
+          supplierId = page.suppliers.find((supplier) =>
+            (supplier.document ?? supplier.cnpj ?? '').replace(/\D/g, '') === note.supplierCnpj.replace(/\D/g, ''),
+          )?.id;
+          cursor = supplierId || !page.hasMore ? null : page.nextCursor;
+        } while (!supplierId && cursor);
+      }
       await addDoc(collection(db, 'purchaseNotes'), {
         ...note,
         businessId: business!.id,
+        ...(supplierId ? { supplierId } : {}),
       });
     },
     onSuccess: () => {
@@ -723,9 +755,19 @@ export default function ComprasModule() {
     setShowImportModal(false);
   };
 
+  if (activeArea === 'suppliers') {
+    return (
+      <div className="flex h-full flex-col">
+        <PurchasesTabs active={activeArea} onChange={setActiveArea} />
+        <SuppliersPanel />
+      </div>
+    );
+  }
+
   // ─── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full">
+      <PurchasesTabs active={activeArea} onChange={setActiveArea} />
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -8 }}
