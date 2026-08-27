@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.6b concluídos; próximo: M01.6c`
+  - Status: `Em implementação — M01.0 a M01.6 concluídos; próximo: M01.7`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -359,7 +359,7 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 - [x] Suportar compra já paga com seleção obrigatória da conta debitada.
 - [x] Vincular transação financeira à nota e ao fornecedor.
 - [x] Evitar duplicidade de lançamentos em reprocessamentos.
-- [ ] Integrar consulta/sincronização de NF-e recebidas quando o fiscal estiver configurado.
+- [x] Integrar consulta/sincronização de NF-e recebidas quando o fiscal estiver configurado.
 - [x] Emitir eventos auditáveis de compra importada, estoque alterado e custo atualizado.
 - [x] Disponibilizar as mesmas capacidades autorizadas para o agente e API v1.
 
@@ -367,7 +367,9 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 
 **M01.6b concluído:** eventos de compra determinísticos e atômicos, consulta e vínculo financeiro no agente, API v1 com ações idempotentes e escopos próprios de compras combinados aos escopos sensíveis de estoque/financeiro.
 
-**Saída:** compra refletida corretamente em estoque, custo e financeiro.
+**M01.6c concluído:** caixa fiscal isolada por tenant, sincronização incremental com cursor NSU protegido, diagnóstico de CNPJ/certificado/ambiente/provedor, manifestação e download opcionais e preparação explícita pelo mesmo parser e claim de chave do upload manual.
+
+**Saída:** compra refletida corretamente em estoque, custo e financeiro, com recebimento fiscal controlado e sem efeitos automáticos.
 
 ### M01.7 — Lotes e validade opcionais
 

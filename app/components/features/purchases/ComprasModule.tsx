@@ -24,6 +24,7 @@ import { confirmPurchaseNote, reversePurchaseNote } from '@/lib/services/purchas
 import SuppliersPanel from './SuppliersPanel';
 import PurchaseImportDialog from './PurchaseImportDialog';
 import PurchaseFinancialDialog from './PurchaseFinancialDialog';
+import PurchaseFiscalInboxDialog from './PurchaseFiscalInboxDialog';
 
 type PurchasesArea = 'notes' | 'suppliers';
 
@@ -318,6 +319,7 @@ export default function ComprasModule() {
   const [filterStatus, setFilterStatus] = useState<PurchaseNoteStatus | 'all'>('all');
   const [selectedNote, setSelectedNote] = useState<PurchaseNote | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showFiscalInbox, setShowFiscalInbox] = useState(false);
   const [reviewingNote, setReviewingNote] = useState<PreparedPurchaseNote | null>(null);
   const [financialNote, setFinancialNote] = useState<PurchaseNote | null>(null);
 
@@ -590,16 +592,25 @@ export default function ComprasModule() {
             Importação de notas fiscais de entrada
           </p>
         </div>
-        <button
-          onClick={() => {
-            setReviewingNote(null);
-            setShowImportModal(true);
-          }}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
-        >
-          <Upload className="w-4 h-4" />
-          Importar NF-e
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setShowFiscalInbox(true)}
+            className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 shadow-sm transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Caixa fiscal
+          </button>
+          <button
+            onClick={() => {
+              setReviewingNote(null);
+              setShowImportModal(true);
+            }}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-colors shadow-sm"
+          >
+            <Upload className="w-4 h-4" />
+            Importar NF-e
+          </button>
+        </div>
       </motion.div>
 
       {/* KPIs */}
@@ -726,6 +737,27 @@ export default function ComprasModule() {
 
       {/* Import modal */}
       <AnimatePresence>
+        {showFiscalInbox && business?.id && (
+          <PurchaseFiscalInboxDialog
+            businessId={business.id}
+            onClose={() => setShowFiscalInbox(false)}
+            onManualUpload={() => {
+              setShowFiscalInbox(false);
+              setReviewingNote(null);
+              setShowImportModal(true);
+            }}
+            onPrepared={(note) => {
+              setShowFiscalInbox(false);
+              setSelectedNote(note as unknown as PurchaseNote);
+            }}
+            onOpenNote={(noteId) => {
+              const note = notes.find((entry) => entry.id === noteId);
+              setShowFiscalInbox(false);
+              if (note) setSelectedNote(note);
+              else toast.info('A compra será exibida assim que a lista for atualizada.');
+            }}
+          />
+        )}
         {showImportModal && business?.id && (
           <PurchaseImportDialog
             businessId={business.id}

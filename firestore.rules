@@ -446,6 +446,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Caixa de entrada fiscal e cursor NSU: somente rotas server-side. Além de
+    // metadados sensíveis, o cursor não pode ser alterado pelo navegador.
+    match /purchaseFiscalInbox/{documentId} {
+      allow read, write: if false;
+    }
+
+    match /purchaseFiscalSyncStates/{businessId} {
+      allow read, write: if false;
+    }
+
     // Claims determinísticos de SKU/código de barras. Somente Admin SDK para
     // impedir que um cliente reserve, libere ou sequestre um identificador.
     match /productIdentifiers/{identifierId} {

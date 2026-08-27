@@ -1,7 +1,7 @@
 # M01.6 — Integrações de compras
 
-> Data: 26/08/2026
-> Status: M01.6a e M01.6b concluídos; próxima entrega: M01.6c.
+> Data: 27/08/2026
+> Status: M01.6 concluído; próxima entrega: M01.7.
 
 ## Decisão de adaptação
 
@@ -39,11 +39,33 @@ O Gestão Raiz vincula a importação da NF-e a `accounts_payable`, aceita compr
 
 ## M01.6c — Fiscal e sincronização operacional
 
-- [ ] Mapear a configuração fiscal necessária para consulta de documentos destinados ao CNPJ.
-- [ ] Sincronizar resumos/documentos recebidos sem transformar automaticamente qualquer XML em entrada.
-- [ ] Reutilizar preparação, validação de destinatário e claim de chave do M01.5.
-- [ ] Tratar manifestação/download do XML como capacidade opcional quando o provedor fiscal permitir.
-- [ ] Exibir diagnóstico e recuperação sem bloquear upload manual.
+- [x] Mapear a configuração fiscal necessária para consulta de documentos destinados ao CNPJ.
+- [x] Sincronizar resumos/documentos recebidos sem transformar automaticamente qualquer XML em entrada.
+- [x] Reutilizar preparação, validação de destinatário e claim de chave do M01.5.
+- [x] Tratar manifestação/download do XML como capacidade opcional quando o provedor fiscal permitir.
+- [x] Exibir diagnóstico e recuperação sem bloquear upload manual.
+
+**M01.6c concluído:** a tela de Compras possui uma caixa fiscal separada, servida exclusivamente por rotas autenticadas para gestor ou superior. A sincronização armazena resumos/XMLs em `purchaseFiscalInbox`, protege o cursor incremental em `purchaseFiscalSyncStates` e nunca confirma estoque ou cria lançamento financeiro. XML completo só vira uma compra `pendente` após ação explícita do operador; a confirmação continua sendo uma segunda etapa.
+
+### Configuração necessária
+
+- Empresa: CNPJ válido, código IBGE do município, ambiente da NF-e e certificado A1 válido.
+- Servidor: `SEFAZ_API_URL` e `SEFAZ_API_KEY` para o gateway fiscal.
+- Capacidades DFe: os caminhos podem ser ajustados por `SEFAZ_DFE_SYNC_PATH`, `SEFAZ_DFE_MANIFEST_PATH` e `SEFAZ_DFE_DOWNLOAD_PATH`. O valor `disabled` desliga uma capacidade e é refletido no diagnóstico.
+- Contrato do gateway: a distribuição aceita CNPJ, último NSU, UF autora, ambiente e certificado; respostas em português ou inglês são normalizadas antes de chegar ao domínio.
+
+### Garantias operacionais
+
+1. O NSU só avança depois que toda a página válida foi persistida; resposta sem cursor, regressiva ou sem progresso preserva o cursor anterior.
+2. A caixa fiscal usa ID determinístico por empresa e chave de acesso, sem permitir acesso pelo SDK cliente.
+3. XML completo é validado novamente contra o CNPJ destinatário antes de ser armazenado e antes de preparar a compra.
+4. Preparação reaproveita o claim determinístico de chave e grava `source = sefaz_sync`; reentrega aponta para a compra existente.
+5. Manifestação por Ciência da Operação acontece somente após clique do operador. Falhas mantêm diagnóstico e orientam solicitar o XML ao fornecedor.
+6. O upload manual permanece disponível independentemente da configuração ou disponibilidade do provedor.
+
+### Limite de validação
+
+Os contratos, a persistência, as fronteiras de segurança e o modo fiscal `mock` foram validados localmente. A chamada real depende de o gateway implantado expor os caminhos DFe configurados e deve ser homologada com certificado/CNPJ de teste antes de uso em produção.
 
 ## Fora deste marco
 

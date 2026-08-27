@@ -4,6 +4,9 @@
 
 const SEFAZ_API_URL = process.env.SEFAZ_API_URL || 'https://emissao.tensorroot.com';
 const SEFAZ_API_KEY = process.env.SEFAZ_API_KEY || '';
+const SEFAZ_DFE_SYNC_PATH = process.env.SEFAZ_DFE_SYNC_PATH || '/nfe/distribuicao';
+const SEFAZ_DFE_MANIFEST_PATH = process.env.SEFAZ_DFE_MANIFEST_PATH || '/nfe/manifestar';
+const SEFAZ_DFE_DOWNLOAD_PATH = process.env.SEFAZ_DFE_DOWNLOAD_PATH || '/nfe/distribuicao/download';
 
 // Node 18+ `fetch` is undici-based and reuses TCP connections via its
 // global pool. Custom http/https.Agent instances are NOT compatible with
@@ -129,6 +132,95 @@ export interface CertificadoPayload {
 }
 
 export type SefazAmbiente = 'producao' | 'homologacao';
+
+export interface SefazDfeDocument {
+  accessKey: string;
+  nsu: string;
+  schema: string;
+  xml: string;
+}
+
+export interface SefazDfeDistributionResponse {
+  ultimoNsu: string;
+  maxNsu: string;
+  hasMore: boolean;
+  documents: SefazDfeDocument[];
+}
+
+export interface SefazDfeCapabilities {
+  provider: 'sefaz_gateway';
+  configured: boolean;
+  distribution: boolean;
+  manifestation: boolean;
+  download: boolean;
+}
+
+function enabledPath(path: string): boolean {
+  return Boolean(path.trim()) && path.trim().toLowerCase() !== 'disabled';
+}
+
+export function getSefazDfeCapabilities(): SefazDfeCapabilities {
+  const configured = isMockMode() || Boolean(SEFAZ_API_KEY.trim());
+  return {
+    provider: 'sefaz_gateway',
+    configured,
+    distribution: configured && enabledPath(SEFAZ_DFE_SYNC_PATH),
+    manifestation: configured && enabledPath(SEFAZ_DFE_MANIFEST_PATH),
+    download: configured && enabledPath(SEFAZ_DFE_DOWNLOAD_PATH),
+  };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function accessKeyFromXml(xml: string): string {
+  return xml.match(/<(?:\w+:)?chNFe[^>]*>\s*(\d{44})\s*<\/(?:\w+:)?chNFe>/i)?.[1]
+    ?? xml.match(/Id=["']NFe(\d{44})["']/i)?.[1]
+    ?? '';
+}
+
+/** Normaliza respostas de gateways novos e legados sem vazar sua forma para o domínio. */
+export function normalizeDfeDistributionResponse(value: unknown): SefazDfeDistributionResponse {
+  const envelope = record(value);
+  if (envelope.success === false) {
+    throw new Error(stringValue(envelope.error) || stringValue(envelope.message) || 'O provedor fiscal recusou a sincronização.');
+  }
+  const root = record(envelope.data ?? envelope.result ?? value);
+  const rawDocuments = Array.isArray(root.documents)
+    ? root.documents
+    : Array.isArray(root.documentos)
+      ? root.documentos
+      : Array.isArray(root.docs)
+        ? root.docs
+        : [];
+  const documents = rawDocuments.map((entry) => {
+    const item = record(entry);
+    const xml = stringValue(item.xml ?? item.xmlContent ?? item.conteudo);
+    return {
+      accessKey: stringValue(item.accessKey ?? item.chaveAcesso ?? item.chave ?? item.chNFe).replace(/\D/g, '') || accessKeyFromXml(xml),
+      nsu: stringValue(item.nsu ?? item.NSU).replace(/\D/g, ''),
+      schema: stringValue(item.schema ?? item.tipo ?? item.documentType),
+      xml,
+    };
+  });
+  const ultimoNsu = stringValue(root.ultimoNsu ?? root.ultNsu ?? root.ultNSU).replace(/\D/g, '');
+  const maxNsu = stringValue(root.maxNsu ?? root.maxNSU).replace(/\D/g, '') || ultimoNsu;
+  if (!ultimoNsu) throw new Error('Resposta fiscal sem ultimoNsu; o cursor anterior foi preservado.');
+  const inferredHasMore = BigInt(maxNsu || '0') > BigInt(ultimoNsu || '0');
+  return {
+    ultimoNsu,
+    maxNsu,
+    hasMore: typeof root.hasMore === 'boolean' ? root.hasMore : inferredHasMore,
+    documents,
+  };
+}
 
 /** Resolve o campo environment do Firestore para o valor aceito pelo SEFAZ-API.
  *  Aceita 'production' ou 'producao' como produção; qualquer outro valor → homologação. */
@@ -426,6 +518,57 @@ export async function statusSefaz(payload: {
   certificado: CertificadoPayload;
 }): Promise<SefazResponse> {
   return sefazRequest('statusSefaz', '/nfe/status', payload);
+}
+
+export async function distribuirDFe(payload: {
+  cnpj: string;
+  ultimoNsu: string;
+  cUFAutor: string;
+  ambiente: SefazAmbiente;
+  certificado: CertificadoPayload;
+}): Promise<SefazDfeDistributionResponse> {
+  if (!getSefazDfeCapabilities().distribution) {
+    throw new Error('O gateway fiscal não está configurado para distribuir NF-e recebidas.');
+  }
+  if (isMockMode()) {
+    const ultimoNsu = payload.ultimoNsu.replace(/\D/g, '') || '0';
+    return { ultimoNsu, maxNsu: ultimoNsu, hasMore: false, documents: [] };
+  }
+  const response = await sefazRequest<unknown>('distribuirDFe', SEFAZ_DFE_SYNC_PATH, payload);
+  return normalizeDfeDistributionResponse(response);
+}
+
+export async function manifestarDFe(payload: {
+  cnpj: string;
+  chaveAcesso: string;
+  tipoEvento: 'ciencia_operacao';
+  ambiente: SefazAmbiente;
+  certificado: CertificadoPayload;
+}): Promise<{ success: boolean; codigoStatus?: string; motivoStatus?: string }> {
+  if (!getSefazDfeCapabilities().manifestation) {
+    throw new Error('O provedor fiscal atual não oferece manifestação do destinatário.');
+  }
+  if (isMockMode()) return { success: true, codigoStatus: '135', motivoStatus: 'Evento registrado (MOCK)' };
+  return sefazRequest('manifestarDFe', SEFAZ_DFE_MANIFEST_PATH, payload);
+}
+
+export async function baixarDFe(payload: {
+  cnpj: string;
+  chaveAcesso: string;
+  cUFAutor: string;
+  ambiente: SefazAmbiente;
+  certificado: CertificadoPayload;
+}): Promise<{ xml: string }> {
+  if (!getSefazDfeCapabilities().download) {
+    throw new Error('O provedor fiscal atual não oferece download de NF-e recebida.');
+  }
+  if (isMockMode()) throw new Error('Nenhum XML recebido está disponível no modo fiscal MOCK.');
+  const response = await sefazRequest<unknown>('baixarDFe', SEFAZ_DFE_DOWNLOAD_PATH, payload);
+  const envelope = record(response);
+  const root = record(envelope.data ?? envelope.result ?? response);
+  const xml = stringValue(root.xml ?? root.xmlContent ?? root.conteudo);
+  if (!xml) throw new Error('O provedor fiscal não retornou o XML completo da NF-e.');
+  return { xml };
 }
 
 // ---------------------------------------------------------------------------

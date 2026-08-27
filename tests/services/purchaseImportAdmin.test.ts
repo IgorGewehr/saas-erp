@@ -151,6 +151,24 @@ describe('purchase import preparation core', () => {
     expect(fake.list('purchaseNoteIdentifiers')).toHaveLength(1);
   });
 
+  it('marca explicitamente a origem SEFAZ sem confirmar a entrada', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    const note = await preparePurchaseNoteAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      noteId: 'note-sefaz',
+      parsed,
+      xmlStoragePath: 'businesses/biz-1/purchase-notes/note-sefaz/original.xml',
+      originalFileName: `${parsed.accessKey}.xml`,
+      actor,
+      source: 'sefaz_sync',
+    });
+    expect(note).toMatchObject({ source: 'sefaz_sync', status: 'pendente', stockMovementIds: [] });
+    expect(fake.list('stockMovements')).toHaveLength(0);
+    expect(fake.list('transactions')).toHaveLength(0);
+  });
+
   it('bloqueia a mesma chave no tenant e permite a chave em outro tenant', async () => {
     const fake = fakeDb();
     seedSupplier(fake, 'biz-1');

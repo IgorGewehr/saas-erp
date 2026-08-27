@@ -210,6 +210,7 @@ export async function preparePurchaseNoteAdmin(params: {
   xmlStoragePath: string;
   originalFileName: string;
   actor: SupplierActor;
+  source?: PurchaseNoteV2['source'];
 }): Promise<PreparedPurchaseNote> {
   const existingId = await findPurchaseNoteByAccessKeyAdmin(params.db, params.businessId, params.parsed.accessKey);
   if (existingId) throw new PurchaseNoteDuplicateError(existingId);
@@ -295,7 +296,7 @@ export async function preparePurchaseNoteAdmin(params: {
     numero: params.parsed.numero,
     serie: params.parsed.serie,
     issueDate: params.parsed.issueDate,
-    source: 'manual_upload',
+    source: params.source ?? 'manual_upload',
     supplier: { id: supplier.id, document: params.parsed.supplier.document, name: params.parsed.supplier.name },
     recipientDocument: params.parsed.recipientDocument,
     items,
