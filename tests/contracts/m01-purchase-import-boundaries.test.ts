@@ -4,6 +4,9 @@ import { ReviewPurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-no
 import { ConfirmPurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-confirm';
 import { ReversePurchaseNoteRequestSchema } from '@/lib/contracts/api/purchase-note-reverse';
 import { LinkPurchaseFinancialRequestSchema } from '@/lib/contracts/api/purchase-note-financial';
+import { PurchaseNoteExternalActionSchema } from '@/lib/contracts/api/purchase-note-external';
+import { DomainEventSchema } from '@/lib/contracts/events';
+import { PurchaseNotesToolRequestSchema } from '@/lib/contracts/api/agent/purchase-notes';
 
 describe('M01.5 purchase import boundaries', () => {
   it('mantém parsing e persistência decisivos fora do componente visual', () => {
@@ -122,5 +125,51 @@ describe('M01.5 purchase import boundaries', () => {
     expect(reversal).toContain("status: 'reversed'");
     expect(module).toContain('PurchaseFinancialDialog');
     expect(module).toContain('Organizar financeiro da compra');
+  });
+
+  it('registra eventos determinísticos e expõe o mesmo núcleo ao agente e à API v1', () => {
+    const events = readFileSync('lib/services/purchase-domain-events.ts', 'utf8');
+    const importCore = readFileSync('lib/services/purchase-import-admin.ts', 'utf8');
+    const financialCore = readFileSync('lib/services/purchase-financial-admin.ts', 'utf8');
+    const queryCore = readFileSync('lib/services/purchase-query-admin.ts', 'utf8');
+    const agentRoute = readFileSync('app/api/agent/tools/purchase-notes/route.ts', 'utf8');
+    const apiRoute = readFileSync('app/api/v1/purchase-notes/route.ts', 'utf8');
+
+    const envelope = { businessId: 'biz-1', purchaseNoteId: 'note-1', occurredAt: '2026-08-27T10:00:00.000Z' };
+    expect(DomainEventSchema.safeParse({
+      ...envelope, type: 'purchase.financialLinked', transactionId: 'tx-1', financialStatus: 'paid', amount: 100,
+    }).success).toBe(true);
+    expect(DomainEventSchema.safeParse({
+      ...envelope, type: 'purchase.reverted', movementsReversed: 1, amountRestored: 100, reason: 'Compra duplicada',
+    }).success).toBe(true);
+    expect(events).toContain('purchaseDomainEventId');
+    expect(events).toContain('params.tx.create(eventRef');
+    expect(importCore).toContain('ensurePurchaseAuditEvent');
+    expect(financialCore).toContain('ensurePurchaseAuditEvent');
+    expect(queryCore).toContain("where('businessId', '==', params.businessId)");
+    expect(agentRoute).toContain("'link_financial'");
+    expect(agentRoute).toContain('linkPurchaseFinancialAdmin');
+    expect(agentRoute).toContain('listPurchaseNotesAdmin');
+    expect(PurchaseNotesToolRequestSchema.safeParse({
+      action: 'link_financial',
+      params: { id: 'note-1', mode: 'paid', bankAccountId: 'bank-1', paymentMethod: 'pix' },
+    }).success).toBe(true);
+    expect(apiRoute).toContain("verifyApiKey(request, ['read:purchases'])");
+    expect(apiRoute).toContain("['write:purchases', 'write:products', 'write:financial']");
+    expect(apiRoute).toContain('confirmPurchaseNoteAdmin');
+    expect(apiRoute).toContain('linkPurchaseFinancialAdmin');
+    expect(apiRoute).toContain('reversePurchaseNoteAdmin');
+  });
+
+  it('mantém as ações externas estritas e nunca aceita o valor financeiro do cliente', () => {
+    expect(PurchaseNoteExternalActionSchema.safeParse({
+      action: 'link_financial', noteId: 'note-1', intent: { mode: 'payable', dueDate: '2026-09-27' },
+    }).success).toBe(true);
+    expect(PurchaseNoteExternalActionSchema.safeParse({
+      action: 'link_financial', noteId: 'note-1', intent: { mode: 'paid', bankAccountId: 'bank-1', amount: 0.01 },
+    }).success).toBe(false);
+    expect(PurchaseNoteExternalActionSchema.safeParse({
+      action: 'reverse', noteId: 'note-1', reason: 'x', businessId: 'biz-2',
+    }).success).toBe(false);
   });
 });

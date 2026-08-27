@@ -2999,6 +2999,8 @@ export type ApiKeyScope =
   | 'write:financial'
   | 'read:products'
   | 'write:products'
+  | 'read:purchases'
+  | 'write:purchases'
   | 'read:kanban'
   | 'write:kanban'
   | 'read:crm'
@@ -3032,6 +3034,8 @@ export const API_KEY_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'write:financial': 'Criar/editar transações',
   'read:products': 'Ler produtos/estoque',
   'write:products': 'Criar/editar produtos',
+  'read:purchases': 'Ler compras e notas de entrada',
+  'write:purchases': 'Confirmar, vincular e reverter compras',
   'read:kanban': 'Ler boards e cards',
   'write:kanban': 'Criar/editar boards e cards',
   'read:crm': 'Ler contatos, deals e atividades CRM',
@@ -3061,6 +3065,7 @@ export const API_KEY_SCOPE_GROUPS: { label: string; scopes: ApiKeyScope[] }[] = 
   { label: 'Serviços', scopes: ['read:services', 'write:services'] },
   { label: 'Financeiro', scopes: ['read:financial', 'write:financial'] },
   { label: 'Produtos & Estoque', scopes: ['read:products', 'write:products'] },
+  { label: 'Compras', scopes: ['read:purchases', 'write:purchases'] },
   { label: 'Vendas (PDV)', scopes: ['read:sales', 'write:sales'] },
   { label: 'Kanban', scopes: ['read:kanban', 'write:kanban'] },
   { label: 'CRM', scopes: ['read:crm', 'write:crm'] },
@@ -3187,6 +3192,8 @@ export const API_KEY_SCOPES: Record<ApiKeyScope, { label: string; description: s
   'write:financial': { label: 'Escrever Financeiro', description: 'Criar e editar transações e contas' },
   'read:products': { label: 'Ler Produtos', description: 'Acessar catálogo e estoque' },
   'write:products': { label: 'Escrever Produtos', description: 'Criar/editar produtos e movimentar estoque' },
+  'read:purchases': { label: 'Ler Compras', description: 'Acessar compras e notas fiscais de entrada' },
+  'write:purchases': { label: 'Escrever Compras', description: 'Confirmar, vincular ao financeiro e reverter compras' },
   'read:kanban': { label: 'Ler Kanban', description: 'Acessar boards e cards' },
   'write:kanban': { label: 'Escrever Kanban', description: 'Criar e editar boards e cards' },
   'read:crm': { label: 'Ler CRM', description: 'Acessar contatos, deals e atividades' },

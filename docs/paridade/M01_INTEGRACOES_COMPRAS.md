@@ -1,7 +1,7 @@
 # M01.6 — Integrações de compras
 
 > Data: 26/08/2026
-> Status: M01.6a concluído; próxima entrega: M01.6b.
+> Status: M01.6a e M01.6b concluídos; próxima entrega: M01.6c.
 
 ## Decisão de adaptação
 
@@ -30,10 +30,12 @@ O Gestão Raiz vincula a importação da NF-e a `accounts_payable`, aceita compr
 
 ## M01.6b — Eventos, agente e API v1
 
-- [ ] Emitir eventos auditáveis determinísticos de compra importada, financeiro vinculado e compra revertida.
-- [ ] Expor vínculo financeiro e consulta das notas ao agente pelo mesmo núcleo.
-- [ ] Criar endpoints equivalentes na API v1 com isolamento de tenant e escopos próprios.
-- [ ] Garantir que reentregas não repitam efeitos de estoque, custo ou dinheiro.
+- [x] Emitir eventos auditáveis determinísticos de compra importada, financeiro vinculado e compra revertida.
+- [x] Expor vínculo financeiro e consulta das notas ao agente pelo mesmo núcleo.
+- [x] Criar endpoints equivalentes na API v1 com isolamento de tenant e escopos próprios.
+- [x] Garantir que reentregas não repitam efeitos de estoque, custo ou dinheiro.
+
+**M01.6b concluído:** os eventos `purchase.imported`, `purchase.financialLinked` e `purchase.reverted` usam IDs determinísticos e são persistidos atomicamente com a mudança principal. O evento de importação referencia movimentos e atualizações de custo. Agente e API v1 reutilizam os mesmos núcleos de consulta, confirmação, vínculo financeiro e reversão; a API separa `read:purchases`/`write:purchases` e exige também os escopos de estoque ou financeiro quando aplicável.
 
 ## M01.6c — Fiscal e sincronização operacional
 

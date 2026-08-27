@@ -12,16 +12,35 @@
  *                        Idempotent: sets `stockImportedAt`, blocks re-apply.
  *   - list_unmatched     notes with unmatched items pending review
  *   - reverse_stock      reverse a V2 import with compensating movements
+ *   - link_financial     create the deterministic payable/paid transaction
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
+import { ZodError } from 'zod';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
-import { confirmPurchaseNoteAdmin, reversePurchaseNoteAdmin } from '@/lib/services/purchase-import-admin';
+import {
+  confirmPurchaseNoteAdmin,
+  PurchaseNoteClaimConflictError,
+  PurchaseNoteNotReadyError,
+  PurchaseNoteNotReversibleError,
+  PurchaseNoteReversalBlockedError,
+  PurchaseNoteReversalConflictError,
+  reversePurchaseNoteAdmin,
+} from '@/lib/services/purchase-import-admin';
+import {
+  linkPurchaseFinancialAdmin,
+  PurchaseFinancialConflictError,
+  PurchaseFinancialNotReadyError,
+  PurchaseFinancialReferenceError,
+} from '@/lib/services/purchase-financial-admin';
+import { PurchaseFinancialIntentSchema } from '@/lib/contracts/api/purchase-note-financial';
+import { PurchaseNoteExternalListQuerySchema } from '@/lib/contracts/api/purchase-note-external';
+import { getPurchaseNoteAdmin, listPurchaseNotesAdmin } from '@/lib/services/purchase-query-admin';
 
-type Action = 'list' | 'get' | 'match_products' | 'apply_to_stock' | 'list_unmatched' | 'reverse_stock';
+type Action = 'list' | 'get' | 'match_products' | 'apply_to_stock' | 'list_unmatched' | 'reverse_stock' | 'link_financial';
 
 export async function POST(req: NextRequest) {
   let ctx;
@@ -39,9 +58,9 @@ export async function POST(req: NextRequest) {
   try {
     switch (body.action) {
       case 'list':
-        return NextResponse.json({ ok: true, data: await listNotes(businessId, body.params as { status?: PurchaseNoteStatus; supplierId?: string; limit?: number }) });
+        return NextResponse.json({ ok: true, data: await listNotesForAgent(businessId, body.params) });
       case 'get':
-        return NextResponse.json({ ok: true, data: await getNote(businessId, body.params.id as string) });
+        return NextResponse.json({ ok: true, data: await getPurchaseNoteAdmin({ db: adminDb, businessId, noteId: body.params.id as string }) });
       case 'match_products':
         return NextResponse.json({ ok: true, data: await matchProducts(businessId, body.params.id as string) });
       case 'apply_to_stock':
@@ -56,38 +75,45 @@ export async function POST(req: NextRequest) {
           body.params.operatorId as string | undefined,
           body.params.operatorName as string | undefined,
         ) });
+      case 'link_financial':
+        return NextResponse.json({ ok: true, data: await linkFinancial(
+          businessId,
+          body.params as {
+            id?: string;
+            mode?: unknown;
+            dueDate?: unknown;
+            bankAccountId?: unknown;
+            paymentDate?: unknown;
+            paymentMethod?: unknown;
+            operatorId?: string;
+            operatorName?: string;
+          },
+        ) });
       default:
         return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
     }
   } catch (err) {
     console.error('[agent.purchase-notes] error', err);
+    if (err instanceof ZodError) {
+      return NextResponse.json({ ok: false, error: 'Invalid purchase note parameters', details: err.flatten() }, { status: 400 });
+    }
+    if (
+      err instanceof PurchaseNoteClaimConflictError ||
+      err instanceof PurchaseNoteNotReadyError ||
+      err instanceof PurchaseNoteNotReversibleError ||
+      err instanceof PurchaseNoteReversalBlockedError ||
+      err instanceof PurchaseNoteReversalConflictError ||
+      err instanceof PurchaseFinancialConflictError ||
+      err instanceof PurchaseFinancialNotReadyError ||
+      err instanceof PurchaseFinancialReferenceError
+    ) {
+      return NextResponse.json({ ok: false, error: err.message }, { status: 409 });
+    }
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
-
-async function listNotes(
-  businessId: string,
-  p: { status?: PurchaseNoteStatus; supplierId?: string; limit?: number },
-): Promise<PurchaseNote[]> {
-  const limit = Math.min(Math.max(p.limit ?? 30, 1), 100);
-  let q: FirebaseFirestore.Query = adminDb.collection('purchaseNotes').where('businessId', '==', businessId);
-  if (p.status) q = q.where('status', '==', p.status);
-  if (p.supplierId) q = q.where('supplierId', '==', p.supplierId);
-
-  const snap = await q.orderBy('issueDate', 'desc').limit(limit).get();
-  return snap.docs.map((d) => ({ ...(d.data() as PurchaseNote), id: d.id }));
-}
-
-async function getNote(businessId: string, id: string): Promise<PurchaseNote | null> {
-  if (!id) throw new Error('id required');
-  const doc = await adminDb.collection('purchaseNotes').doc(id).get();
-  if (!doc.exists) return null;
-  const data = doc.data() as PurchaseNote;
-  if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  return { ...data, id: doc.id };
-}
 
 // ─── Matching ────────────────────────────────────────────────────────────────
 
@@ -96,7 +122,7 @@ async function matchProducts(businessId: string, id: string): Promise<{
   matched: Array<{ item: PurchaseNoteItem; product: Product; confidence: number }>;
   unmatched: PurchaseNoteItem[];
 }> {
-  const note = await getNote(businessId, id);
+  const note = await getPurchaseNoteAdmin({ db: adminDb, businessId, noteId: id });
   if (!note) throw new Error('Note not found');
 
   // Pull tenant's active products (capped)
@@ -181,7 +207,7 @@ async function applyToStock(
       db: adminDb,
       businessId,
       noteId: id,
-      actor: { uid: operatorId || 'agent', name: operatorName || 'Agente IA' },
+      actor: { uid: operatorId || 'agent', name: operatorName || 'Agente IA', type: 'agent' },
       retryFailed: note.status === 'parcial' || note.status === 'falha',
     });
     return {
@@ -270,12 +296,61 @@ async function reverseStock(
     businessId,
     noteId: id,
     reason,
-    actor: { uid: operatorId || 'agent', name: operatorName || 'Agente IA' },
+    actor: { uid: operatorId || 'agent', name: operatorName || 'Agente IA', type: 'agent' },
   });
   return {
     note: reversed.note as unknown as PurchaseNote,
     movementsReversed: reversed.reversedCount,
   };
+}
+
+async function listNotesForAgent(businessId: string, params: Record<string, unknown>): Promise<PurchaseNote[]> {
+  const parsed = PurchaseNoteExternalListQuerySchema.parse({
+    ...(params.status !== undefined ? { status: params.status } : {}),
+    ...(params.supplierId !== undefined ? { supplierId: params.supplierId } : {}),
+    ...(params.limit !== undefined ? { limit: params.limit } : {}),
+  });
+  return (await listPurchaseNotesAdmin({
+    db: adminDb,
+    businessId,
+    status: parsed.status,
+    supplierId: parsed.supplierId,
+    limit: parsed.limit,
+  })).notes;
+}
+
+async function linkFinancial(
+  businessId: string,
+  params: {
+    id?: string;
+    mode?: unknown;
+    dueDate?: unknown;
+    bankAccountId?: unknown;
+    paymentDate?: unknown;
+    paymentMethod?: unknown;
+    operatorId?: string;
+    operatorName?: string;
+  },
+) {
+  if (!params.id) throw new Error('id required');
+  const intent = PurchaseFinancialIntentSchema.parse({
+    mode: params.mode,
+    ...(params.dueDate !== undefined ? { dueDate: params.dueDate } : {}),
+    ...(params.bankAccountId !== undefined ? { bankAccountId: params.bankAccountId } : {}),
+    ...(params.paymentDate !== undefined ? { paymentDate: params.paymentDate } : {}),
+    ...(params.paymentMethod !== undefined ? { paymentMethod: params.paymentMethod } : {}),
+  });
+  return linkPurchaseFinancialAdmin({
+    db: adminDb,
+    businessId,
+    noteId: params.id,
+    intent: { businessId, noteId: params.id, ...intent },
+    actor: {
+      uid: params.operatorId || 'agent',
+      name: params.operatorName || 'Agente IA',
+      type: 'agent',
+    },
+  });
 }
 
 async function listUnmatched(businessId: string, limit?: number): Promise<Array<Pick<PurchaseNote, 'id' | 'numero' | 'supplierName' | 'issueDate' | 'unmatchedItems'>>> {

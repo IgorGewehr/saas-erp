@@ -40,6 +40,7 @@ const EventEnvelopeBase = z.object({
   /** Quem causou o evento. Operador (uid), api ('api'), agent ('agent'), system. */
   actorType: z.enum(['user', 'api', 'agent', 'system']).optional(),
   actorId: z.string().optional(),
+  actorName: z.string().optional(),
 });
 
 // ============================================================================
@@ -202,6 +203,39 @@ export const PurchaseImportedSchema = EventEnvelopeBase.extend({
   type: z.literal('purchase.imported'),
   purchaseNoteId: z.string().min(1),
   movementsCreated: z.number().int().nonnegative(),
+  movementIds: z.array(z.string().min(1)).optional(),
+  costUpdates: z.number().int().nonnegative().optional(),
+  resultStatus: z.enum(['importada', 'parcial']).optional(),
+  supplierId: z.string().min(1).optional(),
+  total: z.number().nonnegative().optional(),
+});
+
+/**
+ * Vínculo financeiro da compra concluído. AUDIT-ONLY: a despesa e o eventual
+ * débito bancário são gravados de forma síncrona no núcleo de compras.
+ */
+export const PurchaseFinancialLinkedSchema = EventEnvelopeBase.extend({
+  type: z.literal('purchase.financialLinked'),
+  purchaseNoteId: z.string().min(1),
+  transactionId: z.string().min(1),
+  financialStatus: z.enum(['payable_created', 'paid']),
+  amount: z.number().positive(),
+  supplierId: z.string().min(1).optional(),
+  bankAccountId: z.string().min(1).optional(),
+});
+
+/**
+ * Compra revertida por movimentos compensatórios. AUDIT-ONLY: estoque,
+ * transação financeira e saldo bancário são revertidos no mesmo fluxo síncrono.
+ */
+export const PurchaseRevertedSchema = EventEnvelopeBase.extend({
+  type: z.literal('purchase.reverted'),
+  purchaseNoteId: z.string().min(1),
+  movementsReversed: z.number().int().nonnegative(),
+  transactionId: z.string().min(1).optional(),
+  bankAccountId: z.string().min(1).optional(),
+  amountRestored: z.number().nonnegative(),
+  reason: z.string().min(5).max(500),
 });
 
 /**
@@ -306,6 +340,8 @@ export const DomainEventSchema = z.discriminatedUnion('type', [
   ClientCreatedSchema,
   DeliveryOrderConfirmedSchema,
   PurchaseImportedSchema,
+  PurchaseFinancialLinkedSchema,
+  PurchaseRevertedSchema,
   ConversationReopenedSchema,
   PaymentApprovedSchema,
   PaymentRefundedSchema,
@@ -326,6 +362,8 @@ export const DOMAIN_EVENT_TYPES = [
   'client.created',
   'deliveryOrder.confirmed',
   'purchase.imported',
+  'purchase.financialLinked',
+  'purchase.reverted',
   'conversation.reopened',
   'payment.approved',
   'payment.refunded',

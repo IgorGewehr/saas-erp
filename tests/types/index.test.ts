@@ -189,6 +189,7 @@ describe('API_KEY_SCOPES', () => {
     'read:appointments', 'write:appointments',
     'read:financial', 'write:financial',
     'read:products', 'write:products',
+    'read:purchases', 'write:purchases',
     'read:kanban', 'write:kanban',
     'read:crm', 'write:crm',
     'read:sales', 'write:sales',
@@ -213,7 +214,7 @@ describe('API_KEY_SCOPES', () => {
   });
 
   it('read/write scopes come in pairs', () => {
-    const resources = ['clients', 'appointments', 'financial', 'products', 'kanban', 'crm', 'sales'];
+    const resources = ['clients', 'appointments', 'financial', 'products', 'purchases', 'kanban', 'crm', 'sales'];
     for (const resource of resources) {
       expect(API_KEY_SCOPES).toHaveProperty(`read:${resource}`);
       expect(API_KEY_SCOPES).toHaveProperty(`write:${resource}`);

@@ -6,7 +6,11 @@ import {
   preparedDocument,
   type PreparedPurchaseNote,
 } from '@/lib/services/purchase-import-admin';
-import type { SupplierActor } from '@/lib/services/supplier-admin';
+import {
+  ensurePurchaseAuditEvent,
+  purchaseEventActor,
+  type PurchaseEventActor,
+} from '@/lib/services/purchase-domain-events';
 import type { BankAccount, Transaction } from '@/lib/types';
 
 export class PurchaseFinancialNotReadyError extends Error {
@@ -70,7 +74,7 @@ export async function linkPurchaseFinancialAdmin(params: {
   businessId: string;
   noteId: string;
   intent: LinkPurchaseFinancialRequest;
-  actor: SupplierActor;
+  actor: PurchaseEventActor;
 }): Promise<PurchaseFinancialResult> {
   const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
 
@@ -109,6 +113,22 @@ export async function linkPurchaseFinancialAdmin(params: {
         throw new PurchaseFinancialConflictError('A compra já foi paga por outra conta.');
       }
       const now = new Date().toISOString();
+      await ensurePurchaseAuditEvent({
+        db: params.db,
+        tx,
+        event: {
+          type: 'purchase.financialLinked',
+          businessId: params.businessId,
+          occurredAt: transaction.createdAt ?? now,
+          ...purchaseEventActor(params.actor),
+          purchaseNoteId: params.noteId,
+          transactionId: transaction.id,
+          financialStatus: status,
+          amount,
+          ...(note.supplier.id ? { supplierId: note.supplier.id } : {}),
+          ...(transaction.bankAccountId ? { bankAccountId: transaction.bankAccountId } : {}),
+        },
+      });
       const canonical = PurchaseNoteV2Schema.parse({
         ...note,
         financial: {
@@ -162,6 +182,22 @@ export async function linkPurchaseFinancialAdmin(params: {
       createdAt: now,
       updatedAt: now,
     };
+    await ensurePurchaseAuditEvent({
+      db: params.db,
+      tx,
+      event: {
+        type: 'purchase.financialLinked',
+        businessId: params.businessId,
+        occurredAt: now,
+        ...purchaseEventActor(params.actor),
+        purchaseNoteId: params.noteId,
+        transactionId,
+        financialStatus: params.intent.mode === 'paid' ? 'paid' : 'payable_created',
+        amount,
+        ...(note.supplier.id ? { supplierId: note.supplier.id } : {}),
+        ...(bankAccount ? { bankAccountId: bankAccount.id } : {}),
+      },
+    });
     tx.create(transactionRef, transaction as unknown as Record<string, unknown>);
     if (bankAccountRef && bankAccount) {
       tx.update(bankAccountRef, {
@@ -182,6 +218,7 @@ export async function linkPurchaseFinancialAdmin(params: {
     const document = preparedDocument(noteSnapshot.data() ?? {}, canonical, {
       financialLinkedBy: params.actor.uid,
       financialLinkedByName: params.actor.name,
+      financialLinkedActorType: params.actor.type ?? 'user',
       financialLinkedAt: now,
       updatedAt: now,
     });

@@ -16,6 +16,7 @@ import {
   linkPurchaseFinancialAdmin,
   PurchaseFinancialReferenceError,
 } from '@/lib/services/purchase-financial-admin';
+import { purchaseDomainEventId } from '@/lib/services/purchase-domain-events';
 
 interface Ref { id: string; collection: string; get: () => Promise<Snapshot> }
 interface Snapshot { id: string; exists: boolean; data: () => Record<string, unknown> | undefined }
@@ -279,6 +280,12 @@ describe('purchase import preparation core', () => {
     expect(fake.list('products').find((item) => item.id === 'product-1')?.value).toMatchObject({ currentStock: 20, costPrice: 5 });
     const created = fake.list('products').find((item) => item.id.startsWith('purchase_product_'));
     expect(created?.value).toMatchObject({ name: 'Caixa para transporte', currentStock: 50, costPrice: 6, menuAvailable: false });
+    expect(fake.list('domainEvents')).toEqual([expect.objectContaining({
+      id: purchaseDomainEventId('biz-1', prepared.id, 'purchase.imported'),
+      value: expect.objectContaining({
+        type: 'purchase.imported', purchaseNoteId: prepared.id, movementsCreated: 2, status: 'processed',
+      }),
+    })]);
   });
 
   it('fecha como parcial quando uma linha falha e preserva o resultado importado', async () => {
@@ -322,6 +329,7 @@ describe('purchase import preparation core', () => {
     expect(fake.list('stockMovements')).toHaveLength(2);
     expect(fake.list('stockOperations')).toHaveLength(2);
     expect(fake.list('products').find((item) => item.id === 'product-1')?.value.currentStock).toBe(10);
+    expect(fake.list('domainEvents').filter((item) => item.value.type === 'purchase.imported')).toHaveLength(1);
   });
 
   it('reverte saldo e custo por movimento compensatório sem apagar o ledger nem duplicar no replay', async () => {
@@ -373,6 +381,10 @@ describe('purchase import preparation core', () => {
     expect(fake.list('stockMovements').find((item) => item.value.reversalOfMovementId)?.value).toMatchObject({
       type: 'saida', costRestored: true, previousCost: 5, newCost: 2,
     });
+    expect(fake.list('domainEvents').map((item) => item.value.type).sort()).toEqual([
+      'purchase.imported',
+      'purchase.reverted',
+    ]);
   });
 
   it('bloqueia reversão quando existe movimento posterior e libera o claim com diagnóstico', async () => {
@@ -457,6 +469,11 @@ describe('purchase import preparation core', () => {
     expect(first.note.financial).toMatchObject({ status: 'payable_created', transactionId: first.transaction.id });
     expect(replay).toMatchObject({ replayed: true, transaction: { id: first.transaction.id } });
     expect(fake.list('transactions')).toHaveLength(1);
+    const financialEvents = fake.list('domainEvents').filter((item) => item.value.type === 'purchase.financialLinked');
+    expect(financialEvents).toEqual([expect.objectContaining({
+      id: purchaseDomainEventId('biz-1', prepared.id, 'purchase.financialLinked'),
+      value: expect.objectContaining({ transactionId: first.transaction.id, financialStatus: 'payable_created', amount: 375 }),
+    })]);
   });
 
   it('reconhece a baixa posterior da conta a pagar e recompõe a conta na reversão', async () => {
@@ -525,6 +542,11 @@ describe('purchase import preparation core', () => {
     expect(fake.list('bankAccounts').find((item) => item.id === 'bank-1')?.value.balance).toBe(1000);
     expect(fake.list('transactions')).toHaveLength(1);
     expect(fake.list('transactions')[0].value).toMatchObject({ status: 'cancelado', cancelledBy: 'user-1' });
+    expect(fake.list('domainEvents').map((item) => item.value.type).sort()).toEqual([
+      'purchase.financialLinked',
+      'purchase.imported',
+      'purchase.reverted',
+    ]);
   });
 
   it('recusa conta de outro tenant sem criar despesa ou alterar saldo', async () => {

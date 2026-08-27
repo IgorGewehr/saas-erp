@@ -1,10 +1,12 @@
 /**
  * lib/contracts/api/agent/purchase-notes.ts — /api/agent/tools/purchase-notes
- * Actions: list, get, match_products, apply_to_stock, list_unmatched
+ * Actions: list, get, match_products, apply_to_stock, list_unmatched,
+ * reverse_stock, link_financial
  */
 
 import { z } from 'zod';
 import { DocIdSchema, MoneySchema, PurchaseNoteStatusSchema } from './_shared';
+import { PurchaseFinancialIntentSchema } from '@/lib/contracts/api/purchase-note-financial';
 
 const PurchaseNoteShape = z.object({
   id: DocIdSchema,
@@ -85,6 +87,31 @@ export const PurchaseNotesReverseStockDataSchema = z.object({
   movementsReversed: z.number().int().nonnegative(),
 });
 
+export const PurchaseNotesLinkFinancialParamsSchema = z.discriminatedUnion('mode', [
+  PurchaseFinancialIntentSchema.options[0].extend({
+    id: DocIdSchema,
+    operatorId: z.string().default('agent'),
+    operatorName: z.string().default('Agente IA'),
+  }),
+  PurchaseFinancialIntentSchema.options[1].extend({
+    id: DocIdSchema,
+    operatorId: z.string().default('agent'),
+    operatorName: z.string().default('Agente IA'),
+  }),
+]);
+export const PurchaseNotesLinkFinancialDataSchema = z.object({
+  note: PurchaseNoteShape,
+  transaction: z.object({
+    id: DocIdSchema,
+    businessId: z.string(),
+    type: z.literal('despesa'),
+    amount: MoneySchema,
+    status: z.enum(['pendente', 'pago', 'atrasado', 'cancelado']),
+    purchaseNoteId: DocIdSchema,
+  }).passthrough(),
+  replayed: z.boolean(),
+});
+
 export const PurchaseNotesToolRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('list'),            params: PurchaseNotesListParamsSchema }),
   z.object({ action: z.literal('get'),             params: PurchaseNotesGetParamsSchema }),
@@ -92,6 +119,7 @@ export const PurchaseNotesToolRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('apply_to_stock'),  params: PurchaseNotesApplyToStockParamsSchema }),
   z.object({ action: z.literal('list_unmatched'),  params: PurchaseNotesListUnmatchedParamsSchema }),
   z.object({ action: z.literal('reverse_stock'),   params: PurchaseNotesReverseStockParamsSchema }),
+  z.object({ action: z.literal('link_financial'),  params: PurchaseNotesLinkFinancialParamsSchema }),
 ]);
 
 export const PURCHASE_NOTES_DATA_SCHEMAS = {
@@ -101,4 +129,5 @@ export const PURCHASE_NOTES_DATA_SCHEMAS = {
   apply_to_stock: PurchaseNotesApplyToStockDataSchema,
   list_unmatched: PurchaseNotesListUnmatchedDataSchema,
   reverse_stock:  PurchaseNotesReverseStockDataSchema,
+  link_financial: PurchaseNotesLinkFinancialDataSchema,
 } as const;

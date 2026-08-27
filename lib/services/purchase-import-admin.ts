@@ -22,6 +22,11 @@ import {
   applyStockOperationAdmin,
   StockDependencyConflictError,
 } from '@/lib/services/stock-core-admin';
+import {
+  ensurePurchaseAuditEvent,
+  purchaseEventActor,
+  type PurchaseEventActor,
+} from '@/lib/services/purchase-domain-events';
 
 export class PurchaseNoteDuplicateError extends Error {
   constructor(public readonly existingNoteId: string) {
@@ -583,7 +588,7 @@ export async function confirmPurchaseNoteAdmin(params: {
   db: Firestore;
   businessId: string;
   noteId: string;
-  actor: SupplierActor;
+  actor: PurchaseEventActor;
   retryFailed?: boolean;
 }): Promise<PurchaseNoteConfirmationResult> {
   const noteRef = params.db.collection('purchaseNotes').doc(params.noteId);
@@ -739,8 +744,28 @@ export async function confirmPurchaseNoteAdmin(params: {
     const document = preparedDocument(snapshot.data() ?? {}, canonical, {
       importedBy: params.actor.uid,
       importedByName: params.actor.name,
+      importedActorType: params.actor.type ?? 'user',
       updatedAt: now,
     });
+    if (status === 'importada' || status === 'parcial') {
+      await ensurePurchaseAuditEvent({
+        db: params.db,
+        tx,
+        event: {
+          type: 'purchase.imported',
+          businessId: params.businessId,
+          occurredAt: canonical.importedAt ?? now,
+          ...purchaseEventActor(params.actor),
+          purchaseNoteId: params.noteId,
+          movementsCreated: stockMovementIds.length,
+          movementIds: stockMovementIds,
+          costUpdates: importedItems.length,
+          resultStatus: status,
+          ...(canonical.supplier.id ? { supplierId: canonical.supplier.id } : {}),
+          total: canonical.totals.invoice,
+        },
+      });
+    }
     tx.set(noteRef, document as unknown as Record<string, unknown>);
     return confirmationResult(document, false);
   });
@@ -985,7 +1010,7 @@ export async function reversePurchaseNoteAdmin(params: {
   businessId: string;
   noteId: string;
   reason: string;
-  actor: SupplierActor;
+  actor: PurchaseEventActor;
 }): Promise<PurchaseNoteReversalResult> {
   const reason = params.reason.trim();
   if (reason.length < 5 || reason.length > 500) {
@@ -1106,6 +1131,22 @@ export async function reversePurchaseNoteAdmin(params: {
       const now = new Date().toISOString();
       const missingReversal = note.items.some((item) => item.importStatus === 'imported' && !item.reversalMovementId);
       if (missingReversal) throw new PurchaseNoteReversalClaimLostError();
+      await ensurePurchaseAuditEvent({
+        db: params.db,
+        tx,
+        event: {
+          type: 'purchase.reverted',
+          businessId: params.businessId,
+          occurredAt: now,
+          ...purchaseEventActor(params.actor),
+          purchaseNoteId: params.noteId,
+          movementsReversed: note.reversalMovementIds.length,
+          ...(financialTransaction ? { transactionId: financialTransaction.id } : {}),
+          ...(financialBankAccountId ? { bankAccountId: financialBankAccountId } : {}),
+          amountRestored: financialTransaction?.status === 'pago' ? financialTransaction.amount : 0,
+          reason,
+        },
+      });
       if (financial && !['not_requested', 'reversed'].includes(financial.status)) {
         if (!financialTransactionRef || !financialTransaction) {
           throw new PurchaseNoteReversalBlockedError('O lançamento financeiro da compra não foi encontrado.');
@@ -1153,6 +1194,7 @@ export async function reversePurchaseNoteAdmin(params: {
       });
       const document = preparedDocument(snapshot.data() ?? {}, canonical, {
         reversedByName: params.actor.name,
+        reversedActorType: params.actor.type ?? 'user',
         reversalClaimedByName: undefined,
         updatedAt: now,
       });
