@@ -312,14 +312,10 @@ service cloud.firestore {
                   && isOwnBusiness()
                   && isManager();
 
-      allow create: if isAuthenticated()
-                    && incomingBelongsToBusiness()
-                    && isManager();
-
-      allow update: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isManager()
-                    && incomingBelongsToBusiness();
+      // Documento fiscal, claim de importação, vínculo financeiro e estado de
+      // estoque são gravados apenas pelas rotas Admin SDK. A migração M01 deve
+      // ser aplicada antes da publicação desta regra para eliminar o fluxo V1.
+      allow create, update: if false;
 
       // Purchase notes are immutable fiscal records — no deletion
       allow delete: if false;
@@ -491,6 +487,16 @@ service cloud.firestore {
                   && isOwnBusiness()
                   && isOperator();
       allow write: if false;
+    }
+
+    // Execuções e backups da migração assistida M01 contêm snapshots internos
+    // e checkpoints operacionais. Somente scripts com Admin SDK podem acessar.
+    match /m01MigrationRuns/{runId} {
+      allow read, write: if false;
+    }
+
+    match /m01MigrationBackups/{backupId} {
+      allow read, write: if false;
     }
 
     // ============================================

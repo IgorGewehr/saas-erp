@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
     const productId = searchParams.get('productId');
     const type = searchParams.get('type');
     const limit = Math.min(Number(searchParams.get('limit')) || 50, 200);
-    const offset = Number(searchParams.get('offset')) || 0;
+    const offset = Math.min(Math.max(Number(searchParams.get('offset')) || 0, 0), 1000);
 
     let query: FirebaseFirestore.Query = adminDb
       .collection('stockMovements')
@@ -36,19 +36,20 @@ export async function GET(req: NextRequest) {
       query = query.where('type', '==', type);
     }
 
-    query = query.orderBy('createdAt', 'desc');
-
-    const snapshot = await query.get();
-    const movements = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-    const total = movements.length;
-    const paginated = movements.slice(offset, offset + limit);
+    const [countSnapshot, snapshot] = await Promise.all([
+      query.count().get(),
+      query.orderBy('createdAt', 'desc').offset(offset).limit(limit + 1).get(),
+    ]);
+    const hasMore = snapshot.docs.length > limit;
+    const movements = snapshot.docs.slice(0, limit).map(doc => ({ id: doc.id, ...doc.data() }));
 
     return apiSuccess({
-      movements: paginated,
-      total,
+      movements,
+      total: countSnapshot.data().count,
       limit,
       offset,
+      hasMore,
+      nextOffset: hasMore ? offset + limit : null,
     });
   } catch (error: any) {
     console.error('[API v1/stock-movements GET]', error);

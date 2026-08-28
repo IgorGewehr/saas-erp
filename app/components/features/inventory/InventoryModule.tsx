@@ -63,9 +63,6 @@ import {
   collection,
   query,
   where,
-  orderBy,
-  limit,
-  getDocs,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -88,6 +85,7 @@ import {
   createStockIdempotencyKey,
 } from '@/lib/services/stock-server-client';
 import { listStockLots } from '@/lib/services/stock-lot-client';
+import { listStockMovementsPage } from '@/lib/services/stock-movement-client';
 import {
   archiveCatalogProduct,
   createCatalogIdempotencyKey,
@@ -2895,9 +2893,6 @@ export default function InventoryModule() {
   const [movementType, setMovementType] = useState<MovementType>('entrada');
   const [movementLotId, setMovementLotId] = useState('');
   const [lotsDialogOpen, setLotsDialogOpen] = useState(false);
-  // stockMovements é coleção de alto throughput — pagina por janela crescente
-  // em vez de baixar tudo (auditoria P1.5). Índice [businessId, createdAt desc] já existe.
-  const [movementLimit, setMovementLimit] = useState(150);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingProduct, setDeletingProduct] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -2959,22 +2954,32 @@ export default function InventoryModule() {
     return [...byId.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
   }, [productPages]);
 
-  const { data: movements = [], isLoading: movementsLoading } = useQuery({
-    queryKey: ['stockMovements', business?.id, movementLimit],
-    queryFn: async () => {
-      if (!business?.id) return [];
-      const q = query(
-        collection(db, 'stockMovements'),
-        where('businessId', '==', business.id),
-        orderBy('createdAt', 'desc'),
-        limit(movementLimit),
-      );
-      const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ ...d.data(), id: d.id } as StockMovement));
+  const {
+    data: movementPages,
+    isLoading: movementsLoading,
+    fetchNextPage: fetchNextMovementPage,
+    hasNextPage: hasNextMovementPage,
+    isFetchingNextPage: isFetchingNextMovementPage,
+  } = useInfiniteQuery({
+    queryKey: ['stockMovements', business?.id],
+    queryFn: ({ pageParam }) => {
+      if (!business?.id) return Promise.resolve({ movements: [], hasMore: false, nextCursor: null });
+      return listStockMovementsPage({ businessId: business.id, cursor: pageParam, limit: 100 });
     },
-    enabled: !!business?.id,
-    staleTime: 2 * 60 * 1000,
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+    enabled: Boolean(business?.id),
+    staleTime: 60 * 1000,
+    refetchOnWindowFocus: true,
   });
+  const movements = useMemo(() => {
+    const byId = new Map<string, StockMovement>();
+    for (const page of movementPages?.pages ?? []) {
+      page.movements.forEach((movement) => byId.set(movement.id, movement));
+    }
+    return [...byId.values()].sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+  }, [movementPages]);
 
   const {
     data: lotResult = { lots: [], summary: { total: 0, active: 0, expired: 0, critical: 0, warning: 0 } },
@@ -2988,7 +2993,6 @@ export default function InventoryModule() {
     staleTime: 60 * 1000,
   });
 
-  const hasMoreMovements = movements.length >= movementLimit;
   const lastMovementByProduct = useMemo(() => {
     const map = new Map<string, StockMovement>();
     for (const movement of movements) {
@@ -3807,13 +3811,16 @@ export default function InventoryModule() {
           </button>
         </div>
         <MovementHistory movements={movements} isLoading={movementsLoading} />
-        {hasMoreMovements && !movementsLoading && (
+        {hasNextMovementPage && !movementsLoading && (
           <div className="flex justify-center py-4 border-t border-border/40">
             <button
-              onClick={() => setMovementLimit((n) => n + 150)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors border border-border/60"
+              onClick={() => void fetchNextMovementPage()}
+              disabled={isFetchingNextMovementPage}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors border border-border/60 disabled:opacity-50"
             >
-              {t('inventory.history.loadMore', 'Ver mais movimentações')}
+              {isFetchingNextMovementPage
+                ? t('common.loading', 'Carregando…')
+                : t('inventory.history.loadMore', 'Ver mais movimentações')}
             </button>
           </div>
         )}

@@ -1758,6 +1758,12 @@ export interface StockMovement {
   reason: string;
   saleId?: string;
   purchaseId?: string;
+  sourceType?: 'manual' | 'sale' | 'order' | 'purchase' | 'service' | 'refund' | 'agent' | 'api' | 'migration';
+  sourceId?: string;
+  sourceLineId?: string;
+  idempotencyKey?: string;
+  correlationId?: string;
+  balanceAccuracy?: 'exact' | 'legacy_best_effort';
   operatorId: string;
   operatorName: string;
   createdAt: string;

@@ -43,6 +43,7 @@ const StockMovementV2CanonicalSchema = z.object({
   sourceId: z.string().optional(),
   sourceLineId: z.string().optional(),
   idempotencyKey: z.string().min(1).max(300),
+  correlationId: z.string().min(1).max(300).optional(),
   balanceAccuracy: z.enum(['exact', 'legacy_best_effort']),
   operatorId: z.string().min(1),
   operatorName: z.string().min(1),
@@ -140,6 +141,7 @@ export function normalizeStockMovementToV2(input: unknown): unknown {
     quantity,
     ...inferredSource,
     idempotencyKey: source.idempotencyKey ?? `legacy:${id}`,
+    correlationId: source.correlationId ?? source.idempotencyKey ?? `legacy:${id}`,
     balanceAccuracy: source.balanceAccuracy ?? (isLegacy ? 'legacy_best_effort' : 'exact'),
   };
 }

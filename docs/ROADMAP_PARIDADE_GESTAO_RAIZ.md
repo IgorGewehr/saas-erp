@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.7 concluídos; próximo: M01.8`
+  - Status: `Em implementação — M01.0 a M01.8 concluídos em código; próximo: M01.9`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -386,14 +386,16 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 
 ### M01.8 — Migração, segurança e desempenho
 
-- [ ] Criar migração idempotente para documentos legados.
-- [ ] Fazer backfill de `schemaVersion`, campos normalizados e referências possíveis.
-- [ ] Preservar `imageUrl`, `currentStock` e demais campos usados pelos módulos atuais durante a transição.
-- [ ] Atualizar Firestore Rules para todos os novos caminhos e negar writes críticos diretos do cliente.
-- [ ] Criar/validar índices para listas, busca, movimentos e notas.
-- [ ] Paginar produtos, movimentos, fornecedores e notas sem listeners ilimitados.
-- [ ] Adicionar logs estruturados e correlação por operação/idempotency key.
-- [ ] Executar migração em dry-run antes de qualquer escrita em produção.
+- [x] Criar migração idempotente para documentos legados.
+- [x] Fazer backfill de `schemaVersion`, campos normalizados e referências possíveis.
+- [x] Preservar `imageUrl`, `currentStock` e demais campos usados pelos módulos atuais durante a transição.
+- [x] Atualizar Firestore Rules para todos os novos caminhos e negar writes críticos diretos do cliente.
+- [x] Criar/validar índices para listas, busca, movimentos e notas.
+- [x] Paginar produtos, movimentos, fornecedores e notas sem listeners ilimitados.
+- [x] Adicionar logs estruturados e correlação por operação/idempotency key.
+- [x] Tornar o dry-run obrigatório como primeira etapa operacional, sem qualquer escrita no modo padrão.
+
+**M01.8 concluído em código:** migrador por tenant com validação V2, claims, checkpoints, backup e rollback; paginação por cursor para movimentos/notas; regras e índices; logs JSON correlacionados. A execução em produção é deliberadamente externa ao deploy e deve seguir o runbook por tenant. Detalhes em `docs/paridade/M01_MIGRACAO_SEGURANCA.md`.
 
 **Saída:** dados existentes preservados e custo operacional controlado.
 
@@ -479,3 +481,4 @@ O M02 — Vendas, PDV, Pedidos e Cardápio — só deve iniciar sua implementaç
 | 26/08/2026 | Cancelar entrada de compra por compensação, sem excluir movimentos | Preservar auditoria e impedir restauração insegura de saldo/custo |
 | 28/08/2026 | Não inventar validade quando a NF-e não a informa | Produto com `trackExpiry` exige uma data real; ausência vira pendência operacional |
 | 28/08/2026 | Usar FEFO apenas para lotes válidos e devolver cancelamentos ao lote original | Evita vender vencidos e mantém produto, lote e ledger conciliados |
+| 28/08/2026 | Exigir migração M01 por tenant, com dry-run padrão, confirmação textual e backup reversível | Evita varredura global, sobrescrita de conflitos e publicação prematura das regras restritivas |

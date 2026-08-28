@@ -14,6 +14,7 @@
 
 import { createHash } from 'crypto';
 import type { Firestore } from 'firebase-admin/firestore';
+import { writeStructuredOperationLog } from '@/lib/services/structured-operation-log';
 import { expandBomLines, type BomProductLite } from '@/contracts/_runtime/bom';
 import { StockLotEntrySchema, type StockLotAllocation, type StockLotDocument, type StockLotEntry } from '@/lib/contracts/domain/stockLot';
 import type { Product, StockAlert } from '@/lib/types';
@@ -985,6 +986,7 @@ export async function applyStockOperationAdmin(
         ...(sourceLineId ? { sourceLineId } : {}),
         ...sourceAliases(input.sourceType, input.sourceId),
         idempotencyKey: movementIdempotencyKey,
+        correlationId: operationId,
         balanceAccuracy: 'exact',
         operatorId: input.operatorId,
         operatorName: input.operatorName,
@@ -1018,6 +1020,7 @@ export async function applyStockOperationAdmin(
       schemaVersion: 1,
       businessId: input.businessId,
       idempotencyKey: input.idempotencyKey,
+      correlationId: operationId,
       fingerprint: requestFingerprint,
       type: input.type,
       sourceType: input.sourceType,
@@ -1030,5 +1033,19 @@ export async function applyStockOperationAdmin(
     return { ...storedResult, replayed: false };
   });
 
+  writeStructuredOperationLog('info', {
+    event: 'stock.operation.completed',
+    businessId: input.businessId,
+    correlationId: result.operationId,
+    operationId: result.operationId,
+    idempotencyKey: input.idempotencyKey,
+    status: result.replayed ? 'replayed' : 'completed',
+    details: {
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      type: input.type,
+      adjustmentCount: result.adjustments.length,
+    },
+  });
   return result;
 }

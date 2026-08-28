@@ -8,6 +8,7 @@ export const PurchaseNoteExternalListQuerySchema = z.object({
   supplierId: z.string().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
   offset: z.coerce.number().int().min(0).max(1000).default(0),
+  cursor: z.string().min(1).max(500).optional(),
 }).strict();
 
 export const PurchaseNoteExternalActionSchema = z.discriminatedUnion('action', [

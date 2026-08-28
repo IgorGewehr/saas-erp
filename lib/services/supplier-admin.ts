@@ -366,7 +366,19 @@ export async function findSupplierByDocumentAdmin(
   document: string,
 ): Promise<Supplier | null> {
   const wanted = normalizeSupplierDocument(document);
-  const snapshot = await db.collection('suppliers').where('businessId', '==', businessId).get();
+  const claim = await db.collection('supplierIdentifiers')
+    .doc(documentClaimId(businessId, wanted))
+    .get();
+  if (claim.exists && claim.data()?.businessId === businessId) {
+    const supplierId = String(claim.data()?.supplierId ?? '');
+    if (supplierId) return getSupplierAdmin(db, businessId, supplierId);
+  }
+  // Compatibilidade temporária antes do backfill M01.8. O limite impede uma
+  // varredura sem controle; após a migração, toda busca usa o claim acima.
+  const snapshot = await db.collection('suppliers')
+    .where('businessId', '==', businessId)
+    .limit(1000)
+    .get();
   const row = snapshot.docs.find((candidate) => {
     const data = candidate.data();
     return normalizeSupplierDocument(data.document ?? data.cnpj) === wanted;
@@ -413,13 +425,17 @@ export async function getSupplierRelationsAdmin(params: {
       .where('businessId', '==', params.businessId)
       .where('supplierId', '==', params.supplierId)
       .orderBy('createdAt', 'desc')
+      .limit(200)
       .get(),
-    params.db.collection('purchaseNotes').where('businessId', '==', params.businessId).get(),
+    params.db.collection('purchaseNotes')
+      .where('businessId', '==', params.businessId)
+      .where('supplierId', '==', params.supplierId)
+      .orderBy('issueDate', 'desc')
+      .limit(100)
+      .get(),
   ]);
-  const document = normalizeSupplierDocument(supplier.document ?? supplier.cnpj);
   const purchaseNotes = notesSnapshot.docs
     .map((row) => ({ ...row.data(), id: row.id } as PurchaseNote))
-    .filter((note) => note.supplierId === params.supplierId || normalizeSupplierDocument(note.supplierCnpj) === document)
     .sort((a, b) => (b.issueDate ?? '').localeCompare(a.issueDate ?? ''));
 
   const movementIds = new Set(purchaseNotes.flatMap((note) => note.stockMovementIds ?? []));

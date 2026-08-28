@@ -938,7 +938,14 @@ async function loadPurchaseReversalTargets(params: {
       throw new PurchaseNoteReversalBlockedError('A trilha original não possui data confiável para validar dependências.');
     }
     const sample = group[0].movement;
-    const snapshot = await params.db.collection('stockMovements').where('productId', '==', sample.productId).get();
+    const snapshot = await params.db.collection('stockMovements')
+      .where('businessId', '==', params.businessId)
+      .where('productId', '==', sample.productId)
+      .limit(501)
+      .get();
+    if (snapshot.docs.length > 500) {
+      throw new PurchaseNoteReversalBlockedError('Há movimentos demais após a compra; a reversão exige revisão manual.');
+    }
     const dependency = snapshot.docs.find((document) => {
       const movement = document.data();
       if (movement.businessId !== params.businessId || (movement.variantId ?? '') !== (sample.variantId ?? '')) return false;

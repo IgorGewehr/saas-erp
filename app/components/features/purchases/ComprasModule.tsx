@@ -9,11 +9,11 @@ import {
   BarChart3, ArrowUpRight, Truck, Undo2,
 } from 'lucide-react';
 import {
-  collection, query, where, getDocs, updateDoc, doc, onSnapshot, writeBatch,
+  collection, query, where, getDocs, updateDoc, doc, writeBatch,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { useMutation } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import type { PurchaseNote, PurchaseNoteStatus, Product } from '@/lib/types';
@@ -21,6 +21,7 @@ import { toast } from 'react-toastify';
 import { applyStockOperation } from '@/lib/services/stock-server-client';
 import type { PreparedPurchaseNote } from '@/lib/services/purchase-import-admin';
 import { confirmPurchaseNote, reversePurchaseNote } from '@/lib/services/purchase-import-client';
+import { listPurchaseNotesPage } from '@/lib/services/purchase-note-client';
 import SuppliersPanel from './SuppliersPanel';
 import PurchaseImportDialog from './PurchaseImportDialog';
 import PurchaseFinancialDialog from './PurchaseFinancialDialog';
@@ -313,6 +314,7 @@ function NoteDetailPanel({
 
 export default function ComprasModule() {
   const { business, user } = useAuth();
+  const queryClient = useQueryClient();
   const [activeArea, setActiveArea] = useState<PurchasesArea>('notes');
 
   const [search, setSearch] = useState('');
@@ -323,36 +325,33 @@ export default function ComprasModule() {
   const [reviewingNote, setReviewingNote] = useState<PreparedPurchaseNote | null>(null);
   const [financialNote, setFinancialNote] = useState<PurchaseNote | null>(null);
 
-  // ─── Data — onSnapshot (sync multi-user) ───────────────────────────────────
-  // ANTES: useQuery + getDocs com staleTime 2min. Comprador A importava NF-e
-  // de compra e dava entrada em estoque, comprador B (em outra sessão) só
-  // via a nota nova após 2min. Em equipe de compras isso geraria duplicidade
-  // de lançamento (B também tenta dar entrada da mesma nota).
-  // AGORA: onSnapshot. Notas novas aparecem em tempo real pra toda a equipe.
-  const [notes, setNotes] = useState<PurchaseNote[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  useEffect(() => {
-    if (!business?.id) { setIsLoading(false); return; }
-    setIsLoading(true);
-    // Single-field — sort por createdAt desc client-side (evita composite
-    // index purchaseNotes/businessId+createdAt).
-    const q = query(
-      collection(db, 'purchaseNotes'),
-      where('businessId', '==', business.id),
-    );
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const list = snap.docs
-          .map(d => ({ ...d.data(), id: d.id } as PurchaseNote))
-          .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-        setNotes(list);
-        setIsLoading(false);
-      },
-      (err) => { console.error('[Compras] purchaseNotes snapshot error:', err); setIsLoading(false); },
-    );
-    return () => unsub();
-  }, [business?.id]);
+  // Lista paginada no servidor. A atualização periódica mantém a colaboração
+  // entre compradores sem deixar um listener ilimitado aberto no Firestore.
+  const {
+    data: notePages,
+    isLoading,
+    fetchNextPage: fetchNextNotePage,
+    hasNextPage: hasNextNotePage,
+    isFetchingNextPage: isFetchingNextNotePage,
+  } = useInfiniteQuery({
+    queryKey: ['purchaseNotes', business?.id],
+    queryFn: ({ pageParam }) => {
+      if (!business?.id) return Promise.resolve({ notes: [], hasMore: false, nextCursor: null });
+      return listPurchaseNotesPage({ businessId: business.id, cursor: pageParam, limit: 50 });
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.hasMore ? lastPage.nextCursor : undefined,
+    enabled: Boolean(business?.id),
+    staleTime: 15 * 1000,
+    refetchInterval: 30 * 1000,
+    refetchOnWindowFocus: true,
+  });
+  const notes = useMemo(() => {
+    const byId = new Map<string, PurchaseNote>();
+    for (const page of notePages?.pages ?? []) page.notes.forEach((note) => byId.set(note.id, note));
+    return [...byId.values()].sort((left, right) =>
+      right.issueDate.localeCompare(left.issueDate) || right.id.localeCompare(left.id));
+  }, [notePages]);
 
   // Sync selectedNote — outro comprador atualiza status (importada → lançada),
   // ou nota é deletada externamente. Compara por updatedAt; se sem updatedAt
@@ -360,7 +359,7 @@ export default function ComprasModule() {
   useEffect(() => {
     if (!selectedNote) return;
     const fresh = notes.find(n => n.id === selectedNote.id);
-    if (!fresh) { setSelectedNote(null); return; }
+    if (!fresh) return;
     if ((fresh as { updatedAt?: string }).updatedAt !== (selectedNote as { updatedAt?: string }).updatedAt) {
       setSelectedNote(fresh);
     }
@@ -475,9 +474,7 @@ export default function ComprasModule() {
       return { matchedCount: matched.length, unmatchedCount: unmatched.length };
     },
     onSuccess: ({ matchedCount, unmatchedCount }) => {
-      // notes vem via onSnapshot — não precisa invalidar manualmente.
-      // ['products', ...] não tem mais consumers via useQuery (Inventory/PDV
-      // viraram onSnapshot), então invalidação seria no-op.
+      void queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business?.id] });
       if (unmatchedCount > 0) {
         toast.success(`${matchedCount} itens lançados. ${unmatchedCount} sem match — cadastre os produtos e reimporte.`);
       } else {
@@ -503,6 +500,7 @@ export default function ComprasModule() {
     },
     onSuccess: (result) => {
       setSelectedNote(result.note as unknown as PurchaseNote);
+      void queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business?.id] });
       if (result.errorCount > 0) {
         toast.warning(`${result.importedCount} item(ns) importado(s) e ${result.errorCount} com erro.`);
       } else if (result.replayed) {
@@ -521,6 +519,7 @@ export default function ComprasModule() {
     },
     onSuccess: (result) => {
       setSelectedNote(result.note as unknown as PurchaseNote);
+      void queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business?.id] });
       toast.success(result.replayed
         ? 'Esta compra já havia sido revertida; nenhum movimento foi duplicado.'
         : `${result.reversedCount} entrada(s) revertida(s) por movimentos compensatórios.`);
@@ -706,6 +705,16 @@ export default function ComprasModule() {
                   </motion.div>
                 );
               })}
+              {hasNextNotePage && (
+                <button
+                  type="button"
+                  onClick={() => void fetchNextNotePage()}
+                  disabled={isFetchingNextNotePage}
+                  className="w-full rounded-xl border border-gray-200 py-2.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  {isFetchingNextNotePage ? 'Carregando…' : 'Carregar mais notas'}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -749,6 +758,7 @@ export default function ComprasModule() {
             onPrepared={(note) => {
               setShowFiscalInbox(false);
               setSelectedNote(note as unknown as PurchaseNote);
+              void queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business.id] });
             }}
             onOpenNote={(noteId) => {
               const note = notes.find((entry) => entry.id === noteId);
@@ -770,6 +780,7 @@ export default function ComprasModule() {
               setShowImportModal(false);
               setReviewingNote(null);
               setSelectedNote(note as unknown as PurchaseNote);
+              void queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business.id] });
             }}
           />
         )}
@@ -782,6 +793,7 @@ export default function ComprasModule() {
           onCompleted={(note) => {
             setFinancialNote(null);
             setSelectedNote(note);
+            void queryClient.invalidateQueries({ queryKey: ['purchaseNotes', business.id] });
           }}
         />
       )}

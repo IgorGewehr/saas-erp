@@ -37,6 +37,7 @@ export async function GET(request: NextRequest) {
     ...(request.nextUrl.searchParams.get('supplierId') ? { supplierId: request.nextUrl.searchParams.get('supplierId') } : {}),
     ...(request.nextUrl.searchParams.get('limit') ? { limit: request.nextUrl.searchParams.get('limit') } : {}),
     ...(request.nextUrl.searchParams.get('offset') ? { offset: request.nextUrl.searchParams.get('offset') } : {}),
+    ...(request.nextUrl.searchParams.get('cursor') ? { cursor: request.nextUrl.searchParams.get('cursor') } : {}),
   };
   const parsed = PurchaseNoteExternalListQuerySchema.safeParse(raw);
   if (!parsed.success) return apiError('Invalid purchase note query', 400, parsed.error.flatten());
@@ -59,6 +60,7 @@ export async function GET(request: NextRequest) {
       supplierId: parsed.data.supplierId,
       limit: parsed.data.limit,
       offset: parsed.data.offset,
+      cursor: parsed.data.cursor,
     });
     return apiSuccess({
       notes: result.notes.map(publicPurchaseNote),
