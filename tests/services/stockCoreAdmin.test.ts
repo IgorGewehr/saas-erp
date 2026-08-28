@@ -51,6 +51,7 @@ function clone<T>(value: T): T {
 
 function makeFakeDb(initialProducts: Product[], extraDocuments: Record<string, Record<string, unknown>> = {}) {
   const documents = new Map<string, Record<string, unknown>>();
+  let transactionTail: Promise<void> = Promise.resolve();
   for (const item of initialProducts) {
     const { id, ...data } = item;
     documents.set(`products/${id}`, clone(data));
@@ -77,6 +78,10 @@ function makeFakeDb(initialProducts: Product[], extraDocuments: Record<string, R
       };
     },
     async runTransaction<T>(handler: (tx: unknown) => Promise<T>): Promise<T> {
+      const previousTransaction = transactionTail;
+      let releaseTransaction!: () => void;
+      transactionTail = new Promise<void>((resolve) => { releaseTransaction = resolve; });
+      await previousTransaction;
       const pending: Array<
         | { kind: 'set'; ref: FakeRef; data: Record<string, unknown> }
         | { kind: 'update'; ref: FakeRef; data: Record<string, unknown> }
@@ -109,18 +114,22 @@ function makeFakeDb(initialProducts: Product[], extraDocuments: Record<string, R
         },
       };
 
-      const result = await handler(tx);
-      for (const write of pending) {
-        const path = `${write.ref._coll}/${write.ref.id}`;
-        if (write.kind === 'set') {
-          documents.set(path, clone(write.data));
-        } else {
-          const current = documents.get(path);
-          if (!current) throw new Error(`Documento ausente no update: ${path}`);
-          documents.set(path, { ...current, ...clone(write.data) });
+      try {
+        const result = await handler(tx);
+        for (const write of pending) {
+          const path = `${write.ref._coll}/${write.ref.id}`;
+          if (write.kind === 'set') {
+            documents.set(path, clone(write.data));
+          } else {
+            const current = documents.get(path);
+            if (!current) throw new Error(`Documento ausente no update: ${path}`);
+            documents.set(path, { ...current, ...clone(write.data) });
+          }
         }
+        return result;
+      } finally {
+        releaseTransaction();
       }
-      return result;
     },
   };
 
@@ -331,18 +340,25 @@ describe('applyStockOperationAdmin', () => {
 
   it('bloqueia a última unidade concorrente com política estrita', async () => {
     const fake = makeFakeDb([product('p1', 1)]);
-    await applyStockOperationAdmin(fake.db, baseInput({
-      lines: [{ productId: 'p1', quantity: 1 }],
-      sourceId: 'sale-a',
-      idempotencyKey: 'sale:sale-a:stock',
-    }));
+    const attempts = await Promise.allSettled([
+      applyStockOperationAdmin(fake.db, baseInput({
+        lines: [{ productId: 'p1', quantity: 1 }],
+        sourceId: 'sale-a',
+        idempotencyKey: 'sale:sale-a:stock',
+      })),
+      applyStockOperationAdmin(fake.db, baseInput({
+        lines: [{ productId: 'p1', quantity: 1 }],
+        sourceId: 'sale-b',
+        idempotencyKey: 'sale:sale-b:stock',
+      })),
+    ]);
 
-    await expect(applyStockOperationAdmin(fake.db, baseInput({
-      lines: [{ productId: 'p1', quantity: 1 }],
-      sourceId: 'sale-b',
-      idempotencyKey: 'sale:sale-b:stock',
-    }))).rejects.toBeInstanceOf(InsufficientStockError);
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    const rejected = attempts.find((attempt) => attempt.status === 'rejected');
+    expect(rejected).toMatchObject({ status: 'rejected' });
+    expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(InsufficientStockError);
     expect(fake.get('products/p1')?.currentStock).toBe(0);
+    expect(fake.list('stockMovements')).toHaveLength(1);
   });
 
   it('aplica ajuste assinado sem expandir BOM e centraliza o alerta de mínimo', async () => {

@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.8 concluídos em código; próximo: M01.9`
+  - Status: `M01.0 a M01.9 concluídos em código; aceite operacional de homologação pendente`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -401,16 +401,19 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 
 ### M01.9 — Testes e validação
 
-- [ ] Testes unitários dos schemas, conversões, custo médio, rateio e BOM.
-- [ ] Testes de integração das transações de estoque.
-- [ ] Teste concorrente: duas vendas disputando o último item.
-- [ ] Teste concorrente: dois usuários importando a mesma NF-e.
-- [ ] Testes de isolamento entre dois `businessId`.
-- [ ] Testes de entrada, ajuste, venda, cancelamento e estorno.
-- [ ] Testes de compra completa, parcial, reprocessada e revertida.
-- [ ] Testes da integração financeira e prevenção de duplicidade.
-- [ ] Smoke test das telas de Catálogo, Estoque, Fornecedores, Compras, PDV e Pedidos.
-- [ ] Comparar saldos e custos antes/depois em uma base de homologação.
+- [x] Testes unitários dos schemas, conversões, custo médio, rateio e BOM.
+- [x] Testes de integração das transações de estoque.
+- [x] Teste concorrente: duas vendas disputando o último item.
+- [x] Teste concorrente: dois usuários importando a mesma NF-e.
+- [x] Testes de isolamento entre dois `businessId`.
+- [x] Testes de entrada, ajuste, venda, cancelamento e estorno.
+- [x] Testes de compra completa, parcial, reprocessada e revertida.
+- [x] Testes da integração financeira e prevenção de duplicidade.
+- [x] Smoke estrutural automatizado das telas de Catálogo, Estoque, Fornecedores, Compras, PDV e Pedidos.
+- [x] Criar auditoria read-only para comparar produtos, variações e lotes antes/depois por `businessId`.
+- [ ] Executar o smoke manual e a comparação antes/depois em uma base de homologação.
+
+**M01.9 concluída em código:** cenários concorrentes reais, matriz de cobertura, smoke estrutural e auditoria read-only antes/depois. O aceite operacional não foi antecipado: execução em homologação, checklist manual e validação de regras/índices continuam pendentes. Detalhes em `docs/paridade/M01_VALIDACAO_ACEITE.md`.
 
 **Saída:** evidência objetiva de que o módulo está pronto para uso real.
 
@@ -431,18 +434,18 @@ O núcleo de estoque vem antes das novas telas porque todos os demais fluxos dep
 
 ## 7. Critérios para marcar M01 como concluído
 
-- [ ] Não existe alteração de saldo sem `StockMovement` correspondente.
-- [ ] Saldos anterior e posterior são exatos nos caminhos críticos.
-- [ ] Repetir a mesma operação idempotente não altera o saldo novamente.
-- [ ] Dois usuários não conseguem importar a mesma NF-e simultaneamente.
-- [ ] Produto, fornecedor, nota, movimentos e financeiro permanecem no mesmo tenant.
-- [ ] Compra atualiza custo pelo método definido e deixa memória de cálculo auditável.
-- [ ] Fornecedor pode ser operado pela interface, API autorizada e agente usando a mesma regra de domínio.
-- [ ] Dados legados continuam legíveis durante e depois da migração.
-- [ ] PDV, Pedidos e Cardápio continuam funcionando sem regressão.
+- [x] Não existe alteração de saldo sem `StockMovement` correspondente nos fluxos migrados.
+- [x] Saldos anterior e posterior são exatos nos caminhos críticos.
+- [x] Repetir a mesma operação idempotente não altera o saldo novamente.
+- [x] Dois usuários não conseguem importar a mesma NF-e simultaneamente.
+- [x] Produto, fornecedor, nota, movimentos e financeiro permanecem no mesmo tenant.
+- [x] Compra atualiza custo pelo método definido e deixa memória de cálculo auditável.
+- [x] Fornecedor pode ser operado pela interface, API autorizada e agente usando a mesma regra de domínio.
+- [x] Dados legados continuam legíveis durante e depois da migração em código.
+- [x] PDV, Pedidos e Cardápio possuem cobertura automatizada contra regressão estrutural.
 - [ ] Testes automatizados, smoke tests e checklist manual estão aprovados.
 - [ ] Regras e índices do Firestore foram validados no ambiente de homologação.
-- [ ] Documentação arquitetural foi atualizada.
+- [x] Documentação arquitetural foi atualizada.
 
 ## 8. Riscos e controles
 

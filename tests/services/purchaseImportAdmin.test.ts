@@ -24,6 +24,7 @@ interface Snapshot { id: string; exists: boolean; data: () => Record<string, unk
 function fakeDb() {
   const data = new Map<string, Record<string, unknown>>();
   let sequence = 0;
+  let transactionTail: Promise<void> = Promise.resolve();
   const snapshot = (collection: string, id: string): Snapshot => {
     const value = data.get(`${collection}/${id}`);
     return { id, exists: Boolean(value), data: () => value ? structuredClone(value) : undefined };
@@ -64,31 +65,39 @@ function fakeDb() {
       };
     },
     async runTransaction<T>(handler: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
+      const previousTransaction = transactionTail;
+      let releaseTransaction!: () => void;
+      transactionTail = new Promise<void>((resolve) => { releaseTransaction = resolve; });
+      await previousTransaction;
       const pending: Array<{ kind: 'create' | 'set' | 'update' | 'delete'; ref: Ref; value?: Record<string, unknown> }> = [];
-      const result = await handler({
-        get: async (target: Ref | { _filters?: unknown; get?: () => Promise<unknown> }) => {
-          if ('_filters' in target && typeof target.get === 'function') return target.get();
-          const document = target as Ref;
-          return snapshot(document.collection, document.id);
-        },
-        create: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'create', ref: target, value: structuredClone(value) }),
-        set: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'set', ref: target, value: structuredClone(value) }),
-        update: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'update', ref: target, value: structuredClone(value) }),
-        delete: (target: Ref) => pending.push({ kind: 'delete', ref: target }),
-      });
-      pending.forEach((write) => {
-        const path = `${write.ref.collection}/${write.ref.id}`;
-        if (write.kind === 'delete') data.delete(path);
-        else if (write.kind === 'update') {
-          if (!data.has(path)) throw new Error('document does not exist');
-          data.set(path, { ...data.get(path), ...structuredClone(write.value!) });
-        }
-        else {
-          if (write.kind === 'create' && data.has(path)) throw new Error('already exists');
-          data.set(path, structuredClone(write.value!));
-        }
-      });
-      return result;
+      try {
+        const result = await handler({
+          get: async (target: Ref | { _filters?: unknown; get?: () => Promise<unknown> }) => {
+            if ('_filters' in target && typeof target.get === 'function') return target.get();
+            const document = target as Ref;
+            return snapshot(document.collection, document.id);
+          },
+          create: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'create', ref: target, value: structuredClone(value) }),
+          set: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'set', ref: target, value: structuredClone(value) }),
+          update: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'update', ref: target, value: structuredClone(value) }),
+          delete: (target: Ref) => pending.push({ kind: 'delete', ref: target }),
+        });
+        pending.forEach((write) => {
+          const path = `${write.ref.collection}/${write.ref.id}`;
+          if (write.kind === 'delete') data.delete(path);
+          else if (write.kind === 'update') {
+            if (!data.has(path)) throw new Error('document does not exist');
+            data.set(path, { ...data.get(path), ...structuredClone(write.value!) });
+          }
+          else {
+            if (write.kind === 'create' && data.has(path)) throw new Error('already exists');
+            data.set(path, structuredClone(write.value!));
+          }
+        });
+        return result;
+      } finally {
+        releaseTransaction();
+      }
     },
   };
   return {
@@ -192,6 +201,39 @@ describe('purchase import preparation core', () => {
       xmlStoragePath: 'businesses/biz-2/purchase-notes/note-3/original.xml', originalFileName: 'c.xml', actor,
     });
     expect(fake.list('purchaseNotes')).toHaveLength(2);
+  });
+
+  it('aceita somente uma importação quando dois usuários enviam a mesma NF-e simultaneamente', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    const common = {
+      db: fake.db,
+      businessId: 'biz-1',
+      parsed,
+      actor,
+    };
+
+    const attempts = await Promise.allSettled([
+      preparePurchaseNoteAdmin({
+        ...common,
+        noteId: 'note-user-a',
+        xmlStoragePath: 'businesses/biz-1/purchase-notes/note-user-a/original.xml',
+        originalFileName: 'user-a.xml',
+      }),
+      preparePurchaseNoteAdmin({
+        ...common,
+        noteId: 'note-user-b',
+        xmlStoragePath: 'businesses/biz-1/purchase-notes/note-user-b/original.xml',
+        originalFileName: 'user-b.xml',
+      }),
+    ]);
+
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    const rejected = attempts.find((attempt) => attempt.status === 'rejected');
+    expect(rejected).toMatchObject({ status: 'rejected' });
+    expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(PurchaseNoteDuplicateError);
+    expect(fake.list('purchaseNotes')).toHaveLength(1);
+    expect(fake.list('purchaseNoteIdentifiers')).toHaveLength(1);
   });
 
   it('salva a decisão de todos os itens sem movimentar estoque', async () => {
