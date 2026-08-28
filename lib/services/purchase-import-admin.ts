@@ -531,6 +531,9 @@ async function ensurePurchaseProduct(params: {
     salePrice: 0,
     minStock: 0,
     trackStock: true,
+    trackLots: Boolean(params.item.lot),
+    trackExpiry: Boolean(params.item.lot?.expiresAt),
+    expiryWarningDays: 30,
     isActive: true,
     menuAvailable: false,
     isDeliverable: false,
@@ -667,6 +670,15 @@ export async function confirmPurchaseNoteAdmin(params: {
           quantity: item.stockQuantity,
           sourceLineId: item.lineId,
           unitCost: item.landedUnitCost,
+          ...(item.lot ? {
+            lot: {
+              ...item.lot,
+              ...(claimed.note.supplier.id ? { supplierId: claimed.note.supplier.id } : {}),
+              supplierName: claimed.note.supplier.name,
+              supplierDocument: claimed.note.supplier.document,
+              purchaseNoteNumber: `${claimed.note.numero}/${claimed.note.serie}`,
+            },
+          } : {}),
         }],
         operatorId: params.actor.uid,
         operatorName: params.actor.name,
@@ -907,6 +919,9 @@ async function loadPurchaseReversalTargets(params: {
     if (movement.previousCost === undefined || movement.newCost === undefined) {
       throw new PurchaseNoteReversalBlockedError(`A linha ${item.lineId} não possui memória de custo; faça a reversão com revisão manual.`);
     }
+    if ((movement.lotAllocations?.length ?? 0) > 1) {
+      throw new PurchaseNoteReversalBlockedError(`A linha ${item.lineId} possui múltiplos lotes e exige revisão manual.`);
+    }
     return { item, movement };
   }));
 
@@ -1078,6 +1093,7 @@ export async function reversePurchaseNoteAdmin(params: {
               targetCost: movement.previousCost!,
             },
             reversalOfMovementId: movement.id,
+            ...(movement.lotAllocations?.[0] ? { lotId: movement.lotAllocations[0].lotId } : {}),
           }],
           operatorId: params.actor.uid,
           operatorName: params.actor.name,

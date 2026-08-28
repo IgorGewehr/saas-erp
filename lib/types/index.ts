@@ -1611,6 +1611,12 @@ export interface Product {
   menuAvailable?: boolean;
   /** Ausente/true = controla estoque. false = "não controlar estoque" (nunca bloqueia venda nem deduz por estoque). */
   trackStock?: boolean;
+  /** Opt-in: o saldo deste produto é conciliado com lotes. */
+  trackLots?: boolean;
+  /** Opt-in: exige validade nas entradas; implica trackLots. */
+  trackExpiry?: boolean;
+  /** Janela padrão dos alertas de vencimento. */
+  expiryWarningDays?: number;
   /** Dietary markers — usados no cardápio e pelo agente para filtrar */
   dietary?: Array<'vegan' | 'vegetarian' | 'glutenfree' | 'lactosefree' | 'organic' | 'picante' | 'alcool' | 'kids'>;
   /** Personalização / modificadores — quando presente, catálogo abre wizard de montagem */
@@ -1748,12 +1754,61 @@ export interface StockMovement {
   costMethod?: 'moving_average';
   costRestored?: boolean;
   reversalOfMovementId?: string;
+  lotAllocations?: StockLotAllocation[];
   reason: string;
   saleId?: string;
   purchaseId?: string;
   operatorId: string;
   operatorName: string;
   createdAt: string;
+}
+
+export interface StockLotAllocation {
+  lotId: string;
+  lotCode: string;
+  quantity: number;
+  expiresAt?: string;
+}
+
+export type StockLotExpiryStatus = 'expired' | 'critical' | 'warning' | 'ok' | 'none';
+
+export interface StockLot {
+  id: string;
+  schemaVersion: 1;
+  businessId: string;
+  productId: string;
+  variantId?: string;
+  productName: string;
+  unit: string;
+  code: string;
+  codeNormalized: string;
+  status: 'active' | 'depleted';
+  manufacturedAt?: string;
+  expiresAt?: string;
+  initialQuantity: number;
+  currentQuantity: number;
+  unitCost?: number;
+  expiryWarningDays: number;
+  supplierId?: string;
+  supplierName?: string;
+  supplierDocument?: string;
+  purchaseNoteIds?: string[];
+  purchaseNoteNumber?: string;
+  sourceLineId?: string;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+  daysUntilExpiry?: number;
+  expiryStatus?: StockLotExpiryStatus;
+}
+
+export interface StockLotSummary {
+  total: number;
+  active: number;
+  expired: number;
+  critical: number;
+  warning: number;
 }
 
 // ---- Password Vault (cofre de senhas compartilhado com admins) ----

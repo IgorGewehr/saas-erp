@@ -8,6 +8,7 @@ import {
   InsufficientStockError,
   InvalidStockOperationError,
   StockIdempotencyConflictError,
+  StockLotConflictError,
   StockReferenceError,
 } from '@/lib/services/stock-core-admin';
 
@@ -87,7 +88,13 @@ export async function POST(req: NextRequest) {
     const result = await applyStockOperationAdmin(adminDb, {
       businessId: auth.businessId,
       type: body.type,
-      lines: [{ productId: body.productId, quantity: body.quantity }],
+      lines: [{
+        productId: body.productId,
+        ...(body.variantId ? { variantId: body.variantId } : {}),
+        quantity: body.quantity,
+        ...(body.lotId ? { lotId: body.lotId } : {}),
+        ...(body.lot ? { lot: body.lot } : {}),
+      }],
       operatorId,
       operatorName,
       reason: body.reason.trim(),
@@ -103,12 +110,14 @@ export async function POST(req: NextRequest) {
       id: adjustment.movementId,
       businessId: auth.businessId,
       productId: adjustment.productId,
+      ...(adjustment.variantId ? { variantId: adjustment.variantId } : {}),
       productName: adjustment.productName,
       type: body.type,
       // Mantém o contrato histórico da resposta v1: ajuste devolve o alvo absoluto.
       quantity: body.quantity,
       previousStock: adjustment.previousStock,
       newStock: adjustment.newStock,
+      ...(adjustment.lotAllocations?.length ? { lotAllocations: adjustment.lotAllocations } : {}),
       reason: body.reason.trim(),
       operatorId,
       operatorName,
@@ -126,6 +135,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     if (err instanceof StockIdempotencyConflictError) return apiError(err.message, 409);
     if (err instanceof InsufficientStockError) return apiError(err.message, 409);
+    if (err instanceof StockLotConflictError) return apiError(err.message, 409);
     if (err instanceof StockReferenceError) return apiError(err.message, 404);
     if (err instanceof InvalidStockOperationError) return apiError(err.message, 400);
     console.error('[API v1/stock-movements POST]', err);

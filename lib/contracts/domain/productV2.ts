@@ -66,6 +66,9 @@ const ProductV2CanonicalSchema = z.object({
   minStock: z.number().nonnegative(),
   maxStock: z.number().nonnegative().optional(),
   trackStock: z.boolean(),
+  trackLots: z.boolean(),
+  trackExpiry: z.boolean(),
+  expiryWarningDays: z.number().int().min(1).max(3650),
   ncm: z.string().optional(),
   cfop: z.string().optional(),
   cest: z.string().optional(),
@@ -141,6 +144,27 @@ const ProductV2CanonicalSchema = z.object({
       path: ['trackStock'],
     });
   }
+  if (product.trackExpiry && !product.trackLots) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'controle de validade exige controle por lote',
+      path: ['trackExpiry'],
+    });
+  }
+  if (product.kind === 'composite' && product.trackLots) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'produto composto controla lotes pelos componentes',
+      path: ['trackLots'],
+    });
+  }
+  if (product.kind === 'simple' && product.trackLots && !product.trackStock) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'controle por lote exige controle de estoque',
+      path: ['trackLots'],
+    });
+  }
   if (product.components?.some((component) => component.productId === product.id)) {
     ctx.addIssue({
       code: 'custom',
@@ -198,6 +222,9 @@ export function normalizeProductToV2(input: unknown): unknown {
     purchaseToStockFactor: source.purchaseToStockFactor ?? 1,
     costMethod: source.costMethod ?? 'moving_average',
     trackStock: inferredKind === 'composite' ? false : (source.trackStock ?? true),
+    trackLots: inferredKind === 'composite' ? false : (source.trackLots ?? false),
+    trackExpiry: inferredKind === 'composite' ? false : (source.trackExpiry ?? false),
+    expiryWarningDays: source.expiryWarningDays ?? 30,
     menuAvailable: source.menuAvailable ?? true,
     imageUrl: legacyImageUrl ?? (isRecord(images[0]) ? images[0].url : undefined),
     images,

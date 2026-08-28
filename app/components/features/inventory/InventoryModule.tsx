@@ -75,6 +75,8 @@ import type {
   ProductImage,
   ProductVariant,
   StockMovement,
+  StockLot,
+  StockLotSummary,
   ProductComponent,
   ProductModifierGroup,
   MenuCategory,
@@ -85,6 +87,7 @@ import {
   applyStockOperation,
   createStockIdempotencyKey,
 } from '@/lib/services/stock-server-client';
+import { listStockLots } from '@/lib/services/stock-lot-client';
 import {
   archiveCatalogProduct,
   createCatalogIdempotencyKey,
@@ -164,6 +167,9 @@ interface ProductFormData {
   // Raw (semântica do type): true/ausente = disponível / controla estoque.
   menuAvailable: boolean;
   trackStock: boolean;
+  trackLots: boolean;
+  trackExpiry: boolean;
+  expiryWarningDays: string;
   menuCategory: string;
   menuCategoryId: string;
   menuDescription: string;
@@ -180,6 +186,10 @@ interface MovementFormData {
   quantity: string;
   reason: string;
   notes: string;
+  lotId: string;
+  lotCode: string;
+  manufacturedAt: string;
+  expiresAt: string;
 }
 
 // ==============================================
@@ -236,6 +246,9 @@ const EMPTY_PRODUCT_FORM: ProductFormData = {
   isDeliverable: false,
   menuAvailable: true,
   trackStock: true,
+  trackLots: false,
+  trackExpiry: false,
+  expiryWarningDays: '30',
   menuCategory: '',
   menuCategoryId: '',
   menuDescription: '',
@@ -252,6 +265,10 @@ const EMPTY_MOVEMENT_FORM: MovementFormData = {
   quantity: '',
   reason: '',
   notes: '',
+  lotId: '',
+  lotCode: '',
+  manufacturedAt: '',
+  expiresAt: '',
 };
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -1370,6 +1387,8 @@ interface StockMovementDialogProps {
   products: Product[];
   initialProduct?: Product | null;
   initialType?: MovementType;
+  lots: StockLot[];
+  initialLotId?: string;
 }
 
 function StockMovementDialog({
@@ -1379,13 +1398,18 @@ function StockMovementDialog({
   products,
   initialProduct,
   initialType,
+  lots,
+  initialLotId,
 }: StockMovementDialogProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<MovementFormData>({
     ...EMPTY_MOVEMENT_FORM,
     type: initialType || 'entrada',
     productId: initialProduct?.id || '',
-    variantId: initialProduct?.variants?.find((variant) => variant.isActive)?.id || '',
+    variantId: lots.find((lot) => lot.id === initialLotId)?.variantId
+      || initialProduct?.variants?.find((variant) => variant.isActive)?.id
+      || '',
+    lotId: initialLotId || '',
   });
   const [isSaving, setIsSaving] = useState(false);
 
@@ -1395,15 +1419,23 @@ function StockMovementDialog({
         ...EMPTY_MOVEMENT_FORM,
         type: initialType || 'entrada',
         productId: initialProduct?.id || '',
-        variantId: initialProduct?.variants?.find((variant) => variant.isActive)?.id || '',
+        variantId: lots.find((lot) => lot.id === initialLotId)?.variantId
+          || initialProduct?.variants?.find((variant) => variant.isActive)?.id
+          || '',
+        lotId: initialLotId || '',
       });
     }
-  }, [open, initialProduct, initialType]);
+  }, [open, initialProduct, initialType, initialLotId]);
 
   const selectedProduct = products.find((p) => p.id === form.productId);
   const selectedVariant = selectedProduct?.variants?.find((variant) => variant.id === form.variantId);
   const selectedCurrentStock = selectedVariant?.currentStock ?? selectedProduct?.currentStock ?? 0;
   const selectedMinStock = selectedVariant?.minStock ?? selectedProduct?.minStock ?? 0;
+  const selectedLots = lots.filter((lot) =>
+    lot.productId === selectedProduct?.id
+    && (lot.variantId ?? '') === (selectedVariant?.id ?? '')
+    && lot.currentQuantity > 0,
+  );
   const qty = parseInt(form.quantity) || 0;
   const newStock = selectedProduct
     ? form.type === 'entrada'
@@ -1415,13 +1447,25 @@ function StockMovementDialog({
 
   async function handleSubmit() {
     if (!form.productId || !form.quantity || !form.reason) return;
+    if (selectedProduct?.trackLots && form.type === 'entrada' && !form.lotCode.trim()) {
+      toast.error('Informe o código do lote para registrar a entrada.');
+      return;
+    }
+    if (selectedProduct?.trackExpiry && form.type === 'entrada' && !form.expiresAt) {
+      toast.error('Informe a data de validade deste lote.');
+      return;
+    }
+    if (selectedProduct?.trackLots && form.type === 'ajuste' && !form.lotId) {
+      toast.error('Selecione o lote que receberá o ajuste.');
+      return;
+    }
     setIsSaving(true);
     try {
       await onSave(form);
       onClose();
     } catch (err) {
       console.error('Error saving movement:', err);
-      toast.error(t('inventory.toast.movementError', 'Erro ao registrar movimentação'));
+      toast.error(err instanceof Error ? err.message : t('inventory.toast.movementError', 'Erro ao registrar movimentação'));
     } finally {
       setIsSaving(false);
     }
@@ -1471,7 +1515,15 @@ function StockMovementDialog({
                 return (
                   <button
                     key={type}
-                    onClick={() => setForm((f) => ({ ...f, type, reason: '' }))}
+                    onClick={() => setForm((f) => ({
+                      ...f,
+                      type,
+                      reason: '',
+                      lotId: '',
+                      lotCode: '',
+                      manufacturedAt: '',
+                      expiresAt: '',
+                    }))}
                     className={cn(
                       'px-3 py-2.5 rounded-lg text-sm font-medium border transition-all',
                       isSelected
@@ -1493,7 +1545,15 @@ function StockMovementDialog({
               value={form.productId ? `${form.productId}::${form.variantId}` : ''}
               onChange={(e) => {
                 const [productId, variantId = ''] = e.target.value.split('::');
-                setForm((f) => ({ ...f, productId, variantId }));
+                setForm((f) => ({
+                  ...f,
+                  productId,
+                  variantId,
+                  lotId: '',
+                  lotCode: '',
+                  manufacturedAt: '',
+                  expiresAt: '',
+                }));
               }}
               label={t('inventory.movement.product', 'Produto')}
             >
@@ -1552,6 +1612,67 @@ function StockMovementDialog({
             slotProps={{ htmlInput: { min: 0 } }}
           />
 
+          {selectedProduct?.trackLots && form.type === 'entrada' && (
+            <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 dark:border-emerald-500/30 dark:bg-emerald-500/10">
+              <div>
+                <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">Identificação do lote</p>
+                <p className="text-xs text-emerald-700/80 dark:text-emerald-400">O saldo do produto e do lote será atualizado na mesma operação.</p>
+              </div>
+              <TextField
+                label="Código do lote"
+                value={form.lotCode}
+                onChange={(event) => setForm((current) => ({ ...current, lotCode: event.target.value }))}
+                required
+                fullWidth
+                size="small"
+              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <TextField
+                  label="Fabricação"
+                  type="date"
+                  value={form.manufacturedAt}
+                  onChange={(event) => setForm((current) => ({ ...current, manufacturedAt: event.target.value }))}
+                  fullWidth
+                  size="small"
+                  slotProps={{ inputLabel: { shrink: true } }}
+                />
+                <TextField
+                  label="Validade"
+                  type="date"
+                  value={form.expiresAt}
+                  onChange={(event) => setForm((current) => ({ ...current, expiresAt: event.target.value }))}
+                  required={selectedProduct.trackExpiry === true}
+                  fullWidth
+                  size="small"
+                  slotProps={{ inputLabel: { shrink: true } }}
+                />
+              </div>
+            </div>
+          )}
+
+          {selectedProduct?.trackLots && form.type !== 'entrada' && (
+            <FormControl fullWidth size="small" required={form.type === 'ajuste'}>
+              <InputLabel>Lote</InputLabel>
+              <Select
+                value={form.lotId}
+                onChange={(event) => setForm((current) => ({ ...current, lotId: event.target.value }))}
+                label="Lote"
+              >
+                {form.type === 'saida' && <MenuItem value="">Automático (FEFO)</MenuItem>}
+                {selectedLots.map((lot) => (
+                  <MenuItem key={lot.id} value={lot.id}>
+                    {lot.code} — {lot.currentQuantity} {lot.unit}{lot.expiresAt ? ` — val. ${lot.expiresAt.split('-').reverse().join('/')}` : ''}
+                  </MenuItem>
+                ))}
+              </Select>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                {form.type === 'saida'
+                  ? 'Sem seleção, o sistema baixa primeiro o lote válido com vencimento mais próximo.'
+                  : 'O ajuste altera o saldo global e o lote selecionado em conjunto.'}
+              </p>
+            </FormControl>
+          )}
+
           {/* Reason */}
           <FormControl fullWidth size="small">
             <InputLabel>{t('inventory.movement.reason', 'Motivo')}</InputLabel>
@@ -1605,6 +1726,100 @@ function StockMovementDialog({
           )}
         </Button>
       </DialogActions>
+    </Dialog>
+  );
+}
+
+interface StockLotsDialogProps {
+  open: boolean;
+  onClose: () => void;
+  lots: StockLot[];
+  summary: StockLotSummary;
+  isLoading: boolean;
+  onOutput: (lot: StockLot) => void;
+}
+
+function StockLotsDialog({ open, onClose, lots, summary, isLoading, onOutput }: StockLotsDialogProps) {
+  const statusLabel = (lot: StockLot) => {
+    if (lot.expiryStatus === 'expired') return 'Vencido';
+    if (lot.expiryStatus === 'critical') return 'Vence em até 7 dias';
+    if (lot.expiryStatus === 'warning') return `Vence em ${lot.daysUntilExpiry} dias`;
+    if (lot.expiryStatus === 'ok') return `Vence em ${lot.daysUntilExpiry} dias`;
+    return 'Sem validade';
+  };
+  const statusClass = (lot: StockLot) => {
+    if (lot.expiryStatus === 'expired') return 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400';
+    if (lot.expiryStatus === 'critical') return 'bg-orange-100 text-orange-700 dark:bg-orange-500/15 dark:text-orange-400';
+    if (lot.expiryStatus === 'warning') return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400';
+    return 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300';
+  };
+
+  return (
+    <Dialog open={open} onClose={onClose} maxWidth="lg" fullWidth PaperProps={{ sx: { borderRadius: '16px' } }}>
+      <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontFamily: '"Plus Jakarta Sans", sans-serif', fontWeight: 700 }}>
+        <span>Lotes e validade</span>
+        <IconButton onClick={onClose} size="small"><X size={20} /></IconButton>
+      </DialogTitle>
+      <Divider />
+      <DialogContent sx={{ pt: 3 }}>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              ['Lotes ativos', summary.active, 'text-slate-900 dark:text-slate-100'],
+              ['Vencidos', summary.expired, 'text-red-600 dark:text-red-400'],
+              ['Até 7 dias', summary.critical, 'text-orange-600 dark:text-orange-400'],
+              ['Em alerta', summary.warning, 'text-amber-600 dark:text-amber-400'],
+            ].map(([label, value, className]) => (
+              <div key={String(label)} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                <p className="text-xs text-slate-500 dark:text-slate-400">{label}</p>
+                <p className={cn('mt-1 text-2xl font-bold', String(className))}>{value}</p>
+              </div>
+            ))}
+          </div>
+          {isLoading ? (
+            <div className="flex justify-center py-12"><CircularProgress size={28} /></div>
+          ) : lots.length === 0 ? (
+            <div className="py-12 text-center">
+              <Boxes className="mx-auto h-10 w-10 text-slate-300 dark:text-slate-600" />
+              <p className="mt-3 text-sm font-medium text-slate-700 dark:text-slate-300">Nenhum lote com saldo ativo</p>
+              <p className="mt-1 text-xs text-slate-500">Ative o controle no produto e registre uma entrada com lote.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-700">
+              <table className="w-full min-w-[760px] text-sm">
+                <thead className="bg-slate-50 text-xs uppercase text-slate-500 dark:bg-slate-900 dark:text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Produto</th>
+                    <th className="px-4 py-3 text-left">Lote</th>
+                    <th className="px-4 py-3 text-right">Saldo</th>
+                    <th className="px-4 py-3 text-left">Validade</th>
+                    <th className="px-4 py-3 text-left">Situação</th>
+                    <th className="px-4 py-3 text-right">Ação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lots.map((lot) => (
+                    <tr key={lot.id} className="border-t border-slate-100 dark:border-slate-800">
+                      <td className="px-4 py-3 font-medium text-slate-900 dark:text-slate-100">{lot.productName}</td>
+                      <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{lot.code}</td>
+                      <td className="px-4 py-3 text-right font-semibold">{lot.currentQuantity} {lot.unit}</td>
+                      <td className="px-4 py-3">{lot.expiresAt ? lot.expiresAt.split('-').reverse().join('/') : '—'}</td>
+                      <td className="px-4 py-3"><span className={cn('rounded-full px-2 py-1 text-[11px] font-semibold', statusClass(lot))}>{statusLabel(lot)}</span></td>
+                      <td className="px-4 py-3 text-right">
+                        <button type="button" onClick={() => onOutput(lot)} className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-50 dark:border-red-500/30 dark:text-red-400 dark:hover:bg-red-500/10">
+                          Dar baixa
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+      <Divider />
+      <DialogActions sx={{ px: 3, py: 2 }}><Button onClick={onClose}>Fechar</Button></DialogActions>
     </Dialog>
   );
 }
@@ -1678,6 +1893,9 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
           isDeliverable: product.isDeliverable ?? false,
           menuAvailable: product.menuAvailable !== false,
           trackStock: product.trackStock !== false,
+          trackLots: product.trackLots === true,
+          trackExpiry: product.trackExpiry === true,
+          expiryWarningDays: String(product.expiryWarningDays ?? 30),
           menuCategory: product.menuCategory || '',
           menuCategoryId: product.menuCategoryId || '',
           menuDescription: product.menuDescription || '',
@@ -1714,6 +1932,16 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
     } else if (product && !product.variants?.length && product.currentStock !== 0 && form.variants.length > 0) {
       newErrors.variants = 'Zere o estoque principal e salve antes de adicionar variações.';
     }
+    if (form.trackExpiry && !form.trackLots) {
+      newErrors.trackLots = 'O controle de validade exige controle por lote.';
+    }
+    const stockChanged = product
+      ? Number(form.currentStock || 0) !== product.currentStock
+        || form.variants.some((variant) => variant.currentStock !== (product.variants?.find((current) => current.id === variant.id)?.currentStock ?? 0))
+      : Number(form.currentStock || 0) > 0 || form.variants.some((variant) => variant.currentStock > 0);
+    if (form.trackLots && stockChanged) {
+      newErrors.currentStock = 'Cadastre o produto com saldo zero e use uma movimentação para informar o lote.';
+    }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }
@@ -1726,7 +1954,7 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
       onClose();
     } catch (err) {
       console.error('Error saving product:', err);
-      toast.error(t('inventory.toast.saveProductError', 'Erro ao salvar produto'));
+      toast.error(err instanceof Error ? err.message : t('inventory.toast.saveProductError', 'Erro ao salvar produto'));
     } finally {
       setIsSaving(false);
     }
@@ -2000,6 +2228,61 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
                 slotProps={{ htmlInput: { min: 0 } }}
               />
             </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setForm((current) => ({
+                  ...current,
+                  trackLots: !current.trackLots,
+                  ...(!current.trackLots ? {} : { trackExpiry: false }),
+                }))}
+                className={cn(
+                  'flex items-center justify-between gap-3 rounded-xl border-2 p-3 text-left transition-all',
+                  form.trackLots
+                    ? 'border-emerald-400 bg-emerald-50 dark:border-emerald-500/40 dark:bg-emerald-500/10'
+                    : 'border-slate-200 bg-white/60 dark:border-slate-700 dark:bg-slate-950/30',
+                )}
+              >
+                <div>
+                  <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Controlar por lote</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Concilia entradas e saídas com saldos rastreáveis.</p>
+                </div>
+                <div className={cn('h-6 w-11 shrink-0 rounded-full p-0.5 transition-colors', form.trackLots ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700')}>
+                  <div className={cn('h-5 w-5 rounded-full bg-white shadow transition-transform', form.trackLots ? 'translate-x-5' : 'translate-x-0')} />
+                </div>
+              </button>
+              <button
+                type="button"
+                disabled={!form.trackLots}
+                onClick={() => setForm((current) => ({ ...current, trackExpiry: !current.trackExpiry }))}
+                className={cn(
+                  'flex items-center justify-between gap-3 rounded-xl border-2 p-3 text-left transition-all disabled:cursor-not-allowed disabled:opacity-50',
+                  form.trackExpiry
+                    ? 'border-amber-400 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-500/10'
+                    : 'border-slate-200 bg-white/60 dark:border-slate-700 dark:bg-slate-950/30',
+                )}
+              >
+                <div>
+                  <p className="text-sm font-bold text-slate-900 dark:text-slate-100">Exigir validade</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Alerta vencimentos e prioriza a baixa por FEFO.</p>
+                </div>
+                <div className={cn('h-6 w-11 shrink-0 rounded-full p-0.5 transition-colors', form.trackExpiry ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700')}>
+                  <div className={cn('h-5 w-5 rounded-full bg-white shadow transition-transform', form.trackExpiry ? 'translate-x-5' : 'translate-x-0')} />
+                </div>
+              </button>
+            </div>
+            {form.trackExpiry && (
+              <TextField
+                label="Alertar com antecedência (dias)"
+                type="number"
+                value={form.expiryWarningDays}
+                onChange={(event) => updateField('expiryWarningDays', event.target.value)}
+                size="small"
+                className="max-w-xs"
+                slotProps={{ htmlInput: { min: 1, max: 3650 } }}
+              />
+            )}
+            {errors.trackLots && <p className="text-xs text-red-600 dark:text-red-400">{errors.trackLots}</p>}
           </ModernSection>
 
           <ModernSection
@@ -2191,7 +2474,11 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
 
                         <button
                           type="button"
-                          onClick={() => updateField('trackStock', !form.trackStock)}
+                          onClick={() => setForm((current) => ({
+                            ...current,
+                            trackStock: !current.trackStock,
+                            ...(!current.trackStock ? {} : { trackLots: false, trackExpiry: false }),
+                          }))}
                           className={cn(
                             'flex items-center justify-between gap-3 p-3 rounded-xl border-2 transition-all text-left',
                             !form.trackStock
@@ -2606,6 +2893,8 @@ export default function InventoryModule() {
   const [movementDialogOpen, setMovementDialogOpen] = useState(false);
   const [movementProduct, setMovementProduct] = useState<Product | null>(null);
   const [movementType, setMovementType] = useState<MovementType>('entrada');
+  const [movementLotId, setMovementLotId] = useState('');
+  const [lotsDialogOpen, setLotsDialogOpen] = useState(false);
   // stockMovements é coleção de alto throughput — pagina por janela crescente
   // em vez de baixar tudo (auditoria P1.5). Índice [businessId, createdAt desc] já existe.
   const [movementLimit, setMovementLimit] = useState(150);
@@ -2687,6 +2976,18 @@ export default function InventoryModule() {
     staleTime: 2 * 60 * 1000,
   });
 
+  const {
+    data: lotResult = { lots: [], summary: { total: 0, active: 0, expired: 0, critical: 0, warning: 0 } },
+    isLoading: lotsLoading,
+  } = useQuery({
+    queryKey: ['stockLots', business?.id],
+    queryFn: () => business?.id
+      ? listStockLots({ businessId: business.id })
+      : Promise.resolve({ lots: [], summary: { total: 0, active: 0, expired: 0, critical: 0, warning: 0 } }),
+    enabled: Boolean(business?.id),
+    staleTime: 60 * 1000,
+  });
+
   const hasMoreMovements = movements.length >= movementLimit;
   const lastMovementByProduct = useMemo(() => {
     const map = new Map<string, StockMovement>();
@@ -2747,6 +3048,9 @@ export default function InventoryModule() {
       isDeliverable: data.isDeliverable,
       menuAvailable: data.menuAvailable,
       trackStock: data.trackStock,
+      trackLots: data.trackLots,
+      trackExpiry: data.trackExpiry,
+      expiryWarningDays: Math.min(3650, Math.max(1, Number(data.expiryWarningDays) || 30)),
       menuCategory: data.isDeliverable ? (data.menuCategory.trim() || undefined) : undefined,
       menuCategoryId: data.isDeliverable ? (data.menuCategoryId || undefined) : undefined,
       menuDescription: data.isDeliverable ? (data.menuDescription.trim() || undefined) : undefined,
@@ -2855,6 +3159,14 @@ export default function InventoryModule() {
         productId: product.id,
         ...(variant ? { variantId: variant.id } : {}),
         quantity: qty,
+        ...(product.trackLots && data.type === 'entrada' ? {
+          lot: {
+            code: data.lotCode.trim(),
+            ...(data.manufacturedAt ? { manufacturedAt: data.manufacturedAt } : {}),
+            ...(data.expiresAt ? { expiresAt: data.expiresAt } : {}),
+          },
+        } : {}),
+        ...(product.trackLots && data.type !== 'entrada' && data.lotId ? { lotId: data.lotId } : {}),
       }],
       reason: data.reason || data.type,
       sourceType: 'manual',
@@ -2869,6 +3181,7 @@ export default function InventoryModule() {
     // products via onSnapshot. stockMovements continua em useQuery local.
     queryClient.invalidateQueries({ queryKey: ['stockMovements', business.id] });
     queryClient.invalidateQueries({ queryKey: ['catalogProducts', business.id] });
+    queryClient.invalidateQueries({ queryKey: ['stockLots', business.id] });
 
     // Estoque baixo: alertas calculados no núcleo transacional do servidor.
     const stockAlerts = adjustments.flatMap((a) => (a.alert ? [a.alert] : []));
@@ -3042,8 +3355,19 @@ export default function InventoryModule() {
   const handleMovement = useCallback((product: Product, type: MovementType) => {
     setMovementProduct(product);
     setMovementType(type);
+    setMovementLotId('');
     setMovementDialogOpen(true);
   }, []);
+
+  const handleLotOutput = useCallback((lot: StockLot) => {
+    const product = products.find((item) => item.id === lot.productId);
+    if (!product) return;
+    setLotsDialogOpen(false);
+    setMovementProduct(product);
+    setMovementType('saida');
+    setMovementLotId(lot.id);
+    setMovementDialogOpen(true);
+  }, [products]);
 
   const handleRequestDelete = useCallback((product: Product) => {
     setDeletingProduct(product);
@@ -3142,6 +3466,18 @@ export default function InventoryModule() {
               )}
             </button>
           )}
+          <button
+            onClick={() => setLotsDialogOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-medium hover:border-amber-300 dark:hover:border-amber-700 transition-all"
+          >
+            <Boxes className="w-4 h-4 text-amber-500" />
+            Lotes e validade
+            {(lotResult.summary.expired + lotResult.summary.critical + lotResult.summary.warning) > 0 && (
+              <span className="rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+                {lotResult.summary.expired + lotResult.summary.critical + lotResult.summary.warning}
+              </span>
+            )}
+          </button>
           <button
             onClick={() => setCsvImportOpen(true)}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 text-sm font-medium hover:border-red-300 dark:hover:border-red-700 transition-all"
@@ -3513,11 +3849,23 @@ export default function InventoryModule() {
         onClose={() => {
           setMovementDialogOpen(false);
           setMovementProduct(null);
+          setMovementLotId('');
         }}
         onSave={handleSaveMovement}
         products={activeProducts}
         initialProduct={movementProduct}
         initialType={movementType}
+        lots={lotResult.lots}
+        initialLotId={movementLotId}
+      />
+
+      <StockLotsDialog
+        open={lotsDialogOpen}
+        onClose={() => setLotsDialogOpen(false)}
+        lots={lotResult.lots}
+        summary={lotResult.summary}
+        isLoading={lotsLoading}
+        onOutput={handleLotOutput}
       />
 
       <DeleteDialog

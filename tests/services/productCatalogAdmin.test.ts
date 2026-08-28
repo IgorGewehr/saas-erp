@@ -7,6 +7,7 @@ import {
   normalizeBarcode,
   normalizeSku,
   ProductCatalogDuplicateIdentifierError,
+  ProductCatalogLotTrackingError,
   updateProductCatalogAdmin,
 } from '@/lib/services/product-catalog-admin';
 
@@ -301,5 +302,31 @@ describe('product catalog admin core', () => {
         }],
       }),
     })).rejects.toBeInstanceOf(ProductCatalogDuplicateIdentifierError);
+  });
+
+  it('persiste configuração de lote e validade com padrões compatíveis', async () => {
+    const fake = makeFakeDb();
+    const regular = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData() });
+    const tracked = await createProductCatalogAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      data: productData({ name: 'Leite', sku: 'LEITE-1', barcode: '111', trackLots: true, trackExpiry: true, expiryWarningDays: 20 }),
+    });
+
+    expect(regular).toMatchObject({ trackLots: false, trackExpiry: false, expiryWarningDays: 30 });
+    expect(tracked).toMatchObject({ trackLots: true, trackExpiry: true, expiryWarningDays: 20 });
+  });
+
+  it('bloqueia alteração do rastreamento quando já existe saldo', async () => {
+    const fake = makeFakeDb();
+    const created = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData() });
+    fake.patchBeforeNextTransaction(`products/${created.id}`, { currentStock: 4 });
+
+    await expect(updateProductCatalogAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      productId: created.id,
+      patch: { trackLots: true },
+    })).rejects.toBeInstanceOf(ProductCatalogLotTrackingError);
   });
 });

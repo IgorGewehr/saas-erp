@@ -1,6 +1,7 @@
 /** Contrato V2 do ledger de estoque, com origem e idempotência explícitas. */
 
 import { z } from 'zod';
+import { StockLotAllocationSchema } from './stockLot';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -36,6 +37,7 @@ const StockMovementV2CanonicalSchema = z.object({
   costMethod: z.literal('moving_average').optional(),
   costRestored: z.boolean().optional(),
   reversalOfMovementId: z.string().min(1).optional(),
+  lotAllocations: z.array(StockLotAllocationSchema).max(450).optional(),
   reason: z.string().min(1).max(500),
   sourceType: z.enum(STOCK_SOURCE_TYPES),
   sourceId: z.string().optional(),
@@ -92,6 +94,16 @@ const StockMovementV2CanonicalSchema = z.object({
       message: 'costRestored exige saída compensatória com memória de custo',
       path: ['costRestored'],
     });
+  }
+  if (movement.lotAllocations?.length) {
+    const allocated = movement.lotAllocations.reduce((total, lot) => total + lot.quantity, 0);
+    if (Math.abs(allocated - Math.abs(movement.quantity)) > 1e-6) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'a soma das alocações de lote deve corresponder à quantidade movimentada',
+        path: ['lotAllocations'],
+      });
+    }
   }
 });
 

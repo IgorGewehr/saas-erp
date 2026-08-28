@@ -15,6 +15,7 @@
 import { createHash } from 'crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import { expandBomLines, type BomProductLite } from '@/contracts/_runtime/bom';
+import { StockLotEntrySchema, type StockLotAllocation, type StockLotDocument, type StockLotEntry } from '@/lib/contracts/domain/stockLot';
 import type { Product, StockAlert } from '@/lib/types';
 
 export type StockOperationType = 'entrada' | 'saida' | 'ajuste' | 'restauracao';
@@ -47,6 +48,10 @@ export interface StockOperationLine {
   costRestoration?: { expectedCurrentCost: number; targetCost: number };
   /** Movimento de entrada compensado por esta linha. */
   reversalOfMovementId?: string;
+  /** Lote existente para saída ou ajuste explícito. */
+  lotId?: string;
+  /** Metadados do lote criado/incrementado por uma entrada. */
+  lot?: StockLotEntry;
 }
 
 export type StockSourceCollection =
@@ -100,6 +105,7 @@ export interface StockOperationAdjustment {
   unitCost?: number;
   previousCost?: number;
   newCost?: number;
+  lotAllocations?: StockLotAllocation[];
   alert?: StockAlert;
 }
 
@@ -125,6 +131,13 @@ interface AggregatedLine {
   expectedCurrentStock?: number;
   costRestoration?: { expectedCurrentCost: number; targetCost: number };
   reversalOfMovementId?: string;
+  lotIntents: Array<{
+    quantity: number;
+    sourceLineId?: string;
+    unitCost?: number;
+    lotId?: string;
+    lot?: StockLotEntry;
+  }>;
 }
 
 export class InvalidStockOperationError extends Error {
@@ -159,6 +172,14 @@ export class StockDependencyConflictError extends Error {
   }
 }
 
+export class StockLotConflictError extends Error {
+  readonly code = 'STOCK_LOT_CONFLICT' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'StockLotConflictError';
+  }
+}
+
 export interface StockShortage {
   productId: string;
   variantId?: string;
@@ -190,6 +211,25 @@ function roundStock(value: number): number {
 
 function roundCost(value: number): number {
   return Math.round((value + Number.EPSILON) * 10_000) / 10_000;
+}
+
+function normalizeLotCode(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+function stockLotId(businessId: string, productId: string, variantId: string | undefined, code: string): string {
+  return `stocklot_${hash(`${businessId}:${productId}:${variantId ?? ''}:${normalizeLotCode(code)}`).slice(0, 40)}`;
+}
+
+function brazilDateOnly(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const value = new Map(parts.map((part) => [part.type, part.value]));
+  return `${value.get('year')}-${value.get('month')}-${value.get('day')}`;
 }
 
 function validateInput(input: StockOperationInput): void {
@@ -246,6 +286,21 @@ function validateInput(input: StockOperationInput): void {
     )) {
       throw new InvalidStockOperationError('Pré-condições de reversão exigem uma única saída com expandBom=false.');
     }
+    if (line.lot && line.lotId) {
+      throw new InvalidStockOperationError(`lines[${index}] deve informar lot ou lotId, não ambos.`);
+    }
+    if (line.lot) {
+      const parsedLot = StockLotEntrySchema.safeParse(line.lot);
+      if (!parsedLot.success) {
+        throw new InvalidStockOperationError(`lines[${index}].lot inválido: ${parsedLot.error.issues[0]?.message ?? 'dados inválidos'}.`);
+      }
+      if (input.type !== 'entrada') {
+        throw new InvalidStockOperationError(`lines[${index}].lot só pode ser usado em entrada.`);
+      }
+    }
+    if (line.lotId && input.type === 'entrada') {
+      throw new InvalidStockOperationError(`lines[${index}].lotId não pode ser usado em entrada.`);
+    }
   }
 }
 
@@ -263,6 +318,11 @@ function fingerprint(input: StockOperationInput): string {
         targetCost: roundCost(line.costRestoration.targetCost),
       } : null,
       reversalOfMovementId: line.reversalOfMovementId ?? '',
+      lotId: line.lotId ?? '',
+      lot: line.lot ? {
+        ...line.lot,
+        code: normalizeLotCode(line.lot.code),
+      } : null,
     }))
     .sort((a, b) =>
       `${a.productId}:${a.variantId}:${a.sourceLineId}:${a.quantity}`.localeCompare(
@@ -356,6 +416,7 @@ function aggregateLines(
         expectedCurrentStock: sourceLine.expectedCurrentStock,
         costRestoration: sourceLine.costRestoration,
         reversalOfMovementId: sourceLine.reversalOfMovementId,
+        lotIntents: [],
       };
       current.quantity = roundStock(current.quantity + line.quantity);
       if (sourceLine.unitCost !== undefined) {
@@ -366,6 +427,17 @@ function aggregateLines(
       current.strict = current.strict ||
         input.strictProductIds?.has(sourceLine.productId) === true ||
         input.strictProductIds?.has(line.productId) === true;
+      const targetsSource = line.productId === sourceLine.productId
+        && (('variantId' in line ? line.variantId : undefined) ?? '') === (sourceLine.variantId ?? '');
+      if (targetsSource) {
+        current.lotIntents.push({
+          quantity: line.quantity,
+          ...(sourceLine.sourceLineId ? { sourceLineId: sourceLine.sourceLineId } : {}),
+          ...(sourceLine.unitCost !== undefined ? { unitCost: sourceLine.unitCost } : {}),
+          ...(sourceLine.lotId ? { lotId: sourceLine.lotId } : {}),
+          ...(sourceLine.lot ? { lot: StockLotEntrySchema.parse(sourceLine.lot) } : {}),
+        });
+      }
       bucket.set(key, current);
     }
   }
@@ -532,6 +604,322 @@ export async function applyStockOperationAdmin(
     if (shortages.length) throw new InsufficientStockError(shortages);
 
     const now = new Date().toISOString();
+    const today = brazilDateOnly();
+    const lotAllocationsByTarget = new Map<string, StockLotAllocation[]>();
+    const lotWrites = new Map<string, {
+      ref: FirebaseFirestore.DocumentReference;
+      data: StockLotDocument;
+    }>();
+
+    for (const { line, product, productName, delta } of effectiveReads) {
+      if (product.trackLots !== true) continue;
+      if (product.kind === 'composite') {
+        throw new StockLotConflictError(`Produto composto ${productName} deve controlar lotes pelos componentes.`);
+      }
+      const targetKey = `${product.id}:${line.variantId ?? ''}`;
+      const allocations: StockLotAllocation[] = [];
+
+      if (input.type === 'entrada' || input.type === 'restauracao') {
+        if (input.type === 'restauracao') {
+          if (!input.sourceId) {
+            throw new StockLotConflictError(`A restauração de ${productName} exige a origem da baixa original.`);
+          }
+          const originalSourceType = input.sourceDocument?.collection === 'sales'
+            ? 'sale'
+            : input.sourceDocument?.collection === 'deliveryOrders'
+              ? 'order'
+              : undefined;
+          const movementQuery = db.collection('stockMovements')
+            .where('businessId', '==', input.businessId)
+            .where('sourceId', '==', input.sourceId);
+          const movementSnapshot = await tx.get(movementQuery);
+          const originalAllocations = movementSnapshot.docs
+            .map((doc) => ({ ...doc.data(), id: doc.id }) as {
+              id: string;
+              businessId?: string;
+              productId?: string;
+              variantId?: string;
+              sourceType?: string;
+              type?: string;
+              createdAt?: string;
+              lotAllocations?: StockLotAllocation[];
+            })
+            .filter((movement) =>
+              movement.businessId === input.businessId
+              && movement.productId === product.id
+              && (movement.variantId ?? '') === (line.variantId ?? '')
+              && movement.type === 'saida'
+              && (!originalSourceType || movement.sourceType === originalSourceType)
+              && Array.isArray(movement.lotAllocations),
+            )
+            .sort((left, right) =>
+              String(left.createdAt ?? '').localeCompare(String(right.createdAt ?? ''))
+              || left.id.localeCompare(right.id),
+            )
+            .flatMap((movement) => movement.lotAllocations ?? []);
+          let remaining = Math.abs(delta);
+          const restoreByLot = new Map<string, number>();
+          const allocationMetadata = new Map<string, StockLotAllocation>();
+          for (const allocation of originalAllocations) {
+            if (remaining <= 0) break;
+            const quantity = roundStock(Math.min(allocation.quantity, remaining));
+            if (quantity <= 0) continue;
+            restoreByLot.set(allocation.lotId, roundStock((restoreByLot.get(allocation.lotId) ?? 0) + quantity));
+            allocationMetadata.set(allocation.lotId, allocation);
+            remaining = roundStock(remaining - quantity);
+          }
+          if (remaining > 1e-6) {
+            throw new StockLotConflictError(`A baixa original de ${productName} não possui lotes suficientes para restauração.`);
+          }
+          for (const [lotId, quantity] of restoreByLot) {
+            const ref = db.collection('stockLots').doc(lotId);
+            const snapshot = await tx.get(ref);
+            if (!snapshot.exists) throw new StockLotConflictError(`O lote original de ${productName} não foi encontrado.`);
+            const lot = snapshot.data() as StockLotDocument;
+            if (
+              lot.businessId !== input.businessId
+              || lot.productId !== product.id
+              || (lot.variantId ?? '') !== (line.variantId ?? '')
+            ) {
+              throw new StockLotConflictError(`O lote original de ${productName} pertence a outro saldo.`);
+            }
+            const nextQuantity = roundStock(lot.currentQuantity + quantity);
+            lotWrites.set(lot.id, {
+              ref,
+              data: { ...lot, currentQuantity: nextQuantity, status: 'active', updatedAt: now },
+            });
+            const metadata = allocationMetadata.get(lotId)!;
+            allocations.push({
+              lotId,
+              lotCode: lot.code ?? metadata.lotCode,
+              quantity,
+              ...(lot.expiresAt ? { expiresAt: lot.expiresAt } : {}),
+            });
+          }
+          lotAllocationsByTarget.set(targetKey, allocations);
+          continue;
+        }
+        const intents = line.lotIntents.filter((intent) => intent.quantity > 0);
+        const describedQuantity = roundStock(intents.reduce((total, intent) => total + intent.quantity, 0));
+        if (
+          intents.length === 0
+          || intents.some((intent) => !intent.lot)
+          || Math.abs(describedQuantity - Math.abs(delta)) > 1e-6
+        ) {
+          throw new StockLotConflictError(`A entrada de ${productName} exige lote para toda a quantidade.`);
+        }
+
+        const grouped = new Map<string, {
+          quantity: number;
+          costTotal: number;
+          costedQuantity: number;
+          lot: StockLotEntry;
+          sourceLineId?: string;
+        }>();
+        for (const intent of intents) {
+          const lot = StockLotEntrySchema.parse(intent.lot);
+          if (product.trackExpiry === true && !lot.expiresAt) {
+            throw new StockLotConflictError(`A entrada de ${productName} exige data de validade.`);
+          }
+          const id = stockLotId(input.businessId, product.id, line.variantId, lot.code);
+          const current = grouped.get(id);
+          if (current && (
+            current.lot.manufacturedAt !== lot.manufacturedAt
+            || current.lot.expiresAt !== lot.expiresAt
+          )) {
+            throw new StockLotConflictError(`O lote ${lot.code} foi informado com datas divergentes na mesma operação.`);
+          }
+          grouped.set(id, {
+            quantity: roundStock((current?.quantity ?? 0) + intent.quantity),
+            costTotal: (current?.costTotal ?? 0) + (intent.unitCost === undefined ? 0 : intent.quantity * intent.unitCost),
+            costedQuantity: roundStock((current?.costedQuantity ?? 0) + (intent.unitCost === undefined ? 0 : intent.quantity)),
+            lot,
+            sourceLineId: current?.sourceLineId ?? intent.sourceLineId,
+          });
+        }
+
+        for (const [id, entry] of grouped) {
+          const ref = db.collection('stockLots').doc(id);
+          const snapshot = await tx.get(ref);
+          const existing = snapshot.exists ? snapshot.data() as StockLotDocument : undefined;
+          if (existing && (
+            existing.businessId !== input.businessId
+            || existing.productId !== product.id
+            || (existing.variantId ?? '') !== (line.variantId ?? '')
+          )) {
+            throw new StockLotConflictError(`O lote ${entry.lot.code} pertence a outro saldo.`);
+          }
+          if (existing && (
+            (existing.manufacturedAt && entry.lot.manufacturedAt && existing.manufacturedAt !== entry.lot.manufacturedAt)
+            || (existing.expiresAt && entry.lot.expiresAt && existing.expiresAt !== entry.lot.expiresAt)
+          )) {
+            throw new StockLotConflictError(`O lote ${entry.lot.code} já existe com datas diferentes.`);
+          }
+          const previousQuantity = existing?.currentQuantity ?? 0;
+          const nextQuantity = roundStock(previousQuantity + entry.quantity);
+          const incomingUnitCost = entry.costedQuantity > 0
+            ? roundCost(entry.costTotal / entry.costedQuantity)
+            : undefined;
+          const previousUnitCost = existing?.unitCost;
+          const nextUnitCost = incomingUnitCost === undefined
+            ? previousUnitCost
+            : previousUnitCost !== undefined && previousQuantity > 0
+              ? roundCost(((previousQuantity * previousUnitCost) + (entry.quantity * incomingUnitCost)) / nextQuantity)
+              : incomingUnitCost;
+          const purchaseNoteIds = [...new Set([
+            ...(existing?.purchaseNoteIds ?? []),
+            ...(input.sourceType === 'purchase' && input.sourceId ? [input.sourceId] : []),
+          ])];
+          const data: StockLotDocument = {
+            id,
+            schemaVersion: 1,
+            businessId: input.businessId,
+            productId: product.id,
+            ...(line.variantId ? { variantId: line.variantId } : {}),
+            productName,
+            unit: product.unit,
+            code: existing?.code ?? entry.lot.code.trim(),
+            codeNormalized: normalizeLotCode(entry.lot.code),
+            status: 'active',
+            ...(existing?.manufacturedAt || entry.lot.manufacturedAt
+              ? { manufacturedAt: existing?.manufacturedAt ?? entry.lot.manufacturedAt }
+              : {}),
+            ...(existing?.expiresAt || entry.lot.expiresAt
+              ? { expiresAt: existing?.expiresAt ?? entry.lot.expiresAt }
+              : {}),
+            initialQuantity: roundStock((existing?.initialQuantity ?? 0) + entry.quantity),
+            currentQuantity: nextQuantity,
+            ...(nextUnitCost !== undefined ? { unitCost: nextUnitCost } : {}),
+            expiryWarningDays: product.expiryWarningDays ?? 30,
+            ...(existing?.supplierId || entry.lot.supplierId ? { supplierId: existing?.supplierId ?? entry.lot.supplierId } : {}),
+            ...(existing?.supplierName || entry.lot.supplierName ? { supplierName: existing?.supplierName ?? entry.lot.supplierName } : {}),
+            ...(existing?.supplierDocument || entry.lot.supplierDocument ? { supplierDocument: existing?.supplierDocument ?? entry.lot.supplierDocument } : {}),
+            ...(purchaseNoteIds.length ? { purchaseNoteIds } : {}),
+            ...(existing?.purchaseNoteNumber || entry.lot.purchaseNoteNumber
+              ? { purchaseNoteNumber: existing?.purchaseNoteNumber ?? entry.lot.purchaseNoteNumber }
+              : {}),
+            ...(existing?.sourceLineId || entry.sourceLineId ? { sourceLineId: existing?.sourceLineId ?? entry.sourceLineId } : {}),
+            createdBy: existing?.createdBy ?? input.operatorId,
+            createdByName: existing?.createdByName ?? input.operatorName,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          };
+          lotWrites.set(id, { ref, data });
+          allocations.push({
+            lotId: id,
+            lotCode: data.code,
+            quantity: entry.quantity,
+            ...(data.expiresAt ? { expiresAt: data.expiresAt } : {}),
+          });
+        }
+      } else {
+        const query = db.collection('stockLots')
+          .where('businessId', '==', input.businessId)
+          .where('productId', '==', product.id);
+        const snapshot = await tx.get(query);
+        if (snapshot.docs.length > 450) {
+          throw new StockLotConflictError(`O produto ${productName} excedeu o limite operacional de 450 lotes.`);
+        }
+        const lots = snapshot.docs
+          .map((doc) => ({ ...doc.data(), id: doc.id }) as StockLotDocument)
+          .filter((lot) => (lot.variantId ?? '') === (line.variantId ?? ''));
+        const byId = new Map(lots.map((lot) => [lot.id, lot]));
+        const plannedQuantity = new Map(lots.map((lot) => [lot.id, lot.currentQuantity]));
+        const requested = Math.abs(delta);
+
+        if (input.type === 'ajuste') {
+          const lotIds = [...new Set(line.lotIntents.map((intent) => intent.lotId).filter(Boolean) as string[])];
+          if (lotIds.length !== 1 || line.lotIntents.some((intent) => !intent.lotId)) {
+            throw new StockLotConflictError(`O ajuste de ${productName} exige a seleção de um único lote.`);
+          }
+          const lot = byId.get(lotIds[0]);
+          if (!lot) throw new StockLotConflictError(`Lote não encontrado para ${productName}.`);
+          const nextQuantity = roundStock(lot.currentQuantity + delta);
+          if (nextQuantity < 0) {
+            throw new StockLotConflictError(`Saldo insuficiente no lote ${lot.code} de ${productName}.`);
+          }
+          lotWrites.set(lot.id, {
+            ref: db.collection('stockLots').doc(lot.id),
+            data: {
+              ...lot,
+              initialQuantity: delta > 0 ? roundStock(lot.initialQuantity + delta) : lot.initialQuantity,
+              currentQuantity: nextQuantity,
+              status: nextQuantity > 0 ? 'active' : 'depleted',
+              updatedAt: now,
+            },
+          });
+          allocations.push({
+            lotId: lot.id,
+            lotCode: lot.code,
+            quantity: requested,
+            ...(lot.expiresAt ? { expiresAt: lot.expiresAt } : {}),
+          });
+        } else {
+          let explicitlyAllocated = 0;
+          for (const intent of line.lotIntents.filter((item) => item.lotId)) {
+            const lot = byId.get(intent.lotId!);
+            if (!lot) throw new StockLotConflictError(`Lote selecionado não encontrado para ${productName}.`);
+            if (lot.expiresAt && lot.expiresAt < today && !['manual', 'migration'].includes(input.sourceType)) {
+              throw new StockLotConflictError(`O lote ${lot.code} de ${productName} está vencido.`);
+            }
+            const available = plannedQuantity.get(lot.id) ?? 0;
+            if (available + 1e-6 < intent.quantity) {
+              throw new StockLotConflictError(`Saldo insuficiente no lote ${lot.code} de ${productName}.`);
+            }
+            plannedQuantity.set(lot.id, roundStock(available - intent.quantity));
+            explicitlyAllocated = roundStock(explicitlyAllocated + intent.quantity);
+            allocations.push({
+              lotId: lot.id,
+              lotCode: lot.code,
+              quantity: intent.quantity,
+              ...(lot.expiresAt ? { expiresAt: lot.expiresAt } : {}),
+            });
+          }
+          if (explicitlyAllocated > requested + 1e-6) {
+            throw new StockLotConflictError(`A quantidade selecionada em lotes excede a saída de ${productName}.`);
+          }
+          let remaining = roundStock(requested - explicitlyAllocated);
+          const fefo = lots
+            .filter((lot) => (plannedQuantity.get(lot.id) ?? 0) > 0 && (!lot.expiresAt || lot.expiresAt >= today))
+            .sort((a, b) => {
+              const expiry = (a.expiresAt ?? '9999-12-31').localeCompare(b.expiresAt ?? '9999-12-31');
+              return expiry || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+            });
+          for (const lot of fefo) {
+            if (remaining <= 0) break;
+            const available = plannedQuantity.get(lot.id) ?? 0;
+            const quantity = roundStock(Math.min(available, remaining));
+            if (quantity <= 0) continue;
+            plannedQuantity.set(lot.id, roundStock(available - quantity));
+            remaining = roundStock(remaining - quantity);
+            allocations.push({
+              lotId: lot.id,
+              lotCode: lot.code,
+              quantity,
+              ...(lot.expiresAt ? { expiresAt: lot.expiresAt } : {}),
+            });
+          }
+          if (remaining > 1e-6) {
+            throw new StockLotConflictError(`Lotes válidos insuficientes para a saída de ${productName}.`);
+          }
+          for (const [lotId, nextQuantity] of plannedQuantity) {
+            const lot = byId.get(lotId)!;
+            if (Math.abs(nextQuantity - lot.currentQuantity) <= 1e-6) continue;
+            lotWrites.set(lot.id, {
+              ref: db.collection('stockLots').doc(lot.id),
+              data: {
+                ...lot,
+                currentQuantity: nextQuantity,
+                status: nextQuantity > 0 ? 'active' : 'depleted',
+                updatedAt: now,
+              },
+            });
+          }
+        }
+      }
+      lotAllocationsByTarget.set(targetKey, allocations);
+    }
+
     const adjustments: StockOperationAdjustment[] = [];
     const productPatches = new Map<string, Record<string, unknown>>();
     for (const { line, product, variant, productName, minStock, previousStock, delta, newStock, unitCost, previousCost, newCost, changesCost } of effectiveReads) {
@@ -546,6 +934,7 @@ export async function applyStockOperationAdmin(
         newStock,
         line.variantId,
       );
+      const lotAllocations = lotAllocationsByTarget.get(targetKey);
 
       const productPatch = productPatches.get(product.id) ?? { updatedAt: now };
       if (variant && line.variantId) {
@@ -589,6 +978,7 @@ export async function applyStockOperationAdmin(
           costRestored: true,
         } : {}),
         ...(line.reversalOfMovementId ? { reversalOfMovementId: line.reversalOfMovementId } : {}),
+        ...(lotAllocations?.length ? { lotAllocations } : {}),
         reason: input.reason.trim(),
         sourceType: input.sourceType,
         ...(input.sourceId ? { sourceId: input.sourceId } : {}),
@@ -610,8 +1000,13 @@ export async function applyStockOperationAdmin(
         previousStock,
         newStock,
         ...(changesCost ? { ...(unitCost !== undefined ? { unitCost } : {}), previousCost, newCost } : {}),
+        ...(lotAllocations?.length ? { lotAllocations } : {}),
         ...(alert ? { alert } : {}),
       });
+    }
+
+    for (const { ref, data } of lotWrites.values()) {
+      tx.set(ref, data as unknown as Record<string, unknown>);
     }
 
     for (const [productId, patch] of productPatches) {

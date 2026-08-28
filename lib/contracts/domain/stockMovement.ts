@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { StockLotAllocationSchema } from './stockLot';
 
 export const STOCK_MOVEMENT_TYPES = ['entrada', 'saida', 'ajuste'] as const;
 export const StockMovementTypeSchema = z.enum(STOCK_MOVEMENT_TYPES);
@@ -19,11 +20,13 @@ export const StockMovementSchema = z.object({
   id: z.string().min(1),
   businessId: z.string().min(1),
   productId: z.string().min(1),
+  variantId: z.string().min(1).optional(),
   productName: z.string().min(1),
   type: StockMovementTypeSchema,
   quantity: z.number(), // ajuste pode ser negativo, entrada/saida sempre positivo
   previousStock: z.number(),
   newStock: z.number(),
+  lotAllocations: z.array(StockLotAllocationSchema).optional(),
   reason: z.string().min(1).max(500),
   saleId: z.string().optional(),
   purchaseId: z.string().optional(),

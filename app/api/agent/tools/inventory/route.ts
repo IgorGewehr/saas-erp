@@ -23,6 +23,7 @@ import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/li
 import type { Product, StockMovement } from '@/lib/types';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 import type { ProductCatalogData, ProductCatalogPatch } from '@/lib/contracts/api/product-catalog';
+import type { StockLotEntry } from '@/lib/contracts/domain/stockLot';
 import {
   archiveProductCatalogAdmin,
   createProductCatalogAdmin,
@@ -57,6 +58,10 @@ interface CreateParams {
   menuDescription?: string;
   preparationTime?: number;
   imageUrl?: string;
+  trackLots?: boolean;
+  trackExpiry?: boolean;
+  expiryWarningDays?: number;
+  initialLot?: StockLotEntry;
 }
 
 interface AdjustStockParams {
@@ -66,12 +71,14 @@ interface AdjustStockParams {
   operatorId?: string;
   operatorName?: string;
   idempotencyKey?: string;
+  lotId?: string;
 }
 
 const WRITEABLE: (keyof Product)[] = [
   'name', 'description', 'category', 'unit', 'costPrice', 'salePrice',
   'minStock', 'maxStock', 'sku', 'barcode', 'isActive', 'imageUrl',
   'isDeliverable', 'menuCategory', 'menuDescription', 'preparationTime', 'dietary',
+  'trackLots', 'trackExpiry', 'expiryWarningDays',
 ];
 
 export async function POST(req: NextRequest) {
@@ -223,6 +230,9 @@ async function createProduct(businessId: string, p: CreateParams): Promise<Produ
     isDeliverable: !!p.isDeliverable,
     menuAvailable: true,
     trackStock: true,
+    trackLots: p.trackLots === true,
+    trackExpiry: p.trackExpiry === true,
+    expiryWarningDays: p.expiryWarningDays ?? 30,
     menuCategory: p.menuCategory,
     menuDescription: p.menuDescription?.slice(0, 400),
     preparationTime: p.preparationTime,
@@ -236,7 +246,11 @@ async function createProduct(businessId: string, p: CreateParams): Promise<Produ
     const stock = await applyStockOperationAdmin(adminDb, {
       businessId,
       type: 'entrada',
-      lines: [{ productId: product.id, quantity: initialStock }],
+      lines: [{
+        productId: product.id,
+        quantity: initialStock,
+        ...(p.initialLot ? { lot: p.initialLot } : {}),
+      }],
       operatorId: 'agent',
       operatorName: 'Agente IA',
       reason: 'Estoque inicial via agente',
@@ -313,7 +327,7 @@ async function adjustStock(businessId: string, p: AdjustStockParams): Promise<{ 
   const result = await applyStockOperationAdmin(adminDb, {
     businessId,
     type: 'ajuste',
-    lines: [{ productId: p.productId, quantity: delta }],
+    lines: [{ productId: p.productId, quantity: delta, ...(p.lotId ? { lotId: p.lotId } : {}) }],
     operatorId: p.operatorId || 'agent',
     operatorName: p.operatorName || 'Agente IA',
     reason: p.reason.slice(0, 200),
@@ -338,6 +352,7 @@ async function adjustStock(businessId: string, p: AdjustStockParams): Promise<{ 
     operatorId: p.operatorId || 'agent',
     operatorName: p.operatorName || 'Agente IA',
     createdAt: now,
+    ...(adjustment.lotAllocations?.length ? { lotAllocations: adjustment.lotAllocations } : {}),
   };
 
   return {

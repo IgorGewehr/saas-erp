@@ -5,6 +5,7 @@ import {
   InsufficientStockError,
   StockDependencyConflictError,
   StockIdempotencyConflictError,
+  StockLotConflictError,
   StockReferenceError,
   type StockOperationInput,
 } from '@/lib/services/stock-core-admin';
@@ -14,6 +15,12 @@ import type { Product } from '@/lib/types';
 interface FakeRef {
   id: string;
   _coll: string;
+}
+
+interface FakeQuery {
+  _coll: string;
+  _filters: Array<{ field: string; expected: unknown }>;
+  where: (field: string, operator: string, expected: unknown) => FakeQuery;
 }
 
 function product(
@@ -52,9 +59,20 @@ function makeFakeDb(initialProducts: Product[], extraDocuments: Record<string, R
 
   const db = {
     collection(coll: string) {
+      const makeQuery = (filters: FakeQuery['_filters']): FakeQuery => ({
+        _coll: coll,
+        _filters: filters,
+        where(field: string, operator: string, expected: unknown) {
+          if (operator !== '==') throw new Error(`Operador não suportado: ${operator}`);
+          return makeQuery([...filters, { field, expected }]);
+        },
+      });
       return {
         doc(id: string): FakeRef {
           return { id, _coll: coll };
+        },
+        where(field: string, operator: string, expected: unknown) {
+          return makeQuery([]).where(field, operator, expected);
         },
       };
     },
@@ -64,7 +82,18 @@ function makeFakeDb(initialProducts: Product[], extraDocuments: Record<string, R
         | { kind: 'update'; ref: FakeRef; data: Record<string, unknown> }
       > = [];
       const tx = {
-        async get(ref: FakeRef) {
+        async get(ref: FakeRef | FakeQuery) {
+          if ('_filters' in ref) {
+            const docs = [...documents.entries()]
+              .filter(([path, data]) => path.startsWith(`${ref._coll}/`)
+                && ref._filters.every((filter) => data[filter.field] === filter.expected))
+              .map(([path, data]) => ({
+                id: path.slice(ref._coll.length + 1),
+                exists: true,
+                data: () => clone(data),
+              }));
+            return { docs, empty: docs.length === 0 };
+          }
           const data = documents.get(`${ref._coll}/${ref.id}`);
           return {
             id: ref.id,
@@ -452,5 +481,155 @@ describe('applyStockOperationAdmin', () => {
     }))).rejects.toBeInstanceOf(InsufficientStockError);
     const stored = fake.get('products/tenis') as unknown as Product;
     expect(stored.variants?.map((variant) => variant.currentStock)).toEqual([1, 4]);
+  });
+
+  it('cria lote na entrada, grava a alocação no ledger e preserva idempotência', async () => {
+    const fake = makeFakeDb([product('p1', 0, { trackLots: true, trackExpiry: true, expiryWarningDays: 45 })]);
+    const input = baseInput({
+      type: 'entrada',
+      lines: [{
+        productId: 'p1',
+        quantity: 5,
+        unitCost: 8,
+        sourceLineId: 'line-1',
+        lot: { code: ' lote-a ', manufacturedAt: '2026-08-01', expiresAt: '2026-12-01', supplierName: 'Fornecedor A' },
+      }],
+      sourceType: 'purchase',
+      sourceId: 'purchase-lot-1',
+      idempotencyKey: 'purchase:lot-1:entry',
+      reason: 'Entrada rastreada',
+      expandBom: false,
+    });
+
+    const first = await applyStockOperationAdmin(fake.db, input);
+    const replay = await applyStockOperationAdmin(fake.db, input);
+
+    expect(replay.replayed).toBe(true);
+    expect(fake.get('products/p1')?.currentStock).toBe(5);
+    expect(fake.list('stockLots')).toHaveLength(1);
+    expect(fake.list('stockLots')[0].data).toMatchObject({
+      businessId: 'biz1', productId: 'p1', codeNormalized: 'LOTE-A', initialQuantity: 5,
+      currentQuantity: 5, unitCost: 8, expiresAt: '2026-12-01', expiryWarningDays: 45,
+    });
+    expect(first.adjustments[0].lotAllocations).toEqual([
+      expect.objectContaining({ lotCode: 'lote-a', quantity: 5, expiresAt: '2026-12-01' }),
+    ]);
+    expect(fake.list('stockMovements')[0].data.lotAllocations).toEqual(first.adjustments[0].lotAllocations);
+  });
+
+  it('baixa automaticamente por FEFO e distribui a saída entre lotes', async () => {
+    const lot = (id: string, code: string, expiresAt: string, quantity: number) => ({
+      id, schemaVersion: 1, businessId: 'biz1', productId: 'p1', productName: 'Produto p1', unit: 'UN',
+      code, codeNormalized: code, status: 'active', expiresAt, initialQuantity: quantity,
+      currentQuantity: quantity, expiryWarningDays: 30, createdBy: 'user-1', createdByName: 'Operador',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const fake = makeFakeDb(
+      [product('p1', 8, { trackLots: true })],
+      {
+        'stockLots/lot-old': lot('lot-old', 'ANTIGO', '2027-01-01', 3),
+        'stockLots/lot-new': lot('lot-new', 'NOVO', '2027-06-01', 5),
+      },
+    );
+
+    const result = await applyStockOperationAdmin(fake.db, baseInput({
+      lines: [{ productId: 'p1', quantity: 4 }],
+      sourceId: 'sale-fefo',
+      idempotencyKey: 'sale:fefo:stock',
+    }));
+
+    expect(result.adjustments[0].lotAllocations).toEqual([
+      expect.objectContaining({ lotId: 'lot-old', quantity: 3 }),
+      expect.objectContaining({ lotId: 'lot-new', quantity: 1 }),
+    ]);
+    expect(fake.get('stockLots/lot-old')).toMatchObject({ currentQuantity: 0, status: 'depleted' });
+    expect(fake.get('stockLots/lot-new')).toMatchObject({ currentQuantity: 4, status: 'active' });
+    expect(fake.get('products/p1')?.currentStock).toBe(4);
+  });
+
+  it('restaura exatamente os lotes consumidos quando a venda é cancelada', async () => {
+    const baseLot = (id: string, code: string, expiresAt: string, quantity: number) => ({
+      id, schemaVersion: 1, businessId: 'biz1', productId: 'p1', productName: 'Produto p1', unit: 'UN',
+      code, codeNormalized: code, status: 'active', expiresAt, initialQuantity: quantity,
+      currentQuantity: quantity, expiryWarningDays: 30, createdBy: 'user-1', createdByName: 'Operador',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const fake = makeFakeDb([product('p1', 8, { trackLots: true })], {
+      'stockLots/lot-a': baseLot('lot-a', 'A', '2027-01-01', 3),
+      'stockLots/lot-b': baseLot('lot-b', 'B', '2027-06-01', 5),
+    });
+    await applyStockOperationAdmin(fake.db, baseInput({
+      lines: [{ productId: 'p1', quantity: 4 }],
+      sourceId: 'sale-restore',
+      idempotencyKey: 'sale:restore:deduct',
+    }));
+
+    const restored = await applyStockOperationAdmin(fake.db, baseInput({
+      type: 'restauracao',
+      lines: [{ productId: 'p1', quantity: 4 }],
+      sourceType: 'refund',
+      sourceId: 'sale-restore',
+      idempotencyKey: 'sale:restore:return',
+      reason: 'Cancelamento da venda',
+    }));
+
+    expect(restored.adjustments[0].lotAllocations).toEqual([
+      expect.objectContaining({ lotId: 'lot-a', quantity: 3 }),
+      expect.objectContaining({ lotId: 'lot-b', quantity: 1 }),
+    ]);
+    expect(fake.get('stockLots/lot-a')).toMatchObject({ currentQuantity: 3, status: 'active' });
+    expect(fake.get('stockLots/lot-b')).toMatchObject({ currentQuantity: 5, status: 'active' });
+    expect(fake.get('products/p1')?.currentStock).toBe(8);
+  });
+
+  it('não usa lote vencido automaticamente, mas permite baixa manual explícita para descarte', async () => {
+    const expired = {
+      id: 'lot-expired', schemaVersion: 1, businessId: 'biz1', productId: 'p1', productName: 'Produto p1', unit: 'UN',
+      code: 'VENCIDO', codeNormalized: 'VENCIDO', status: 'active', expiresAt: '2020-01-01', initialQuantity: 2,
+      currentQuantity: 2, expiryWarningDays: 30, createdBy: 'user-1', createdByName: 'Operador',
+      createdAt: '2020-01-01T00:00:00.000Z', updatedAt: '2020-01-01T00:00:00.000Z',
+    };
+    const fake = makeFakeDb([product('p1', 2, { trackLots: true, trackExpiry: true })], {
+      'stockLots/lot-expired': expired,
+    });
+
+    await expect(applyStockOperationAdmin(fake.db, baseInput({
+      lines: [{ productId: 'p1', quantity: 1 }],
+      sourceId: 'sale-expired',
+      idempotencyKey: 'sale:expired:stock',
+    }))).rejects.toBeInstanceOf(StockLotConflictError);
+    expect(fake.get('products/p1')?.currentStock).toBe(2);
+
+    const disposal = await applyStockOperationAdmin(fake.db, baseInput({
+      lines: [{ productId: 'p1', quantity: 1, lotId: 'lot-expired' }],
+      sourceType: 'manual',
+      sourceId: undefined,
+      reason: 'Descarte de vencido',
+      idempotencyKey: 'manual:expired:disposal',
+      expandBom: false,
+    }));
+    expect(disposal.adjustments[0].lotAllocations).toEqual([
+      expect.objectContaining({ lotId: 'lot-expired', quantity: 1 }),
+    ]);
+    expect(fake.get('stockLots/lot-expired')?.currentQuantity).toBe(1);
+    expect(fake.get('products/p1')?.currentStock).toBe(1);
+  });
+
+  it('não considera lotes pertencentes a outro tenant durante a alocação', async () => {
+    const fake = makeFakeDb([product('p1', 1, { trackLots: true })], {
+      'stockLots/foreign': {
+        id: 'foreign', schemaVersion: 1, businessId: 'biz2', productId: 'p1', productName: 'Produto externo', unit: 'UN',
+        code: 'EXTERNO', codeNormalized: 'EXTERNO', status: 'active', initialQuantity: 10, currentQuantity: 10,
+        expiryWarningDays: 30, createdBy: 'other', createdByName: 'Outro', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+
+    await expect(applyStockOperationAdmin(fake.db, baseInput({
+      lines: [{ productId: 'p1', quantity: 1 }],
+      sourceId: 'sale-tenant-lot',
+      idempotencyKey: 'sale:tenant-lot:stock',
+    }))).rejects.toBeInstanceOf(StockLotConflictError);
+    expect(fake.get('stockLots/foreign')?.currentQuantity).toBe(10);
+    expect(fake.get('products/p1')?.currentStock).toBe(1);
   });
 });

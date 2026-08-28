@@ -1,10 +1,13 @@
 import { z } from 'zod';
+import { StockLotEntrySchema } from '@/lib/contracts/domain/stockLot';
 
 const StockOperationLineSchema = z.object({
   productId: z.string().min(1),
   variantId: z.string().min(1).optional(),
   quantity: z.number().finite(),
   sourceLineId: z.string().min(1).optional(),
+  lotId: z.string().min(1).optional(),
+  lot: StockLotEntrySchema.optional(),
 });
 
 const StockSourceDocumentSchema = z.object({
@@ -51,6 +54,15 @@ export const StockOperationRequestSchema = z.object({
     }
     if (operation.type !== 'ajuste' && line.quantity <= 0) {
       ctx.addIssue({ code: 'custom', path: ['lines', index, 'quantity'], message: 'quantity deve ser positiva' });
+    }
+    if (line.lot && operation.type !== 'entrada') {
+      ctx.addIssue({ code: 'custom', path: ['lines', index, 'lot'], message: 'dados de lote só podem ser informados em entradas' });
+    }
+    if (line.lotId && operation.type === 'entrada') {
+      ctx.addIssue({ code: 'custom', path: ['lines', index, 'lotId'], message: 'entradas identificam o lote pelo código' });
+    }
+    if (line.lot && line.lotId) {
+      ctx.addIssue({ code: 'custom', path: ['lines', index], message: 'informe lot ou lotId, não ambos' });
     }
   }
 });

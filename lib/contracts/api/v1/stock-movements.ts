@@ -17,12 +17,16 @@ import {
   successEnvelope,
 } from '../_envelope';
 import { StockMovementSchema, StockMovementTypeSchema } from '../../domain/stockMovement';
+import { StockLotEntrySchema } from '../../domain/stockLot';
 
 export const CreateStockMovementBodySchema = z.object({
   productId: z.string().min(1),
+  variantId: z.string().min(1).optional(),
   type: StockMovementTypeSchema,
   quantity: z.number().refine((v) => v !== 0, 'quantity != 0'),
   reason: z.string().min(1).max(500),
+  lotId: z.string().min(1).optional(),
+  lot: StockLotEntrySchema.optional(),
 }).superRefine((b, ctx) => {
   // Ajuste pode ser negativo. Entrada/saida exigem quantity > 0.
   if (b.type !== 'ajuste' && b.quantity < 0) {
@@ -31,6 +35,12 @@ export const CreateStockMovementBodySchema = z.object({
       message: 'entrada/saida exigem quantity > 0 (sinal já implícito)',
       path: ['quantity'],
     });
+  }
+  if (b.lot && b.type !== 'entrada') {
+    ctx.addIssue({ code: 'custom', message: 'lot só pode ser informado em entrada', path: ['lot'] });
+  }
+  if (b.lotId && b.type === 'entrada') {
+    ctx.addIssue({ code: 'custom', message: 'entrada identifica o lote pelo código', path: ['lotId'] });
   }
 });
 

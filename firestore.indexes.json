@@ -577,6 +577,22 @@
       ]
     },
     {
+      "collectionGroup": "stockMovements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "sourceId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "stockLots",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "productId", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "kanbanBoards",
       "queryScope": "COLLECTION",
       "fields": [

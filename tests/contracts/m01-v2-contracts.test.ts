@@ -96,6 +96,28 @@ describe('M01.1 — ProductV2Schema', () => {
     ).toBe(false);
   });
 
+  it('mantém lote e validade opt-in e exige a relação entre ambos', () => {
+    expect(ProductV2Schema.parse(legacyProduct())).toMatchObject({
+      trackLots: false,
+      trackExpiry: false,
+      expiryWarningDays: 30,
+    });
+    expect(ProductV2Schema.safeParse(legacyProduct({
+      schemaVersion: 2,
+      trackStock: true,
+      trackLots: false,
+      trackExpiry: true,
+      expiryWarningDays: 20,
+    })).success).toBe(false);
+    expect(ProductV2Schema.safeParse(legacyProduct({
+      schemaVersion: 2,
+      trackStock: true,
+      trackLots: true,
+      trackExpiry: true,
+      expiryWarningDays: 20,
+    })).success).toBe(true);
+  });
+
 });
 describe('M01.1 — SupplierSchema', () => {
   it('normaliza pontuação do CNPJ legado e preserva rastreabilidade', () => {
@@ -302,5 +324,23 @@ describe('M01.1 — StockMovementV2Schema', () => {
       createdAt: NOW,
     });
     expect(result.success).toBe(false);
+  });
+
+  it('valida que as alocações por lote fecham a quantidade do movimento', () => {
+    const base = {
+      schemaVersion: 2,
+      id: 'movement-lot', businessId: 'business-1', productId: 'product-1', productName: 'Produto',
+      type: 'saida', quantity: 2, previousStock: 5, newStock: 3, reason: 'Venda',
+      sourceType: 'sale', sourceId: 'sale-lot', idempotencyKey: 'sale:lot', balanceAccuracy: 'exact',
+      operatorId: 'user-1', operatorName: 'Operador', createdAt: NOW,
+    } as const;
+    expect(StockMovementV2Schema.safeParse({
+      ...base,
+      lotAllocations: [{ lotId: 'lot-1', lotCode: 'A', quantity: 2 }],
+    }).success).toBe(true);
+    expect(StockMovementV2Schema.safeParse({
+      ...base,
+      lotAllocations: [{ lotId: 'lot-1', lotCode: 'A', quantity: 1 }],
+    }).success).toBe(false);
   });
 });

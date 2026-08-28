@@ -83,4 +83,30 @@ describe('M01.2 — boundaries server-side de estoque', () => {
     });
     expect(result.lines[0].variantId).toBe('azul-p');
   });
+
+  it('aceita metadados de lote na entrada e lote explícito na saída', () => {
+    const entry = StockOperationRequestSchema.safeParse({
+      businessId: 'biz1', type: 'entrada',
+      lines: [{ productId: 'p1', quantity: 3, lot: { code: 'A-1', expiresAt: '2027-01-01' } }],
+      operatorName: 'Operador', reason: 'Compra', sourceType: 'purchase', sourceId: 'note-1',
+      idempotencyKey: 'purchase:note-1:lot', expandBom: false,
+    });
+    const output = StockOperationRequestSchema.safeParse({
+      businessId: 'biz1', type: 'saida',
+      lines: [{ productId: 'p1', quantity: 1, lotId: 'lot-1' }],
+      operatorName: 'Operador', reason: 'Perda', sourceType: 'manual',
+      idempotencyKey: 'manual:lot-1:output', expandBom: false,
+    });
+    expect(entry.success).toBe(true);
+    expect(output.success).toBe(true);
+  });
+
+  it('rejeita metadados de criação de lote fora de uma entrada', () => {
+    expect(StockOperationRequestSchema.safeParse({
+      businessId: 'biz1', type: 'saida',
+      lines: [{ productId: 'p1', quantity: 1, lot: { code: 'A-1' } }],
+      operatorName: 'Operador', reason: 'Venda', sourceType: 'sale', sourceId: 'sale-1',
+      idempotencyKey: 'sale:lot-invalid', expandBom: false,
+    }).success).toBe(false);
+  });
 });

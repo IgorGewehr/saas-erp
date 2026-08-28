@@ -8,6 +8,7 @@ import {
   InsufficientStockError,
   InvalidStockOperationError,
   StockIdempotencyConflictError,
+  StockLotConflictError,
   StockReferenceError,
 } from '@/lib/services/stock-core-admin';
 
@@ -47,6 +48,9 @@ export async function POST(request: NextRequest) {
         { ok: false, error: cause.message, code: cause.code, shortages: cause.shortages },
         { status: 409 },
       );
+    }
+    if (cause instanceof StockLotConflictError) {
+      return error(cause.message, 409);
     }
     if (cause instanceof StockReferenceError) return error(cause.message, 404);
     if (cause instanceof InvalidStockOperationError) return error(cause.message, 400);

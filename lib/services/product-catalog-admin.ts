@@ -41,6 +41,13 @@ export class ProductCatalogVariantStockError extends Error {
   }
 }
 
+export class ProductCatalogLotTrackingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProductCatalogLotTrackingError';
+  }
+}
+
 export function normalizeSku(value?: string | null): string | undefined {
   const normalized = value?.normalize('NFKC').trim().replace(/\s+/g, ' ').toUpperCase();
   return normalized || undefined;
@@ -158,6 +165,21 @@ function buildProductDocument(params: {
   const kind = components.length > 0 ? 'composite' : variants.length > 0 ? 'variant' : 'simple';
   const isActive = merged.isActive !== false;
   const primaryImage = images.find((image) => image.isPrimary) ?? images[0];
+  const trackLots = kind === 'composite' ? false : merged.trackLots === true;
+  const trackExpiry = trackLots && merged.trackExpiry === true;
+  const previousTrackLots = existing.trackLots === true;
+  const previousTrackExpiry = existing.trackExpiry === true;
+  const existingHasStock = Number(existing.currentStock ?? 0) !== 0
+    || existingVariants.some((variant) => Number(variant.currentStock ?? 0) !== 0);
+  if (
+    params.existing
+    && existingHasStock
+    && (trackLots !== previousTrackLots || trackExpiry !== previousTrackExpiry)
+  ) {
+    throw new ProductCatalogLotTrackingError(
+      'Zere o estoque antes de alterar o controle por lote ou validade. Saldos existentes serão tratados pela migração assistida.',
+    );
+  }
 
   const parsed = ProductV2Schema.parse({
     ...merged,
@@ -176,6 +198,9 @@ function buildProductDocument(params: {
     currentStock: merged.currentStock ?? 0,
     minStock: merged.minStock ?? 0,
     trackStock: kind === 'simple' ? merged.trackStock !== false : false,
+    trackLots,
+    trackExpiry,
+    expiryWarningDays: merged.expiryWarningDays ?? 30,
     isActive,
     menuAvailable: merged.menuAvailable !== false,
     imageUrl: primaryImage?.url,

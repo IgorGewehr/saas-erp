@@ -484,6 +484,15 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Saldos por lote são legíveis pelos operadores do tenant, mas somente o
+    // núcleo transacional Admin SDK pode criar ou alterar quantidades.
+    match /stockLots/{lotId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+      allow write: if false;
+    }
+
     // ============================================
     // SALES COLLECTION
     // ============================================

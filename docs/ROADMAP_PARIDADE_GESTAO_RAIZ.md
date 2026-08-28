@@ -52,7 +52,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 ### Fase 1 — Operação comercial fundamental
 
 - [ ] **M01 — Catálogo, Estoque, Fornecedores e Compras**
-  - Status: `Em implementação — M01.0 a M01.6 concluídos; próximo: M01.7`
+  - Status: `Em implementação — M01.0 a M01.7 concluídos; próximo: M01.8`
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
@@ -225,7 +225,7 @@ O módulo deve atender varejo, alimentação e serviços com venda de produtos, 
 
 - Quarentena e liberação por controle de qualidade industrial.
 - Laudos, FISPQ, GHS e qualificação regulatória de fornecedor.
-- FEFO obrigatório e rastreabilidade industrial completa.
+- FEFO obrigatório para todo o catálogo e rastreabilidade industrial completa; no AEVO ele só vale para produtos opt-in.
 - Múltiplos depósitos/filiais; será tratado apenas quando o produto suportar multi-location.
 
 ## 4. Arquitetura-alvo
@@ -246,7 +246,7 @@ Serviços de domínio
                 │
                 ▼
 Firestore por businessId
-  products | suppliers | purchaseNotes | stockMovements
+  products | suppliers | purchaseNotes | stockMovements | stockLots
                 │
                 ├── transactions / bankAccounts
                 └── notifications / domainEvents
@@ -373,12 +373,14 @@ Regras críticas de escrita devem executar no servidor. A interface pode manter 
 
 ### M01.7 — Lotes e validade opcionais
 
-- [ ] Adicionar configuração por produto `trackLots`/`trackExpiry`.
-- [ ] Criar lote na entrada quando o recurso estiver habilitado.
-- [ ] Guardar fornecedor, nota, quantidade inicial/atual, custo e validade.
-- [ ] Alertar produtos próximos do vencimento.
-- [ ] Permitir baixa por lote em fluxo simplificado quando necessário.
-- [ ] Não incluir quarentena, laudos ou qualidade industrial nesta etapa.
+- [x] Adicionar configuração por produto `trackLots`/`trackExpiry`.
+- [x] Criar lote na entrada quando o recurso estiver habilitado.
+- [x] Guardar fornecedor, nota, quantidade inicial/atual, custo e validade.
+- [x] Alertar produtos próximos do vencimento.
+- [x] Permitir baixa por lote em fluxo simplificado quando necessário.
+- [x] Não incluir quarentena, laudos ou qualidade industrial nesta etapa.
+
+**M01.7 concluído:** rastreamento opt-in por produto, saldo transacional em `stockLots`, entrada integrada à NF-e, baixa automática FEFO ou lote explícito, bloqueio de lote vencido em fluxos comerciais, descarte manual e restauração exata no cancelamento. A tela de Estoque reúne alertas e saldos ativos. Detalhes em `docs/paridade/M01_LOTES_VALIDADE.md`.
 
 **Saída:** rastreabilidade leve para alimentação, cosméticos, farmácia e varejo perecível.
 
@@ -475,3 +477,5 @@ O M02 — Vendas, PDV, Pedidos e Cardápio — só deve iniciar sua implementaç
 | 25/08/2026 | Manter recursos industriais fora do núcleo do AEVO | Evitar complexidade sem demanda de pequenos negócios |
 | 25/08/2026 | Tratar lote/validade como capacidade opcional | Há valor para alguns segmentos sem exigir processo industrial |
 | 26/08/2026 | Cancelar entrada de compra por compensação, sem excluir movimentos | Preservar auditoria e impedir restauração insegura de saldo/custo |
+| 28/08/2026 | Não inventar validade quando a NF-e não a informa | Produto com `trackExpiry` exige uma data real; ausência vira pendência operacional |
+| 28/08/2026 | Usar FEFO apenas para lotes válidos e devolver cancelamentos ao lote original | Evita vender vencidos e mantém produto, lote e ledger conciliados |

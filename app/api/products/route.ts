@@ -11,6 +11,7 @@ import {
   createProductCatalogAdmin,
   ProductCatalogDuplicateIdentifierError,
   ProductCatalogNotFoundError,
+  ProductCatalogLotTrackingError,
   ProductCatalogVariantStockError,
   updateProductCatalogAdmin,
 } from '@/lib/services/product-catalog-admin';
@@ -74,6 +75,9 @@ function catalogError(cause: unknown) {
   }
   if (cause instanceof ProductCatalogVariantStockError) {
     return error(cause.message, 409, 'VARIANT_STOCK_CONFLICT');
+  }
+  if (cause instanceof ProductCatalogLotTrackingError) {
+    return error(cause.message, 409, 'LOT_TRACKING_CONFLICT');
   }
   if (cause instanceof ProductCatalogNotFoundError || cause instanceof StockReferenceError) {
     return error(cause.message, 404, 'PRODUCT_NOT_FOUND');

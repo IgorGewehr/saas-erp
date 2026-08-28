@@ -34,6 +34,8 @@ function fakeDb() {
     get: async function get() { return snapshot(this.collection, this.id); },
   });
   const query = (collection: string, filters: Array<[string, unknown]> = [], cap?: number): Record<string, unknown> => ({
+    _collection: collection,
+    _filters: filters,
     where(field: string, operator: string, value: unknown) {
       if (operator !== '==') throw new Error('unsupported operator');
       return query(collection, [...filters, [field, value]], cap);
@@ -64,7 +66,11 @@ function fakeDb() {
     async runTransaction<T>(handler: (tx: Record<string, unknown>) => Promise<T>): Promise<T> {
       const pending: Array<{ kind: 'create' | 'set' | 'update' | 'delete'; ref: Ref; value?: Record<string, unknown> }> = [];
       const result = await handler({
-        get: async (target: Ref) => snapshot(target.collection, target.id),
+        get: async (target: Ref | { _filters?: unknown; get?: () => Promise<unknown> }) => {
+          if ('_filters' in target && typeof target.get === 'function') return target.get();
+          const document = target as Ref;
+          return snapshot(document.collection, document.id);
+        },
         create: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'create', ref: target, value: structuredClone(value) }),
         set: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'set', ref: target, value: structuredClone(value) }),
         update: (target: Ref, value: Record<string, unknown>) => pending.push({ kind: 'update', ref: target, value: structuredClone(value) }),
@@ -348,6 +354,50 @@ describe('purchase import preparation core', () => {
     expect(fake.list('stockOperations')).toHaveLength(2);
     expect(fake.list('products').find((item) => item.id === 'product-1')?.value.currentStock).toBe(10);
     expect(fake.list('domainEvents').filter((item) => item.value.type === 'purchase.imported')).toHaveLength(1);
+  });
+
+  it('leva o lote revisado da NF-e até o saldo e o reutiliza na reversão', async () => {
+    const fake = fakeDb();
+    seedSupplier(fake, 'biz-1');
+    fake.seed('products', 'tracked-product', {
+      id: 'tracked-product', businessId: 'biz-1', isActive: true, trackStock: true,
+      trackLots: true, trackExpiry: true, expiryWarningDays: 30,
+      name: 'Café rastreado', sku: 'CAFE-TRACK', unit: 'KG', currentStock: 0,
+      costPrice: 0, salePrice: 10, minStock: 0,
+    });
+    const prepared = await preparePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: 'note-lot-flow', parsed,
+      xmlStoragePath: 'businesses/biz-1/purchase-notes/note-lot-flow/original.xml', originalFileName: 'lot.xml', actor,
+    });
+    await reviewPurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor,
+      items: [
+        {
+          lineId: prepared.items[0].lineId, action: 'match', productId: 'tracked-product',
+          conversionFactor: 1, landedUnitCost: 8,
+          lot: { code: 'LOTE-NFE-1', manufacturedAt: '2026-08-01', expiresAt: '2027-08-01' },
+        },
+        { lineId: prepared.items[1].lineId, action: 'skip', conversionFactor: 1, landedUnitCost: prepared.items[1].landedUnitCost },
+      ],
+    });
+
+    const confirmed = await confirmPurchaseNoteAdmin({ db: fake.db, businessId: 'biz-1', noteId: prepared.id, actor });
+    const lotAfterEntry = fake.list('stockLots')[0];
+    expect(confirmed).toMatchObject({ importedCount: 1, errorCount: 0 });
+    expect(lotAfterEntry.value).toMatchObject({
+      businessId: 'biz-1', productId: 'tracked-product', codeNormalized: 'LOTE-NFE-1',
+      currentQuantity: 10, supplierName: parsed.supplier.name, purchaseNoteIds: [prepared.id],
+    });
+    expect(fake.list('stockMovements')[0].value.lotAllocations).toEqual([
+      expect.objectContaining({ lotId: lotAfterEntry.id, quantity: 10 }),
+    ]);
+
+    const reversed = await reversePurchaseNoteAdmin({
+      db: fake.db, businessId: 'biz-1', noteId: prepared.id, reason: 'Correção integral do lote recebido', actor,
+    });
+    expect(reversed.note.status).toBe('revertida');
+    expect(fake.list('stockLots')[0].value).toMatchObject({ currentQuantity: 0, status: 'depleted' });
+    expect(fake.list('products').find((item) => item.id === 'tracked-product')?.value.currentStock).toBe(0);
   });
 
   it('reverte saldo e custo por movimento compensatório sem apagar o ledger nem duplicar no replay', async () => {
