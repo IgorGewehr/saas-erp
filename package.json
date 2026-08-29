@@ -10,6 +10,7 @@
     "start": "next start",
     "lint": "next lint",
     "audit:m01": "tsx --env-file=.env.local scripts/audit-m01-homologation.ts",
+    "audit:m02": "tsx --env-file=.env.local scripts/audit-m02-commercial.ts",
     "migrate:m01": "tsx --env-file=.env.local scripts/migrate-m01-parity.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest",

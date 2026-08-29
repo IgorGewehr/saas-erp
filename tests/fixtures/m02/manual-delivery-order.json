@@ -1,0 +1,28 @@
+{
+  "channel": "manual",
+  "document": {
+    "id": "delivery-manual-1",
+    "businessId": "biz-m02",
+    "number": 102,
+    "status": "recebido",
+    "clientName": "Cliente Balcão",
+    "channel": "manual",
+    "items": [
+      {
+        "productId": "product-shirt",
+        "variantId": "variant-blue-m",
+        "productName": "Camiseta Azul M",
+        "quantity": 2,
+        "unitPrice": 50,
+        "total": 100
+      }
+    ],
+    "subtotal": 100,
+    "total": 100,
+    "deliveryType": "retirada",
+    "paymentMethod": "dinheiro",
+    "paymentStatus": "pendente",
+    "createdAt": "2026-08-28T12:10:00.000Z",
+    "updatedAt": "2026-08-28T12:10:00.000Z"
+  }
+}

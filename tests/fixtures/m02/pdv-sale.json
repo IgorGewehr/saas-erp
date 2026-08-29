@@ -1,0 +1,57 @@
+{
+  "channel": "pdv",
+  "request": {
+    "businessId": "biz-m02",
+    "clientId": "client-1",
+    "clientName": "Cliente PDV",
+    "items": [
+      {
+        "productId": "product-burger",
+        "description": "Hambúrguer",
+        "quantity": 1,
+        "unitPrice": 30,
+        "discount": 0,
+        "total": 30
+      }
+    ],
+    "payments": [
+      { "method": "dinheiro", "amount": 10 },
+      { "method": "pix", "amount": 20 }
+    ],
+    "discount": 0,
+    "status": "finalizada",
+    "operatorId": "operator-1",
+    "operatorName": "Operador PDV",
+    "idempotencyKey": "fixture-pdv-1"
+  },
+  "document": {
+    "id": "sale-pdv-1",
+    "businessId": "biz-m02",
+    "clientId": "client-1",
+    "clientName": "Cliente PDV",
+    "items": [
+      {
+        "id": "item-0",
+        "productId": "product-burger",
+        "description": "Hambúrguer",
+        "quantity": 1,
+        "unitPrice": 30,
+        "discount": 0,
+        "total": 30
+      }
+    ],
+    "payments": [
+      { "method": "dinheiro", "amount": 10 },
+      { "method": "pix", "amount": 20 }
+    ],
+    "subtotal": 30,
+    "discount": 0,
+    "total": 30,
+    "status": "finalizada",
+    "transactionId": "sale-pdv-1_revenue",
+    "operatorId": "operator-1",
+    "operatorName": "Operador PDV",
+    "createdAt": "2026-08-28T12:00:00.000Z",
+    "updatedAt": "2026-08-28T12:00:00.000Z"
+  }
+}

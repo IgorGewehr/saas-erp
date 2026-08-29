@@ -57,7 +57,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
 - [ ] **M02 — Vendas, PDV, Pedidos e Cardápio**
-  - Status: `Em análise — inventário e plano de implementação concluídos; próxima etapa M02.0`
+  - Status: `Em implementação — M02.0 concluída; próxima etapa M02.1`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.
@@ -480,8 +480,8 @@ Essas dependências estão concluídas em código na M01. O aceite operacional d
 
 O inventário, o diagnóstico e o plano completo estão em `docs/paridade/M02_PLANO_IMPLEMENTACAO.md`.
 
-- [ ] **M02.0 — Baseline e caracterização** — próxima etapa.
-- [ ] **M02.1 — Contratos, cotação e preço autoritativo**.
+- [x] **M02.0 — Baseline e caracterização** — mapa, fixtures, testes e auditoria read-only concluídos.
+- [ ] **M02.1 — Contratos, cotação e preço autoritativo** — próxima etapa.
 - [ ] **M02.2 — Coordenador de operação comercial**.
 - [ ] **M02.3 — PDV e venda de serviços**.
 - [ ] **M02.4 — Cupons, gift cards e fidelidade**.
@@ -516,3 +516,4 @@ Decisões estruturais da M02:
 | 28/08/2026 | Exigir migração M01 por tenant, com dry-run padrão, confirmação textual e backup reversível | Evita varredura global, sobrescrita de conflitos e publicação prematura das regras restritivas |
 | 28/08/2026 | Preservar `sales`, `deliveryOrders` e `orders` na M02, unificando regras por um núcleo comercial e adaptadores | Evita migração destrutiva e mantém as diferenças reais entre PDV, delivery e B2B |
 | 28/08/2026 | Migrar a M02 por canal, começando pelo PDV | O PDV já possui entrada server-side e oferece a menor superfície para validar o núcleo comum |
+| 28/08/2026 | Tratar preço do cliente, contrato público divergente e ausência comercial de variações como lacunas explícitas do baseline M02 | Impede que a migração altere comportamento sem teste ou esconda riscos já existentes |

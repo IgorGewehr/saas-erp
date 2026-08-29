@@ -1,0 +1,128 @@
+{
+  "channel": "site",
+  "request": {
+    "businessId": "biz-m02",
+    "clientName": "Cliente Site",
+    "clientPhone": "51999990001",
+    "items": [
+      {
+        "productId": "product-pizza",
+        "productName": "Pizza",
+        "quantity": 1,
+        "unitPrice": 44,
+        "total": 44,
+        "selectedModifiers": [
+          {
+            "groupId": "extras",
+            "groupName": "Nome adulterado",
+            "priceStrategy": "sum",
+            "selectedOptions": [
+              {
+                "optionId": "bacon",
+                "optionName": "Preço adulterado",
+                "additionalPrice": 99,
+                "quantity": 1
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "deliveryType": "entrega",
+    "deliveryAddress": {
+      "logradouro": "Rua das Flores",
+      "numero": "10",
+      "bairro": "Centro",
+      "municipio": "Porto Alegre",
+      "uf": "RS",
+      "cep": "90000000"
+    },
+    "paymentMethod": "pix",
+    "couponCode": "BEMVINDO10",
+    "giftCardCode": "GIFT1234"
+  },
+  "product": {
+    "id": "product-pizza",
+    "businessId": "biz-m02",
+    "name": "Pizza",
+    "salePrice": 40,
+    "isActive": true,
+    "isDeliverable": true,
+    "currentStock": 10,
+    "modifierGroups": [
+      {
+        "id": "extras",
+        "name": "Extras",
+        "required": false,
+        "minSelections": 0,
+        "maxSelections": 3,
+        "priceStrategy": "sum",
+        "options": [
+          {
+            "id": "bacon",
+            "name": "Bacon",
+            "additionalPrice": 4,
+            "available": true,
+            "maxQuantity": 2,
+            "linkedProductId": "ingredient-bacon",
+            "consumeQty": 1
+          }
+        ]
+      }
+    ]
+  },
+  "document": {
+    "id": "delivery-public-1",
+    "businessId": "biz-m02",
+    "number": 101,
+    "status": "recebido",
+    "clientId": "client-site-1",
+    "clientName": "Cliente Site",
+    "clientPhone": "51999990001",
+    "channel": "site",
+    "items": [
+      {
+        "productId": "product-pizza",
+        "productName": "Pizza",
+        "quantity": 1,
+        "basePrice": 40,
+        "unitPrice": 44,
+        "total": 44,
+        "selectedModifiers": [
+          {
+            "groupId": "extras",
+            "groupName": "Extras",
+            "priceStrategy": "sum",
+            "selectedOptions": [
+              {
+                "optionId": "bacon",
+                "optionName": "Bacon",
+                "additionalPrice": 4,
+                "quantity": 1
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "subtotal": 44,
+    "deliveryFee": 6,
+    "discount": 5,
+    "total": 45,
+    "deliveryType": "entrega",
+    "deliveryAddress": {
+      "logradouro": "Rua das Flores",
+      "numero": "10",
+      "bairro": "Centro",
+      "municipio": "Porto Alegre",
+      "uf": "RS",
+      "cep": "90000000"
+    },
+    "paymentMethod": "pix",
+    "paymentStatus": "pendente",
+    "stockDeductedAt": "2026-08-28T12:05:00.000Z",
+    "stockMovementIds": ["movement-public-1"],
+    "createdAt": "2026-08-28T12:05:00.000Z",
+    "updatedAt": "2026-08-28T12:05:00.000Z"
+  }
+}

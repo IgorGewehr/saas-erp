@@ -1,0 +1,52 @@
+{
+  "channel": "whatsapp",
+  "request": {
+    "action": "create",
+    "params": {
+      "clientName": "Cliente WhatsApp",
+      "clientPhone": "51999990002",
+      "items": [
+        {
+          "productId": "product-burger",
+          "quantity": 1,
+          "notes": "Sem cebola"
+        }
+      ],
+      "deliveryType": "retirada",
+      "paymentMethod": "pix",
+      "paymentStatus": "pendente",
+      "estimatedMinutes": 30,
+      "channel": "whatsapp",
+      "conversationId": "conversation-1"
+    }
+  },
+  "document": {
+    "id": "delivery-agent-1",
+    "businessId": "biz-m02",
+    "number": 103,
+    "status": "recebido",
+    "clientId": "client-agent-1",
+    "clientName": "Cliente WhatsApp",
+    "clientPhone": "51999990002",
+    "channel": "whatsapp",
+    "conversationId": "conversation-1",
+    "items": [
+      {
+        "productId": "product-burger",
+        "productName": "Hambúrguer",
+        "quantity": 1,
+        "unitPrice": 30,
+        "total": 30,
+        "notes": "Sem cebola"
+      }
+    ],
+    "subtotal": 30,
+    "total": 30,
+    "deliveryType": "retirada",
+    "paymentMethod": "pix",
+    "paymentStatus": "pendente",
+    "stockDeductedAt": "2026-08-28T12:15:00.000Z",
+    "createdAt": "2026-08-28T12:15:00.000Z",
+    "updatedAt": "2026-08-28T12:15:00.000Z"
+  }
+}

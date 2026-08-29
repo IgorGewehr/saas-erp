@@ -178,12 +178,14 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 ### M02.0 — Baseline e caracterização
 
-- [ ] Registrar os campos e escritores de `sales`, `deliveryOrders` e `orders`.
-- [ ] Mapear todos os efeitos em estoque, lotes, transações, bancos, comissão, cliente, cupom, gift card, fidelidade e fiscal.
-- [ ] Criar fixtures dos cinco canais: PDV, cardápio, pedido manual, agente e B2B.
-- [ ] Congelar em testes o comportamento válido de horário, zona, modificadores, Mercado Pago, impressão e fiscal.
-- [ ] Criar uma matriz de estados e transições por tipo de documento.
-- [ ] Criar auditoria read-only de venda/pedido e seus efeitos relacionados.
+- [x] Registrar os campos e escritores de `sales`, `deliveryOrders` e `orders`.
+- [x] Mapear todos os efeitos em estoque, lotes, transações, bancos, comissão, cliente, cupom, gift card, fidelidade e fiscal.
+- [x] Criar fixtures dos cinco canais: PDV, cardápio, pedido manual, agente e B2B.
+- [x] Congelar em testes o comportamento válido de horário, zona, modificadores, Mercado Pago, impressão e fiscal.
+- [x] Criar uma matriz de estados e transições por tipo de documento.
+- [x] Criar auditoria read-only de venda/pedido e seus efeitos relacionados.
+
+**M02.0 concluída:** mapa de escritores/efeitos, matrizes de estado, cinco fixtures, 20 testes de caracterização e auditoria read-only por tenant. Detalhes em `docs/paridade/M02_BASELINE.md`.
 
 **Saída:** baseline reproduzível, mapa de dependências e testes que protegem as capacidades exclusivas do AEVO.
 

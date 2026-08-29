@@ -1,0 +1,41 @@
+{
+  "channel": "b2b",
+  "document": {
+    "id": "order-b2b-1",
+    "businessId": "biz-m02",
+    "type": "b2b",
+    "status": "pendente",
+    "clientId": "client-company-1",
+    "clientName": "Empresa Cliente",
+    "clientCpfCnpj": "12345678000199",
+    "items": [
+      {
+        "productId": "product-box",
+        "productName": "Caixa de produtos",
+        "sku": "BOX-001",
+        "quantity": 10,
+        "unitPrice": 25,
+        "discount": 0,
+        "total": 250,
+        "unit": "UN"
+      }
+    ],
+    "subtotal": 250,
+    "discount": 25,
+    "total": 225,
+    "paymentMethod": "boleto",
+    "paymentTerms": "30 dias",
+    "operatorId": "operator-1",
+    "operatorName": "Operador Comercial",
+    "statusHistory": [
+      {
+        "status": "pendente",
+        "timestamp": "2026-08-28T12:20:00.000Z",
+        "userId": "operator-1",
+        "userName": "Operador Comercial"
+      }
+    ],
+    "createdAt": "2026-08-28T12:20:00.000Z",
+    "updatedAt": "2026-08-28T12:20:00.000Z"
+  }
+}
