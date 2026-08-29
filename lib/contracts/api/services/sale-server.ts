@@ -21,12 +21,14 @@ import { SelectedModifierSchema } from '@/contracts/domain/deliveryOrder';
 const SaleItemInputSchema = z.object({
   productId: z.string().optional(),
   serviceId: z.string().optional(),
+  variantId: z.string().optional(),
   description: z.string().min(1).max(300),
   quantity: z.number().positive(),
   unitPrice: z.number().nonnegative(),
   discount: z.number().nonnegative().default(0),
   basePrice: z.number().nonnegative().optional(),
   selectedModifiers: z.array(SelectedModifierSchema).optional(),
+  notes: z.string().max(500).optional(),
   /** Server recomputa se ausente. */
   total: z.number().nonnegative().optional(),
 }).superRefine((it, ctx) => {
@@ -57,12 +59,14 @@ export const CreateSaleWithSideEffectsInputSchema = z.object({
   operatorName: z.string().min(1),
   /** Taxa de comissão (%) do operador. 0/ausente → sem comissão. */
   commissionRate: z.number().nonnegative().optional(),
+  /** Motivo auditável do desconto; callers legados recebem um motivo padrão. */
+  discountReason: z.string().min(3).max(300).optional(),
   /**
    * Chave de idempotência. Se ausente, o serviço deriva uma determinística
    * do conteúdo da venda (mesmo padrão de agenda/route.ts). Pré-checagem
    * antes de criar evita Sale/Transaction/StockMovement duplicados em retry.
    */
-  idempotencyKey: z.string().optional(),
+  idempotencyKey: z.string().min(1).max(200).optional(),
 }).superRefine((s, ctx) => {
   if (s.status === 'finalizada') {
     const round2 = (n: number) => Math.round(n * 100) / 100;

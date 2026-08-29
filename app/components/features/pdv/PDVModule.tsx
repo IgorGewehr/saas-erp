@@ -103,6 +103,18 @@ const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   outros: 'Outros',
 };
 
+const SALE_OPERATION_STATUS_LABELS = {
+  payment: {
+    paid: 'Pago', pending: 'Pendente', partial: 'Parcial', unpaid: 'Sem pagamento',
+  },
+  financial: {
+    paid: 'Liquidado', pending: 'A receber', partial: 'Parcial', not_applicable: 'Não aplicável',
+  },
+  stock: {
+    applied: 'Baixado', not_required: 'Não aplicável',
+  },
+} as const;
+
 function getCategoryIcon(category: string) {
   const icons: Record<string, React.ReactNode> = {
     Cabelo: <Scissors size={16} />,
@@ -883,6 +895,7 @@ export default function PDVModule() {
         items: cart.map(item => ({
           ...(item.productId ? { productId: item.productId } : {}),
           ...(item.serviceId ? { serviceId: item.serviceId } : {}),
+          ...(item.variantId ? { variantId: item.variantId } : {}),
           description: item.description,
           quantity: item.quantity,
           unitPrice: item.unitPrice,
@@ -896,6 +909,7 @@ export default function PDVModule() {
         payments: payments,
         subtotal,
         discount: discountAmount,
+        ...(discountAmount > 0 ? { discountReason: 'Desconto concedido no PDV' } : {}),
         ...(tipAmount > 0 ? { tip: tipAmount } : {}),
         total,
         status: 'finalizada' as const,
@@ -1605,6 +1619,40 @@ export default function PDVModule() {
                         </div>
                       ))}
                     </div>
+                    {(selectedSale.paymentStatus || selectedSale.financialStatus || selectedSale.stockStatus || selectedSale.fiscalStatus) && (
+                      <div className="grid grid-cols-2 gap-2 mt-3">
+                        {selectedSale.paymentStatus && (
+                          <div className="rounded-lg bg-slate-50 dark:bg-gray-800 px-2.5 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-400">Pagamento</p>
+                            <p className="text-xs font-semibold text-slate-700 dark:text-gray-200">
+                              {SALE_OPERATION_STATUS_LABELS.payment[selectedSale.paymentStatus]}
+                            </p>
+                          </div>
+                        )}
+                        {selectedSale.financialStatus && (
+                          <div className="rounded-lg bg-slate-50 dark:bg-gray-800 px-2.5 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-400">Financeiro</p>
+                            <p className="text-xs font-semibold text-slate-700 dark:text-gray-200">
+                              {SALE_OPERATION_STATUS_LABELS.financial[selectedSale.financialStatus]}
+                            </p>
+                          </div>
+                        )}
+                        {selectedSale.stockStatus && (
+                          <div className="rounded-lg bg-slate-50 dark:bg-gray-800 px-2.5 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-400">Estoque</p>
+                            <p className="text-xs font-semibold text-slate-700 dark:text-gray-200">
+                              {SALE_OPERATION_STATUS_LABELS.stock[selectedSale.stockStatus]}
+                            </p>
+                          </div>
+                        )}
+                        {selectedSale.fiscalStatus && (
+                          <div className="rounded-lg bg-slate-50 dark:bg-gray-800 px-2.5 py-2">
+                            <p className="text-[10px] uppercase tracking-wide text-slate-400">Fiscal</p>
+                            <p className="text-xs font-semibold text-slate-700 dark:text-gray-200">{selectedSale.fiscalStatus}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </DialogContent>

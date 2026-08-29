@@ -6,7 +6,7 @@
 >
 > Referência funcional: Gestão Raiz
 >
-> Estado desta rodada: M02.0, M02.1 e M02.2 concluídas em código; próxima etapa M02.3
+> Estado desta rodada: M02.0 a M02.3 concluídas em código; próxima etapa M02.4
 
 ## 1. Resultado esperado
 
@@ -219,14 +219,16 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 ### M02.3 — PDV e venda de serviços
 
-- [ ] Migrar `/api/sales/checkout` e API/agente de vendas para o núcleo comum.
-- [ ] Revalidar catálogo, serviço, variação, modificadores e desconto no servidor.
-- [ ] Preservar múltiplos meios de pagamento no documento da venda.
-- [ ] Criar efeito financeiro separado para cada alocação quando necessário.
-- [ ] Distinguir pagamento imediato, a receber, sem pagamento e crédito da loja.
-- [ ] Integrar comissão, cliente e estoque nos checkpoints da operação.
-- [ ] Manter venda de serviços sem forçar baixa de produto inexistente.
-- [ ] Exibir no histórico o estado real de pagamento, financeiro, estoque e fiscal.
+- [x] Migrar `/api/sales/checkout` e API/agente de vendas para o núcleo comum.
+- [x] Revalidar catálogo, serviço, variação, modificadores e desconto no servidor.
+- [x] Preservar múltiplos meios de pagamento no documento da venda.
+- [x] Criar efeito financeiro separado para cada alocação quando necessário.
+- [x] Distinguir pagamento imediato, a receber, sem pagamento e crédito da loja.
+- [x] Integrar comissão, cliente e estoque nos checkpoints da operação.
+- [x] Manter venda de serviços sem forçar baixa de produto inexistente.
+- [x] Exibir no histórico o estado real de pagamento, financeiro, estoque e fiscal.
+
+**M02.3 concluída:** PDV, API v1 e criação de venda pelo agente usam cotação autoritativa e o coordenador recuperável; pagamentos são conciliados por alocação, comissão vem do cadastro autenticado, cliente e estoque participam dos checkpoints e o histórico expõe o estado composto. Benefícios serão liquidados no ledger na M02.4 e a reversão centralizada pertence à M02.7. Detalhes em `docs/paridade/M02_PDV_SERVICOS.md`.
 
 **Saída:** PDV autoritativo e compatível com vendas à vista, divididas e diferidas.
 

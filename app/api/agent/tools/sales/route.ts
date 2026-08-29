@@ -24,6 +24,7 @@ type Action = 'list' | 'get' | 'list_by_client' | 'create' | 'cancel' | 'summary
 type SaleStatus = 'aberta' | 'finalizada' | 'cancelada';
 
 interface CreateParams {
+  idempotencyKey?: string;
   clientId?: string;
   // Aliases aceitos no boundary (P2.10) — normalizados pra clientId via resolveClientId.
   contactId?: string;
@@ -139,17 +140,22 @@ async function createSale(businessId: string, p: CreateParams): Promise<Sale> {
     items: p.items.map((it) => ({
       productId: it.productId,
       serviceId: it.serviceId,
+      variantId: it.variantId,
       description: it.description,
       quantity: it.quantity,
       unitPrice: it.unitPrice,
       discount: it.discount || 0,
       total: it.total,
+      basePrice: it.basePrice,
+      selectedModifiers: it.selectedModifiers,
+      notes: it.notes,
     })),
     payments: p.payments.map((x) => ({
       method: x.method,
       amount: x.amount,
       installments: x.installments,
       cardBrand: x.cardBrand,
+      dueDate: x.dueDate,
     })),
     discount: typeof p.discount === 'number' ? p.discount : 0,
     tip: typeof p.tip === 'number' ? p.tip : undefined,
@@ -161,6 +167,12 @@ async function createSale(businessId: string, p: CreateParams): Promise<Sale> {
     operatorName: p.operatorName || 'Agente IA',
     ...(p.dealId ? { dealId: p.dealId } : {}),
     ...(p.appointmentId ? { appointmentId: p.appointmentId } : {}),
+    ...(p.idempotencyKey ? { idempotencyKey: p.idempotencyKey } : {}),
+  }, adminDb, {
+    channel: 'agent',
+    actorType: 'agent',
+    canApplyManualDiscount: true,
+    commissionRate: 0,
   });
 
   return result.sale;

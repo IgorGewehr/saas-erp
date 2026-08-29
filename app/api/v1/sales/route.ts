@@ -2,8 +2,9 @@ import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import { CreateSaleBodySchema } from '@/contracts/api/v1/sales';
-import { IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 import { createSaleWithSideEffects } from '@/lib/services/sales-server';
+import { CommercialOperationError } from '@/lib/services/commercial-operation-admin';
+import { CommercialQuoteError } from '@/lib/services/commercial-quote';
 
 // =============================================================================
 // GET /api/v1/sales — List sales for the authenticated business
@@ -141,6 +142,7 @@ export async function POST(req: NextRequest) {
       items: body.items,
       payments: body.payments,
       discount: body.discount,
+      discountReason: body.discountReason,
       tip: body.tip,
       status: body.status,
       notes: body.notes,
@@ -150,13 +152,20 @@ export async function POST(req: NextRequest) {
       operatorId: 'api',
       operatorName: `API (${auth.businessId.slice(0, 8)})`,
       idempotencyKey: idempotencyKey ?? undefined,
+    }, adminDb, {
+      channel: 'api_v1',
+      actorType: 'api',
+      canApplyManualDiscount: true,
+      commissionRate: 0,
     });
 
     return apiSuccess(
       {
         ...result.sale,
         _linked: {
-          transactionId: result.transactionId,
+          ...(result.transactionId ? { transactionId: result.transactionId } : {}),
+          transactionIds: result.transactionIds,
+          operationId: result.operationId,
           ...(result.commissionTransactionId ? { commissionTransactionId: result.commissionTransactionId } : {}),
         },
         ...(result.replayed ? { _idempotent: true } : {}),
@@ -164,8 +173,10 @@ export async function POST(req: NextRequest) {
       201,
     );
   } catch (err) {
-    if (err instanceof IdempotencyConflictError) {
-      return apiError(`Idempotency key in progress — retry in a moment`, 409);
+    if (err instanceof CommercialQuoteError) return apiError(err.message, err.status);
+    if (err instanceof CommercialOperationError) {
+      const status = err.code.includes('IDEMPOTENCY') || err.code.includes('IN_PROGRESS') ? 409 : 400;
+      return apiError(err.message, status);
     }
     console.error('[API] POST /api/v1/sales error:', err);
     return apiError(err instanceof Error ? err.message : 'Failed to create sale', 500);

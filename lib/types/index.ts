@@ -1115,6 +1115,7 @@ export interface SaleItem {
   id: string;
   productId?: string;
   serviceId?: string;
+  variantId?: string;
   description: string;
   quantity: number;
   unitPrice: number;
@@ -1125,6 +1126,7 @@ export interface SaleItem {
   selectedModifiers?: SelectedModifier[];
   /** Preço base do produto antes dos modificadores (unitPrice = basePrice + delta). */
   basePrice?: number;
+  notes?: string;
 }
 
 export type PaymentMethod =
@@ -1144,6 +1146,8 @@ export interface Payment {
   amount: number;
   installments?: number;
   cardBrand?: string;
+  status?: 'paid' | 'pending' | 'unpaid';
+  dueDate?: string;
 }
 
 export interface Sale {
@@ -1163,6 +1167,14 @@ export interface Sale {
   transactionId?: string;
   /** FK para a Transaction de comissão (despesa) gerada na venda. */
   commissionTransactionId?: string;
+  transactionIds?: string[];
+  stockMovementIds?: string[];
+  commercialOperationId?: string;
+  commercialOperationStatus?: string;
+  paymentStatus?: 'paid' | 'pending' | 'partial' | 'unpaid';
+  financialStatus?: 'paid' | 'pending' | 'partial' | 'not_applicable';
+  stockStatus?: 'applied' | 'not_required';
+  fiscalStatus?: string;
   /** FK opcional para o CRMDeal que esta venda concretizou (ROI por deal — P2.10). */
   dealId?: string;
   /** FK opcional para o Appointment que esta venda cobrou (reconciliação agenda↔caixa — P2.10). */

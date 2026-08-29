@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { SelectedModifierSchema } from './deliveryOrder';
 
 export const SALE_STATUSES = ['aberta', 'finalizada', 'cancelada'] as const;
 export const SaleStatusSchema = z.enum(SALE_STATUSES);
@@ -30,11 +31,15 @@ export const SaleItemSchema = z.object({
   id: z.string().min(1),
   productId: z.string().optional(),
   serviceId: z.string().optional(),
+  variantId: z.string().optional(),
   description: z.string().min(1).max(300),
   quantity: z.number().positive(),
   unitPrice: z.number().nonnegative(),
   discount: z.number().nonnegative(),
   total: z.number().nonnegative(),
+  selectedModifiers: z.array(SelectedModifierSchema).optional(),
+  basePrice: z.number().nonnegative().optional(),
+  notes: z.string().max(500).optional(),
 }).superRefine((it, ctx) => {
   if (!it.productId && !it.serviceId) {
     ctx.addIssue({ code: 'custom', message: 'productId ou serviceId obrigatório', path: ['productId'] });
@@ -54,6 +59,8 @@ export const PaymentSchema = z.object({
   amount: z.number().positive(),
   installments: z.number().int().min(1).max(48).optional(),
   cardBrand: z.string().max(50).optional(),
+  status: z.enum(['paid', 'pending', 'unpaid']).optional(),
+  dueDate: z.string().optional(),
 });
 
 export const SaleSchema = z.object({
@@ -74,6 +81,14 @@ export const SaleSchema = z.object({
   transactionId: z.string().optional(),
   /** FK para a Transaction de comissão (despesa) gerada na venda. Idempotência da comissão. */
   commissionTransactionId: z.string().optional(),
+  transactionIds: z.array(z.string().min(1)).optional(),
+  stockMovementIds: z.array(z.string().min(1)).optional(),
+  commercialOperationId: z.string().optional(),
+  commercialOperationStatus: z.string().optional(),
+  paymentStatus: z.enum(['paid', 'pending', 'partial', 'unpaid']).optional(),
+  financialStatus: z.enum(['paid', 'pending', 'partial', 'not_applicable']).optional(),
+  stockStatus: z.enum(['applied', 'not_required']).optional(),
+  fiscalStatus: z.string().optional(),
   notes: z.string().max(2000).optional(),
   operatorId: z.string().min(1),
   operatorName: z.string().min(1),

@@ -157,6 +157,16 @@ export const CommercialStockEffectSchema = z.object({
     delta: z.number(),
     previousStock: z.number(),
     newStock: z.number(),
+    alert: z.object({
+      businessId: z.string().min(1),
+      productId: z.string().min(1),
+      variantId: z.string().min(1).optional(),
+      productName: z.string().min(1),
+      previousStock: z.number(),
+      newStock: z.number(),
+      minStock: z.number(),
+      severity: z.enum(['zeroed', 'min']),
+    }).optional(),
     lotAllocations: z.array(z.object({
       lotId: z.string().min(1),
       lotCode: z.string().min(1),

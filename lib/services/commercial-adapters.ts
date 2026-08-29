@@ -119,12 +119,19 @@ function legacyLine(input: {
 }
 
 function emptyEffects(raw: UnknownRecord) {
-  const transactionIds = [optionalString(raw.transactionId), optionalString(raw.commissionTransactionId), optionalString(raw.feeTransactionId)]
+  const transactionIds = [
+    ...stringArray(raw.transactionIds),
+    optionalString(raw.transactionId),
+    optionalString(raw.commissionTransactionId),
+    optionalString(raw.feeTransactionId),
+  ]
     .filter((value): value is string => Boolean(value));
   const fiscalDocumentIds = [optionalString(raw.fiscalDocId), optionalString(raw.fiscalDocumentId)]
     .filter((value): value is string => Boolean(value));
   return {
-    ...(optionalString(raw.operationId) ? { operationId: optionalString(raw.operationId) } : {}),
+    ...(optionalString(raw.commercialOperationId) || optionalString(raw.operationId)
+      ? { operationId: optionalString(raw.commercialOperationId) ?? optionalString(raw.operationId) }
+      : {}),
     transactionIds: [...new Set(transactionIds)],
     stockMovementIds: stringArray(raw.stockMovementIds),
     couponRedemptionIds: stringArray(raw.couponRedemptionIds),
@@ -156,7 +163,8 @@ export function adaptSaleToCommercialV2(rawInput: unknown): CommercialDocumentV2
     allocationId: `${sale.id}:payment:${index + 1}`,
     method: paymentMethod(payment.method),
     amountCents: reaisToCents(payment.amount),
-    status: sale.status === 'finalizada' ? 'paid' as const
+    status: payment.status === 'pending' || payment.status === 'unpaid' ? 'pending' as const
+      : sale.status === 'finalizada' ? 'paid' as const
       : sale.status === 'cancelada' ? 'refunded' as const
         : 'pending' as const,
     ...(payment.installments ? { installments: payment.installments } : {}),

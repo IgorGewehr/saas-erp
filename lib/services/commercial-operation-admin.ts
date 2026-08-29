@@ -185,7 +185,30 @@ export function commercialOperationId(
 }
 
 export function commercialRequestFingerprint(request: CommercialOperationRequest): string {
-  return hash(JSON.stringify(stableValue(request)));
+  // Datas e saldos disponíveis são snapshots voláteis. Eles não podem fazer um
+  // retry da mesma intenção parecer outro checkout depois que o próprio estoque
+  // já foi baixado. Preço, linhas, quantidades, pagamentos e documento continuam
+  // participando integralmente da identidade.
+  const quote = {
+    ...request.quote,
+    quotedAt: undefined,
+    lines: request.quote.lines.map((line) => ({
+      ...line,
+      stockRequirements: line.stockRequirements.map((requirement) => ({
+        ...requirement,
+        available: undefined,
+      })),
+    })),
+    // A disponibilidade global e a lista de faltas são derivadas dos mesmos
+    // requisitos e do saldo instantâneo; ambas podem mudar após a própria baixa.
+    availability: undefined,
+  };
+  const document = {
+    ...request.document,
+    createdAt: undefined,
+    updatedAt: undefined,
+  };
+  return hash(JSON.stringify(stableValue({ ...request, quote, document })));
 }
 
 export function buildCommercialOperationEffectIds(
@@ -821,7 +844,13 @@ export async function runCommercialOperationAdmin({
   failurePolicy,
 }: RunCommercialOperationAdminInput): Promise<RunCommercialOperationResult> {
   const identity = buildCommercialOperationIdentity(rawRequest);
-  if (!identity.request.quote.availability.available) throw new CommercialOperationUnavailableError();
+  if (!identity.request.quote.availability.available) {
+    // Um replay pode recalcular a disponibilidade depois que a própria operação
+    // baixou o saldo. Nesse caso a intenção persistida vence; sem operação prévia,
+    // a indisponibilidade continua sendo rejeitada antes de qualquer escrita.
+    const existing = await db.collection('commercialOperations').doc(identity.operationId).get();
+    if (!existing.exists) throw new CommercialOperationUnavailableError();
+  }
   if (identity.request.benefits.length > 0 && !handlers.reserveBenefits) {
     throw new CommercialOperationConfigurationError('Benefícios exigem um handler idempotente de reserva.');
   }
@@ -840,25 +869,43 @@ export async function runCommercialOperationAdmin({
   if (claimed.replayed) {
     return { ...CommercialOperationResultSchema.parse(claimed.operation.result), replayed: true };
   }
+  if (!claimed.operation.request.quote.availability.available) {
+    await failCheckpoint({
+      db,
+      operationId: identity.operationId,
+      leaseToken,
+      checkpoint: 'input_validated',
+      cause: new CommercialOperationUnavailableError(),
+      now: nowFactory(),
+      policy: 'retry',
+    });
+    throw new CommercialOperationUnavailableError();
+  }
+
+  // Em retomadas, a requisição persistida é a autoridade. Assim uma nova leitura
+  // de catálogo/saldo não reconstrói os efeitos ou timestamps da intenção original.
+  const executionRequest = claimed.operation.request;
+  const executionEffectIds = claimed.operation.effectIds;
+  const executionFingerprint = claimed.operation.requestFingerprint;
 
   writeStructuredOperationLog('info', {
     event: 'commercial.operation.claimed',
-    businessId: identity.request.businessId,
+    businessId: executionRequest.businessId,
     correlationId: identity.operationId,
     operationId: identity.operationId,
     idempotencyKey: identity.request.idempotencyKey,
     status: 'running',
-    details: { attempt: claimed.operation.attempts, sourceType: identity.request.sourceType, channel: identity.request.channel },
+    details: { attempt: claimed.operation.attempts, sourceType: executionRequest.sourceType, channel: executionRequest.channel },
   });
 
   let operation = claimed.operation;
   const context: CommercialOperationHandlerContext = {
     db,
     operationId: identity.operationId,
-    requestFingerprint: identity.requestFingerprint,
-    request: identity.request,
-    effectIds: identity.effectIds,
-    documentId: identity.effectIds.documentId,
+    requestFingerprint: executionFingerprint,
+    request: executionRequest,
+    effectIds: executionEffectIds,
+    documentId: executionEffectIds.documentId,
   };
 
   const execute = async <T>(
@@ -885,7 +932,7 @@ export async function runCommercialOperationAdmin({
     try {
       writeStructuredOperationLog('info', {
         event: 'commercial.checkpoint.started',
-        businessId: identity.request.businessId,
+        businessId: executionRequest.businessId,
         correlationId: identity.operationId,
         operationId: identity.operationId,
         idempotencyKey: identity.request.idempotencyKey,
@@ -899,7 +946,7 @@ export async function runCommercialOperationAdmin({
       });
       writeStructuredOperationLog('info', {
         event: 'commercial.checkpoint.completed',
-        businessId: identity.request.businessId,
+        businessId: executionRequest.businessId,
         correlationId: identity.operationId,
         operationId: identity.operationId,
         idempotencyKey: identity.request.idempotencyKey,
@@ -914,7 +961,7 @@ export async function runCommercialOperationAdmin({
       });
       writeStructuredOperationLog('error', {
         event: 'commercial.checkpoint.failed',
-        businessId: identity.request.businessId,
+        businessId: executionRequest.businessId,
         correlationId: identity.operationId,
         operationId: identity.operationId,
         idempotencyKey: identity.request.idempotencyKey,
@@ -925,11 +972,11 @@ export async function runCommercialOperationAdmin({
     }
   };
 
-  await execute('benefits_reserved', identity.request.benefits.length
+  await execute('benefits_reserved', executionRequest.benefits.length
     ? async () => CommercialOperationStepEffectsSchema.parse(await handlers.reserveBenefits!(context) ?? {})
     : null);
 
-  const stockLines = commercialStockLines(identity.request);
+  const stockLines = commercialStockLines(executionRequest);
   const stock = await execute('stock_applied', stockLines.length
     ? async () => applyCommercialStock(context)
     : null) as CommercialStockEffect | undefined;
@@ -994,12 +1041,12 @@ export async function runCommercialOperationAdmin({
 
   writeStructuredOperationLog('info', {
     event: 'commercial.operation.completed',
-    businessId: identity.request.businessId,
+    businessId: executionRequest.businessId,
     correlationId: identity.operationId,
     operationId: identity.operationId,
     idempotencyKey: identity.request.idempotencyKey,
     status: 'completed',
-    details: { documentCollection: identity.request.target.collection, documentId: identity.effectIds.documentId },
+    details: { documentCollection: executionRequest.target.collection, documentId: executionEffectIds.documentId },
   });
   return { ...CommercialOperationResultSchema.parse(operation.result), replayed: false };
 }

@@ -122,6 +122,33 @@ describe('M02.2 — contrato de commercialOperations', () => {
     expect(other.effectIds.documentId).not.toBe(first.effectIds.documentId);
   });
 
+  it('ignora snapshots voláteis no replay, mas detecta mudança comercial real', () => {
+    const first = buildCommercialOperationIdentity(request());
+    const replayRequest = structuredClone(first.request);
+    replayRequest.quote.quotedAt = '2026-08-30T10:00:00.000Z';
+    replayRequest.quote.lines[0].stockRequirements[0].available = 3;
+    replayRequest.quote.availability.available = false;
+    replayRequest.quote.availability.shortages = [{
+      ...replayRequest.quote.lines[0].stockRequirements[0],
+      available: 0,
+    }];
+    replayRequest.document.createdAt = '2026-08-30T10:00:00.000Z';
+    replayRequest.document.updatedAt = '2026-08-30T10:00:00.000Z';
+
+    const replay = buildCommercialOperationIdentity(replayRequest);
+    const changed = buildCommercialOperationIdentity(request({
+      document: {
+        businessId: 'biz1',
+        status: 'finalizada',
+        total: 10,
+        notes: 'intenção comercial diferente',
+      },
+    }));
+
+    expect(replay.requestFingerprint).toBe(first.requestFingerprint);
+    expect(changed.requestFingerprint).not.toBe(first.requestFingerprint);
+  });
+
   it('não aceita checkpoint parcial como operação concluída', () => {
     const identity = buildCommercialOperationIdentity(request());
     expect(CommercialOperationSchema.safeParse({

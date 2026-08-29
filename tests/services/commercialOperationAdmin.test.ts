@@ -17,7 +17,11 @@ import {
   runCommercialOperationAdmin,
 } from '@/lib/services/commercial-operation-admin';
 
-interface FakeRef { id: string; _coll: string }
+interface FakeRef {
+  id: string;
+  _coll: string;
+  get: () => Promise<{ id: string; exists: boolean; data: () => Record<string, unknown> | undefined }>;
+}
 interface FakeQuery {
   _coll: string;
   _filters: Array<{ field: string; expected: unknown }>;
@@ -49,7 +53,17 @@ function makeFakeDb(initial: Record<string, Record<string, unknown>> = {}) {
         limit() { return makeQuery(filters); },
       });
       return {
-        doc(id: string): FakeRef { return { id, _coll: coll }; },
+        doc(id: string): FakeRef {
+          const ref: FakeRef = {
+            id,
+            _coll: coll,
+            async get() {
+              const data = documents.get(`${coll}/${id}`);
+              return { id, exists: Boolean(data), data: () => data ? clone(data) : undefined };
+            },
+          };
+          return ref;
+        },
         where(field: string, operator: string, expected: unknown) {
           return makeQuery([]).where(field, operator, expected);
         },
@@ -237,6 +251,27 @@ describe('M02.2 — coordenador comercial recuperável', () => {
     expect(fake.list('sales')).toHaveLength(1);
     expect(fake.list('stockMovements')).toHaveLength(1);
     expect(fake.list('domainEvents')).toHaveLength(1);
+  });
+
+  it('replay usa a intenção persistida quando a própria baixa torna a nova cotação indisponível', async () => {
+    const item = product({ currentStock: 2 });
+    const fake = makeFakeDb(seedProduct(item));
+    const request = operationRequest(item);
+    const first = await runCommercialOperationAdmin({ db: fake.db, request, now: () => NOW });
+    const unavailableReplay = structuredClone(request);
+    unavailableReplay.quote.quotedAt = '2026-08-30T10:00:00.000Z';
+    unavailableReplay.quote.lines[0].stockRequirements[0].available = 0;
+    unavailableReplay.quote.availability = {
+      available: false,
+      shortages: [structuredClone(unavailableReplay.quote.lines[0].stockRequirements[0])],
+    };
+
+    const replay = await runCommercialOperationAdmin({ db: fake.db, request: unavailableReplay, now: () => NOW });
+
+    expect(replay).toMatchObject({ operationId: first.operationId, replayed: true });
+    expect(fake.get('products/p1')?.currentStock).toBe(0);
+    expect(fake.list('stockMovements')).toHaveLength(1);
+    expect(fake.list('sales')).toHaveLength(1);
   });
 
   it('retoma queda após o estoque usando o replay do núcleo M01', async () => {

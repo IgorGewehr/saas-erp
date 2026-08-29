@@ -3,7 +3,13 @@ import { CreateSaleWithSideEffectsInputSchema } from '@/lib/contracts/api/servic
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { ROLE_HIERARCHY, type UserRole } from '@/lib/types';
 import { createSaleWithSideEffects } from '@/lib/services/sales-server';
-import { IdempotencyConflictError } from '@/lib/contracts/_runtime/idempotency';
+import { adminDb } from '@/lib/config/firebaseAdmin';
+import {
+  CommercialOperationError,
+  CommercialOperationIdempotencyConflictError,
+  CommercialOperationInProgressError,
+} from '@/lib/services/commercial-operation-admin';
+import { CommercialQuoteError } from '@/lib/services/commercial-quote';
 import {
   InsufficientStockError,
   StockIdempotencyConflictError,
@@ -37,11 +43,28 @@ export async function POST(request: NextRequest) {
       operatorId: auth.uid,
       operatorName: auth.name,
       idempotencyKey: headerKey ?? parsed.data.idempotencyKey,
+    }, adminDb, {
+      channel: 'pdv',
+      actorType: 'user',
+      canApplyManualDiscount: (ROLE_HIERARCHY[auth.role as UserRole] ?? 0) >= ROLE_HIERARCHY.manager,
+      commissionRate: auth.commissionRate,
     });
     return NextResponse.json({ ok: true, data: result });
   } catch (cause) {
-    if (cause instanceof IdempotencyConflictError || cause instanceof StockIdempotencyConflictError) {
+    if (
+      cause instanceof CommercialOperationIdempotencyConflictError
+      || cause instanceof CommercialOperationInProgressError
+      || cause instanceof StockIdempotencyConflictError
+    ) {
       return error(cause.message, 409);
+    }
+    if (cause instanceof CommercialQuoteError) return error(cause.message, cause.status);
+    if (cause instanceof CommercialOperationError) {
+      const status = cause.code === 'TENANT_MISMATCH' ? 403
+        : cause.code === 'CLIENT_NOT_FOUND' || cause.code === 'SALE_RESULT_NOT_FOUND' ? 404
+          : cause.code === 'COMMERCIAL_QUOTE_UNAVAILABLE' ? 409
+            : 400;
+      return error(cause.message, status);
     }
     if (cause instanceof InsufficientStockError) {
       return NextResponse.json(

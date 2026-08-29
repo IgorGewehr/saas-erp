@@ -18,6 +18,7 @@ import {
   SaleSchema,
   SaleStatusSchema,
 } from '../../domain/sale';
+import { SelectedModifierSchema } from '../../domain/deliveryOrder';
 
 // ─── Request input para criação ─────────────────────────────────────────────
 // Mais permissivo que SaleSchema (cliente não envia id, createdAt, totais derivados).
@@ -26,10 +27,14 @@ import {
 const SaleItemInputSchema = z.object({
   productId: z.string().optional(),
   serviceId: z.string().optional(),
+  variantId: z.string().optional(),
   description: z.string().min(1).max(300),
   quantity: z.number().positive(),
   unitPrice: z.number().nonnegative(),
   discount: z.number().nonnegative().default(0),
+  basePrice: z.number().nonnegative().optional(),
+  selectedModifiers: z.array(SelectedModifierSchema).optional(),
+  notes: z.string().max(500).optional(),
   total: z.number().nonnegative().optional(), // server pode recomputar
 }).superRefine((it, ctx) => {
   if (!it.productId && !it.serviceId) {
@@ -43,6 +48,7 @@ export const CreateSaleBodySchema = z.object({
   items: z.array(SaleItemInputSchema).min(1),
   payments: z.array(PaymentSchema).min(1),
   discount: z.number().nonnegative().default(0),
+  discountReason: z.string().min(3).max(300).optional(),
   tip: z.number().nonnegative().optional(),
   status: SaleStatusSchema.default('finalizada'),
   notes: z.string().max(2000).optional(),
