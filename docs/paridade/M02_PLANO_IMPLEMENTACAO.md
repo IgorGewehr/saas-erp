@@ -191,13 +191,15 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 ### M02.1 — Contratos, cotação e preço autoritativo
 
-- [ ] Criar contratos V2 compartilhados para linha, preço, desconto, alocação de pagamento e referências de efeitos.
-- [ ] Criar normalizadores/adaptadores compatíveis para os três documentos atuais.
-- [ ] Implementar cotação server-side por produto, serviço, variação, modificador, zona e canal.
-- [ ] Validar disponibilidade, tenant, status ativo e permissão de desconto.
-- [ ] Recalcular todos os totais no servidor e rejeitar preço obsoleto/adulterado com resposta acionável.
-- [ ] Consolidar o contrato real de `/api/orders/public` e usá-lo na fronteira.
-- [ ] Definir política única de arredondamento em centavos.
+- [x] Criar contratos V2 compartilhados para linha, preço, desconto, alocação de pagamento e referências de efeitos.
+- [x] Criar normalizadores/adaptadores compatíveis para os três documentos atuais.
+- [x] Implementar cotação server-side por produto, serviço, variação, modificador, zona e canal.
+- [x] Validar disponibilidade, tenant, status ativo e permissão de desconto.
+- [x] Recalcular todos os totais no servidor e rejeitar preço obsoleto/adulterado com resposta acionável.
+- [x] Consolidar o contrato real de `/api/orders/public` e usá-lo na fronteira.
+- [x] Definir política única de arredondamento em centavos.
+
+**M02.1 concluída:** contratos comerciais V2, adaptadores de leitura para as três coleções, cotação autenticada em centavos e fronteira pública consolidada. A cotação não escreve nem reserva estoque; os canais serão migrados somente após o coordenador recuperável. Detalhes em `docs/paridade/M02_CONTRATOS_COTACAO.md`.
 
 **Saída:** qualquer canal obtém o mesmo total autoritativo para a mesma cesta e contexto.
 

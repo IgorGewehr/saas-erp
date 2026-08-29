@@ -38,9 +38,9 @@ describe('M02.0 — fixtures dos cinco canais comerciais', () => {
     expect(CreateSaleWithSideEffectsInputSchema.safeParse(request).success).toBe(true);
   });
 
-  it('caracteriza cardápio público e congela a divergência do contrato HTTP atual', () => {
+  it('caracteriza cardápio público com o contrato HTTP consolidado na M02.1', () => {
     expect(DeliveryOrderSchema.safeParse(publicFixture.document).success).toBe(true);
-    expect(CreatePublicOrderBodySchema.safeParse(publicFixture.request).success).toBe(false);
+    expect(CreatePublicOrderBodySchema.safeParse(publicFixture.request).success).toBe(true);
   });
 
   it('caracteriza pedido manual e registra que variantId ainda é descartado pelo contrato', () => {

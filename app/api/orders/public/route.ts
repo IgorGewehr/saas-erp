@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { NextResponse, type NextRequest } from 'next/server';
+import { CreatePublicOrderBodySchema, type CreatePublicOrderBody } from '@/contracts/api/orders/public';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { checkRateLimit, getClientIp, rateLimitHeaders } from '@/lib/utils/rateLimit';
@@ -19,35 +20,10 @@ import { redeemGiftCardAdmin, loadGiftCardByCode, checkGiftCardEligibility } fro
 import { formatCurrency } from '@/lib/utils/format';
 import type {
   Business,
-  DeliveryOrder, DeliveryOrderItem, DeliveryOrderAddress,
-  DeliveryOrderPaymentMethod, DeliveryType, SelectedModifier,
+  DeliveryOrder, DeliveryOrderItem,
+  DeliveryType,
   Product,
 } from '@/lib/types';
-
-interface PublicOrderPayload {
-  businessId: string;
-  clientName: string;
-  clientPhone?: string;
-  items: Array<{
-    productId: string;
-    productName: string;
-    quantity: number;
-    unitPrice: number;
-    basePrice?: number;
-    total: number;
-    notes?: string;
-    imageUrl?: string;
-    selectedModifiers?: SelectedModifier[];
-  }>;
-  deliveryType: DeliveryType;
-  deliveryAddress?: DeliveryOrderAddress;
-  deliveryFee?: number;
-  paymentMethod?: DeliveryOrderPaymentMethod;
-  changeFor?: number;
-  customerNotes?: string;
-  couponCode?: string;
-  giftCardCode?: string;
-}
 
 const PRICE_TOLERANCE = 0.01;
 const RATE_LIMIT = 10;        // 10 requests
@@ -78,34 +54,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: PublicOrderPayload;
+  let rawBody: unknown;
   try {
-    body = await req.json();
+    rawBody = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
+
+  const parsedBody = CreatePublicOrderBodySchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return NextResponse.json(
+      { error: 'Dados do pedido inválidos', details: parsedBody.error.flatten() },
+      { status: 400 },
+    );
+  }
+  const body: CreatePublicOrderBody = parsedBody.data;
 
   // `deliveryFee` do payload é IGNORADO de propósito: a taxa é recomputada
   // server-side contra a zona de entrega resolvida (não se confia no client).
   const { businessId, clientName, clientPhone, items, deliveryType, deliveryAddress,
     paymentMethod, changeFor, customerNotes, couponCode, giftCardCode } = body;
-
-  if (!businessId || !clientName?.trim() || !items?.length || !deliveryType) {
-    return NextResponse.json({ error: 'Campos obrigatórios ausentes' }, { status: 400 });
-  }
-
-  if (deliveryType === 'entrega') {
-    const addr = deliveryAddress;
-    const missing = !addr
-      || !addr.logradouro?.trim()
-      || !addr.numero?.trim()
-      || !addr.bairro?.trim()
-      || !addr.municipio?.trim()
-      || !addr.uf?.trim();
-    if (missing) {
-      return NextResponse.json({ error: 'Endereço de entrega incompleto' }, { status: 400 });
-    }
-  }
 
   // ── Idempotência (R3/P2.17) ─────────────────────────────────────────────────
   // Retry/double-tap em rede móvel reentregaria o mesmo carrinho → pedido

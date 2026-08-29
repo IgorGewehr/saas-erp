@@ -1,59 +1,75 @@
 /**
- * lib/contracts/api/orders/public.ts — POST /api/orders/public
+ * Contrato real de POST /api/orders/public.
  *
- * Endpoint anônimo (rate-limited por IP, sem auth) que recebe pedido do
- * cardápio online. Server re-computa preços (tolerância 0.01) e valida modifiers
- * contra ProductModifierGroup do produto.
- *
- * SDD invariant: cliente NÃO pode forçar preço final — server sempre recomputa.
- *                modifiers selecionados precisam existir em Product.modifierGroups.
+ * Esta fronteira permanece compatível com o cardápio atual. Os preços enviados
+ * pelo navegador são apenas valores esperados: a rota relê catálogo,
+ * modificadores, zona e benefícios antes de persistir o pedido.
  */
 
 import { z } from 'zod';
-import { ErrorEnvelopeSchema, successEnvelope } from '../_envelope';
-import { DeliveryOrderAddressSchema, DeliveryOrderSchema, DeliveryTypeSchema, SelectedModifierSchema } from '../../domain/deliveryOrder';
+import {
+  DeliveryOrderAddressSchema,
+  DeliveryOrderPaymentMethodSchema,
+  DeliveryTypeSchema,
+  SelectedModifierSchema,
+} from '../../domain/deliveryOrder';
 
-const PublicOrderItemSchema = z.object({
+export const PublicOrderItemSchema = z.object({
   productId: z.string().min(1),
+  productName: z.string().min(1).max(200),
   quantity: z.number().int().positive().max(99),
+  unitPrice: z.number().nonnegative(),
+  basePrice: z.number().nonnegative().optional(),
+  total: z.number().nonnegative(),
   notes: z.string().max(500).optional(),
-  selectedModifiers: z.array(SelectedModifierSchema).optional(),
+  imageUrl: z.string().url().optional(),
+  selectedModifiers: z.array(SelectedModifierSchema).max(20).optional(),
 });
 
 export const CreatePublicOrderBodySchema = z.object({
-  businessSlug: z.string().min(1).max(100),
-  clientName: z.string().min(1).max(200),
-  clientPhone: z.string().min(8).max(20),
+  businessId: z.string().min(1),
+  clientName: z.string().trim().min(1).max(200),
+  clientPhone: z.string().min(8).max(30).optional(),
   items: z.array(PublicOrderItemSchema).min(1).max(50),
   deliveryType: DeliveryTypeSchema,
   deliveryAddress: DeliveryOrderAddressSchema.optional(),
-  paymentMethod: z.enum(['dinheiro', 'cartao_credito', 'cartao_debito', 'pix', 'voucher', 'outro']).optional(),
+  /** Valor informativo do cliente; é ignorado e recalculado pela rota. */
+  deliveryFee: z.number().nonnegative().optional(),
+  paymentMethod: z.union([
+    DeliveryOrderPaymentMethodSchema,
+    z.enum(['pix_online', 'cartao_online']),
+  ]).optional(),
   changeFor: z.number().nonnegative().optional(),
   customerNotes: z.string().max(2000).optional(),
-  /**
-   * Cliente PODE enviar preço esperado (informativo). Server re-computa e
-   * REJEITA se delta > R$0.01 — evita confusão se preço mudou no servidor
-   * desde o load da página.
-   */
-  clientExpectedTotal: z.number().nonnegative().optional(),
-}).superRefine((b, ctx) => {
-  if (b.deliveryType === 'entrega' && !b.deliveryAddress) {
-    ctx.addIssue({ code: 'custom', message: 'deliveryType=entrega exige deliveryAddress', path: ['deliveryAddress'] });
+  couponCode: z.string().trim().min(1).max(100).optional(),
+  giftCardCode: z.string().trim().min(1).max(100).optional(),
+}).superRefine((body, ctx) => {
+  if (body.deliveryType !== 'entrega') return;
+  const address = body.deliveryAddress;
+  if (!address) {
+    ctx.addIssue({ code: 'custom', message: 'Entrega exige endereço.', path: ['deliveryAddress'] });
+    return;
+  }
+  for (const field of ['logradouro', 'numero', 'bairro', 'municipio', 'uf'] as const) {
+    if (!address[field]?.trim()) {
+      ctx.addIssue({ code: 'custom', message: `Endereço exige ${field}.`, path: ['deliveryAddress', field] });
+    }
   }
 });
 
+export const CreatePublicOrderSuccessSchema = z.object({
+  orderId: z.string().min(1),
+  orderNumber: z.number().int().nonnegative(),
+  trackingToken: z.string().min(1),
+  total: z.number().nonnegative(),
+  discount: z.number().nonnegative(),
+  giftCardAmount: z.number().nonnegative(),
+});
+
 export const CreatePublicOrderResponseSchema = z.union([
-  successEnvelope(z.object({
-    orderId: z.string(),
-    orderNumber: z.number().int().nonnegative(),
-    /** Capability token opaco: cliente anônimo acompanha/paga só o próprio
-     *  pedido (rotas /status, /pay-pix, /pay-card). Nunca em projeção pública. */
-    trackingToken: z.string(),
-    status: DeliveryOrderSchema.shape.status,
-    estimatedDeliveryAt: z.string().optional(),
-    total: z.number().nonnegative(),
-  })),
-  ErrorEnvelopeSchema,
+  CreatePublicOrderSuccessSchema,
+  z.object({ error: z.string().min(1) }),
 ]);
 
 export type CreatePublicOrderBody = z.infer<typeof CreatePublicOrderBodySchema>;
+export type CreatePublicOrderResponse = z.infer<typeof CreatePublicOrderResponseSchema>;
