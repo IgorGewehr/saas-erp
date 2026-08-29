@@ -480,6 +480,13 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Checkpoints, leases, fingerprints e resultados do coordenador M02.
+    // Contêm detalhes internos de efeitos comerciais e são acessados somente
+    // por rotas com Admin SDK; o navegador nunca cria ou altera operações.
+    match /commercialOperations/{operationId} {
+      allow read, write: if false;
+    }
+
     // Saldos por lote são legíveis pelos operadores do tenant, mas somente o
     // núcleo transacional Admin SDK pode criar ou alterar quantidades.
     match /stockLots/{lotId} {

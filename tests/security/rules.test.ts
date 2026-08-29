@@ -179,6 +179,13 @@ describe('Firestore rules file coverage', () => {
     expect(stockLotBlock).toContain('allow write: if false');
   });
 
+  it('reserva commercialOperations ao coordenador server-side', () => {
+    const operationBlock = rulesContent.match(
+      /match \/commercialOperations\/\{operationId\} \{[\s\S]*?\n    \}/,
+    )?.[0];
+    expect(operationBlock).toContain('allow read, write: if false');
+  });
+
   it('reserva cadastro, identificadores e exclusão de produtos ao servidor', () => {
     const productBlock = rulesContent.match(
       /match \/products\/\{productId\} \{[\s\S]*?\n    \}/,

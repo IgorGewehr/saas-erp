@@ -11,7 +11,7 @@ const StockOperationLineSchema = z.object({
 });
 
 const StockSourceDocumentSchema = z.object({
-  collection: z.enum(['sales', 'deliveryOrders', 'purchaseNotes', 'appointments', 'services']),
+  collection: z.enum(['sales', 'deliveryOrders', 'orders', 'purchaseNotes', 'appointments', 'services']),
   id: z.string().min(1),
   existence: z.enum(['required', 'if-present']).optional(),
 });

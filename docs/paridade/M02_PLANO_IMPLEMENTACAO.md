@@ -6,7 +6,7 @@
 >
 > Referência funcional: Gestão Raiz
 >
-> Estado desta rodada: plano aprovado tecnicamente; nenhuma regra de produção alterada
+> Estado desta rodada: M02.0, M02.1 e M02.2 concluídas em código; próxima etapa M02.3
 
 ## 1. Resultado esperado
 
@@ -205,13 +205,15 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 ### M02.2 — Coordenador de operação comercial
 
-- [ ] Criar `commercialOperations` com tenant, origem, chave idempotente, checkpoints, erros e estado de compensação.
-- [ ] Definir IDs determinísticos para documento comercial, movimentos, transações e ledgers.
-- [ ] Integrar o núcleo M01 sem reconstruir efeitos já executados.
-- [ ] Persistir IDs de movimentos e alocações de lote no resultado comercial.
-- [ ] Implementar retomada segura após falha em cada checkpoint.
-- [ ] Emitir logs estruturados e eventos com o mesmo `operationId`.
-- [ ] Impedir que um replay altere preço, estoque ou dinheiro novamente.
+- [x] Criar `commercialOperations` com tenant, origem, chave idempotente, checkpoints, erros e estado de compensação.
+- [x] Definir IDs determinísticos para documento comercial, movimentos, transações e ledgers.
+- [x] Integrar o núcleo M01 sem reconstruir efeitos já executados.
+- [x] Persistir IDs de movimentos e alocações de lote no resultado comercial.
+- [x] Implementar retomada segura após falha em cada checkpoint.
+- [x] Emitir logs estruturados e eventos com o mesmo `operationId`.
+- [x] Impedir que um replay altere preço, estoque ou dinheiro novamente.
+
+**M02.2 concluída:** coordenador server-side com lease, checkpoints, fingerprint, IDs determinísticos, integração exata ao estoque M01, adaptadores idempotentes de efeitos, evento correlacionado e estado explícito de compensação. Nenhum canal foi migrado antecipadamente. Detalhes em `docs/paridade/M02_COORDENADOR_OPERACOES.md`.
 
 **Saída:** uma operação multi-etapas observável, idempotente e recuperável.
 

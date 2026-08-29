@@ -58,6 +58,7 @@ export interface StockOperationLine {
 export type StockSourceCollection =
   | 'sales'
   | 'deliveryOrders'
+  | 'orders'
   | 'purchaseNotes'
   | 'appointments'
   | 'services';

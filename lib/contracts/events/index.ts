@@ -211,6 +211,23 @@ export const PurchaseImportedSchema = EventEnvelopeBase.extend({
 });
 
 /**
+ * Coordenador M02 concluiu todos os checkpoints de uma operação comercial.
+ * AUDIT-ONLY nesta fase: os efeitos já foram confirmados de forma síncrona e
+ * idempotente antes deste evento determinístico ser gravado.
+ */
+export const CommercialOperationCompletedSchema = EventEnvelopeBase.extend({
+  type: z.literal('commercial.operationCompleted'),
+  operationId: z.string().min(1),
+  sourceType: z.enum(['sale', 'deliveryOrder', 'order']),
+  sourceId: z.string().min(1),
+  documentCollection: z.enum(['sales', 'deliveryOrders', 'orders']),
+  documentId: z.string().min(1),
+  totalCents: z.number().int().nonnegative(),
+  stockMovementIds: z.array(z.string().min(1)),
+  transactionIds: z.array(z.string().min(1)),
+});
+
+/**
  * Vínculo financeiro da compra concluído. AUDIT-ONLY: a despesa e o eventual
  * débito bancário são gravados de forma síncrona no núcleo de compras.
  */
@@ -337,6 +354,7 @@ export const DomainEventSchema = z.discriminatedUnion('type', [
   FormSubmittedSchema,
   BroadcastRepliedSchema,
   SaleFinalizedSchema,
+  CommercialOperationCompletedSchema,
   ClientCreatedSchema,
   DeliveryOrderConfirmedSchema,
   PurchaseImportedSchema,
@@ -359,6 +377,7 @@ export const DOMAIN_EVENT_TYPES = [
   'form.submitted',
   'broadcast.replied',
   'sale.finalized',
+  'commercial.operationCompleted',
   'client.created',
   'deliveryOrder.confirmed',
   'purchase.imported',

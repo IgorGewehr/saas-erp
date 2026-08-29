@@ -57,7 +57,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
 - [ ] **M02 — Vendas, PDV, Pedidos e Cardápio**
-  - Status: `Em implementação — M02.0 e M02.1 concluídas; próxima etapa M02.2`
+  - Status: `Em implementação — M02.0 a M02.2 concluídas; próxima etapa M02.3`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.
@@ -482,8 +482,8 @@ O inventário, o diagnóstico e o plano completo estão em `docs/paridade/M02_PL
 
 - [x] **M02.0 — Baseline e caracterização** — mapa, fixtures, testes e auditoria read-only concluídos.
 - [x] **M02.1 — Contratos, cotação e preço autoritativo** — contratos V2, adaptadores legados, preço em centavos e fronteiras server-side concluídos.
-- [ ] **M02.2 — Coordenador de operação comercial** — próxima etapa.
-- [ ] **M02.3 — PDV e venda de serviços**.
+- [x] **M02.2 — Coordenador de operação comercial** — checkpoints, replay, efeitos determinísticos, estoque M01 e compensação concluídos.
+- [ ] **M02.3 — PDV e venda de serviços** — próxima etapa.
 - [ ] **M02.4 — Cupons, gift cards e fidelidade**.
 - [ ] **M02.5 — Delivery, cardápio e agente**.
 - [ ] **M02.6 — Venda B2B e condicional**.
@@ -519,3 +519,4 @@ Decisões estruturais da M02:
 | 28/08/2026 | Tratar preço do cliente, contrato público divergente e ausência comercial de variações como lacunas explícitas do baseline M02 | Impede que a migração altere comportamento sem teste ou esconda riscos já existentes |
 | 29/08/2026 | Calcular a cotação comercial em centavos e aceitar apenas IDs/quantidades como intenção do cliente | Elimina confiança em snapshots adulteráveis e cria resultado uniforme para todos os canais |
 | 29/08/2026 | Manter a cotação sem escrita e adiar a migração dos canais até existir `commercialOperations` | Evita trocar os escritores antes de haver checkpoints, replay seguro e recuperação de falhas |
+| 29/08/2026 | Coordenar operações comerciais por checkpoints e IDs determinísticos, mantendo os documentos legados por canal | Permite retomar falhas sem repetir estoque ou dinheiro e prepara uma migração gradual começando pelo PDV |
