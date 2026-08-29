@@ -57,10 +57,11 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
 - [ ] **M02 — Vendas, PDV, Pedidos e Cardápio**
-  - Status: `Planejado`
+  - Status: `Em análise — inventário e plano de implementação concluídos; próxima etapa M02.0`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.
+  - Plano detalhado: `docs/paridade/M02_PLANO_IMPLEMENTACAO.md`.
 
 - [ ] **M03 — Financeiro e Conciliação**
   - Status: `Planejado`
@@ -471,6 +472,34 @@ O M02 — Vendas, PDV, Pedidos e Cardápio — só deve iniciar sua implementaç
 - política de estoque negativo;
 - compatibilidade dos dados legados.
 
+Essas dependências estão concluídas em código na M01. O aceite operacional da M01 em homologação continua pendente e não será confundido com conclusão funcional da M02.
+
+---
+
+# Acompanhamento — M02: Vendas, PDV, Pedidos e Cardápio
+
+O inventário, o diagnóstico e o plano completo estão em `docs/paridade/M02_PLANO_IMPLEMENTACAO.md`.
+
+- [ ] **M02.0 — Baseline e caracterização** — próxima etapa.
+- [ ] **M02.1 — Contratos, cotação e preço autoritativo**.
+- [ ] **M02.2 — Coordenador de operação comercial**.
+- [ ] **M02.3 — PDV e venda de serviços**.
+- [ ] **M02.4 — Cupons, gift cards e fidelidade**.
+- [ ] **M02.5 — Delivery, cardápio e agente**.
+- [ ] **M02.6 — Venda B2B e condicional**.
+- [ ] **M02.7 — Cancelamento, devolução e reembolso**.
+- [ ] **M02.8 — Experiência e desempenho comercial**.
+- [ ] **M02.9 — Migração, regras e observabilidade**.
+- [ ] **M02.10 — Testes, homologação e aceite**.
+
+Decisões estruturais da M02:
+
+- preservar `sales`, `deliveryOrders` e `orders`, sem merge destrutivo;
+- compartilhar contratos, cotação, coordenador e efeitos server-side;
+- migrar por canal, começando pelo PDV;
+- reverter estoque pelos movimentos/lotes originais, não pelo catálogo mutável;
+- preservar cardápio, modificadores, cupons, gift cards, fidelidade e Mercado Pago do AEVO.
+
 ---
 
 ## Histórico de decisões
@@ -485,3 +514,5 @@ O M02 — Vendas, PDV, Pedidos e Cardápio — só deve iniciar sua implementaç
 | 28/08/2026 | Não inventar validade quando a NF-e não a informa | Produto com `trackExpiry` exige uma data real; ausência vira pendência operacional |
 | 28/08/2026 | Usar FEFO apenas para lotes válidos e devolver cancelamentos ao lote original | Evita vender vencidos e mantém produto, lote e ledger conciliados |
 | 28/08/2026 | Exigir migração M01 por tenant, com dry-run padrão, confirmação textual e backup reversível | Evita varredura global, sobrescrita de conflitos e publicação prematura das regras restritivas |
+| 28/08/2026 | Preservar `sales`, `deliveryOrders` e `orders` na M02, unificando regras por um núcleo comercial e adaptadores | Evita migração destrutiva e mantém as diferenças reais entre PDV, delivery e B2B |
+| 28/08/2026 | Migrar a M02 por canal, começando pelo PDV | O PDV já possui entrada server-side e oferece a menor superfície para validar o núcleo comum |
