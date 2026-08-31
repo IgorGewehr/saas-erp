@@ -1148,6 +1148,8 @@ export interface Payment {
   cardBrand?: string;
   status?: 'paid' | 'pending' | 'unpaid';
   dueDate?: string;
+  benefitReferenceId?: string;
+  benefitCode?: string;
 }
 
 export interface Sale {
@@ -1175,6 +1177,12 @@ export interface Sale {
   financialStatus?: 'paid' | 'pending' | 'partial' | 'not_applicable';
   stockStatus?: 'applied' | 'not_required';
   fiscalStatus?: string;
+  manualDiscount?: number;
+  couponId?: string;
+  couponCode?: string;
+  couponDiscount?: number;
+  pointsRedeemed?: number;
+  pointsEarned?: number;
   /** FK opcional para o CRMDeal que esta venda concretizou (ROI por deal — P2.10). */
   dealId?: string;
   /** FK opcional para o Appointment que esta venda cobrou (reconciliação agenda↔caixa — P2.10). */

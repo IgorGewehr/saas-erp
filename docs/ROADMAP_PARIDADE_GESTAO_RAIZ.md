@@ -57,7 +57,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
 - [ ] **M02 — Vendas, PDV, Pedidos e Cardápio**
-  - Status: `Em implementação — M02.0 a M02.3 concluídas; próxima etapa M02.4`
+  - Status: `Em implementação — M02.0 a M02.4 concluídas; próxima etapa M02.5`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.

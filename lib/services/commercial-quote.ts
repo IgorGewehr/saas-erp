@@ -71,6 +71,41 @@ export function centsToReais(value: number): number {
   return value / 100;
 }
 
+/** Acrescenta descontos já resolvidos por um serviço server-side (ex.: cupom). */
+export function applyAuthoritativeCommercialDiscounts(
+  quote: CommercialQuote,
+  discounts: Array<{
+    source: 'coupon' | 'campaign' | 'points' | 'other';
+    amountCents: number;
+    referenceId?: string;
+    reason?: string;
+  }>,
+): CommercialQuote {
+  let remainingCents = Math.max(0, quote.pricing.subtotalCents - quote.pricing.discountCents);
+  const applied = discounts.map((discount) => {
+    const amountCents = Math.min(remainingCents, Math.max(0, Math.round(discount.amountCents)));
+    remainingCents -= amountCents;
+    return { ...discount, amountCents };
+  }).filter((discount) => discount.amountCents > 0);
+  const addedCents = applied.reduce((sum, discount) => sum + discount.amountCents, 0);
+  const discountCents = quote.pricing.discountCents + addedCents;
+  return CommercialQuoteSchema.parse({
+    ...quote,
+    pricing: {
+      ...quote.pricing,
+      discountCents,
+      totalCents: Math.max(
+        0,
+        quote.pricing.subtotalCents
+          + quote.pricing.deliveryFeeCents
+          + quote.pricing.tipCents
+          - discountCents,
+      ),
+      discounts: [...quote.pricing.discounts, ...applied],
+    },
+  });
+}
+
 function quoteError(code: CommercialQuoteErrorCode, message: string, status = 400): never {
   throw new CommercialQuoteError(code, message, status);
 }

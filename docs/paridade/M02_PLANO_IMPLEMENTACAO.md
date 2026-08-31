@@ -234,13 +234,15 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 ### M02.4 — Cupons, gift cards e fidelidade
 
-- [ ] Levar resgate e estorno de gift card para ledger server-side determinístico.
-- [ ] Levar débito, ganho e estorno de pontos para ledger server-side determinístico.
-- [ ] Integrar cupons ao mesmo ciclo de reserva, confirmação e liberação.
-- [ ] Impedir saldo negativo ou consumo concorrente além do limite.
-- [ ] Unificar comportamento entre PDV, cardápio, pedido manual e agente.
-- [ ] Tratar desconto manual separadamente, com permissão e motivo auditáveis.
-- [ ] Garantir compensação quando estoque, persistência ou pagamento falhar depois da reserva.
+- [x] Levar resgate e estorno de gift card para ledger server-side determinístico.
+- [x] Levar débito, ganho e estorno de pontos para ledger server-side determinístico.
+- [x] Integrar cupons ao mesmo ciclo de reserva, confirmação e liberação.
+- [x] Impedir saldo negativo ou consumo concorrente além do limite.
+- [x] Unificar comportamento entre PDV, cardápio, pedido manual e agente no núcleo comercial.
+- [x] Tratar desconto manual separadamente, com permissão e motivo auditáveis.
+- [x] Garantir compensação quando estoque, persistência ou pagamento falhar depois da reserva.
+
+**M02.4 concluída:** ledgers determinísticos de cupons, gift cards e fidelidade integrados ao coordenador comercial no checkpoint `benefits_reserved`, confirmados em `downstream_reconciled` e revertidos automaticamente em falhas. Detalhes em `docs/paridade/M02_BENEFICIOS.md`.
 
 **Saída:** benefícios e saldos nunca ficam consumidos sem uma operação comercial correspondente.
 

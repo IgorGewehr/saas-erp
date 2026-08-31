@@ -43,6 +43,9 @@ export const CreateSaleWithSideEffectsInputSchema = z.object({
   clientName: z.string().max(200).optional(),
   items: z.array(SaleItemInputSchema).min(1),
   payments: z.array(PaymentSchema).min(1),
+  couponCode: z.string().min(3).max(32).optional(),
+  /** Valor apenas para detectar preview obsoleto; o desconto real é recalculado. */
+  couponDiscount: z.number().nonnegative().optional(),
   discount: z.number().nonnegative().default(0),
   tip: z.number().nonnegative().optional(),
   status: SaleStatusSchema.default('finalizada'),
@@ -73,7 +76,7 @@ export const CreateSaleWithSideEffectsInputSchema = z.object({
     const itemsTotal = round2(
       s.items.reduce((acc, it) => acc + (it.total ?? it.quantity * it.unitPrice - it.discount), 0),
     );
-    const expectedTotal = round2(Math.max(itemsTotal - s.discount + (s.tip ?? 0), 0));
+    const expectedTotal = round2(Math.max(itemsTotal - s.discount - (s.couponDiscount ?? 0) + (s.tip ?? 0), 0));
     const paid = round2(s.payments.reduce((acc, p) => acc + p.amount, 0));
     if (Math.abs(paid - expectedTotal) > 0.011) {
       ctx.addIssue({

@@ -408,7 +408,7 @@ describe('M02.2 — coordenador comercial recuperável', () => {
     const item = product({ trackStock: false });
     const fake = makeFakeDb(seedProduct(item));
     const request = operationRequest(item, {
-      benefits: [{ intentId: 'coupon-1', type: 'coupon', referenceId: 'coupon-a', amountCents: 100 }],
+      benefits: [{ intentId: 'coupon-1', type: 'coupon', action: 'redeem', referenceId: 'coupon-a', code: 'CUPOM10', amountCents: 100 }],
     });
     let entered!: () => void;
     const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });

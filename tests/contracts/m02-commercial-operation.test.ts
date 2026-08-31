@@ -94,9 +94,9 @@ describe('M02.2 — contrato de commercialOperations', () => {
     const parsed = CommercialOperationRequestSchema.parse(request({
       payments: [{ allocationId: 'pix-1', method: 'pix', amountCents: 1000, status: 'paid' }],
       benefits: [
-        { intentId: 'coupon-1', type: 'coupon', referenceId: 'coupon-a', amountCents: 100 },
-        { intentId: 'gift-1', type: 'gift_card', referenceId: 'gift-a', amountCents: 200 },
-        { intentId: 'points-1', type: 'loyalty_points', amountCents: 50 },
+        { intentId: 'coupon-1', type: 'coupon', action: 'redeem', referenceId: 'coupon-a', code: 'CUPOM10', amountCents: 100 },
+        { intentId: 'gift-1', type: 'gift_card', action: 'redeem', referenceId: 'gift-a', code: 'GIFT100', amountCents: 200 },
+        { intentId: 'points-1', type: 'loyalty_points', action: 'redeem', referenceId: 'client-1', amountCents: 50, quantity: 5, unitAmountCents: 10 },
       ],
       fiscalIntent: { type: 'nfce' },
     }));

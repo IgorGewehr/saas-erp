@@ -27,6 +27,11 @@ import {
   type CommercialStockEffect,
 } from '@/lib/contracts/domain/commercialOperation';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
+import {
+  compensateCommercialBenefitsAdmin,
+  confirmCommercialBenefitsAdmin,
+  reserveCommercialBenefitsAdmin,
+} from '@/lib/services/commercial-benefits-admin';
 import { writeStructuredOperationLog } from '@/lib/services/structured-operation-log';
 
 const DEFAULT_LEASE_MS = 5 * 60 * 1000;
@@ -851,7 +856,8 @@ export async function runCommercialOperationAdmin({
     const existing = await db.collection('commercialOperations').doc(identity.operationId).get();
     if (!existing.exists) throw new CommercialOperationUnavailableError();
   }
-  if (identity.request.benefits.length > 0 && !handlers.reserveBenefits) {
+  const reserveBenefitsHandler = handlers.reserveBenefits ?? reserveCommercialBenefitsAdmin;
+  if (identity.request.benefits.length > 0 && !reserveBenefitsHandler) {
     throw new CommercialOperationConfigurationError('Benefícios exigem um handler idempotente de reserva.');
   }
   if ((identity.request.payments.length > 0 || identity.request.fiscalIntent) && !handlers.reconcileDownstream) {
@@ -973,7 +979,7 @@ export async function runCommercialOperationAdmin({
   };
 
   await execute('benefits_reserved', executionRequest.benefits.length
-    ? async () => CommercialOperationStepEffectsSchema.parse(await handlers.reserveBenefits!(context) ?? {})
+    ? async () => CommercialOperationStepEffectsSchema.parse(await reserveBenefitsHandler(context) ?? {})
     : null);
 
   const stockLines = commercialStockLines(executionRequest);
@@ -989,9 +995,32 @@ export async function runCommercialOperationAdmin({
   }));
 
   await execute('downstream_reconciled', async () => {
-    const downstream = CommercialOperationStepEffectsSchema.parse(
-      await handlers.reconcileDownstream?.({ ...context, stock }) ?? {},
-    );
+    const benefitEffects = (executionRequest.benefits.length && !handlers.reserveBenefits)
+      ? await confirmCommercialBenefitsAdmin(context)
+      : {};
+    const downstreamCustom = await handlers.reconcileDownstream?.({ ...context, stock }) ?? {};
+    const downstream = CommercialOperationStepEffectsSchema.parse({
+      couponRedemptionIds: [
+        ...(benefitEffects.couponRedemptionIds ?? []),
+        ...(downstreamCustom.couponRedemptionIds ?? []),
+      ],
+      giftCardRedemptionIds: [
+        ...(benefitEffects.giftCardRedemptionIds ?? []),
+        ...(downstreamCustom.giftCardRedemptionIds ?? []),
+      ],
+      loyaltyTransactionIds: [
+        ...(benefitEffects.loyaltyTransactionIds ?? []),
+        ...(downstreamCustom.loyaltyTransactionIds ?? []),
+      ],
+      transactionIds: [
+        ...(benefitEffects.transactionIds ?? []),
+        ...(downstreamCustom.transactionIds ?? []),
+      ],
+      fiscalDocumentIds: [
+        ...(benefitEffects.fiscalDocumentIds ?? []),
+        ...(downstreamCustom.fiscalDocumentIds ?? []),
+      ],
+    });
     const preview = {
       ...operation,
       checkpoints: {

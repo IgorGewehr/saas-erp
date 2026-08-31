@@ -47,6 +47,8 @@ export const CreateSaleBodySchema = z.object({
   clientName: z.string().max(200).optional(),
   items: z.array(SaleItemInputSchema).min(1),
   payments: z.array(PaymentSchema).min(1),
+  couponCode: z.string().min(3).max(32).optional(),
+  couponDiscount: z.number().nonnegative().optional(),
   discount: z.number().nonnegative().default(0),
   discountReason: z.string().min(3).max(300).optional(),
   tip: z.number().nonnegative().optional(),

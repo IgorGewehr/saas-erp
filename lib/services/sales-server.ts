@@ -28,10 +28,14 @@ import {
   type CommercialOperationRequest,
 } from '@/lib/contracts/domain/commercialOperation';
 import {
+  applyAuthoritativeCommercialDiscounts,
   centsToReais,
   quoteCommercialCartAdmin,
   reaisToCents,
 } from '@/lib/services/commercial-quote';
+import { loadCommercialBenefitResourcesAdmin } from '@/lib/services/commercial-benefits-admin';
+import { evaluateCoupon, normalizeCouponCode } from '@/lib/services/orders/coupons';
+import { normalizeGiftCardCode } from '@/lib/services/orders/checkoutRedemptions';
 import { recordClientPurchaseAdmin } from '@/lib/services/clients/recordPurchase';
 import type { StockAdjustmentAdmin } from '@/lib/services/stock-admin';
 import type { Payment, PaymentMethod, Sale, SelectedModifier } from '@/lib/types';
@@ -283,6 +287,109 @@ async function buildNewOperationRequest(params: {
     quotedAt: now,
   });
 
+  const giftCardCodes = input.payments
+    .filter((payment) => payment.method === 'gift_card')
+    .map((payment) => payment.benefitCode || payment.cardBrand)
+    .filter((code): code is string => Boolean(code));
+
+  const benefitResources = await loadCommercialBenefitResourcesAdmin({
+    db,
+    businessId: input.businessId,
+    clientId: input.clientId,
+    couponCode: input.couponCode,
+    giftCardCodes,
+  });
+
+  let effectiveQuote = quote;
+  const benefits: CommercialOperationRequest['benefits'] = [];
+  let couponDiscountCents = 0;
+
+  if (input.couponCode) {
+    if (!benefitResources.coupon) {
+      throw new CommercialOperationError('COUPON_NOT_FOUND', 'Cupom não encontrado.');
+    }
+    const evaluation = evaluateCoupon(benefitResources.coupon, {
+      subtotal: centsToReais(quote.pricing.subtotalCents),
+      deliveryFee: 0,
+      deliveryType: 'retirada',
+      now,
+      hasIdentity: Boolean(input.clientId),
+      isFirstOrder: input.clientId ? Number((benefitResources.client as { visitCount?: number } | undefined)?.visitCount ?? 0) === 0 : undefined,
+    });
+    if (!evaluation.ok) {
+      throw new CommercialOperationError(`COUPON_${evaluation.reason.toUpperCase()}`, 'Cupom indisponível para esta venda.');
+    }
+    couponDiscountCents = Math.min(
+      reaisToCents(evaluation.discount),
+      Math.max(0, quote.pricing.subtotalCents - manualDiscountCents),
+    );
+    effectiveQuote = applyAuthoritativeCommercialDiscounts(effectiveQuote, [{
+      source: 'coupon',
+      amountCents: couponDiscountCents,
+      referenceId: benefitResources.coupon.id,
+      reason: `Cupom ${benefitResources.coupon.code}`,
+    }]);
+    benefits.push({
+      intentId: 'coupon-1',
+      type: 'coupon',
+      action: 'redeem',
+      referenceId: benefitResources.coupon.id,
+      code: benefitResources.coupon.code,
+      amountCents: couponDiscountCents,
+    });
+  }
+
+  let giftCardIndex = 0;
+  let pointsRedeemedTotal = 0;
+  for (const payment of input.payments) {
+    if (payment.method === 'gift_card') {
+      giftCardIndex += 1;
+      const code = payment.benefitCode || payment.cardBrand;
+      const card = code ? benefitResources.giftCards.get(normalizeGiftCardCode(code)) : undefined;
+      if (!card) throw new CommercialOperationError('GIFT_CARD_NOT_FOUND', 'Gift card não encontrado.');
+      benefits.push({
+        intentId: `gift-card-${giftCardIndex}`,
+        type: 'gift_card',
+        action: 'redeem',
+        referenceId: card.id,
+        code: card.code,
+        amountCents: reaisToCents(payment.amount),
+      });
+    } else if (payment.method === 'pontos') {
+      if (!input.clientId || !benefitResources.loyalty) {
+        throw new CommercialOperationError('LOYALTY_UNAVAILABLE', 'Programa de fidelidade ou cliente indisponível.');
+      }
+      const points = Math.ceil(reaisToCents(payment.amount) / benefitResources.loyalty.pointValueInCentavos);
+      pointsRedeemedTotal += points;
+      benefits.push({
+        intentId: 'loyalty-redeem-1',
+        type: 'loyalty_points',
+        action: 'redeem',
+        referenceId: input.clientId,
+        amountCents: reaisToCents(payment.amount),
+        quantity: points,
+        unitAmountCents: benefitResources.loyalty.pointValueInCentavos,
+      });
+    }
+  }
+
+  let pointsEarnedTotal = 0;
+  if (input.clientId && benefitResources.loyalty?.isEnabled && benefitResources.loyalty.pointsPerReal > 0) {
+    const totalSpentReais = centsToReais(effectiveQuote.pricing.totalCents);
+    pointsEarnedTotal = Math.floor(totalSpentReais * benefitResources.loyalty.pointsPerReal);
+    if (pointsEarnedTotal > 0) {
+      benefits.push({
+        intentId: 'loyalty-earn-1',
+        type: 'loyalty_points',
+        action: 'earn',
+        referenceId: input.clientId,
+        amountCents: effectiveQuote.pricing.totalCents,
+        quantity: pointsEarnedTotal,
+        unitAmountCents: benefitResources.loyalty.pointValueInCentavos,
+      });
+    }
+  }
+
   const payments: CommercialPayment[] = input.payments.map((payment, index) => {
     const semantics = salePaymentSemantics(payment.method);
     return {
@@ -306,8 +413,8 @@ async function buildNewOperationRequest(params: {
   const paymentStatus = aggregatePaymentStatus(legacyPayments);
   const financialStatus = aggregateFinancialStatus(legacyPayments);
   const commissionRate = validateCommissionRate(context.commissionRate);
-  const hasStock = quote.lines.some((line) => line.stockRequirements.some((requirement) => requirement.tracked));
-  const items = quote.lines.map((line) => ({
+  const hasStock = effectiveQuote.lines.some((line) => line.stockRequirements.some((requirement) => requirement.tracked));
+  const items = effectiveQuote.lines.map((line) => ({
     id: line.lineId,
     ...(line.productId ? { productId: line.productId } : {}),
     ...(line.serviceId ? { serviceId: line.serviceId } : {}),
@@ -328,15 +435,23 @@ async function buildNewOperationRequest(params: {
     ...(clientName ? { clientName } : {}),
     items,
     payments: legacyPayments,
-    subtotal: centsToReais(quote.pricing.subtotalCents),
-    discount: centsToReais(quote.pricing.discountCents),
-    ...(quote.pricing.tipCents > 0 ? { tip: centsToReais(quote.pricing.tipCents) } : {}),
-    total: centsToReais(quote.pricing.totalCents),
+    subtotal: centsToReais(effectiveQuote.pricing.subtotalCents),
+    discount: centsToReais(effectiveQuote.pricing.discountCents),
+    ...(effectiveQuote.pricing.tipCents > 0 ? { tip: centsToReais(effectiveQuote.pricing.tipCents) } : {}),
+    total: centsToReais(effectiveQuote.pricing.totalCents),
     status: 'finalizada' as const,
     paymentStatus,
     financialStatus,
     stockStatus: hasStock ? 'applied' as const : 'not_required' as const,
     fiscalStatus: 'nao_emitido',
+    manualDiscount: centsToReais(manualDiscountCents),
+    ...(benefitResources.coupon ? {
+      couponId: benefitResources.coupon.id,
+      couponCode: benefitResources.coupon.code,
+      couponDiscount: centsToReais(couponDiscountCents),
+    } : {}),
+    ...(pointsRedeemedTotal > 0 ? { pointsRedeemed: pointsRedeemedTotal } : {}),
+    ...(pointsEarnedTotal > 0 ? { pointsEarned: pointsEarnedTotal } : {}),
     operatorId: input.operatorId,
     operatorName: input.operatorName,
     commissionRateApplied: commissionRate,
@@ -357,11 +472,11 @@ async function buildNewOperationRequest(params: {
     idempotencyKey: params.idempotencyKey,
     sourceType: 'sale',
     channel,
-    quote,
+    quote: effectiveQuote,
     target: { collection: 'sales' },
     document,
     payments,
-    benefits: [],
+    benefits,
     actor: {
       id: input.operatorId,
       name: input.operatorName,

@@ -54,8 +54,25 @@ export const CommercialOperationCheckpointSchema = z.object({
 export const CommercialBenefitIntentSchema = z.object({
   intentId: z.string().min(1).max(120),
   type: z.enum(['coupon', 'gift_card', 'loyalty_points']),
+  action: z.enum(['redeem', 'earn']).default('redeem'),
   referenceId: z.string().min(1).optional(),
+  code: z.string().min(1).max(64).optional(),
   amountCents: MoneyCentsSchema,
+  quantity: z.number().int().positive().optional(),
+  unitAmountCents: MoneyCentsSchema.optional(),
+}).superRefine((benefit, ctx) => {
+  if ((benefit.type === 'coupon' || benefit.type === 'gift_card') && !benefit.referenceId) {
+    ctx.addIssue({ code: 'custom', path: ['referenceId'], message: 'Cupom e gift card exigem referência autoritativa.' });
+  }
+  if ((benefit.type === 'coupon' || benefit.type === 'gift_card') && !benefit.code) {
+    ctx.addIssue({ code: 'custom', path: ['code'], message: 'Cupom e gift card exigem código normalizado.' });
+  }
+  if (benefit.type === 'loyalty_points' && (!benefit.referenceId || !benefit.quantity || benefit.unitAmountCents === undefined)) {
+    ctx.addIssue({ code: 'custom', path: ['quantity'], message: 'Fidelidade exige cliente, pontos e valor unitário.' });
+  }
+  if (benefit.type !== 'loyalty_points' && benefit.action === 'earn') {
+    ctx.addIssue({ code: 'custom', path: ['action'], message: 'Somente fidelidade pode acumular benefício.' });
+  }
 });
 
 export const CommercialOperationActorSchema = z.object({

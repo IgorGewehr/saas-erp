@@ -61,6 +61,9 @@ export const PaymentSchema = z.object({
   cardBrand: z.string().max(50).optional(),
   status: z.enum(['paid', 'pending', 'unpaid']).optional(),
   dueDate: z.string().optional(),
+  /** Referência/código do tender de benefício. O servidor sempre revalida. */
+  benefitReferenceId: z.string().min(1).optional(),
+  benefitCode: z.string().min(1).max(64).optional(),
 });
 
 export const SaleSchema = z.object({
@@ -89,6 +92,12 @@ export const SaleSchema = z.object({
   financialStatus: z.enum(['paid', 'pending', 'partial', 'not_applicable']).optional(),
   stockStatus: z.enum(['applied', 'not_required']).optional(),
   fiscalStatus: z.string().optional(),
+  manualDiscount: z.number().nonnegative().optional(),
+  couponId: z.string().optional(),
+  couponCode: z.string().optional(),
+  couponDiscount: z.number().nonnegative().optional(),
+  pointsRedeemed: z.number().int().nonnegative().optional(),
+  pointsEarned: z.number().int().nonnegative().optional(),
   notes: z.string().max(2000).optional(),
   operatorId: z.string().min(1),
   operatorName: z.string().min(1),
