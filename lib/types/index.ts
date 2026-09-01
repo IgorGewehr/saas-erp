@@ -2099,10 +2099,13 @@ export interface DeliveryOrder {
   transactionId?: string;
 
   /** Correlação com o núcleo comercial M02 (commercialOperations/{id}) para
-   *  canais já migrados (M02.5a: cardápio público). Mesma semântica de
-   *  Sale.commercialOperationId/commercialOperationStatus. */
+   *  canais já migrados (M02.5a: cardápio público; M02.5b: pedido manual).
+   *  Mesma semântica de Sale.commercialOperationId/commercialOperationStatus. */
   commercialOperationId?: string;
   commercialOperationStatus?: string;
+  /** Quem criou o pedido (auditoria). 'public' no canal site/anônimo. */
+  createdBy?: string;
+  createdByName?: string;
 
   // ── Vínculo fiscal (V3) — writeback de /api/fiscal/emit ──
   /** FK para o fiscalDocument (NFC-e) emitido a partir deste pedido. Presença =

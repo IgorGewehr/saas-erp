@@ -1,13 +1,13 @@
 /**
- * Checkout comercial server-side do cardápio público (M02.5a).
+ * Checkout comercial server-side de deliveryOrders — cardápio público (M02.5a,
+ * canal 'site') e pedido manual autenticado (M02.5b, canal 'manual').
  *
- * O cliente envia somente a intenção (itens, endereço, cupom/gift card).
  * Catálogo, modificadores, zona de entrega e desconto são revalidados pela
  * cotação M02.1. A execução usa o coordenador recuperável M02.2 e os ledgers
  * de benefícios M02.4 — o mesmo núcleo já usado pelo PDV (M02.3/M02.4).
  *
- * Variação de catálogo (variantId), pedido manual e do agente ficam para
- * fatias seguintes (M02.5b+) — este adaptador cobre só o canal `site`.
+ * Variação de catálogo (variantId) e pedido do agente ficam para fatias
+ * seguintes (M02.5c+).
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -50,6 +50,11 @@ type CommercialActorType = CommercialOperationRequest['actor']['type'];
 export interface DeliveryOrderExecutionContext {
   channel?: CommercialChannel;
   actorType?: CommercialActorType;
+  /** Gerente+ pode aplicar desconto manual (M02.5b, canal manual). */
+  canApplyManualDiscount?: boolean;
+  /** Gerente+ pode propor a taxa de entrega quando nenhuma zona resolve o
+   *  endereço (M02.5b, canal manual). */
+  canOverrideDeliveryFee?: boolean;
   now?: () => Date;
 }
 
@@ -92,10 +97,13 @@ function deliveryInputFingerprint(input: CreateDeliveryOrderWithSideEffectsInput
 function deriveIdempotencyKey(input: CreateDeliveryOrderWithSideEffectsInput): string {
   return hash(JSON.stringify(stable({
     businessId: input.businessId,
+    clientId: input.clientId,
     clientPhone: input.clientPhone,
     items: input.items,
     deliveryType: input.deliveryType,
     deliveryAddress: input.deliveryAddress,
+    manualDeliveryFee: input.manualDeliveryFee,
+    discount: input.discount,
     couponCode: input.couponCode,
     giftCardCode: input.giftCardCode,
   }))).slice(0, 40);
@@ -172,10 +180,24 @@ async function buildNewOperationRequest(params: {
   const { db, input, now } = params;
   const channel = params.context.channel ?? 'site';
   const nowIso = now.toISOString();
+  // Identidade do ator: a rota autenticada sempre sobrescreve operatorId/Name
+  // com o uid/nome do token verificado antes de chegar aqui (nunca confiar no
+  // valor enviado pelo cliente). Fallback preserva o canal público anônimo.
+  const actorId = input.operatorId ?? 'public';
+  const actorName = input.operatorName ?? 'Cardápio online';
 
-  // ── Cliente (dedup/canonical por telefone) ─────────────────────────────────
+  // ── Cliente: clientId (já resolvido pelo operador) tem precedência sobre
+  // clientPhone (resolução por telefone, canal público). O formulário manual
+  // manda os dois juntos ao escolher um cliente existente — não são exclusivos.
   let clientId: string | undefined;
-  if (input.clientPhone) {
+  if (input.clientId) {
+    const snapshot = await db.collection('clients').doc(input.clientId).get();
+    if (!snapshot.exists) throw new CommercialOperationError('CLIENT_NOT_FOUND', 'Cliente não encontrado.');
+    if (snapshot.data()?.businessId !== input.businessId) {
+      throw new CommercialOperationError('TENANT_MISMATCH', 'Cliente pertence a outro negócio.');
+    }
+    clientId = input.clientId;
+  } else if (input.clientPhone) {
     const phone = input.clientPhone.replace(/\D/g, '');
     if (phone.length < 8) throw new CommercialOperationError('INVALID_PHONE', 'Telefone inválido.');
     const { clientId: resolvedId } = await resolveClientIdentityAdmin({
@@ -185,6 +207,8 @@ async function buildNewOperationRequest(params: {
   }
 
   // ── Cotação autoritativa (preço, modificadores, zona, estoque) ─────────────
+  const manualDeliveryFeeCents = input.manualDeliveryFee !== undefined ? reaisToCents(input.manualDeliveryFee) : undefined;
+  const manualDiscountInputCents = input.discount ? reaisToCents(input.discount) : 0;
   const quote = await quoteCommercialCartAdmin({
     db,
     input: {
@@ -198,16 +222,32 @@ async function buildNewOperationRequest(params: {
         ...(item.selectedModifiers?.length ? { selectedModifiers: normalizeModifiers(item.selectedModifiers) } : {}),
         ...(item.notes ? { notes: item.notes } : {}),
       })),
-      delivery: { type: input.deliveryType, cep: input.deliveryAddress?.cep, bairro: input.deliveryAddress?.bairro },
+      delivery: {
+        type: input.deliveryType,
+        cep: input.deliveryAddress?.cep,
+        bairro: input.deliveryAddress?.bairro,
+        ...(manualDeliveryFeeCents !== undefined ? { manualFeeCents: manualDeliveryFeeCents } : {}),
+      },
+      ...(manualDiscountInputCents > 0 ? {
+        manualDiscount: {
+          kind: 'fixed' as const,
+          amountCents: manualDiscountInputCents,
+          reason: input.discountReason?.trim() || 'Desconto manual no pedido',
+        },
+      } : {}),
       tipCents: 0,
       // Sem expectedTotalCents agregado: ele compararia contra subtotal+frete e o
       // frete só é conhecido DEPOIS da zona resolvida aqui dentro — usaríamos o
       // valor (ignorado) enviado pelo cliente e geraríamos falso positivo em toda
       // entrega. A integridade por item é conferida abaixo, linha a linha.
     },
-    canApplyManualDiscount: false,
+    canApplyManualDiscount: params.context.canApplyManualDiscount === true,
+    canOverrideDeliveryFee: params.context.canOverrideDeliveryFee === true,
     quotedAt: now,
   });
+  // quote.pricing.discountCents já inclui o desconto manual nativo do núcleo
+  // (buildCommercialQuote) — para site isso é sempre 0 (nunca envia manualDiscount).
+  const manualDiscountAppliedCents = quote.pricing.discountCents;
 
   // Preço obsoleto/adulterado por item (mesma tolerância do route legado):
   // a cotação nunca lê o preço do cliente, então uma divergência aqui só
@@ -353,11 +393,14 @@ async function buildNewOperationRequest(params: {
     ...(clientId ? { clientId } : {}),
     clientName: input.clientName.trim(),
     ...(input.clientPhone ? { clientPhone: input.clientPhone.replace(/\D/g, '') } : {}),
-    channel: 'site' as const,
+    channel: input.originChannel ?? 'site',
+    ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+    ...(input.contactExternalId ? { contactExternalId: input.contactExternalId } : {}),
     items,
     subtotal: centsToReais(effectiveQuote.pricing.subtotalCents),
     deliveryFee: centsToReais(effectiveQuote.pricing.deliveryFeeCents),
-    ...(couponDiscountCents > 0 ? { discount: centsToReais(couponDiscountCents) } : {}),
+    ...(manualDiscountAppliedCents + couponDiscountCents > 0
+      ? { discount: centsToReais(manualDiscountAppliedCents + couponDiscountCents) } : {}),
     ...(benefits.some((b) => b.type === 'coupon')
       ? { couponId: benefitResources.coupon!.id, couponCode: benefitResources.coupon!.code, couponDiscount: centsToReais(couponDiscountCents) }
       : {}),
@@ -368,9 +411,15 @@ async function buildNewOperationRequest(params: {
     deliveryType: input.deliveryType,
     ...(input.deliveryType === 'entrega' ? { deliveryAddress: input.deliveryAddress } : {}),
     paymentMethod: input.paymentMethod ?? 'pix',
-    paymentStatus: 'pendente' as const,
+    paymentStatus: input.paymentStatus ?? 'pendente',
     ...(input.changeFor && input.changeFor > centsToReais(effectiveQuote.pricing.totalCents) ? { changeFor: input.changeFor } : {}),
     ...(input.customerNotes ? { customerNotes: input.customerNotes.slice(0, 1000) } : {}),
+    ...(input.internalNotes ? { internalNotes: input.internalNotes.slice(0, 2000) } : {}),
+    ...(input.estimatedMinutes
+      ? { estimatedDeliveryAt: new Date(now.getTime() + input.estimatedMinutes * 60_000).toISOString() }
+      : {}),
+    createdBy: actorId,
+    createdByName: actorName,
     trackingToken,
     deliveryOrderCheckoutFingerprint: params.inputFingerprint,
     createdAt: nowIso,
@@ -389,8 +438,8 @@ async function buildNewOperationRequest(params: {
     payments: [],
     benefits,
     actor: {
-      id: 'public',
-      name: 'Cardápio online',
+      id: actorId,
+      name: actorName,
       type: params.context.actorType ?? 'system',
     },
   };

@@ -54,6 +54,10 @@ export const CommercialDeliveryQuoteSchema = z.object({
   type: z.enum(['entrega', 'retirada']),
   cep: z.string().max(12).optional(),
   bairro: z.string().max(160).optional(),
+  /** Taxa proposta pelo operador quando nenhuma zona resolve o endereço (M02.5b,
+   *  canal manual). Só tem efeito se a zona não casar; permissão é responsabilidade
+   *  do chamador (ver QuoteCommercialCartAdminInput.canOverrideDeliveryFee). */
+  manualFeeCents: MoneyCentsSchema.optional(),
 });
 
 export const CommercialManualDiscountSchema = z.discriminatedUnion('kind', [
@@ -208,7 +212,7 @@ export const CommercialQuoteSchema = z.object({
   delivery: z.object({
     type: z.enum(['entrega', 'retirada']),
     feeCents: MoneyCentsSchema,
-    resolution: z.enum(['matched', 'flat', 'none']),
+    resolution: z.enum(['matched', 'flat', 'none', 'manual']),
     zoneName: z.string().optional(),
     estimatedMinutes: z.number().int().nonnegative().optional(),
   }).optional(),

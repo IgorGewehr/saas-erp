@@ -38,6 +38,7 @@ interface FakeRef {
   _coll: string;
   get: () => Promise<FakeSnapshot>;
   collection: (name: string) => FakeCollection;
+  update: (data: Record<string, unknown>) => Promise<void>;
 }
 
 interface FakeCollection {
@@ -51,6 +52,18 @@ type PendingWrite =
   | { kind: 'update'; ref: FakeRef; data: Record<string, unknown> };
 
 function clone<T>(value: T): T { return structuredClone(value); }
+
+function mergeWithIncrement(current: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const merged = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value && typeof value === 'object' && '__increment' in (value as Record<string, unknown>)) {
+      merged[key] = Number(current[key] ?? 0) + Number((value as { __increment: number }).__increment);
+    } else {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
 
 function fieldValue(data: Record<string, unknown>, path: string): unknown {
   return path.split('.').reduce<unknown>((acc, key) => (acc && typeof acc === 'object' ? (acc as Record<string, unknown>)[key] : undefined), data);
@@ -98,6 +111,12 @@ function makeFakeDb(initial: Record<string, Record<string, unknown>> = {}) {
         _coll: coll,
         async get() { return snapshot(ref); },
         collection(name: string) { return makeCollection(`${coll}/${docId}/${name}`); },
+        async update(data: Record<string, unknown>) {
+          const path = `${coll}/${docId}`;
+          const current = documents.get(path);
+          if (!current) throw new Error(`Documento ausente: ${path}`);
+          documents.set(path, mergeWithIncrement(current, data));
+        },
       };
       return ref;
     },
@@ -144,16 +163,7 @@ function makeFakeDb(initial: Record<string, Record<string, unknown>> = {}) {
           if (write.kind === 'update') {
             const current = documents.get(path);
             if (!current) throw new Error(`Documento ausente: ${path}`);
-            const patch = clone(write.data) as Record<string, unknown>;
-            const merged = { ...current };
-            for (const [key, value] of Object.entries(patch)) {
-              if (value && typeof value === 'object' && '__increment' in (value as Record<string, unknown>)) {
-                merged[key] = Number(current[key] ?? 0) + Number((value as { __increment: number }).__increment);
-              } else {
-                merged[key] = value;
-              }
-            }
-            documents.set(path, merged);
+            documents.set(path, mergeWithIncrement(current, clone(write.data)));
           } else {
             documents.set(path, clone(write.data));
           }
@@ -167,15 +177,7 @@ function makeFakeDb(initial: Record<string, Record<string, unknown>> = {}) {
       const path = `${ref._coll}/${ref.id}`;
       const current = documents.get(path);
       if (!current) throw new Error(`Documento ausente: ${path}`);
-      const merged = { ...current };
-      for (const [key, value] of Object.entries(data)) {
-        if (value && typeof value === 'object' && '__increment' in (value as Record<string, unknown>)) {
-          merged[key] = Number(current[key] ?? 0) + Number((value as { __increment: number }).__increment);
-        } else {
-          merged[key] = value;
-        }
-      }
-      documents.set(path, merged);
+      documents.set(path, mergeWithIncrement(current, data));
     },
   };
 
@@ -420,5 +422,115 @@ describe('M02.5a — checkout comercial do cardápio público', () => {
     const fake = makeFakeDb({ ...initialDocuments(), 'products/p1': stored(product({ businessId: 'biz2' })) });
     await expect(createDeliveryOrderWithSideEffects(baseInput(), fake.db, { now: () => NOW }))
       .rejects.toBeInstanceOf(CommercialQuoteError);
+  });
+});
+
+describe('M02.5b — pedido manual (canal manual, autenticado)', () => {
+  const manualCtx = { now: () => NOW, channel: 'manual' as const, actorType: 'user' as const };
+
+  it('usa clientId já resolvido pelo operador e grava createdBy/createdByName/originChannel', async () => {
+    const fake = makeFakeDb({
+      ...initialDocuments(),
+      'clients/client-1': { businessId: 'biz1', name: 'Cliente Existente', visitCount: 2 },
+    });
+    const result = await createDeliveryOrderWithSideEffects(baseInput({
+      clientId: 'client-1',
+      clientName: 'Cliente Existente',
+      operatorId: 'user-1',
+      operatorName: 'Atendente Teste',
+      originChannel: 'whatsapp',
+    }), fake.db, manualCtx);
+
+    expect(result.order).toMatchObject({
+      clientId: 'client-1', channel: 'whatsapp', createdBy: 'user-1', createdByName: 'Atendente Teste',
+    });
+  });
+
+  it('rejeita clientId de outro tenant antes de qualquer efeito', async () => {
+    const fake = makeFakeDb({
+      ...initialDocuments(),
+      'clients/client-2': { businessId: 'biz2', name: 'Cliente Alheio' },
+    });
+    await expect(createDeliveryOrderWithSideEffects(baseInput({
+      clientId: 'client-2', operatorId: 'user-1', operatorName: 'Atendente Teste',
+    }), fake.db, manualCtx)).rejects.toMatchObject({ code: 'TENANT_MISMATCH' });
+    expect(fake.list('deliveryOrders')).toHaveLength(0);
+  });
+
+  it('aplica desconto manual com permissão de gerente', async () => {
+    const fake = makeFakeDb(initialDocuments());
+    const result = await createDeliveryOrderWithSideEffects(baseInput({
+      discount: 10, discountReason: 'Cliente fidelizado', operatorId: 'user-1', operatorName: 'Gerente Teste',
+    }), fake.db, { ...manualCtx, canApplyManualDiscount: true });
+
+    expect(result.order).toMatchObject({ discount: 10, total: 30 });
+  });
+
+  it('rejeita desconto manual sem permissão', async () => {
+    const fake = makeFakeDb(initialDocuments());
+    await expect(createDeliveryOrderWithSideEffects(baseInput({
+      discount: 10, operatorId: 'user-1', operatorName: 'Operador Teste',
+    }), fake.db, { ...manualCtx, canApplyManualDiscount: false }))
+      .rejects.toBeInstanceOf(CommercialQuoteError);
+    expect(fake.list('deliveryOrders')).toHaveLength(0);
+  });
+
+  it('permite taxa de entrega manual fora de área com permissão de gerente', async () => {
+    const fake = makeFakeDb({
+      ...initialDocuments(),
+      'businesses/biz1': business({
+        settings: { aiAgent: { deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Centro', fee: 6 }] } },
+      }),
+    });
+    const result = await createDeliveryOrderWithSideEffects(baseInput({
+      deliveryType: 'entrega',
+      deliveryAddress: { logradouro: 'Rua X', numero: '1', bairro: 'Bairro Fora De Área', municipio: 'POA', uf: 'RS' },
+      manualDeliveryFee: 15,
+      operatorId: 'user-1', operatorName: 'Gerente Teste',
+    }), fake.db, { ...manualCtx, canOverrideDeliveryFee: true });
+
+    expect(result.order).toMatchObject({ deliveryFee: 15, total: 55 });
+  });
+
+  it('rejeita taxa de entrega manual fora de área sem permissão', async () => {
+    const fake = makeFakeDb({
+      ...initialDocuments(),
+      'businesses/biz1': business({
+        settings: { aiAgent: { deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Centro', fee: 6 }] } },
+      }),
+    });
+    await expect(createDeliveryOrderWithSideEffects(baseInput({
+      deliveryType: 'entrega',
+      deliveryAddress: { logradouro: 'Rua X', numero: '1', bairro: 'Bairro Fora De Área', municipio: 'POA', uf: 'RS' },
+      manualDeliveryFee: 15,
+      operatorId: 'user-1', operatorName: 'Operador Teste',
+    }), fake.db, { ...manualCtx, canOverrideDeliveryFee: false }))
+      .rejects.toBeInstanceOf(CommercialQuoteError);
+  });
+
+  it('ignora a taxa manual quando o endereço casa numa zona configurada', async () => {
+    const fake = makeFakeDb({
+      ...initialDocuments(),
+      'businesses/biz1': business({
+        settings: { aiAgent: { deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Centro', fee: 6 }] } },
+      }),
+    });
+    const result = await createDeliveryOrderWithSideEffects(baseInput({
+      deliveryType: 'entrega',
+      deliveryAddress: { logradouro: 'Rua X', numero: '1', bairro: 'Centro', municipio: 'POA', uf: 'RS' },
+      manualDeliveryFee: 999,
+      operatorId: 'user-1', operatorName: 'Gerente Teste',
+    }), fake.db, { ...manualCtx, canOverrideDeliveryFee: true });
+
+    expect(result.order.deliveryFee).toBe(6);
+  });
+
+  it('respeita paymentStatus explícito (pago) em vez do default pendente', async () => {
+    const fake = makeFakeDb(initialDocuments());
+    const result = await createDeliveryOrderWithSideEffects(baseInput({
+      paymentStatus: 'pago', operatorId: 'user-1', operatorName: 'Atendente Teste',
+    }), fake.db, manualCtx);
+
+    expect(result.order.paymentStatus).toBe('pago');
   });
 });

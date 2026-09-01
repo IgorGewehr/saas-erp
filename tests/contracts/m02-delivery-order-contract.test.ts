@@ -47,4 +47,14 @@ describe('M02.5a — contrato DeliveryOrder com campos aditivos do núcleo comer
     const result = DeliveryOrderSchema.safeParse(publicFixture.document);
     expect(result.success).toBe(true);
   });
+
+  it('aceita createdBy/createdByName (M02.5b — auditoria de criação)', () => {
+    const document = {
+      ...structuredClone(publicFixture.document),
+      createdBy: 'user-1',
+      createdByName: 'Atendente Teste',
+    };
+    const result = DeliveryOrderSchema.safeParse(document);
+    expect(result.success).toBe(true);
+  });
 });

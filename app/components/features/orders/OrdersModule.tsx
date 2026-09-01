@@ -12,7 +12,7 @@ import {
   Receipt, FileCheck2,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, onSnapshot, setDoc, getDoc, getDocs, updateDoc,
+  collection, query, where, orderBy, onSnapshot, getDocs, updateDoc,
   doc, runTransaction, limit,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
@@ -26,7 +26,6 @@ import { toast } from 'react-toastify';
 import { checkStockAvailability } from '@/lib/services/stock';
 import { applyStockOperation } from '@/lib/services/stock-server-client';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
-import { allocateOrderNumber } from '@/lib/services/orderNumber';
 import { notifyLowStock } from '@/lib/services/notifications';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
@@ -448,7 +447,10 @@ function OrderFormDialog({
   }, [open, initial]);
 
   const deliverableProducts = useMemo(
-    () => products.filter(p => p.isDeliverable && p.isActive),
+    // Produtos com variação exigem variantId na cotação comercial (M02.1), que o
+    // formulário manual ainda não coleta (fica para a M02.5e) — sem esse filtro,
+    // adicionar um desses produtos resultaria em VARIANT_REQUIRED sem UI para resolver.
+    () => products.filter(p => p.isDeliverable && p.isActive && !(p as { variants?: unknown[] }).variants?.length),
     [products],
   );
 
@@ -1312,7 +1314,7 @@ type ViewMode = 'board' | 'list';
 const AUTO_PRINT_PREF_KEY = 'orders:autoPrintOnAccept';
 
 export default function OrdersModule() {
-  const { user, business } = useAuth();
+  const { user, business, firebaseUser } = useAuth();
 
   const [viewMode, setViewMode] = useState<ViewMode>('board');
   const [search, setSearch] = useState('');
@@ -1549,68 +1551,54 @@ export default function OrdersModule() {
         await updateDoc(doc(db, 'deliveryOrders',editingOrder.id), cleaned);
         toast.success('Pedido atualizado');
       } else {
-        // Grupo 11: idempotência do pedido manual. A chave do formulário vira o
-        // doc id ⇒ duplo-clique/retry reusa o MESMO doc. Pré-check evita queimar
-        // um número sequencial num retry cujo pedido já existe.
-        const orderRef = doc(db, 'deliveryOrders', idempotencyKey);
-        const existing = await getDoc(orderRef);
-        if (existing.exists()) {
-          toast.info(`Pedido #${(existing.data() as Order).number} já foi criado`);
-          setEditingOrder(null);
-          setPrefillFromConversation(null);
-          setPrefillCartItems([]);
-          setFormOpen(false);
+        // M02.5b: criação delega preço, modificadores, zona de entrega, desconto
+        // manual e estoque ao núcleo comercial (mesmo usado pelo PDV/cardápio
+        // público) via rota autenticada — servidor recalcula tudo, não confia
+        // no que o formulário manda. Idempotência é do núcleo (chave do form).
+        if (!firebaseUser) {
+          toast.error('Sessão expirada. Entre novamente.');
           return;
         }
-        // X1: numeração atômica via contador monotônico do business
-        // (allocateOrderNumber, runTransaction). Substitui o max()+1 lido em
-        // memória, que colidia com o canal público (orders/public) sob concorrência.
-        const number = await allocateOrderNumber(db, business.id);
-        const payload: Omit<Order, 'id'> = {
-          businessId: business.id,
-          number,
-          status: 'recebido',
-          clientId: data.clientId || undefined,
-          clientName: data.clientName.trim(),
-          clientPhone: data.clientPhone || undefined,
-          channel: prefillFromConversation?.channel || 'manual',
-          conversationId: prefillFromConversation?.conversationId,
-          contactExternalId: prefillFromConversation?.contactExternalId,
-          items: data.items,
-          subtotal,
-          deliveryFee: data.deliveryFee || undefined,
-          discount: data.discount || undefined,
-          total,
-          deliveryType: data.deliveryType,
-          deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
-          paymentMethod: data.paymentMethod,
-          paymentStatus: data.paymentStatus,
-          changeFor: data.changeFor || undefined,
-          customerNotes: data.customerNotes || undefined,
-          internalNotes: data.internalNotes || undefined,
-          estimatedDeliveryAt,
-          createdAt: now,
-          updatedAt: now,
-        };
-        const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined)) as Omit<Order, 'id'>;
-
-        // Non-blocking stock pre-check — warns operator but doesn't block creation.
-        // Reconstrói as MESMAS linhas que a baixa/restauro (buildOrderStockLines):
-        // itens + insumos de modificadores (linkedProductId), pra alertar também
-        // quando o que falta é um insumo, não só o produto base.
-        const productIndex = new Map(products.map(p => [p.id, p]));
-        const stockLines = buildOrderStockLines(
-          { ...cleaned, id: 'preview' } as Order,
-          productIndex,
-        );
-        const shortages = checkStockAvailability(stockLines, productIndex);
-        if (shortages.length > 0) {
-          const names = shortages.map(s => `${s.productName} (pediu ${s.requested}, tem ${s.available})`).join(' · ');
-          toast.warn(`Estoque insuficiente: ${names}`, { autoClose: 7000 });
+        const token = await firebaseUser.getIdToken();
+        const response = await fetch('/api/orders/manual', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+            'X-Idempotency-Key': idempotencyKey,
+          },
+          body: JSON.stringify({
+            businessId: business.id,
+            clientId: data.clientId || undefined,
+            clientName: data.clientName.trim(),
+            clientPhone: data.clientPhone || undefined,
+            items: data.items,
+            deliveryType: data.deliveryType,
+            deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
+            manualDeliveryFee: data.deliveryFee || undefined,
+            discount: data.discount || undefined,
+            discountReason: data.discount ? 'Desconto manual no pedido' : undefined,
+            paymentMethod: data.paymentMethod,
+            paymentStatus: data.paymentStatus,
+            changeFor: data.changeFor || undefined,
+            customerNotes: data.customerNotes || undefined,
+            internalNotes: data.internalNotes || undefined,
+            estimatedMinutes: data.estimatedMinutes || undefined,
+            originChannel: prefillFromConversation?.channel || 'manual',
+            conversationId: prefillFromConversation?.conversationId,
+            contactExternalId: prefillFromConversation?.contactExternalId,
+            idempotencyKey,
+          }),
+        });
+        const payload = await response.json().catch(() => null) as {
+          ok?: boolean;
+          error?: string;
+          data?: { orderNumber: number };
+        } | null;
+        if (!response.ok || !payload?.ok || !payload.data) {
+          throw new Error(payload?.error || 'Erro ao criar pedido');
         }
-
-        await setDoc(orderRef, cleaned);
-        toast.success(`Pedido #${number} criado!`);
+        toast.success(`Pedido #${payload.data.orderNumber} criado!`);
       }
       setEditingOrder(null);
       setPrefillFromConversation(null);

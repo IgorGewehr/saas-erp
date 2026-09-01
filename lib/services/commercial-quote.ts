@@ -23,6 +23,7 @@ export type CommercialQuoteErrorCode =
   | 'MODIFIER_INVALID'
   | 'DISCOUNT_FORBIDDEN'
   | 'DELIVERY_OUT_OF_AREA'
+  | 'DELIVERY_FEE_OVERRIDE_FORBIDDEN'
   | 'STALE_QUOTE';
 
 export class CommercialQuoteError extends Error {
@@ -38,7 +39,7 @@ export class CommercialQuoteError extends Error {
 
 export interface CommercialDeliveryResolution {
   feeCents: number;
-  resolution: 'matched' | 'flat' | 'none';
+  resolution: 'matched' | 'flat' | 'none' | 'manual';
   zoneName?: string;
   estimatedMinutes?: number;
 }
@@ -55,6 +56,9 @@ export interface QuoteCommercialCartAdminInput {
   db: Firestore;
   input: unknown;
   canApplyManualDiscount: boolean;
+  /** Gerente+ pode propor uma taxa de entrega quando nenhuma zona resolve o
+   *  endereço (M02.5b). Default false — PDV/site nunca passam isso. */
+  canOverrideDeliveryFee?: boolean;
   operatorId?: string;
   quotedAt?: Date;
 }
@@ -534,6 +538,7 @@ export async function quoteCommercialCartAdmin({
   db,
   input: rawInput,
   canApplyManualDiscount,
+  canOverrideDeliveryFee = false,
   operatorId,
   quotedAt = new Date(),
 }: QuoteCommercialCartAdminInput): Promise<CommercialQuote> {
@@ -562,20 +567,30 @@ export async function quoteCommercialCartAdmin({
       cep: input.delivery.cep,
       bairro: input.delivery.bairro,
     });
-    if (resolution.status === 'out-of-area') {
+    const manualFeeCents = input.delivery.manualFeeCents;
+
+    if (resolution.status === 'matched') {
+      // Zona é autoritativa — um override manual enviado junto é ignorado.
+      delivery = {
+        feeCents: reaisToCents(resolution.fee),
+        resolution: 'matched',
+        zoneName: resolution.zone.name,
+        estimatedMinutes: resolution.estimatedMinutes,
+      };
+    } else if (manualFeeCents !== undefined) {
+      // out-of-area ou sem zonas configuradas: o operador propôs uma taxa.
+      if (!canOverrideDeliveryFee) {
+        quoteError('DELIVERY_FEE_OVERRIDE_FORBIDDEN', 'Seu perfil não permite definir a taxa de entrega manualmente.', 403);
+      }
+      delivery = { feeCents: manualFeeCents, resolution: 'manual' };
+    } else if (resolution.status === 'out-of-area') {
       quoteError('DELIVERY_OUT_OF_AREA', 'Endereço fora da área de entrega desta loja.');
+    } else {
+      delivery = {
+        feeCents: reaisToCents(Math.max(0, business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0)),
+        resolution: 'flat',
+      };
     }
-    delivery = resolution.status === 'matched'
-      ? {
-          feeCents: reaisToCents(resolution.fee),
-          resolution: 'matched',
-          zoneName: resolution.zone.name,
-          estimatedMinutes: resolution.estimatedMinutes,
-        }
-      : {
-          feeCents: reaisToCents(Math.max(0, business.settings?.aiAgent?.pedidos?.deliveryFee ?? 0)),
-          resolution: 'flat',
-        };
   }
 
   return buildCommercialQuote(input, {

@@ -111,6 +111,9 @@ export const DeliveryOrderSchema = z.object({
   giftCardCode: z.string().optional(),
   giftCardAmount: z.number().nonnegative().optional(),
   trackingToken: z.string().optional(),
+  /** Quem criou o pedido (auditoria — R§6). 'public' no canal site/anônimo. */
+  createdBy: z.string().min(1).optional(),
+  createdByName: z.string().min(1).max(200).optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 }).superRefine((o, ctx) => {

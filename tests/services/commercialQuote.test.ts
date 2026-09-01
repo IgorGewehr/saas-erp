@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import type { Firestore } from 'firebase-admin/firestore';
 import { ProductV2Schema, type ProductV2 } from '@/contracts/domain/productV2';
 import { ServiceSchema, type Service } from '@/contracts/domain/service';
 import { CommercialQuoteSchema } from '@/contracts/domain/commercialV2';
 import {
   buildCommercialQuote,
+  quoteCommercialCartAdmin,
   CommercialQuoteError,
   reaisToCents,
   type CommercialQuoteResources,
@@ -242,5 +244,116 @@ describe('M02.1 — cotação comercial autoritativa', () => {
     }), new Date(NOW));
     expect(CommercialQuoteSchema.safeParse(quote).success).toBe(true);
     expect(quote.pricing.totalCents).toBe(3773);
+  });
+});
+
+function fakeReadOnlyDb(docs: Record<string, Record<string, unknown>>): Firestore {
+  const ref = (coll: string, id: string) => ({
+    id,
+    async get() {
+      const data = docs[`${coll}/${id}`];
+      return { exists: Boolean(data), id, data: () => data };
+    },
+  });
+  return {
+    collection(coll: string) {
+      return { doc: (id: string) => ref(coll, id) };
+    },
+    async getAll(...refs: Array<{ get: () => Promise<unknown> }>) {
+      return Promise.all(refs.map((r) => r.get()));
+    },
+  } as unknown as Firestore;
+}
+
+describe('M02.5b — resolução de zona em quoteCommercialCartAdmin', () => {
+  const NOW2 = new Date('2026-09-01T12:00:00.000Z');
+  function docs(overrides: { deliveryZones?: unknown[]; flatFee?: number } = {}) {
+    return {
+      'products/product-burger': { ...product(), id: undefined },
+      'businesses/biz-m02': {
+        id: 'biz-m02',
+        settings: {
+          aiAgent: {
+            deliveryZones: overrides.deliveryZones,
+            pedidos: { deliveryFee: overrides.flatFee },
+          },
+        },
+      },
+    };
+  }
+  function deliveryRequest(overrides: Record<string, unknown> = {}) {
+    return request({
+      delivery: { type: 'entrega', bairro: 'Bairro Desconhecido', ...overrides },
+    });
+  }
+
+  it('zona casada é autoritativa mesmo com override manual enviado', async () => {
+    const db = fakeReadOnlyDb(docs({
+      deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Bairro Desconhecido', fee: 7 }],
+    }));
+    const quote = await quoteCommercialCartAdmin({
+      db,
+      input: deliveryRequest({ manualFeeCents: 99999 }),
+      canApplyManualDiscount: false,
+      canOverrideDeliveryFee: true,
+      quotedAt: NOW2,
+    });
+    expect(quote.delivery).toMatchObject({ resolution: 'matched', feeCents: 700 });
+  });
+
+  it('fora de área sem override continua bloqueando', async () => {
+    const db = fakeReadOnlyDb(docs({
+      deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Outro Bairro', fee: 7 }],
+    }));
+    await expect(quoteCommercialCartAdmin({
+      db, input: deliveryRequest(), canApplyManualDiscount: false, quotedAt: NOW2,
+    })).rejects.toThrowError(/fora da área/i);
+  });
+
+  it('fora de área com override e permissão usa a taxa proposta', async () => {
+    const db = fakeReadOnlyDb(docs({
+      deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Outro Bairro', fee: 7 }],
+    }));
+    const quote = await quoteCommercialCartAdmin({
+      db,
+      input: deliveryRequest({ manualFeeCents: 1200 }),
+      canApplyManualDiscount: false,
+      canOverrideDeliveryFee: true,
+      quotedAt: NOW2,
+    });
+    expect(quote.delivery).toMatchObject({ resolution: 'manual', feeCents: 1200 });
+  });
+
+  it('fora de área com override mas sem permissão rejeita', async () => {
+    const db = fakeReadOnlyDb(docs({
+      deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Outro Bairro', fee: 7 }],
+    }));
+    await expect(quoteCommercialCartAdmin({
+      db,
+      input: deliveryRequest({ manualFeeCents: 1200 }),
+      canApplyManualDiscount: false,
+      canOverrideDeliveryFee: false,
+      quotedAt: NOW2,
+    })).rejects.toThrowError(/não permite definir a taxa/i);
+  });
+
+  it('sem zonas configuradas cai na taxa plana quando não há override', async () => {
+    const db = fakeReadOnlyDb(docs({ flatFee: 5 }));
+    const quote = await quoteCommercialCartAdmin({
+      db, input: deliveryRequest(), canApplyManualDiscount: false, quotedAt: NOW2,
+    });
+    expect(quote.delivery).toMatchObject({ resolution: 'flat', feeCents: 500 });
+  });
+
+  it('sem zonas configuradas com override e permissão usa a taxa proposta em vez da plana', async () => {
+    const db = fakeReadOnlyDb(docs({ flatFee: 5 }));
+    const quote = await quoteCommercialCartAdmin({
+      db,
+      input: deliveryRequest({ manualFeeCents: 800 }),
+      canApplyManualDiscount: false,
+      canOverrideDeliveryFee: true,
+      quotedAt: NOW2,
+    });
+    expect(quote.delivery).toMatchObject({ resolution: 'manual', feeCents: 800 });
   });
 });
