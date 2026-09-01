@@ -77,9 +77,6 @@ import { getAppointmentProfessionalIds, getAppointmentProfessionalNames, isAppoi
 import { notifyUsers } from '@/lib/services/notifications';
 import type { Appointment, AppointmentStatus, Service, CRMContact, User, WeeklySession } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
-import { maybeCreateCommission, maybeCancelCommission } from '@/lib/services/commission';
-import { consumeServiceComponents } from '@/lib/services/serviceConsumption';
-import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 import { createAppointmentSafe, updateAppointmentSafe, AppointmentConflictError, SessionFullError } from '@/lib/services/appointmentTxGuard';
@@ -96,10 +93,15 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 import { NfseServicoCombobox } from '@/app/components/features/fiscal/NfseServicoCombobox';
 
-// SDD Fase 4: dispatch de domain event quando appointment vira concluido.
-// Fire-and-forget — não bloqueia o save. Auditoria fica em domainEvents/{id}.
-// Métricas/commission/loyalty ainda fluem via chamadas inline (handler em
-// modo auditoria — ver lib/contracts/_runtime/handlers/appointmentCompleted.ts).
+// Hardening da Agenda (go-live odontologia): appointment.completed/canceled
+// são a ÚNICA fonte dos efeitos de conclusão (métricas, comissão, fidelidade,
+// baixa de insumo) — handler real em
+// lib/contracts/_runtime/handlers/appointmentCompleted.ts e appointmentCanceled.ts.
+// Chamadas AGUARDADAS (não fire-and-forget): o toast de sucesso só aparece
+// depois que o servidor confirma os efeitos, mesma UX que já existia quando
+// comissão era aguardada inline. Falha de rede é engolida (log apenas) pra
+// não travar o save por causa só do dispatch do evento — o appointment em si
+// já foi salvo antes desta chamada.
 async function emitAppointmentCompletedEvent(args: {
   appointmentId: string;
   clientId?: string;
@@ -125,8 +127,32 @@ async function emitAppointmentCompletedEvent(args: {
       }),
     });
   } catch (err) {
-    // Fire-and-forget: log mas não derruba o save
     console.warn('[Agenda] emit appointment.completed falhou:', err);
+  }
+}
+
+// Reverte os efeitos de appointment.completed (comissão + métricas) quando um
+// agendamento sai de 'concluido'. Handler real: appointmentCanceled.ts.
+async function emitAppointmentCanceledEvent(args: {
+  appointmentId: string;
+  reason?: string;
+}): Promise<void> {
+  try {
+    const { getAuth } = await import('firebase/auth');
+    const token = await getAuth().currentUser?.getIdToken();
+    if (!token) return;
+    await fetch('/api/events/dispatch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        type: 'appointment.canceled',
+        occurredAt: new Date().toISOString(),
+        appointmentId: args.appointmentId,
+        reason: args.reason,
+      }),
+    });
+  } catch (err) {
+    console.warn('[Agenda] emit appointment.canceled falhou:', err);
   }
 }
 
@@ -252,26 +278,6 @@ function generateRecurrenceDates(startDateISO: string, frequency: RecurrenceFreq
     dates.push(format(d, 'yyyy-MM-dd'));
   }
   return dates;
-}
-
-// Mantém Client.totalSpent / visitCount / lastVisit em sincronia com o ciclo de conclusão do Appointment.
-// Why: esses campos eram puramente manuais, deixando a régua de valor do cliente sempre desatualizada.
-async function syncClientMetrics(params: {
-  clientId: string;
-  visitDelta: number;
-  priceDelta: number;
-  lastVisitDate?: string;
-}) {
-  if (!params.clientId) return;
-  const update: Record<string, unknown> = { updatedAt: new Date().toISOString() };
-  if (params.visitDelta !== 0) update.visitCount = increment(params.visitDelta);
-  if (params.priceDelta !== 0) update.totalSpent = increment(params.priceDelta);
-  if (params.lastVisitDate) update.lastVisit = params.lastVisitDate;
-  try {
-    await updateDoc(doc(db, 'clients', params.clientId), update);
-  } catch (err) {
-    console.warn('[Agenda] syncClientMetrics failed:', err);
-  }
 }
 
 // ==========================================
@@ -2270,6 +2276,23 @@ export default function AgendaModule() {
         }
       }
 
+      // FSM: o diálogo de edição deixa o status como <select> livre — sem este
+      // guard, dava pra abrir um agendamento 'agendado' e marcar 'concluido'
+      // direto, pulando confirmado/em_andamento (mesmo risco de comissão/
+      // fidelidade indevida que handleStatusChange já bloqueia há mais tempo).
+      if (editingAppointment && editingAppointment.status !== data.status
+        && !canTransitionAppointment(editingAppointment.status, data.status)) {
+        setSnackbar({
+          open: true,
+          message: t(
+            'agenda.invalidTransition',
+            `Não é possível ir de "${getStatusLabel(editingAppointment.status)}" para "${getStatusLabel(data.status)}". Confirme ou inicie o atendimento antes de concluir.`,
+          ),
+          severity: 'warning',
+        });
+        return;
+      }
+
       // Soft warning for past appointments (does not block — allows retroactive registration)
       if (!editingAppointment) {
         const apptDateTime = new Date(`${data.date}T${data.startTime}`);
@@ -2346,7 +2369,6 @@ export default function AgendaModule() {
           (key, fallback) => t(key, fallback),
         );
 
-        // Sync Client metrics for the edit paths that affect "concluído" state/price/clientId.
         const wasDone = editingAppointment.status === 'concluido';
         const isDone = data.status === 'concluido';
         const oldClientId = editingAppointment.clientId || '';
@@ -2354,76 +2376,29 @@ export default function AgendaModule() {
         const oldPrice = editingAppointment.price || 0;
         const newPrice = data.price || 0;
 
-        if (wasDone && isDone && oldClientId === newClientId) {
-          // same client, same completion state — adjust only price diff
-          if (newPrice !== oldPrice && newClientId) {
-            await syncClientMetrics({ clientId: newClientId, visitDelta: 0, priceDelta: newPrice - oldPrice });
-          }
-        } else {
-          if (wasDone && oldClientId) {
-            await syncClientMetrics({ clientId: oldClientId, visitDelta: -1, priceDelta: -oldPrice });
-          }
-          if (isDone && newClientId) {
-            await syncClientMetrics({ clientId: newClientId, visitDelta: 1, priceDelta: newPrice, lastVisitDate: data.date });
-          }
+        // Correção de preço num agendamento JÁ concluído (status não mudou —
+        // FSM não se aplica aqui). Único ajuste que continua direto: não cria
+        // Transaction/loyaltyTransaction nova, só corrige o cache totalSpent.
+        if (wasDone && isDone && oldClientId === newClientId && newClientId && newPrice !== oldPrice) {
+          await updateDoc(doc(db, 'clients', newClientId), {
+            totalSpent: increment(newPrice - oldPrice),
+            updatedAt: new Date().toISOString(),
+          }).catch(err => console.warn('[Agenda] ajuste de totalSpent na edição falhou:', err));
         }
 
-        // ── Loyalty points on edit (first time concluido) ────────────────
-        if (!wasDone && isDone && newClientId) {
-          const lc = business.settings?.loyalty;
-          if (lc?.isEnabled && (data.price || 0) > 0) {
-            const earned = calculateEarnedPoints(data.price || 0, lc);
-            if (earned > 0) {
-              addLoyaltyPoints(db, {
-                businessId: business.id,
-                clientId: newClientId,
-                clientName: data.clientName || '',
-                pointsEarned: earned,
-                config: lc,
-                sourceId: editingAppointment.id,
-                sourceType: 'appointment',
-                description: `Atendimento - ${data.serviceName || 'Serviço'}`,
-              }).catch(err => console.warn('[Agenda] loyalty on edit failed:', err));
-            }
-          }
-        }
-
-        // ── Commission handling on edit ──────────────────────────────────
-        if (!wasDone && isDone && data.professionalId) {
-          const professional = members.find(m => m.id === data.professionalId);
-          const service = services.find(s => s.id === data.serviceId);
-          await maybeCreateCommission({
-            appointment: { ...editingAppointment, ...payload, id: editingAppointment.id } as Appointment,
-            professional,
-            service,
-            businessId: business.id,
-          }).catch(err => console.warn('[Agenda] commission creation on edit failed:', err));
-        } else if (wasDone && !isDone) {
-          await maybeCancelCommission(editingAppointment.commissionTransactionId)
-            .catch(err => console.warn('[Agenda] commission cancel on edit failed:', err));
-        }
-
-        // ── P2.5: deduz insumos do serviço na 1ª conclusão (edit) ───────────
-        if (!wasDone && isDone && user) {
-          const svc = services.find(s => s.id === data.serviceId);
-          void consumeServiceComponents({
-            service: svc,
-            businessId: business.id,
-            operatorId: user.uid,
-            operatorName: user.name || user.uid,
-            appointmentId: editingAppointment.id,
-          }).catch(err => console.warn('[Agenda] service stock consumption on edit failed:', err));
-        }
-
-        // SDD Fase 4: emit domain event quando vira concluido (auditoria)
+        // ── Efeitos de conclusão/reversão — fonte única server-side ──────────
+        // (métricas, comissão, fidelidade, baixa de insumo — ver
+        // lib/contracts/_runtime/handlers/appointmentCompleted.ts / appointmentCanceled.ts)
         if (!wasDone && isDone) {
-          void emitAppointmentCompletedEvent({
+          await emitAppointmentCompletedEvent({
             appointmentId: editingAppointment.id,
             clientId: data.clientId,
             professionalId: data.professionalId,
             serviceId: data.serviceId,
             amount: data.price || 0,
           });
+        } else if (wasDone && !isDone) {
+          await emitAppointmentCanceledEvent({ appointmentId: editingAppointment.id });
         }
 
         // P2.8: aula experimental concluída → sinaliza conversão pro CRM/agent.
@@ -2475,23 +2450,28 @@ export default function AgendaModule() {
           }
 
           const batch = writeBatch(db);
+          const seriesRefs: Array<ReturnType<typeof doc>> = [];
           for (const d of dates) {
             const ref = doc(collection(db, 'appointments'));
+            seriesRefs.push(ref);
             batch.set(ref, { ...payload, date: d, recurrenceId });
           }
           await batch.commit();
-          // TODO(auditoria P2.5): série recorrente criada já 'concluido' não
-          // deduz insumos (consumedComponents) por ocorrência. Caso raro
-          // (criar série inteira como concluída); evitar dedução N× sem doc IDs
-          // individuais aqui. O caminho normal (conclusão individual) já cobre.
-          if (data.status === 'concluido' && data.clientId) {
-            // Backfill metrics for every occurrence created as 'concluído'.
-            await syncClientMetrics({
-              clientId: data.clientId,
-              visitDelta: dates.length,
-              priceDelta: (data.price || 0) * dates.length,
-              lastVisitDate: dates[dates.length - 1],
-            });
+          // Cada ocorrência criada já 'concluido' dispara seus PRÓPRIOS efeitos
+          // (métricas, comissão, fidelidade, baixa de insumo) via evento
+          // individual — o handler server-side relê o doc de cada uma.
+          // Sequencial (não Promise.all): garante que lastVisit do cliente
+          // termine na data da ÚLTIMA ocorrência da série, não numa aleatória.
+          if (data.status === 'concluido') {
+            for (let i = 0; i < seriesRefs.length; i++) {
+              await emitAppointmentCompletedEvent({
+                appointmentId: seriesRefs[i].id,
+                clientId: data.clientId,
+                professionalId: data.professionalId,
+                serviceId: data.serviceId,
+                amount: data.price || 0,
+              }).catch(err => console.warn(`[Agenda] emit appointment.completed falhou (ocorrência ${i}):`, err));
+            }
           }
           setSnackbar({
             open: true,
@@ -2517,26 +2497,17 @@ export default function AgendaModule() {
             (key, fallback) => t(key, fallback),
           );
           const newDocRef = doc(db, 'appointments', newDocId);
-          // SDD Fase 4: emit domain event se criado já concluido (auditoria)
+          // Efeitos de conclusão (métricas, comissão, fidelidade, baixa de
+          // insumo) quando criado já 'concluido' — mesma fonte única server-side
+          // do caminho de edição/mudança de status (ver appointmentCompleted.ts).
           if (data.status === 'concluido') {
-            void emitAppointmentCompletedEvent({
+            await emitAppointmentCompletedEvent({
               appointmentId: newDocRef.id,
               clientId: data.clientId,
               professionalId: data.professionalId,
               serviceId: data.serviceId,
               amount: data.price || 0,
             });
-            // P2.5: deduz insumos do serviço quando criado já concluído.
-            if (user) {
-              const svc = services.find(s => s.id === data.serviceId);
-              void consumeServiceComponents({
-                service: svc,
-                businessId: business.id,
-                operatorId: user.uid,
-                operatorName: user.name || user.uid,
-                appointmentId: newDocRef.id,
-              }).catch(err => console.warn('[Agenda] service stock consumption on create failed:', err));
-            }
             // P2.8: aula experimental criada já concluída → sinaliza conversão.
             if (data.isTrial) {
               void emitAppointmentTrialCompletedEvent({
@@ -2545,31 +2516,6 @@ export default function AgendaModule() {
                 serviceId: data.serviceId,
                 outcome: data.trialOutcome ?? 'pendente',
               });
-            }
-          }
-          if (data.status === 'concluido' && data.clientId) {
-            await syncClientMetrics({
-              clientId: data.clientId,
-              visitDelta: 1,
-              priceDelta: data.price || 0,
-              lastVisitDate: data.date,
-            });
-            // Loyalty points accumulation on creation of completed appointment
-            const lc = business.settings?.loyalty;
-            if (lc?.isEnabled && (data.price || 0) > 0) {
-              const earned = calculateEarnedPoints(data.price || 0, lc);
-              if (earned > 0) {
-                addLoyaltyPoints(db, {
-                  businessId: business.id,
-                  clientId: data.clientId,
-                  clientName: data.clientName || '',
-                  pointsEarned: earned,
-                  config: lc,
-                  sourceId: newDocRef.id,
-                  sourceType: 'appointment',
-                  description: `Atendimento - ${data.serviceName || 'Serviço'}`,
-                }).catch(err => console.warn('[Agenda] loyalty on create failed:', err));
-              }
             }
           }
           // Google Calendar sync (fire-and-forget)
@@ -2702,17 +2648,10 @@ export default function AgendaModule() {
           googleCalendarEventId: editingAppointment.googleCalendarEventId,
         }).catch(() => {});
       }
-      if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
-        await syncClientMetrics({
-          clientId: editingAppointment.clientId,
-          visitDelta: -1,
-          priceDelta: -(editingAppointment.price || 0),
-        });
-      }
-      // Cancel commission if appointment was concluido — prevents orphaned pending transactions
+      // Reverte efeitos de conclusão (comissão + métricas) se estava concluido —
+      // mesma fonte única server-side do resto do módulo (appointmentCanceled.ts).
       if (editingAppointment.status === 'concluido') {
-        await maybeCancelCommission(editingAppointment.commissionTransactionId)
-          .catch(err => console.warn('[Agenda] commission cancel on delete:', err));
+        await emitAppointmentCanceledEvent({ appointmentId: editingAppointment.id });
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
@@ -2740,9 +2679,9 @@ export default function AgendaModule() {
         a => a.recurrenceId === editingAppointment.recurrenceId && a.status !== 'cancelado',
       );
 
-      // Aggregate client metric deltas from any 'concluido' items in the series.
-      const clientDeltas = new Map<string, { visits: number; price: number }>();
-      const commissionIds: (string | undefined)[] = [];
+      // Ids concluídos da série — cada um reverte seus PRÓPRIOS efeitos via
+      // evento (appointmentCanceled.ts), sem agregação aqui.
+      const completedIds = seriesItems.filter(a => a.status === 'concluido').map(a => a.id);
       const now = new Date().toISOString();
       const cancelMeta = {
         status: 'cancelado' as const,
@@ -2753,30 +2692,16 @@ export default function AgendaModule() {
       };
       const batch = writeBatch(db);
       for (const a of seriesItems) {
-        if (a.status === 'concluido') {
-          if (a.clientId) {
-            const d = clientDeltas.get(a.clientId) || { visits: 0, price: 0 };
-            d.visits += 1;
-            d.price += a.price || 0;
-            clientDeltas.set(a.clientId, d);
-          }
-          // Collect commission IDs to cancel after batch update
-          if (a.commissionTransactionId) commissionIds.push(a.commissionTransactionId);
-        }
         // Fase 5: status-driven em vez de hard-delete. Preserva doc na FSM.
         batch.update(doc(db, 'appointments', a.id), cancelMeta);
       }
       await batch.commit();
 
-      await Promise.all([
-        ...Array.from(clientDeltas.entries()).map(([clientId, d]) =>
-          syncClientMetrics({ clientId, visitDelta: -d.visits, priceDelta: -d.price }),
-        ),
-        ...commissionIds.map(cid =>
-          maybeCancelCommission(cid).catch(err => console.warn('[Agenda] series commission cancel:', err))
-        ),
-      ]);
-      if (commissionIds.length > 0) {
+      await Promise.all(completedIds.map(appointmentId =>
+        emitAppointmentCanceledEvent({ appointmentId })
+          .catch(err => console.warn('[Agenda] series appointment.canceled falhou:', err))
+      ));
+      if (completedIds.length > 0) {
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
 
@@ -2812,17 +2737,8 @@ export default function AgendaModule() {
         cancelledByName: user.name || user.uid,
         updatedAt: now,
       });
-      if (editingAppointment.status === 'concluido' && editingAppointment.clientId) {
-        await syncClientMetrics({
-          clientId: editingAppointment.clientId,
-          visitDelta: -1,
-          priceDelta: -(editingAppointment.price || 0),
-        });
-      }
-      // Cancel commission if appointment was concluido — prevents orphaned pending transactions
       if (editingAppointment.status === 'concluido') {
-        await maybeCancelCommission(editingAppointment.commissionTransactionId)
-          .catch(err => console.warn('[Agenda] commission cancel on cancel:', err));
+        await emitAppointmentCanceledEvent({ appointmentId: editingAppointment.id });
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
@@ -2885,65 +2801,28 @@ export default function AgendaModule() {
         })();
       }
       const prevStatus = selectedAppointment.status;
-      const clientId = selectedAppointment.clientId;
       const wasDone = prevStatus === 'concluido';
       const isDone = status === 'concluido';
 
-      if (clientId) {
-        if (!wasDone && isDone) {
-          await syncClientMetrics({
-            clientId,
-            visitDelta: 1,
-            priceDelta: selectedAppointment.price || 0,
-            lastVisitDate: selectedAppointment.date,
-          });
-        } else if (wasDone && !isDone) {
-          await syncClientMetrics({
-            clientId,
-            visitDelta: -1,
-            priceDelta: -(selectedAppointment.price || 0),
-          });
-        }
-      }
-
-      // ── P2.5: deduz insumos do serviço (BOM de serviço) ───────────────────
-      // Mesma transição que comissão/loyalty (!wasDone && isDone) garante
-      // idempotência (não re-deduz em re-conclusão). Fire-and-forget.
-      if (!wasDone && isDone && user) {
-        const svc = services.find(s => s.id === selectedAppointment.serviceId);
-        void consumeServiceComponents({
-          service: svc,
-          businessId: business.id,
-          operatorId: user.uid,
-          operatorName: user.name || user.uid,
+      // ── Efeitos de conclusão/reversão — fonte única server-side ──────────
+      // (métricas, comissão, fidelidade, baixa de insumo — ver
+      // lib/contracts/_runtime/handlers/appointmentCompleted.ts / appointmentCanceled.ts).
+      // commissionTransactionId chega no selectedAppointment via onSnapshot
+      // assim que o handler grava — não precisa setState otimista aqui.
+      if (!wasDone && isDone) {
+        await emitAppointmentCompletedEvent({
           appointmentId: selectedAppointment.id,
-        }).catch(err => console.warn('[Agenda] service stock consumption failed:', err));
-      }
-
-      // ── Automatic commission handling ────────────────────────────────────
-      if (!wasDone && isDone && selectedAppointment.professionalId) {
-        const professional = members.find(m => m.id === selectedAppointment.professionalId);
-        const service = services.find(s => s.id === selectedAppointment.serviceId);
-        const commissionTxId = await maybeCreateCommission({
-          appointment: selectedAppointment,
-          professional,
-          service,
-          businessId: business.id,
-        }).catch(err => { console.warn('[Agenda] commission creation failed:', err); return null; });
-        if (commissionTxId) {
-          setSelectedAppointment(prev => prev ? { ...prev, status, commissionTransactionId: commissionTxId } : null);
-          queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
-        } else {
-          setSelectedAppointment(prev => prev ? { ...prev, status } : null);
-        }
-      } else if (wasDone && !isDone) {
-        await maybeCancelCommission(selectedAppointment.commissionTransactionId)
-          .catch(err => console.warn('[Agenda] commission cancellation failed:', err));
-        setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+          clientId: selectedAppointment.clientId,
+          professionalId: selectedAppointment.professionalId,
+          serviceId: selectedAppointment.serviceId,
+          amount: selectedAppointment.price || 0,
+        });
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
-      } else {
-        setSelectedAppointment(prev => prev ? { ...prev, status } : null);
+      } else if (wasDone && !isDone) {
+        await emitAppointmentCanceledEvent({ appointmentId: selectedAppointment.id });
+        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
+      setSelectedAppointment(prev => prev ? { ...prev, status } : null);
 
       // P2.8: aula experimental concluída via mudança de status → sinaliza
       // conversão pro CRM/agent (mesma transição idempotente !wasDone && isDone).
@@ -2969,7 +2848,7 @@ export default function AgendaModule() {
     } finally {
       setStatusChanging(false);
     }
-  }, [selectedAppointment, business?.id, queryClient, t, members, services, user]);
+  }, [selectedAppointment, business?.id, queryClient, t]);
 
   // ---- Computed values ----
   const weekStart = useMemo(() => startOfWeek(currentDate, { weekStartsOn: 0 }), [currentDate]);

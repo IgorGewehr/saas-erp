@@ -65,4 +65,22 @@ describe('M01.9 — smoke estrutural das telas críticas', () => {
     expect(orders).not.toContain('bookDeliveryRevenue');
     expect(orders).not.toContain('restoreOrderStockOnce');
   });
+
+  it('mantém Agenda acessível, com efeitos de conclusão pelo handler server-side (hardening odontologia)', () => {
+    const shell = read('app/app/page.tsx');
+    const agenda = read('app/components/features/agenda/AgendaModule.tsx');
+    expect(shell).toContain("case 'Agenda'");
+    expect(shell).toContain('<AgendaModule />');
+    // Hardening: métricas/comissão/fidelidade/baixa de insumo saem do client
+    // e passam a rodar só no handler server-side de appointment.completed/
+    // canceled — a UI só dispara o evento via /api/events/dispatch.
+    expect(agenda).toContain("fetch('/api/events/dispatch'");
+    expect(agenda).toContain('emitAppointmentCompletedEvent');
+    expect(agenda).toContain('emitAppointmentCanceledEvent');
+    expect(agenda).not.toContain('maybeCreateCommission(');
+    expect(agenda).not.toContain('maybeCancelCommission(');
+    expect(agenda).not.toContain('addLoyaltyPoints(');
+    expect(agenda).not.toContain('consumeServiceComponents(');
+    expect(agenda).not.toContain('syncClientMetrics(');
+  });
 });

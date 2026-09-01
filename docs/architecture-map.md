@@ -37,7 +37,7 @@ External
 | Estoque | `app/components/features/inventory/InventoryModule.tsx` | products (com `components[]` BOM, `modifierGroups`), stockMovements | Catálogo apenas |
 | Compras | `app/components/features/purchases/ComprasModule.tsx` | purchaseNotes, products, stockMovements, transactions | XML NF-e fornecedor → match manual → addStock; idempotência via `stockImportedAt` |
 | Cardápio | `app/components/features/cardapio/CardapioModule.tsx` | products, menuCategories | — |
-| Agenda | `app/components/features/agenda/AgendaModule.tsx` | appointments, services, clients, transactions | conflict-check + commission + loyalty + GCal push + cron reminders |
+| Agenda | `app/components/features/agenda/AgendaModule.tsx` | appointments, services, clients, transactions | conflict-check inline; conclusão/reversão (commission + loyalty + métricas + baixa de insumo) via evento `appointment.completed`/`canceled` → handler server-side (hardening odontologia); GCal push + cron reminders continuam inline |
 | Booking público | `app/booking/[slug]/page.tsx` | appointments, conversations, clients | Idempotency hash; cria cliente; NÃO dispara evento CRM (gap) |
 | Conversations | `app/components/features/conversations/ConversasModule.tsx` | conversations, conversationMessages, channelConnections | Inbound salva → dispatchInboundToAgent (debounce 5s); audio/image preprocessing |
 | Broadcasts | dentro do CRMModule | broadcasts, broadcastMessages, segments | Throttle, sessions, LGPD `consentBasis`, cron `process-scheduled` |
@@ -73,13 +73,18 @@ Broadcast send ──► throttle + sessions ──► broadcastMessages + upser
 Cron horário birthday ──► targetMmDdInTz + idempotência (campaign, client, ano) ──► detectAndNotifyMissedRun se atrasou >6h
 ```
 
-## Event bus (`lib/contracts/events` + `_runtime/dispatch`) — AUDIT-ONLY na v1
+## Event bus (`lib/contracts/events` + `_runtime/dispatch`) — AUDIT-ONLY salvo Agenda
 
 `dispatchDomainEvent(db, event)` faz duas coisas: (1) valida o evento com Zod e
 **persiste em `domainEvents/{id}`** (trilha de auditoria, status `dispatched` →
-`processed`); (2) roda os handlers **registrados** para aquele tipo. Hoje o
-ÚNICO handler pluggado é `appointment.completed` (ver
-`_runtime/handlers/index.ts`). Todo o resto — em especial os eventos de
+`processed`); (2) roda os handlers **registrados** para aquele tipo. Hoje os
+handlers pluggados são `appointment.completed` e `appointment.canceled` (ver
+`_runtime/handlers/index.ts`) — hardening da Agenda pra go-live da odontologia
+(01/09/2026): métricas do cliente, comissão e fidelidade saíram das 6+
+chamadas inline duplicadas em `AgendaModule.tsx` (criar/editar/mudar status/
+excluir/cancelar, individual e em série) e viraram efeito único desses dois
+handlers, que releem o Appointment real por `ctx.db` antes de agir — não
+confiam no payload do evento. Todo o resto — em especial os eventos de
 **cardápio/pedido** (`payment.approved`, `payment.refunded`,
 `deliveryOrder.confirmed`) — **não tem subscriber**: o evento é só auditoria.
 
@@ -108,7 +113,7 @@ handler de comissão nesses eventos.
 | G2 | Status `string` largo sem FSM | Sale, Order, Appointment, Conversation, FiscalDoc, Broadcast | Transições inválidas possíveis |
 | G3 | Sem idempotency-key | `/api/v1/sales`, `/api/v1/appointments`, broadcast send | Retry HTTP duplica registro + side-effects |
 | G4 | Lógica duplicada client↔server | stock.ts vs stock-admin.ts, BOM expansion, validação de modifiers, fuzzy phone BR | Divergência silenciosa |
-| G5 | Eventos cross-módulo só auditoria (bus audit-only — ver seção acima) | Booking IA não notifica CRM; FormResponse não cria Client; Birthday confirmação não atualiza Appointment | Bus registra `domainEvents/{id}` mas só `appointment.completed` tem handler; efeitos de pedido/pagamento rodam inline com guards (não no bus) |
+| G5 | Eventos cross-módulo só auditoria (bus audit-only — ver seção acima) | Booking IA não notifica CRM; FormResponse não cria Client; Birthday confirmação não atualiza Appointment | Bus registra `domainEvents/{id}` mas só `appointment.completed`/`appointment.canceled` têm handler; efeitos de pedido/pagamento rodam inline com guards (não no bus) |
 | G6 | Tools do agente sem output schema | `/api/agent/tools/*` | LLM trabalha em cima de dict cru; falhas silenciosas no executor |
 
 ## Coleções Firestore (resumo)

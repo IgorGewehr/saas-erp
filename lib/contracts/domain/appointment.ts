@@ -88,6 +88,11 @@ export const AppointmentSchema = z.object({
   followUpSentAt: z.string().optional(),
   commissionTransactionId: z.string().optional(),
   googleCalendarEventId: z.string().optional(),
+  // CAS de idempotência: setado quando os efeitos de conclusão (métricas,
+  // comissão, fidelidade, baixa de insumo) já foram aplicados por
+  // lib/contracts/_runtime/handlers/appointmentCompleted.ts — evita
+  // duplicar em replay/retry do evento appointment.completed.
+  completionAppliedAt: z.string().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
   cancelledAt: z.string().optional(),

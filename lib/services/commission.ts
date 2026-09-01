@@ -16,6 +16,7 @@
  */
 
 import { addDoc, collection, doc, updateDoc } from 'firebase/firestore';
+import type { Firestore as AdminFirestore } from 'firebase-admin/firestore';
 import { db } from '@/lib/config/firebase';
 import type { Appointment, User, Service } from '@/lib/types';
 
@@ -83,6 +84,74 @@ export async function maybeCreateCommission(params: {
 export async function maybeCancelCommission(commissionTransactionId: string | undefined): Promise<void> {
   if (!commissionTransactionId) return;
   await updateDoc(doc(db, 'transactions', commissionTransactionId), {
+    status: 'cancelado',
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Admin SDK mirror de `maybeCreateCommission` — mesma lógica, usada por
+ * handlers server-side (ex.: lib/contracts/_runtime/handlers/appointmentCompleted.ts)
+ * onde não há sessão de cliente autenticado disponível.
+ */
+export async function maybeCreateCommissionAdmin(
+  db: AdminFirestore,
+  params: {
+    appointment: Appointment;
+    professional: User | undefined;
+    service: Service | undefined;
+    businessId: string;
+  },
+): Promise<string | null> {
+  const { appointment, professional, service, businessId } = params;
+
+  if (appointment.commissionTransactionId) return appointment.commissionTransactionId;
+  if (!professional) return null;
+
+  const rate =
+    (service?.commissionRate != null && service.commissionRate > 0)
+      ? service.commissionRate
+      : (professional.commissionRate ?? 0);
+
+  if (rate <= 0) return null;
+  if (!appointment.price || appointment.price <= 0) return null;
+
+  const commissionAmount = Math.round((appointment.price * rate) / 100 * 100) / 100;
+  const now = new Date().toISOString();
+
+  const txRef = await db.collection('transactions').add({
+    businessId,
+    type: 'despesa',
+    category: 'Comissoes',
+    description: `Comissão — ${appointment.professionalName || professional.name} — ${appointment.serviceName}`,
+    amount: commissionAmount,
+    dueDate: appointment.date,
+    status: 'pendente',
+    clientId: professional.uid,
+    clientName: appointment.professionalName || professional.name,
+    appointmentId: appointment.id,
+    notes: `Taxa: ${rate}% sobre R$ ${appointment.price.toFixed(2)}`,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await db.collection('appointments').doc(appointment.id).update({
+    commissionTransactionId: txRef.id,
+    updatedAt: now,
+  });
+
+  return txRef.id;
+}
+
+/**
+ * Admin SDK mirror de `maybeCancelCommission`.
+ */
+export async function maybeCancelCommissionAdmin(
+  db: AdminFirestore,
+  commissionTransactionId: string | undefined,
+): Promise<void> {
+  if (!commissionTransactionId) return;
+  await db.collection('transactions').doc(commissionTransactionId).update({
     status: 'cancelado',
     updatedAt: new Date().toISOString(),
   });

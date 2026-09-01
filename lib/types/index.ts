@@ -1020,6 +1020,10 @@ export interface Appointment {
   cancelledAt?: string;
   cancelledBy?: string;
   cancelledByName?: string;
+  /** CAS de idempotência: setado quando os efeitos de conclusão (métricas,
+   *  comissão, fidelidade, baixa de insumo) já foram aplicados por
+   *  lib/contracts/_runtime/handlers/appointmentCompleted.ts. */
+  completionAppliedAt?: string;
 }
 
 /**

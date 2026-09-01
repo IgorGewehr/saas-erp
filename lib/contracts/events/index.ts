@@ -14,17 +14,23 @@
  *   `dispatchDomainEvent()` pode ser síncrono — chama handlers conhecidos
  *   em ordem. Persiste o evento em `domainEvents/{id}` para auditoria.
  *
- * ⚠️ ESTADO REAL DO BUS (v1): AUDIT-ONLY salvo o piloto.
+ * ⚠️ ESTADO REAL DO BUS (v1): AUDIT-ONLY salvo os handlers pluggados.
  *   `dispatchDomainEvent()` SEMPRE persiste `domainEvents/{id}` (trilha de
- *   auditoria) e roda os handlers REGISTRADOS — mas hoje o ÚNICO handler
- *   pluggado é `appointment.completed` (ver `_runtime/handlers/index.ts`).
+ *   auditoria) e roda os handlers REGISTRADOS — hoje `appointment.completed`
+ *   e `appointment.canceled` têm handler real (ver `_runtime/handlers/index.ts`;
+ *   hardening da Agenda pra go-live da odontologia). Ambos releem o
+ *   Appointment fresco por `ctx.db` e só aplicam efeito se o doc real
+ *   confirmar `status`/`businessId` — não confiam no `amount`/demais campos
+ *   do payload do evento (fecha a superfície de evento forjado via
+ *   `/api/events/dispatch`).
  *   Para TODO o resto — em especial os eventos do CARDÁPIO/PEDIDO
  *   (`payment.approved`, `payment.refunded`, `deliveryOrder.confirmed`) — NÃO
  *   há subscriber: o evento serve só de AUDITORIA. Os efeitos (marcar pedido
  *   pago, restaurar estoque, estornar receita, etc.) rodam INLINE no caller,
  *   com guards de idempotência (CAS: `stockRestoredAt`, `transactionReversedAt`,
  *   `paidAt`, etc.). Os jsdocs abaixo descrevem ONDE o efeito roda inline, não
- *   "subscribers" do bus. Não confie no bus para disparar efeito de dinheiro.
+ *   "subscribers" do bus. Não confie no bus para disparar efeito de dinheiro
+ *   nesses eventos ainda audit-only.
  *
  * - Cada evento documenta no body Zod (jsdoc) quem reage (ou que é audit-only).
  *   Adicionar/remover subscriber = mudança visível em 1 lugar.
@@ -48,13 +54,17 @@ const EventEnvelopeBase = z.object({
 // ============================================================================
 
 /**
- * Subscribers conhecidos:
- *   - lib/services/commission.ts → cria Transaction de comissão
- *   - lib/services/loyalty.ts → addLoyaltyPoints
- *   - lib/services/calendarSync.ts → push update GCal (status mudou)
- *   - clients.update → incrementar visitCount, lastVisit, totalSpent
+ * Handler real (`_runtime/handlers/appointmentCompleted.ts`):
+ *   - lib/services/serviceConsumption.ts → consumeServiceComponentsAdmin (baixa de insumos)
+ *   - lib/services/clientMetricsAdmin.ts → syncClientMetricsAdmin (visitCount/lastVisit/totalSpent)
+ *   - lib/services/commission.ts → maybeCreateCommissionAdmin
+ *   - lib/services/loyalty.ts → addLoyaltyPointsAdmin
  *
- * Substitui: chamadas inline em AgendaModule.tsx:handleSaveAppointment
+ * `amount` é só um snapshot pro `domainEvents/{id}` de auditoria — o handler
+ * usa `appointment.price` do doc real, nunca este campo, pra calcular efeito.
+ * GCal sync continua disparado inline pelo caller (AgendaModule), fora do bus.
+ *
+ * Substitui: chamadas inline em AgendaModule.tsx:handleSaveAppointment / handleStatusChange
  */
 export const AppointmentCompletedSchema = EventEnvelopeBase.extend({
   type: z.literal('appointment.completed'),
@@ -66,10 +76,14 @@ export const AppointmentCompletedSchema = EventEnvelopeBase.extend({
 });
 
 /**
- * Subscribers conhecidos:
- *   - lib/services/commission.ts → maybeCancelCommission
- *   - lib/services/loyalty.ts → revertLoyaltyPoints
- *   - lib/services/calendarSync.ts → push delete/update GCal
+ * Handler real (`_runtime/handlers/appointmentCanceled.ts`):
+ *   - lib/services/commission.ts → maybeCancelCommissionAdmin
+ *   - lib/services/clientMetricsAdmin.ts → syncClientMetricsAdmin (reversão)
+ *
+ * Só reverte se `appointment.completionAppliedAt` confirmar que os efeitos
+ * de conclusão foram de fato aplicados antes (idempotência simétrica ao
+ * handler de `appointment.completed`). Não reverte fidelidade nem estoque —
+ * essas reversões nunca existiram no caminho anterior (client-side).
  */
 export const AppointmentCanceledSchema = EventEnvelopeBase.extend({
   type: z.literal('appointment.canceled'),
