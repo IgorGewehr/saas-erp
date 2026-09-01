@@ -59,6 +59,8 @@ import {
   Bell,
   MessageCircle,
   Copy,
+  Receipt,
+  FileCheck2,
 } from 'lucide-react';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -1545,6 +1547,8 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, onDeleteSeries
 // ./shared. Re-import aqui mantém a API interna do AgendaModule intacta.
 import { AppointmentFormDialog } from './AppointmentFormDialog';
 import type { AppointmentFormData } from './AppointmentFormDialog';
+import EmitirNotaDialog from '@/app/components/features/fiscal/EmitirNotaDialog';
+import { buildAppointmentNfseInput } from '@/lib/services/fiscal/appointmentNfse';
 import type { RecurrenceFrequency } from './shared';
 
 // ---- View Appointment Dialog ----
@@ -1556,6 +1560,7 @@ interface ViewAppointmentDialogProps {
   onEdit: () => void;
   onStatusChange: (status: AppointmentStatus) => void;
   onOpenConversation: () => void;
+  onEmitNfse: () => void;
   statusChanging: boolean;
 }
 
@@ -1567,6 +1572,7 @@ function ViewAppointmentDialog({
   onEdit,
   onStatusChange,
   onOpenConversation,
+  onEmitNfse,
   statusChanging,
 }: ViewAppointmentDialogProps) {
   const { t, i18n } = useTranslation();
@@ -1841,6 +1847,29 @@ function ViewAppointmentDialog({
                 {t('agenda.noShow', 'Não Compareceu')}
               </button>
             )}
+
+            {/* NFSe: emitida → badge (idempotência visual); senão, concluído →
+                botão. Emissão real vive no EmitirNotaDialog + /api/fiscal/emit
+                (não reimplementada aqui) — mesmo padrão do NFC-e em Pedidos. */}
+            {appointment.status === 'concluido' && (
+              appointment.fiscalDocumentId ? (
+                <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10">
+                  <FileCheck2 className="w-3.5 h-3.5" />
+                  {t('agenda.nfseEmitted', 'NFSe emitida')}
+                </span>
+              ) : canEdit && (
+                <button
+                  onClick={onEmitNfse}
+                  className={cn(
+                    'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
+                    'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
+                  )}
+                >
+                  <Receipt className="w-3.5 h-3.5" />
+                  {t('agenda.emitNfse', 'Emitir NFSe')}
+                </button>
+              )
+            )}
           </div>
         </div>
       </div>
@@ -1925,6 +1954,9 @@ export default function AgendaModule() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+  // Atendimento em emissão de NFSe — quando setado, abre o EmitirNotaDialog
+  // pré-preenchido. Null = fechado. Espelha nfceOrder do OrdersModule.
+  const [nfseAppointment, setNfseAppointment] = useState<Appointment | null>(null);
   const [showViewDialog, setShowViewDialog] = useState(false);
   const [showFormDialog, setShowFormDialog] = useState(false);
   const [showServiceDialog, setShowServiceDialog] = useState(false);
@@ -3689,7 +3721,25 @@ export default function AgendaModule() {
         onEdit={handleEditAppointment}
         onStatusChange={handleStatusChange}
         onOpenConversation={handleOpenConversation}
+        onEmitNfse={() => {
+          setNfseAppointment(selectedAppointment);
+          setShowViewDialog(false);
+        }}
         statusChanging={statusChanging}
+      />
+
+      {/* Emissão de NFSe do atendimento — reusa o dialog fiscal existente,
+          pré-preenchido via buildAppointmentNfseInput. A emissão real
+          (certificado + SEFAZ) e o writeback fiscalDocumentId/accessKey vivem
+          no /api/fiscal/emit. Mesmo padrão do NFC-e em Pedidos. */}
+      <EmitirNotaDialog
+        open={!!nfseAppointment}
+        onClose={() => setNfseAppointment(null)}
+        type="nfse"
+        onSuccess={() => setNfseAppointment(null)}
+        prefillNFSe={nfseAppointment && business
+          ? buildAppointmentNfseInput(nfseAppointment, services.find(s => s.id === nfseAppointment.serviceId), business)
+          : undefined}
       />
 
       <AppointmentFormDialog

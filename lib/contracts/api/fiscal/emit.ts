@@ -163,19 +163,24 @@ const SharedFields = {
   certificado: CertificadoInputSchema.optional(),
   informacoesAdicionais: z.string().max(5000).optional(),
   /**
-   * Vínculo com o documento de ORIGEM que motivou a nota — Sale (PDV) ou
-   * DeliveryOrder (Pedidos). Quando presente, o handler:
-   *   - ancora a idempotência ao documento (`sale_${saleId}` / `order_${orderId}`),
-   *     de forma que retry da MESMA venda/pedido replaya a nota em vez de
-   *     emitir uma segunda (dedup deixa de depender da chave efêmera do cliente);
-   *   - persiste saleId/orderId/sourceType no fiscalDocument (rastreio bidirecional);
-   *   - grava accessKey + documentId de volta na Sale/DeliveryOrder.
-   * `sourceType` é derivado quando ausente (saleId ⇒ 'sale', orderId ⇒ 'order').
-   * Emissão manual (dialog) omite os três — sem vínculo, sem writeback.
+   * Vínculo com o documento de ORIGEM que motivou a nota — Sale (PDV),
+   * DeliveryOrder (Pedidos) ou Appointment (Agenda, NFSe). Quando presente,
+   * o handler:
+   *   - ancora a idempotência ao documento (`sale_${saleId}` / `order_${orderId}` /
+   *     `appointment_${appointmentId}`), de forma que retry do MESMO
+   *     documento replaya a nota em vez de emitir uma segunda (dedup deixa
+   *     de depender da chave efêmera do cliente);
+   *   - persiste saleId/orderId/appointmentId/sourceType no fiscalDocument
+   *     (rastreio bidirecional);
+   *   - grava accessKey + documentId de volta na Sale/DeliveryOrder/Appointment.
+   * `sourceType` é derivado quando ausente (saleId ⇒ 'sale', orderId ⇒ 'order',
+   * appointmentId ⇒ 'appointment'). Emissão manual (dialog) omite os quatro —
+   * sem vínculo, sem writeback.
    */
-  sourceType: z.enum(['sale', 'order', 'manual']).optional(),
+  sourceType: z.enum(['sale', 'order', 'appointment', 'manual']).optional(),
   saleId: z.string().optional(),
   orderId: z.string().optional(),
+  appointmentId: z.string().optional(),
 };
 
 /** NF-e — mercadoria, B2B. */

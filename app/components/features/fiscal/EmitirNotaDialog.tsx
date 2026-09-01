@@ -32,12 +32,13 @@ import { collection, getDocs, query, where, limit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { FiscalDocType, PaymentMethod, CRMContact, Product, Service } from '@/lib/types';
-import type { NfceRequest } from '@/lib/contracts/api/fiscal/emit';
+import type { NfceRequest, NfseRequest } from '@/lib/contracts/api/fiscal/emit';
 import { NfseServicoCombobox } from './NfseServicoCombobox';
 import NcmSelector from './NcmSelector';
 import { cn } from '@/lib/utils';
 import { formatCurrency, formatCPFCNPJ } from '@/lib/utils/format';
 import { maskCpfCnpj, maskPhone, maskCep, unmaskDigits } from '@/lib/utils/fiscal-masks';
+import { formatCNAEInput } from '@/lib/utils/validators';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { getNFSeCoverage } from '@/lib/fiscal/nfse-coverage';
@@ -72,6 +73,17 @@ interface EmitirNotaDialogProps {
    * `type === 'nfce'`. Nenhuma lógica de SEFAZ é reimplementada aqui.
    */
   prefillNFCe?: NfceRequest;
+  /**
+   * Pré-preenche o form de NFSe a partir de um atendimento concluído (módulo
+   * Agenda). Recebe o mesmo shape que `buildAppointmentNfseInput(appointment,
+   * service, business)` produz — valor, discriminação, códigos fiscais do
+   * serviço (quando cadastrados) e o vínculo `appointmentId`/`sourceType`. O
+   * operador confere/completa o tomador (CPF/CNPJ) antes de emitir;
+   * `appointmentId`/`sourceType` fluem pro emit route pra ancorar a
+   * idempotência POR ATENDIMENTO (retry replaya a nota já emitida em vez de
+   * duplicar). Só tem efeito quando `type === 'nfse'`.
+   */
+  prefillNFSe?: NfseRequest;
 }
 
 // Coerce arbitrary payment label (vinda do pedido/contrato) pra PaymentMethod
@@ -208,7 +220,7 @@ const createDefaultPayments = (): PaymentForm[] => [{ id: '1', method: 'dinheiro
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefillNFeDevolution, prefillNFCe }: EmitirNotaDialogProps) {
+export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefillNFeDevolution, prefillNFCe, prefillNFSe }: EmitirNotaDialogProps) {
   // Idempotência: chave estável durante a sessão do dialog — retry manual da
   // MESMA nota reusa a chave (replay/409 no servidor); nova nota = chave nova.
   const idemKeyRef = useRef<string>(crypto.randomUUID());
@@ -424,6 +436,34 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
       .map((p, i) => ({ id: String(i + 1), method: toPaymentMethod(p.method), amount: Number(p.amount) || 0 }));
     if (payments.length > 0) setNfcePayments(payments);
   }, [open, type, prefillNFCe]);
+
+  // Pré-preenche o form de NFSe a partir de um atendimento concluído
+  // (buildAppointmentNfseInput). Roda DEPOIS do resetForm (declarado antes) no
+  // mesmo commit. tomador sai só com nome (sem CPF/CNPJ — Appointment não
+  // guarda documento do cliente); o operador confirma via autocomplete de
+  // cliente antes de emitir. appointmentId/sourceType não vão pro state do
+  // form: fluem direto pro apiBody em handleEmitNFSe.
+  useEffect(() => {
+    if (!open || type !== 'nfse' || !prefillNFSe) return;
+    setNfseForm(prev => ({
+      ...prev,
+      tomadorNome: prefillNFSe.tomador?.nome || prev.tomadorNome,
+      discriminacao: prefillNFSe.discriminacao || prev.discriminacao,
+      codigoTributacaoNacional: prefillNFSe.codigoServico || prev.codigoTributacaoNacional,
+      codigoTributacaoMunicipal: prefillNFSe.codigoServicoMunicipal || prev.codigoTributacaoMunicipal,
+      valorServicos: prefillNFSe.valorServicos || prev.valorServicos,
+      aliquotaISS: prefillNFSe.aliquotaIss ?? prev.aliquotaISS,
+    }));
+    if (prefillNFSe.nbs) setNfseNbs(prefillNFSe.nbs);
+  }, [open, type, prefillNFSe]);
+
+  // Pré-preenche o CNAE a partir de business.fiscal.cnae (Settings → Fiscal) —
+  // evita redigitar em toda nota quando a prefeitura exige. Operador continua
+  // livre pra editar/limpar.
+  useEffect(() => {
+    if (!open || type !== 'nfse' || !business?.fiscal?.cnae) return;
+    setNfseCnae(formatCNAEInput(business.fiscal.cnae));
+  }, [open, type, business]);
 
   // ── NFSe Computed Values ──
   const nfseBaseCalculo = useMemo(() => {
@@ -664,6 +704,9 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
         issRetido: nfseForm.tipoRetencaoISSQN !== '1',
         tipoRetencaoISSQN: nfseForm.tipoRetencaoISSQN,
         informacoesAdicionais: nfseForm.informacoesAdicionais || undefined,
+        ...(prefillNFSe?.appointmentId
+          ? { appointmentId: prefillNFSe.appointmentId, sourceType: 'appointment' as const }
+          : {}),
       };
 
       const res = await fetch('/api/fiscal/emit', {
@@ -1314,13 +1357,7 @@ export default function EmitirNotaDialog({ open, onClose, type, onSuccess, prefi
                   </label>
                   <input
                     value={nfseCnae}
-                    onChange={(e) => {
-                      const digits = e.target.value.replace(/\D/g, '').slice(0, 7);
-                      let masked = digits;
-                      if (digits.length > 4) masked = `${digits.slice(0, 4)}-${digits.slice(4)}`;
-                      if (digits.length > 5) masked = `${digits.slice(0, 4)}-${digits.slice(4, 5)}/${digits.slice(5)}`;
-                      setNfseCnae(masked);
-                    }}
+                    onChange={(e) => setNfseCnae(formatCNAEInput(e.target.value))}
                     placeholder="Ex: 6201-5/01"
                     maxLength={9}
                     className={inputClasses}

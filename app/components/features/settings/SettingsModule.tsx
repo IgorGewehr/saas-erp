@@ -114,6 +114,7 @@ import {
   formatCPFInput,
   formatPhoneInput,
   formatCEPInput,
+  formatCNAEInput,
   UF_LIST,
 } from '@/lib/utils/validators';
 
@@ -1946,6 +1947,7 @@ function FiscalTab() {
   const [operationType, setOperationType] = useState('saida');
   const [sellsInterstate, setSellsInterstate] = useState(false);
   const [ibgeCode, setIbgeCode] = useState('');
+  const [cnae, setCnae] = useState('');
   const [isSavingRegime, setIsSavingRegime] = useState(false);
 
   const [nfeSeries, setNfeSeries] = useState('1');
@@ -2010,6 +2012,7 @@ function FiscalTab() {
     setOperationType(((f as Record<string, unknown>).operationType as string) || 'saida');
     setSellsInterstate(!!((f as Record<string, unknown>).sellsInterstate));
     setIbgeCode(f.ibgeCodigoMunicipio || business.endereco?.codigoMunicipio || '');
+    setCnae(f.cnae ? formatCNAEInput(f.cnae) : '');
 
     if (f.nfeConfig) {
       setNfeSeries(f.nfeConfig.series || '1');
@@ -2089,7 +2092,7 @@ function FiscalTab() {
   const handleSaveRegime = async () => {
     setIsSavingRegime(true);
     try {
-      await saveFiscalField({ taxRegime, operationType, sellsInterstate, ibgeCodigoMunicipio: ibgeCode || null });
+      await saveFiscalField({ taxRegime, operationType, sellsInterstate, ibgeCodigoMunicipio: ibgeCode || null, cnae: cnae.replace(/\D/g, '') || null });
       toast.success(t('settings.fiscal.regimeSaved', 'Regime e operação salvos!'));
     } catch { toast.error(t('settings.fiscal.regimeError', 'Erro ao salvar regime')); }
     finally { setIsSavingRegime(false); }
@@ -2504,6 +2507,9 @@ function FiscalTab() {
             </FormField>
             <FormField label={t('settings.fiscal.ibgeCode', 'Cód. IBGE Município')} tooltip={t('settings.fiscal.ibgeCodeTooltip', 'Código IBGE de 7 dígitos')}>
               <input value={ibgeCode} onChange={(e) => setIbgeCode(e.target.value)} placeholder="3550308" maxLength={7} className={inputClasses} disabled={!canEditFiscal} />
+            </FormField>
+            <FormField label={t('settings.fiscal.cnae', 'Código CNAE')} tooltip={t('settings.fiscal.cnaeTooltip', 'Obrigatório em algumas prefeituras (ex: BH) para emissão de NFS-e. Evita digitar em toda nota.')}>
+              <input value={cnae} onChange={(e) => setCnae(formatCNAEInput(e.target.value))} placeholder="Ex: 6201-5/01" maxLength={9} className={inputClasses} disabled={!canEditFiscal} />
             </FormField>
           </div>
           {canEditFiscal && (

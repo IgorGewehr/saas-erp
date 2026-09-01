@@ -26,6 +26,13 @@ Entregue: [lib/fiscal/nfse-coverage.ts](../../lib/fiscal/nfse-coverage.ts) com t
 
 ---
 
+### 2.1. ~~Vínculo manual Agenda → NFSe~~ ✅ Concluído (01/09/2026)
+Entregue pro go-live da odontologia: botão "Emitir NFSe" no atendimento concluído (Agenda), reaproveitando `EmitirNotaDialog` via novo `prefillNFSe` — ver [docs/agenda/AGENDA_NFSE_MANUAL.md](../agenda/AGENDA_NFSE_MANUAL.md). Deliberadamente manual (sem `autoEmit`) até a validação real pro município abaixo acontecer. De quebra, corrigiu um gap real: a branch de NFSe do emit route nunca gravava o writeback (`fiscalDocumentId`/`fiscalAccessKey`) — agora grava, vale pra qualquer emissão vinculada por `appointmentId`.
+
+**Ainda pendente (bloqueado no usuário):** validação de emissão real (homologação) contra o gateway sefaz-api pra **Maximiliano de Almeida (RS)** — cliente real da odontologia. A cidade não está na coverage table (`lib/fiscal/nfse-coverage.ts`); cai no fallback genérico "Padrão Nacional ADN, não testado". O gateway já declara suporte a ADN (ver `ROADMAP_FISCAL.md`), mas nunca foi exercitado contra este município específico. Precisa das credenciais/certificado do usuário pra rodar um teste real — quando confirmado, adicionar entrada na coverage table.
+
+---
+
 ## 🟡 Médio prazo (fazer quando aparecer caso real)
 
 ### 3. ~~Refactor mínimo: extrair regras municipais SP num módulo~~ ✅ Concluído (Opção C)

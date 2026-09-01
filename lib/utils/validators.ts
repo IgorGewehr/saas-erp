@@ -57,6 +57,13 @@ export function formatCNPJInput(value: string): string {
   return `${cleaned.slice(0, 2)}.${cleaned.slice(2, 5)}.${cleaned.slice(5, 8)}/${cleaned.slice(8, 12)}-${cleaned.slice(12)}`;
 }
 
+export function formatCNAEInput(value: string): string {
+  const digits = value.replace(/\D/g, '').slice(0, 7);
+  if (digits.length <= 4) return digits;
+  if (digits.length <= 5) return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+  return `${digits.slice(0, 4)}-${digits.slice(4, 5)}/${digits.slice(5)}`;
+}
+
 export function formatCPFInput(value: string): string {
   const cleaned = value.replace(/\D/g, '').slice(0, 11);
   if (cleaned.length <= 3) return cleaned;

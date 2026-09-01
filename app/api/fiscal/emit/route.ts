@@ -111,25 +111,27 @@ async function persistPendingAndRespond(params: {
 
 /**
  * Grava o vínculo do fiscalDocument recém-emitido de volta no documento de
- * origem (Sale em `sales` ou DeliveryOrder em `deliveryOrders`). Fecha o loop
- * de rastreio: a venda passa a saber sua nota (accessKey + documentId) e o
- * módulo Fiscal já ancora a idempotência no saleId/orderId. Best-effort — a
- * emissão já ocorreu, então falha de writeback loga (warn) e não derruba a
- * resposta. Cross-tenant guard: nunca escreve em doc de outro businessId
- * (adminDb bypassa Firestore rules).
+ * origem (Sale em `sales`, DeliveryOrder em `deliveryOrders` ou Appointment
+ * em `appointments`). Fecha o loop de rastreio: a venda/pedido/atendimento
+ * passa a saber sua nota (accessKey + documentId) e o módulo Fiscal já ancora
+ * a idempotência no saleId/orderId/appointmentId. Best-effort — a emissão já
+ * ocorreu, então falha de writeback loga (warn) e não derruba a resposta.
+ * Cross-tenant guard: nunca escreve em doc de outro businessId (adminDb
+ * bypassa Firestore rules).
  */
 async function linkFiscalDocToSource(params: {
   businessId: string;
   saleId?: string;
   orderId?: string;
+  appointmentId?: string;
   fiscalDocumentId: string;
   accessKey: string | null;
-  type: 'nfe' | 'nfce';
+  type: 'nfe' | 'nfce' | 'nfse';
   status: string;
   now: string;
 }): Promise<void> {
-  const collectionName = params.saleId ? 'sales' : params.orderId ? 'deliveryOrders' : null;
-  const docId = params.saleId || params.orderId;
+  const collectionName = params.saleId ? 'sales' : params.orderId ? 'deliveryOrders' : params.appointmentId ? 'appointments' : null;
+  const docId = params.saleId || params.orderId || params.appointmentId;
   if (!collectionName || !docId) return;
   try {
     const ref = adminDb.collection(collectionName).doc(docId);
@@ -188,11 +190,14 @@ export async function POST(request: NextRequest) {
   // manual), cai na X-Idempotency-Key enviada pela UI (comportamento legado).
   const sourceSaleId = typeof bodyRec?.saleId === 'string' ? bodyRec.saleId.trim() : '';
   const sourceOrderId = typeof bodyRec?.orderId === 'string' ? bodyRec.orderId.trim() : '';
+  const sourceAppointmentId = typeof bodyRec?.appointmentId === 'string' ? bodyRec.appointmentId.trim() : '';
   const sourceAnchor = sourceSaleId
     ? `sale_${sourceSaleId}`
     : sourceOrderId
       ? `order_${sourceOrderId}`
-      : '';
+      : sourceAppointmentId
+        ? `appointment_${sourceAppointmentId}`
+        : '';
   const idemKeyRaw = sourceAnchor || request.headers.get('x-idempotency-key')?.trim();
   if (!idemKeyRaw || typeof bid !== 'string' || !bid) {
     return emitCore(request, body);
@@ -313,19 +318,23 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
     // handler for quebrado em sub-handlers (1 por type).
     const data = parsed.data as Record<string, any>;
 
-    // Vínculo com o documento de origem (Sale/DeliveryOrder). sourceType é
-    // derivado quando ausente. Usado pra persistir no fiscalDocument e gravar
-    // accessKey/documentId de volta na venda/pedido após a emissão.
+    // Vínculo com o documento de origem (Sale/DeliveryOrder/Appointment).
+    // sourceType é derivado quando ausente. Usado pra persistir no
+    // fiscalDocument e gravar accessKey/documentId de volta na venda/
+    // pedido/atendimento após a emissão.
     const saleId = typeof data.saleId === 'string' && data.saleId.trim() ? data.saleId.trim() : undefined;
     const orderId = typeof data.orderId === 'string' && data.orderId.trim() ? data.orderId.trim() : undefined;
-    const sourceType: 'sale' | 'order' | 'manual' | undefined =
-      data.sourceType === 'sale' || data.sourceType === 'order' || data.sourceType === 'manual'
+    const appointmentId = typeof data.appointmentId === 'string' && data.appointmentId.trim() ? data.appointmentId.trim() : undefined;
+    const sourceType: 'sale' | 'order' | 'appointment' | 'manual' | undefined =
+      data.sourceType === 'sale' || data.sourceType === 'order' || data.sourceType === 'appointment' || data.sourceType === 'manual'
         ? data.sourceType
         : saleId
           ? 'sale'
           : orderId
             ? 'order'
-            : undefined;
+            : appointmentId
+              ? 'appointment'
+              : undefined;
 
     // Auth: NFC-e (cupom de caixa) pode ser emitida por operator+ — é o fluxo
     // pós-venda do PDV, operado por caixas. NF-e/NFSe seguem admin+ (dados
@@ -903,7 +912,9 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
 
       // Persist fiscal document
       if (result.chaveAcesso || result.codigoVerificacao || result.status === 'autorizado') {
-        await adminDb.collection('fiscalDocuments').add(
+        const nfseStatus = normalizeFiscalDocumentStatus(result.status) ?? result.status;
+        const nfseAccessKey = result.codigoVerificacao || result.chaveAcesso || null;
+        const nfseDocRef = await adminDb.collection('fiscalDocuments').add(
           stripEmpty({
             businessId,
             type: 'nfse',
@@ -911,11 +922,11 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
             number: result.numeroNfse || number,
             series,
             // For NFSe, the SEFAZ returns codigoVerificacao (used to validate the note on the city portal).
-            accessKey: result.codigoVerificacao || result.chaveAcesso,
+            accessKey: nfseAccessKey,
             protocol: result.protocolo,
             // Canoniza pro feminino do FSM (rejeitado→rejeitada, erro mantém)
             // — gravar o masculino cru do gateway divergiria do FSM e da UI.
-            status: normalizeFiscalDocumentStatus(result.status) ?? result.status,
+            status: nfseStatus,
             statusMessage: result.motivoStatus || result.mensagens?.[0]?.mensagem || result.erros?.[0] || null,
             xml: result.xml,
             // linkVisualizacao = external URL (city portal) to view/print the NFSe — there's no DANFE for NFSe.
@@ -925,6 +936,8 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
             clientName: data.tomador?.nome,
             clientCpfCnpj: data.tomador?.cpf || data.tomador?.cnpj,
             informacoesAdicionais: data.informacoesAdicionais,
+            appointmentId,
+            sourceType,
             // NFSe doesn't have a true items array — synthesize one entry from the service block so
             // the detail dialog renders the description/value table consistently with NFe/NFCe.
             items: [
@@ -943,6 +956,16 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
             updatedAt: now,
           }),
         );
+
+        await linkFiscalDocToSource({
+          businessId,
+          appointmentId,
+          fiscalDocumentId: nfseDocRef.id,
+          accessKey: nfseAccessKey,
+          type: 'nfse',
+          status: nfseStatus,
+          now,
+        });
       }
 
       return NextResponse.json(

@@ -98,6 +98,13 @@ export const AppointmentSchema = z.object({
   cancelledAt: z.string().optional(),
   cancelledBy: z.string().optional(),
   cancelledByName: z.string().optional(),
+  // ── Vínculo fiscal (NFSe) — writeback de /api/fiscal/emit ────────────────
+  // Mesmo padrão de DeliveryOrder.fiscalDocumentId/fiscalAccessKey. Presença
+  // de fiscalDocumentId = nota já emitida ⇒ idempotência visual na Agenda
+  // (mostra badge "NFSe emitida" em vez do botão de emissão).
+  fiscalDocumentId: z.string().optional(),
+  fiscalAccessKey: z.string().nullable().optional(),
+  fiscalStatus: z.string().optional(),
 }).superRefine((a, ctx) => {
   // INVARIANTE: turma é coerente — se isGroupSession então precisa de sessionKey.
   if (a.isGroupSession && !a.sessionKey) {

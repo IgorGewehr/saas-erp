@@ -860,6 +860,10 @@ export interface FiscalConfig {
   inscricaoEstadual?: string;
   inscricaoMunicipal?: string;
   ibgeCodigoMunicipio?: string;
+  /** Código CNAE (7 dígitos, ex: "6201501"). Algumas prefeituras exigem no
+   *  corpo da NFS-e (ex: BH) — configurar aqui evita digitação manual por
+   *  nota em EmitirNotaDialog. */
+  cnae?: string;
   taxRegime?: TaxRegime;
   accountingEmail?: string;
 }
@@ -1024,6 +1028,16 @@ export interface Appointment {
    *  comissão, fidelidade, baixa de insumo) já foram aplicados por
    *  lib/contracts/_runtime/handlers/appointmentCompleted.ts. */
   completionAppliedAt?: string;
+  // ── Vínculo fiscal (NFSe) — writeback de /api/fiscal/emit ──────────────
+  /** FK para o fiscalDocument (NFSe) emitido a partir deste atendimento.
+   *  Presença = nota já emitida ⇒ idempotência visual (mostra "NFSe emitida"
+   *  em vez do botão de emissão). Gravado pelo writeback best-effort do
+   *  emit route — mesmo padrão de DeliveryOrder.fiscalDocumentId. */
+  fiscalDocumentId?: string;
+  /** Chave de acesso da NFSe vinculada. Null quando a nota ficou pendente
+   *  sem chave ainda. */
+  fiscalAccessKey?: string | null;
+  fiscalStatus?: string;
 }
 
 /**
