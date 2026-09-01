@@ -57,7 +57,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
 - [ ] **M02 — Vendas, PDV, Pedidos e Cardápio**
-  - Status: `Em implementação — M02.0 a M02.4 concluídas; próxima etapa M02.5`
+  - Status: `Em implementação — M02.0 a M02.4 concluídas em código; M02.5a (cardápio público) concluída; próxima etapa M02.5b`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.
@@ -484,8 +484,8 @@ O inventário, o diagnóstico e o plano completo estão em `docs/paridade/M02_PL
 - [x] **M02.1 — Contratos, cotação e preço autoritativo** — contratos V2, adaptadores legados, preço em centavos e fronteiras server-side concluídos.
 - [x] **M02.2 — Coordenador de operação comercial** — checkpoints, replay, efeitos determinísticos, estoque M01 e compensação concluídos.
 - [x] **M02.3 — PDV e venda de serviços** — preço autoritativo, pagamentos por alocação, estoque, cliente, comissão e estados operacionais concluídos.
-- [ ] **M02.4 — Cupons, gift cards e fidelidade** — próxima etapa.
-- [ ] **M02.5 — Delivery, cardápio e agente**.
+- [x] **M02.4 — Cupons, gift cards e fidelidade** — ledgers determinísticos de cupom, gift card e fidelidade integrados ao coordenador comercial concluídos.
+- [ ] **M02.5 — Delivery, cardápio e agente** — M02.5a (cardápio público) concluída; M02.5b (pedido manual) é a próxima etapa.
 - [ ] **M02.6 — Venda B2B e condicional**.
 - [ ] **M02.7 — Cancelamento, devolução e reembolso**.
 - [ ] **M02.8 — Experiência e desempenho comercial**.
@@ -522,3 +522,6 @@ Decisões estruturais da M02:
 | 29/08/2026 | Coordenar operações comerciais por checkpoints e IDs determinísticos, mantendo os documentos legados por canal | Permite retomar falhas sem repetir estoque ou dinheiro e prepara uma migração gradual começando pelo PDV |
 | 29/08/2026 | Criar um lançamento financeiro legado determinístico por alocação aplicável do PDV e registrar pagamento, financeiro, estoque e fiscal separadamente | Preserva pagamentos divididos e diferidos agora, sem antecipar a consolidação do contas a receber da M03 |
 | 29/08/2026 | Resolver preço, nome, desconto permitido e comissão no servidor, ignorando a taxa de comissão enviada pelo navegador | Impede adulteração do checkout e mantém as regras vinculadas ao tenant e ao usuário autenticado |
+| 01/09/2026 | Fatiar a M02.5 (público/manual/agente/FSM/variantId/Mercado Pago) começando pelo cardápio público | O canal site já tinha a lógica mais madura (zona, horário, modificadores, cupom, gift card, tracking) e testes de caracterização prontos, reduzindo o risco da primeira migração |
+| 01/09/2026 | Unificar o estoque de insumo/modificador do delivery com a regra do PDV (bloqueia saldo negativo), aceitando a rejeição de pedidos que hoje passariam | Duas regras diferentes de estoque por canal era exatamente o risco que a M02 existe para eliminar; a divergência só foi percebida ao migrar um canal com frete |
+| 01/09/2026 | Gift card do delivery passa a falhar de forma dura em corrida, dentro do mesmo checkpoint transacional do cupom | Elimina o ledger paralelo de gift card do site e a inconsistência de hoje (cupom já falhava duro, só gift card era "melhor esforço") |

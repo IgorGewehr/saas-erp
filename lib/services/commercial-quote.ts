@@ -81,7 +81,13 @@ export function applyAuthoritativeCommercialDiscounts(
     reason?: string;
   }>,
 ): CommercialQuote {
-  let remainingCents = Math.max(0, quote.pricing.subtotalCents - quote.pricing.discountCents);
+  // Inclui o frete no teto: sem isso, um benefício que precisa cobrir mercadoria
+  // + entrega (ex.: gift card) seria clampado ao subtotal e debitado a mais do
+  // que o total efetivamente reduzido. Para Sale, deliveryFeeCents é sempre 0.
+  let remainingCents = Math.max(
+    0,
+    quote.pricing.subtotalCents + quote.pricing.deliveryFeeCents - quote.pricing.discountCents,
+  );
   const applied = discounts.map((discount) => {
     const amountCents = Math.min(remainingCents, Math.max(0, Math.round(discount.amountCents)));
     remainingCents -= amountCents;

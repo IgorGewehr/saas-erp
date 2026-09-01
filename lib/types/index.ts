@@ -2098,6 +2098,12 @@ export interface DeliveryOrder {
    *  idempotência: Transaction só é criada se este campo estiver vazio. */
   transactionId?: string;
 
+  /** Correlação com o núcleo comercial M02 (commercialOperations/{id}) para
+   *  canais já migrados (M02.5a: cardápio público). Mesma semântica de
+   *  Sale.commercialOperationId/commercialOperationStatus. */
+  commercialOperationId?: string;
+  commercialOperationStatus?: string;
+
   // ── Vínculo fiscal (V3) — writeback de /api/fiscal/emit ──
   /** FK para o fiscalDocument (NFC-e) emitido a partir deste pedido. Presença =
    *  nota já emitida ⇒ idempotência visual (mostra "NFC-e emitida" em vez do

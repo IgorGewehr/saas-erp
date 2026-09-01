@@ -164,8 +164,8 @@ Não foi executada contra o projeto Firebase padrão, pois não há um ambiente 
 ## 8. Descobertas congeladas para as próximas etapas
 
 1. O PDV possui entrada server-side, mas o preço e desconto ainda vêm do cliente.
-2. `CreatePublicOrderBodySchema` e `/api/orders/public` descrevem payloads diferentes.
-3. `variantId` existe no catálogo V2, porém é descartado pelos contratos de Sale/DeliveryOrder/Order.
+2. ~~`CreatePublicOrderBodySchema` e `/api/orders/public` descrevem payloads diferentes.~~ Resolvido na M02.5a: a rota delega ao núcleo comercial e o contrato público é a fronteira efetiva. Detalhes em `docs/paridade/M02_DELIVERY_CARDAPIO.md`.
+3. `variantId` existe no catálogo V2, porém ainda é descartado pelos contratos de Sale/DeliveryOrder/Order fora do PDV — permanece congelado até a M02.5e (delivery) e M02.6 (B2B).
 4. O PDV preserva os pagamentos na venda, mas cria uma única receita paga com o primeiro método.
 5. Gift card e pontos do PDV são aplicados depois da venda, em melhor esforço.
 6. O site possui ledgers melhores para cupom/gift card, mas sem compensação completa após falha posterior.

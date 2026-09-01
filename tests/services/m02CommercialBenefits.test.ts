@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { CouponSchema } from '@/lib/contracts/domain/coupon';
+import { ProductV2Schema } from '@/contracts/domain/productV2';
 import {
   compensateCommercialBenefitsAdmin,
   confirmCommercialBenefitsAdmin,
   loadCommercialBenefitResourcesAdmin,
   reserveCommercialBenefitsAdmin,
 } from '@/lib/services/commercial-benefits-admin';
-import type { CommercialOperationHandlerContext } from '@/lib/services/commercial-operation-admin';
+import { buildCommercialOperationIdentity } from '@/lib/services/commercial-operation-admin';
+import { buildCommercialQuote } from '@/lib/services/commercial-quote';
 import type { GiftCard, LoyaltyConfig } from '@/lib/types';
 
 const NOW = new Date('2026-08-31T10:00:00.000Z');
@@ -28,6 +30,8 @@ function mockDb(data: Record<string, Record<string, any>> = {}) {
     collection: (colName: string) => {
       return {
         doc: (docId: string) => ({
+          _colName: colName,
+          _docId: docId,
           get: async () => {
             const col = getCol(colName);
             const exists = col.has(docId);
@@ -175,5 +179,140 @@ describe('M02.4 — Ledgers e serviços de benefícios comerciais', () => {
     expect(resources.giftCards.get('GIFT50')?.id).toBe('gf-1');
     expect(resources.loyalty?.pointsPerReal).toBe(1);
     expect(resources.client?.loyaltyPoints).toBe(100);
+  });
+});
+
+describe('M02.5a — reserva de cupom respeita o frete/tipo de entrega real da cotação', () => {
+  function deliveryQuote() {
+    const product = ProductV2Schema.parse({
+      schemaVersion: 2,
+      id: 'p1',
+      businessId: 'biz-1',
+      kind: 'simple',
+      name: 'Produto 1',
+      category: 'Geral',
+      unit: 'UN',
+      purchaseUnit: 'UN',
+      purchaseToStockFactor: 1,
+      costMethod: 'moving_average',
+      costPrice: 2,
+      salePrice: 10,
+      currentStock: 5,
+      minStock: 0,
+      trackStock: true,
+      trackLots: false,
+      trackExpiry: false,
+      expiryWarningDays: 30,
+      isActive: true,
+      images: [],
+      variants: [],
+      menuAvailable: true,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+    return buildCommercialQuote({
+      schemaVersion: 2,
+      businessId: 'biz-1',
+      channel: 'site',
+      lines: [{ lineId: 'line-1', productId: product.id, quantity: 1 }],
+      delivery: { type: 'entrega' },
+      tipCents: 0,
+    }, {
+      products: new Map([[product.id, product]]),
+      services: new Map(),
+      canApplyManualDiscount: false,
+      delivery: { feeCents: 500, resolution: 'flat' },
+    }, NOW);
+  }
+
+  function deliveryRequest(benefits: Record<string, unknown>[]) {
+    const quote = deliveryQuote();
+    return {
+      schemaVersion: 1,
+      businessId: 'biz-1',
+      idempotencyKey: 'delivery-checkout-1',
+      sourceType: 'deliveryOrder',
+      channel: 'site',
+      quote,
+      target: { collection: 'deliveryOrders' },
+      document: { businessId: 'biz-1', status: 'recebido', total: quote.pricing.totalCents / 100 },
+      payments: [],
+      benefits,
+      actor: { id: 'public', name: 'Cardápio online', type: 'system' },
+    };
+  }
+
+  it('aplica cupom appliesTo=entrega num pedido de entrega (antes da correção, era sempre wrong_channel)', async () => {
+    const coupon = CouponSchema.parse({
+      id: 'cp-entrega',
+      businessId: 'biz-1',
+      code: 'FRETE-OK',
+      discountType: 'fixed',
+      discountValue: 5,
+      appliesTo: 'entrega',
+      status: 'active',
+      usedCount: 0,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+    const rawRequest = deliveryRequest([{
+      intentId: 'coupon-1',
+      type: 'coupon',
+      action: 'redeem',
+      referenceId: coupon.id,
+      code: coupon.code,
+      amountCents: 500,
+    }]);
+    const { request, operationId, requestFingerprint, effectIds } = buildCommercialOperationIdentity(rawRequest);
+    const db = mockDb({ coupons: { 'cp-entrega': coupon } });
+
+    const effects = await reserveCommercialBenefitsAdmin({
+      db: db as any,
+      operationId,
+      requestFingerprint,
+      request,
+      effectIds,
+      documentId: effectIds.documentId,
+    });
+
+    expect(effects.couponRedemptionIds).toHaveLength(1);
+    const ledgerId = effectIds.couponRedemptionIds['coupon-1'];
+    expect(db._store.get('couponRedemptions')?.get(ledgerId)?.status).toBe('reserved');
+  });
+
+  it('reserva cupom de frete grátis pelo valor do frete autoritativo da cotação, não por evaluation.discount', async () => {
+    const coupon = CouponSchema.parse({
+      id: 'cp-free',
+      businessId: 'biz-1',
+      code: 'FRETEGRATIS',
+      discountType: 'free_delivery',
+      discountValue: 0,
+      appliesTo: 'all',
+      status: 'active',
+      usedCount: 0,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    });
+    const rawRequest = deliveryRequest([{
+      intentId: 'coupon-1',
+      type: 'coupon',
+      action: 'redeem',
+      referenceId: coupon.id,
+      code: coupon.code,
+      amountCents: 500, // == quote.delivery.feeCents, não evaluation.discount (que é 0)
+    }]);
+    const { request, operationId, requestFingerprint, effectIds } = buildCommercialOperationIdentity(rawRequest);
+    const db = mockDb({ coupons: { 'cp-free': coupon } });
+
+    const effects = await reserveCommercialBenefitsAdmin({
+      db: db as any,
+      operationId,
+      requestFingerprint,
+      request,
+      effectIds,
+      documentId: effectIds.documentId,
+    });
+
+    expect(effects.couponRedemptionIds).toHaveLength(1);
   });
 });

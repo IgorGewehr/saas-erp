@@ -202,11 +202,9 @@ export function adaptDeliveryOrderToCommercialV2(rawInput: unknown): CommercialD
   const raw = asRecord(rawInput);
   const giftCardCents = reaisToCents(Number(raw.giftCardAmount ?? 0));
   const storedTotal = Number(raw.total ?? 0);
-  // O schema legado não conhece giftCardAmount e valida `total` antes dessa
-  // tender. Recompomos só a entrada da validação; a saída V2 mantém o total pago.
-  const order: DeliveryOrder = DeliveryOrderSchema.parse(giftCardCents > 0
-    ? { ...raw, total: storedTotal + giftCardCents / 100 }
-    : rawInput);
+  // Desde a M02.5a, o schema legado já desconta giftCardAmount do total (o
+  // documento sempre guardou o valor pago, pós-tender) — não há mais reinflação a fazer.
+  const order: DeliveryOrder = DeliveryOrderSchema.parse(rawInput);
   const rawItems = Array.isArray(raw.items) ? raw.items.map(asRecord) : [];
   const lines = order.items.map((item, index) => legacyLine({
     raw: rawItems[index] ?? {},

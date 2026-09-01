@@ -49,6 +49,22 @@ function nowIso(context: CommercialOperationHandlerContext): string {
     : context.request.quote.quotedAt;
 }
 
+/**
+ * A cotação carrega o único frete/tipo de entrega autoritativo da operação.
+ * PDV nunca preenche `quote.delivery`, então o fallback retirada/0 preserva o
+ * comportamento anterior a esta função existir (M02.3/M02.4).
+ */
+function deliveryContextFrom(context: CommercialOperationHandlerContext): {
+  deliveryFee: number;
+  deliveryType: 'entrega' | 'retirada';
+} {
+  const delivery = context.request.quote.delivery;
+  return {
+    deliveryFee: delivery ? centsToReais(delivery.feeCents) : 0,
+    deliveryType: delivery?.type ?? 'retirada',
+  };
+}
+
 function loyaltyConfig(raw: unknown): LoyaltyConfig | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;
   const value = raw as Partial<LoyaltyConfig>;
@@ -190,18 +206,21 @@ export async function reserveCommercialBenefitsAdmin(
         }
         const evaluation = evaluateCoupon(coupon, {
           subtotal: centsToReais(context.request.quote.pricing.subtotalCents),
-          deliveryFee: 0,
-          deliveryType: 'retirada',
+          ...deliveryContextFrom(context),
           now: new Date(createdAt),
           hasIdentity: Boolean(clientId),
           isFirstOrder: clientId ? Number(clientSnapshot?.data()?.visitCount ?? 0) === 0 : undefined,
           clientRedemptionCount,
         });
         if (!evaluation.ok) fail(`COUPON_${evaluation.reason.toUpperCase()}`, 'Cupom indisponível para esta venda.');
-        const expectedCents = Math.min(
-          reaisToCents(evaluation.discount),
-          Math.max(0, context.request.quote.pricing.subtotalCents - manualDiscountCents),
-        );
+        // Frete grátis não desconta a mercadoria: o valor reservado representa
+        // o frete zerado (autoritativo em quote.delivery), não evaluation.discount.
+        const expectedCents = evaluation.freeDelivery
+          ? (context.request.quote.delivery?.feeCents ?? 0)
+          : Math.min(
+              reaisToCents(evaluation.discount),
+              Math.max(0, context.request.quote.pricing.subtotalCents - manualDiscountCents),
+            );
         if (expectedCents !== benefit.amountCents || expectedCents <= 0) {
           fail('COUPON_VALUE_CHANGED', 'O desconto do cupom foi alterado. Revise a venda.');
         }

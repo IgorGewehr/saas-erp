@@ -102,6 +102,15 @@ export const DeliveryOrderSchema = z.object({
   stockDeductedAt: z.string().optional(),
   stockMovementIds: z.array(z.string()).optional(),
   transactionId: z.string().optional(),
+  commercialOperationId: z.string().optional(),
+  commercialOperationStatus: z.string().optional(),
+  couponId: z.string().optional(),
+  couponCode: z.string().optional(),
+  couponDiscount: z.number().nonnegative().optional(),
+  giftCardId: z.string().optional(),
+  giftCardCode: z.string().optional(),
+  giftCardAmount: z.number().nonnegative().optional(),
+  trackingToken: z.string().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 }).superRefine((o, ctx) => {
@@ -110,10 +119,10 @@ export const DeliveryOrderSchema = z.object({
   if (Math.abs(o.subtotal - itemsTotal) > PRICE_TOLERANCE) {
     ctx.addIssue({ code: 'custom', message: `subtotal (${o.subtotal}) ≠ sum(items) (${itemsTotal})`, path: ['subtotal'] });
   }
-  // INVARIANTE 2: total ≈ subtotal + deliveryFee - discount
-  const expectedTotal = round2(o.subtotal + (o.deliveryFee ?? 0) - (o.discount ?? 0));
+  // INVARIANTE 2: total ≈ subtotal + deliveryFee - discount - giftCardAmount
+  const expectedTotal = round2(o.subtotal + (o.deliveryFee ?? 0) - (o.discount ?? 0) - (o.giftCardAmount ?? 0));
   if (Math.abs(o.total - expectedTotal) > PRICE_TOLERANCE) {
-    ctx.addIssue({ code: 'custom', message: `total (${o.total}) ≠ subtotal+deliveryFee-discount (${expectedTotal})`, path: ['total'] });
+    ctx.addIssue({ code: 'custom', message: `total (${o.total}) ≠ subtotal+deliveryFee-discount-giftCardAmount (${expectedTotal})`, path: ['total'] });
   }
   // INVARIANTE 3: deliveryType=entrega ⇒ deliveryAddress obrigatório
   if (o.deliveryType === 'entrega' && !o.deliveryAddress) {

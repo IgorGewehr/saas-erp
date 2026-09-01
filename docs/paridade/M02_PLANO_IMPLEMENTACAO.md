@@ -6,7 +6,7 @@
 >
 > Referência funcional: Gestão Raiz
 >
-> Estado desta rodada: M02.0 a M02.3 concluídas em código; próxima etapa M02.4
+> Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a (cardápio público) concluída; próxima etapa M02.5b
 
 ## 1. Resultado esperado
 
@@ -248,14 +248,16 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 ### M02.5 — Delivery, cardápio e agente
 
-- [ ] Fazer pedido público, manual e do agente usarem a mesma criação server-side.
-- [ ] Preservar horário, zona, entrega/retirada, modificadores, tracking e numeração.
+- [x] Fazer pedido público usar a mesma criação server-side (manual e agente pendentes — M02.5b/c).
+- [x] Preservar horário, zona, entrega/retirada, modificadores, tracking e numeração no canal público.
 - [ ] Adicionar variação ao carrinho, contrato, estoque, impressão, fiscal e repetição de pedido.
 - [ ] Mover transições críticas de status para endpoint/serviço autenticado com FSM server-side.
 - [ ] Definir quando o estoque é reservado/deduzido em cada forma de pagamento e canal.
 - [ ] Bloquear edição insegura após efeitos; quando permitida, calcular e aplicar delta compensatório.
 - [ ] Integrar Mercado Pago ao mesmo `operationId` e aos mesmos efeitos reconciliáveis.
 - [ ] Manter jobs de expiração/reconciliação, eliminando caminhos paralelos de estorno.
+
+**M02.5a concluída em código:** `/api/orders/public` migrado para o núcleo comercial (cotação, coordenador, ledgers de benefício) via `lib/services/delivery-order-server.ts`. Corrigidos dois bugs latentes do núcleo M02.4 que só apareciam com frete (cupom de entrega e teto de desconto do gift card). Duas mudanças de comportamento deliberadas (estoque de insumo/modificador agora bloqueia; gift card em corrida aborta o pedido) documentadas em `docs/paridade/M02_DELIVERY_CARDAPIO.md`. Pedido manual, agente, FSM central, `variantId` e Mercado Pago ficam para M02.5b–f.
 
 **Saída:** delivery omnichannel consistente, sem divergência entre site, atendente e agente.
 
