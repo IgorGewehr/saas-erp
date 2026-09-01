@@ -8,6 +8,7 @@ import {
   runTransaction,
   Firestore,
 } from 'firebase/firestore';
+import type { Firestore as AdminFirestore } from 'firebase-admin/firestore';
 import type { LoyaltyConfig, LoyaltyTransaction } from '@/lib/types';
 
 /**
@@ -62,6 +63,66 @@ export async function addLoyaltyPoints(
     if (!clientSnap.exists()) return;
 
     const currentPoints = (clientSnap.data().loyaltyPoints as number) || 0;
+    const balanceAfter = currentPoints + pointsEarned;
+
+    const loyaltyTx: Omit<LoyaltyTransaction, 'id'> = {
+      businessId,
+      clientId,
+      clientName,
+      type: 'acumulo',
+      points: pointsEarned,
+      balanceAfter,
+      description,
+      sourceId,
+      sourceType,
+      createdAt: new Date().toISOString(),
+      ...(config.expirationDays
+        ? {
+            expiresAt: new Date(
+              Date.now() + config.expirationDays * 24 * 60 * 60 * 1000
+            ).toISOString(),
+          }
+        : {}),
+    };
+
+    tx.update(clientRef, {
+      loyaltyPoints: balanceAfter,
+      updatedAt: new Date().toISOString(),
+    });
+
+    tx.set(newTxRef, loyaltyTx);
+  });
+}
+
+/**
+ * Admin SDK mirror de `addLoyaltyPoints` — mesma lógica transacional, usada por
+ * serviços server-side (ex.: transição de status de deliveryOrders, M02.5d)
+ * onde não há sessão de cliente autenticado disponível.
+ */
+export async function addLoyaltyPointsAdmin(
+  db: AdminFirestore,
+  params: {
+    businessId: string;
+    clientId: string;
+    clientName: string;
+    pointsEarned: number;
+    config: LoyaltyConfig;
+    sourceId: string;
+    sourceType: 'sale' | 'appointment' | 'order';
+    description: string;
+  }
+): Promise<void> {
+  const { businessId, clientId, clientName, pointsEarned, config, sourceId, sourceType, description } = params;
+  if (pointsEarned <= 0) return;
+
+  const clientRef = db.collection('clients').doc(clientId);
+  const newTxRef = db.collection('loyaltyTransactions').doc();
+
+  await db.runTransaction(async (tx) => {
+    const clientSnap = await tx.get(clientRef);
+    if (!clientSnap.exists) return;
+
+    const currentPoints = (clientSnap.data()?.loyaltyPoints as number) || 0;
     const balanceAfter = currentPoints + pointsEarned;
 
     const loyaltyTx: Omit<LoyaltyTransaction, 'id'> = {

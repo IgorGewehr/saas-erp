@@ -6,7 +6,7 @@
 >
 > Referência funcional: Gestão Raiz
 >
-> Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a (cardápio público), M02.5b (pedido manual) e M02.5c (agente) concluídas; próxima etapa M02.5d
+> Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a-d (cardápio público, pedido manual, agente, FSM central) concluídas; próxima etapa M02.5e
 
 ## 1. Resultado esperado
 
@@ -251,8 +251,8 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 - [x] Fazer pedido público, manual e do agente usarem a mesma criação server-side.
 - [x] Preservar horário, zona, entrega/retirada, modificadores, tracking e numeração nos três canais de criação.
 - [ ] Adicionar variação ao carrinho, contrato, estoque, impressão, fiscal e repetição de pedido.
-- [ ] Mover transições críticas de status para endpoint/serviço autenticado com FSM server-side.
-- [ ] Definir quando o estoque é reservado/deduzido em cada forma de pagamento e canal.
+- [x] Mover transições críticas de status para endpoint/serviço autenticado com FSM server-side.
+- [x] Definir quando o estoque é reservado/deduzido em cada forma de pagamento e canal (dedução na criação pelos três canais; dedução legada em `preparando` só para pedidos anteriores à migração).
 - [ ] Bloquear edição insegura após efeitos; quando permitida, calcular e aplicar delta compensatório.
 - [ ] Integrar Mercado Pago ao mesmo `operationId` e aos mesmos efeitos reconciliáveis.
 - [ ] Manter jobs de expiração/reconciliação, eliminando caminhos paralelos de estorno.
@@ -261,7 +261,9 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 **M02.5b concluída em código:** criação de pedido manual (`OrdersModule.tsx`) migrada para a MESMA função `createDeliveryOrderWithSideEffects`, generalizada para o canal `manual`, via nova rota autenticada `app/api/orders/manual/route.ts` (`operator+` cria, `manager+` desconto/override de frete). Núcleo ganhou suporte a taxa de entrega manual fora de zona (`canOverrideDeliveryFee`, `resolution:'manual'`). Estoque insuficiente e preço de item adulterado agora bloqueiam duro (antes eram só aviso/sem checagem) — decisão confirmada com o usuário. Detalhes em `docs/paridade/M02_PEDIDO_MANUAL.md`.
 
-**M02.5c concluída em código:** criação de pedido do agente de IA (`/api/agent/tools/orders`, action `create`) migrada para a MESMA função, canal `agent`. Agente perdeu a capacidade de aplicar desconto manual ou taxa de entrega fora de zona — decisão de segurança confirmada com o usuário, contra manipulação via conversa (prompt injection); frete agora sempre resolvido por zona, igual ao cardápio público. Checagem de preço obsoleto por item (M02.5a) passou a ser pulada para o canal `agent`, que nunca teve preço real de item para enviar. Detalhes em `docs/paridade/M02_AGENTE_PEDIDOS.md`. Com isso, os três canais de criação (público, manual, agente) estão unificados. FSM central, `variantId` e Mercado Pago ficam para M02.5d–f.
+**M02.5c concluída em código:** criação de pedido do agente de IA (`/api/agent/tools/orders`, action `create`) migrada para a MESMA função, canal `agent`. Agente perdeu a capacidade de aplicar desconto manual ou taxa de entrega fora de zona — decisão de segurança confirmada com o usuário, contra manipulação via conversa (prompt injection); frete agora sempre resolvido por zona, igual ao cardápio público. Checagem de preço obsoleto por item (M02.5a) passou a ser pulada para o canal `agent`, que nunca teve preço real de item para enviar. Detalhes em `docs/paridade/M02_AGENTE_PEDIDOS.md`. Com isso, os três canais de criação (público, manual, agente) estão unificados.
+
+**M02.5d concluída em código:** transições de status (aceitar/preparar/entregar/cancelar/excluir/recusar) centralizadas em `lib/services/delivery-order-transition-admin.ts`, usada pela nova rota autenticada `PATCH /api/orders/[id]/transition` (UI) e diretamente pelo agente — substituindo duas implementações independentes que haviam divergido de verdade: fidelidade não acumulava em pedidos entregues pelo agente (corrigido), "excluir" um pedido pela UI pulava a validação de FSM e não impedia excluir um pedido já entregue (corrigido), e o restauro de estoque no cancelamento pela UI usava uma resolução de produtos mais fraca que a do agente/Mercado Pago (unificado). Mercado Pago não foi tocado — já não mexia em `status` e já usava a função de restauro correta. Detalhes em `docs/paridade/M02_FSM_TRANSICOES.md`. `variantId`, bloqueio de edição pós-efeito e Mercado Pago com `operationId` ficam para M02.5e–f.
 
 **Saída:** delivery omnichannel consistente, sem divergência entre site, atendente e agente.
 

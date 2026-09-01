@@ -40,18 +40,29 @@ describe('M01.9 — smoke estrutural das telas críticas', () => {
     expect(suppliers).toContain('archiveSupplier');
   });
 
-  it('mantém PDV e Pedidos acessíveis com baixa e restauração pelo núcleo autoritativo', () => {
+  it('mantém PDV acessível com baixa e restauração pelo núcleo autoritativo', () => {
     const shell = read('app/app/page.tsx');
     const pdv = read('app/components/features/pdv/PDVModule.tsx');
-    const orders = read('app/components/features/orders/OrdersModule.tsx');
     expect(shell).toContain("case 'PDV'");
     expect(shell).toContain('<PDVModule />');
+    expect(pdv).toContain("from '@/lib/services/stock-server-client'");
+    expect(pdv).toContain('buildOrderStockLines');
+    expect(pdv).toContain('applyStockOperation');
+  });
+
+  it('mantém Pedidos acessível, criando e transicionando status pelo núcleo comercial server-side (M02.5b/d)', () => {
+    const shell = read('app/app/page.tsx');
+    const orders = read('app/components/features/orders/OrdersModule.tsx');
     expect(shell).toContain("case 'Pedidos'");
     expect(shell).toContain('<OrdersModule />');
-    for (const module of [pdv, orders]) {
-      expect(module).toContain("from '@/lib/services/stock-server-client'");
-      expect(module).toContain('buildOrderStockLines');
-      expect(module).toContain('applyStockOperation');
-    }
+    // M02.5b: criação delega pra /api/orders/manual (núcleo comercial), não
+    // grava mais deliveryOrders direto pelo SDK cliente.
+    expect(orders).toContain("fetch('/api/orders/manual'");
+    // M02.5d: transição de status delega pra /api/orders/[id]/transition
+    // (FSM + estoque + receita server-side), não mais bookDeliveryRevenue/
+    // restoreOrderStockOnce client-side.
+    expect(orders).toContain('/transition');
+    expect(orders).not.toContain('bookDeliveryRevenue');
+    expect(orders).not.toContain('restoreOrderStockOnce');
   });
 });

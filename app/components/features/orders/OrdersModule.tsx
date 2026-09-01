@@ -13,25 +13,19 @@ import {
 } from 'lucide-react';
 import {
   collection, query, where, orderBy, onSnapshot, getDocs, updateDoc,
-  doc, runTransaction, limit,
+  doc, limit,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
-import { recordClientPurchaseClient } from '@/lib/services/clients/recordPurchase';
-import { calculateEarnedPoints, addLoyaltyPoints } from '@/lib/services/loyalty';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { toast } from 'react-toastify';
-import { checkStockAvailability } from '@/lib/services/stock';
-import { applyStockOperation } from '@/lib/services/stock-server-client';
-import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import { notifyLowStock } from '@/lib/services/notifications';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
   Product, Client, DeliveryOrderAddress, StockAlert, PaymentFsmStatus,
-  ConversationChannel,
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
@@ -1500,8 +1494,9 @@ export default function OrdersModule() {
     const todayOrders = orders.filter(o => o.createdAt.startsWith(today));
     // Grupo 10: receita POTENCIAL (todos os pedidos não-cancelados de hoje,
     // inclusive não-entregues/não-pagos). NÃO é a receita reconhecida do
-    // Financeiro — essa é lançada por competência só na entrega
-    // (bookDeliveryRevenue). KPI rotulado "Receita potencial" pra não confundir.
+    // Financeiro — essa é lançada por competência só na entrega, pelo núcleo
+    // server-side (transitionDeliveryOrderAdmin). KPI rotulado "Receita
+    // potencial" pra não confundir.
     const todayRevenue = todayOrders
       .filter(o => o.status !== 'cancelado')
       .reduce((s, o) => s + o.total, 0);
@@ -1610,236 +1605,64 @@ export default function OrdersModule() {
     }
   };
 
-  // Restaura, idempotentemente, o estoque debitado de um pedido (caminho MANUAL,
-  // client SDK). Espelha restoreOrderStockOnReversal (admin/webhook) com a MESMA
-  // ordem RECUPERÁVEL e os mesmos guards CAS:
-  //   1. claim DENTRO da runTransaction ANTES de restaurar: grava
-  //      stockRestoreClaimedAt + stockRestoredAt=null, só se ainda NÃO há
-  //      timestamp de restauro e nenhum claim recente (<5min). Após o restauro
-  //      automático (cron/webhook) ou de outro atendente, este caminho vira no-op
-  //      (STK-01 — guard por stockRestoredAt, não só por stockDeductedAt).
-  //   2. reconstrói as MESMAS linhas (itens + insumos de modificadores via
-  //      linkedProductId) com buildOrderStockLines e restaura (STK-02).
-  //   3. grava stockRestoredAt=timestamp SÓ APÓS concluir — se restoreStock
-  //      lançar, o claim antigo expira e a recuperação (cron) reprocessa.
-  const restoreOrderStockOnce = useCallback(async (order: Order): Promise<boolean> => {
-    const businessId = business?.id;
-    if (!businessId || !user) return false;
-    const orderRef = doc(db, 'deliveryOrders', order.id);
-    const claimedOrder = await runTransaction(db, async (trx) => {
-      const snap = await trx.get(orderRef);
-      const data = snap.data() as Order | undefined;
-      if (!data) return null;
-      if (data.businessId !== businessId) return null;            // R1 re-check
-      if (!data.stockDeductedAt) return null;                     // nada debitado
-      if (typeof data.stockRestoredAt === 'string') return null;  // já restaurado
-      const claimedAt = data.stockRestoreClaimedAt;
-      if (typeof claimedAt === 'string' && Date.now() - Date.parse(claimedAt) < 5 * 60 * 1000) {
-        return null; // claim recente em progresso — não restaura de novo
-      }
-      const nowIso = new Date().toISOString();
-      trx.update(orderRef, { stockRestoreClaimedAt: nowIso, stockRestoredAt: null, updatedAt: nowIso });
-      return data;
+  // M02.5d: transição de status delega ao endpoint autenticado server-side
+  // (mesma função usada pelo agente — transitionDeliveryOrderAdmin), que
+  // centraliza FSM, gate X1, receita de entrega (com fidelidade) e restauro de
+  // estoque no cancelamento. Substitui os writes diretos e o lançamento de
+  // receita/restauro de estoque que antes eram feitos aqui pelo SDK cliente.
+  const transitionOrder = useCallback(async (
+    orderId: string,
+    status: OrderStatus,
+    reason?: string,
+  ): Promise<{ stockAlerts: StockAlert[] }> => {
+    if (!business?.id || !firebaseUser) throw new Error('Sessão expirada. Entre novamente.');
+    const token = await firebaseUser.getIdToken();
+    const response = await fetch(`/api/orders/${orderId}/transition`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ businessId: business.id, status, reason }),
     });
-    if (!claimedOrder) return false;
-
-    const productIndex = new Map(products.map(p => [p.id, p]));
-    const stockLines = buildOrderStockLines(claimedOrder, productIndex);
-    await applyStockOperation({
-      businessId,
-      type: 'restauracao',
-      lines: stockLines,
-      operatorName: user.name,
-      sourceType: 'refund',
-      sourceId: order.id,
-      sourceDocument: { collection: 'deliveryOrders', id: order.id, existence: 'required' },
-      idempotencyKey: `order:${order.id}:restore`,
-      reason: `Cancelamento pedido #${order.number}`,
-      expandBom: true,
-    });
-    // Timestamp gravado SÓ APÓS concluir (ordem recuperável).
-    await updateDoc(orderRef, { stockRestoredAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
-    return true;
-  }, [business?.id, user, products]);
-
-  // Lança a receita de entrega como Transaction idempotente e marca o pedido como
-  // entregue numa única runTransaction (F1/F3). Espelha o estorno:
-  //   - ID DETERMINÍSTICO transactions/{orderId}_revenue ⇒ no máximo UM doc de
-  //     receita por pedido, mesmo sob reentrada/concorrência (set idempotente);
-  //   - CAS em order.transactionId ⇒ não relança se já houve receita.
-  // Gate X1 (revalidado contra a versão fresca do doc): pedido ONLINE só lança
-  // receita 'pago' quando paymentFsmStatus==='paid'.
-  const bookDeliveryRevenue = useCallback(async (order: Order, now: string): Promise<void> => {
-    const businessId = business?.id;
-    if (!businessId) return;
-    const orderRef = doc(db, 'deliveryOrders', order.id);
-    const txRef = doc(db, 'transactions', `${order.id}_revenue`);
-    // Capturados FRESCOS dentro da transação (não do closure, que pode estar
-    // stale se o pedido mutou concorrentemente) pra alimentar o recordClientPurchase.
-    let freshClientId: string | undefined;
-    let freshClientName: string | undefined;
-    let freshTotal = 0;
-    let freshChannel: Order['channel'] | undefined;
-    // COE-01: fidelidade só acumula na PRIMEIRA reconciliação (mesmo CAS de
-    // order.transactionId que garante uma única receita) ⇒ idempotente por
-    // sourceId=order.id sob reentrada/concorrência.
-    let bookedNow = false;
-    await runTransaction(db, async (trx) => {
-      const snap = await trx.get(orderRef);
-      const data = snap.data() as Order | undefined;
-      if (!data) throw new Error('Pedido não encontrado');
-      if (isOnlineOrder(data) && data.paymentFsmStatus !== 'paid') {
-        throw new Error('ONLINE_UNPAID: pagamento online não confirmado');
-      }
-      freshClientId = data.clientId || undefined;
-      freshClientName = data.clientName || undefined;
-      freshTotal = data.total;
-      freshChannel = data.channel;
-      const patch: Record<string, unknown> = { status: 'entregue', deliveredAt: now, updatedAt: now };
-      if (!data.transactionId) {
-        trx.set(txRef, {
-          businessId,
-          type: 'receita',
-          category: 'Vendas',
-          description: `Pedido #${data.number}${data.clientName ? ` - ${data.clientName}` : ''}`,
-          amount: data.total,
-          dueDate: now.split('T')[0],
-          paymentDate: now.split('T')[0],
-          status: 'pago',
-          clientId: data.clientId || null,
-          contactId: data.clientId || null,
-          clientName: data.clientName || null,
-          deliveryOrderId: order.id,
-          paymentMethod: data.paymentMethod || null,
-          // FIN-DEL-03: propaga a origem do pedido pra receita — channelType só
-          // aceita canais de conversa (whatsapp/facebook/instagram); manual/site
-          // ficam sem canal. sectorId herda o setor responsável do pedido.
-          ...(data.channel && (['whatsapp', 'facebook', 'instagram'] as string[]).includes(data.channel)
-            ? { channelType: data.channel as ConversationChannel }
-            : {}),
-          ...(data.sectorId ? { sectorId: data.sectorId } : {}),
-          createdAt: now,
-          updatedAt: now,
-        });
-        patch.transactionId = txRef.id;
-        bookedNow = true;
-      }
-      trx.update(orderRef, patch);
-    });
-
-    // Grupo 6: no reconhecimento da receita (entrega), registra a compra na ficha
-    // do cliente — totalSpent/lastVisit/lifecycle — de forma idempotente por pedido
-    // (guard clients/{id}/purchases/{orderId}), logo reentrada/concorrência não
-    // re-conta. Pedidos do cardápio público (channel 'site') já incrementaram
-    // visitCount na criação ⇒ countVisit:false; manual/whatsapp/... contam aqui.
-    // Best-effort: não derruba a entrega já efetivada se a ficha falhar.
-    if (freshClientId) {
-      try {
-        await recordClientPurchaseClient({
-          businessId,
-          clientId: freshClientId,
-          sourceId: order.id,
-          amount: freshTotal,
-          countVisit: freshChannel !== 'site',
-        });
-      } catch (err) {
-        console.warn('[Orders] recordClientPurchase failed:', err);
-      }
+    const payload = await response.json().catch(() => null) as {
+      ok?: boolean;
+      error?: string;
+      data?: { status: OrderStatus; stockAlerts: StockAlert[] };
+    } | null;
+    if (!response.ok || !payload?.ok || !payload.data) {
+      throw new Error(payload?.error || 'Erro ao alterar pedido');
     }
+    return { stockAlerts: payload.data.stockAlerts };
+  }, [business?.id, firebaseUser]);
 
-    // COE-02: acúmulo de pontos de fidelidade no reconhecimento da receita —
-    // espelha PDV (sale) e Agenda (appointment). A idempotência vem do gate
-    // `bookedNow` (só true quando o CAS em order.transactionId lançou a receita
-    // ÚNICA nesta execução) — reentrega/reconciliação repetida não re-acumula.
-    // (addLoyaltyPoints em si grava com doc id aleatório; a garantia é o CAS.)
-    // Best-effort: não derruba a entrega já efetivada se a fidelidade falhar.
-    if (bookedNow && freshClientId) {
-      const lc = business?.settings?.loyalty;
-      if (lc?.isEnabled) {
-        const earned = calculateEarnedPoints(freshTotal, lc);
-        if (earned > 0) {
-          try {
-            await addLoyaltyPoints(db, {
-              businessId,
-              clientId: freshClientId,
-              clientName: freshClientName || '',
-              pointsEarned: earned,
-              config: lc,
-              sourceId: order.id,
-              sourceType: 'order',
-              description: `Pedido #${order.number}`,
-            });
-          } catch (err) {
-            console.warn('[Orders] loyalty accrual failed:', err);
-          }
-        }
-      }
-    }
-  }, [business?.id, business?.settings?.loyalty]);
-
-  // Status change — deducts stock on transition into "preparando" (idempotent).
+  // Status change — o servidor decide/aplica os efeitos (estoque, receita,
+  // fidelidade); aqui só a UX otimista (feedback imediato) + pós-efeitos client
+  // (toasts, notificação, fiscal).
   const handleStatusChange = async (order: Order, newStatus: OrderStatus) => {
     if (!business?.id || !user) return;
-    const now = new Date().toISOString();
     try {
-      // R4/P1.9: valida a transição pela FSM antes de qualquer write/side-effect
-      // (estoque, transação). Bloqueia pulos de estado; no-op se status não mudou.
+      // Pré-checagens client-side (UX otimista — o servidor revalida de qualquer forma).
       if (newStatus !== order.status) {
         assertTransitionDeliveryOrder(order.status, newStatus);
       }
-
-      // X1-gate (UX, pré-write): pedido ONLINE só pode ser entregue — e ter
-      // receita 'pago' lançada — com pagamento confirmado. Dinheiro-na-entrega
-      // não entra aqui (isOnlineOrder=false) e segue bookando normalmente.
       if (newStatus === 'entregue' && isOnlineOrder(order) && order.paymentFsmStatus !== 'paid') {
         toast.error('Pedido online ainda não foi pago — não é possível entregar.');
         return;
       }
 
-      let appliedPatch: Record<string, unknown> = { status: newStatus, updatedAt: now };
-      let stockAlertsFromOrder: StockAlert[] = [];
+      const { stockAlerts } = await transitionOrder(order.id, newStatus);
 
       if (newStatus === 'entregue') {
-        await bookDeliveryRevenue(order, now);
-        appliedPatch = { status: 'entregue', deliveredAt: now, updatedAt: now };
         // Fiscal: auto-emissão de NFC-e na conclusão (opt-in). Fire-and-forget —
-        // a receita/entrega já foi efetivada acima; a nota nunca bloqueia o pedido.
+        // a receita/entrega já foi efetivada no servidor; a nota nunca bloqueia o pedido.
         void autoEmitNfceIfEnabled(order);
-      } else if (newStatus === 'cancelado') {
-        // STK-01/STK-02: restauro idempotente com guard CAS por stockRestoredAt.
-        await restoreOrderStockOnce(order);
-        await updateDoc(doc(db, 'deliveryOrders', order.id), appliedPatch);
-      } else {
-        // Deduct stock when entering 'preparando' for the first time.
-        if (newStatus === 'preparando' && !order.stockDeductedAt) {
-          const productIndex = new Map(products.map(p => [p.id, p]));
-          const stockLines = buildOrderStockLines(order, productIndex);
-          const stockResult = await applyStockOperation({
-            businessId: business.id,
-            type: 'saida',
-            lines: stockLines,
-            operatorName: user.name,
-            sourceType: 'order',
-            sourceId: order.id,
-            sourceDocument: { collection: 'deliveryOrders', id: order.id, existence: 'required' },
-            idempotencyKey: `order:${order.id}:deduct`,
-            reason: `Pedido #${order.number}`,
-            expandBom: true,
-            negativeStockPolicy: 'prevent',
-          });
-          const adjustments = stockResult.adjustments;
-          stockAlertsFromOrder = adjustments.flatMap(a => a.alert ? [a.alert] : []);
-          appliedPatch.stockDeductedAt = now;
-        }
-        await updateDoc(doc(db, 'deliveryOrders', order.id), appliedPatch);
       }
 
-      setSelectedOrder(prev => prev && prev.id === order.id ? { ...prev, ...appliedPatch, status: newStatus } as Order : prev);
+      setSelectedOrder(prev => prev && prev.id === order.id ? { ...prev, status: newStatus } as Order : prev);
       toast.success(`Pedido #${order.number}: ${STATUS_CONFIG[newStatus].label}`);
 
-      // Estoque baixo após dedução do pedido: toast + notif (best-effort).
-      if (stockAlertsFromOrder.length > 0) {
-        stockAlertsFromOrder.forEach(a => {
+      // Estoque baixo após dedução do pedido (só relevante em 'preparando' de
+      // pedidos legados sem stockDeductedAt): toast + notif (best-effort).
+      if (stockAlerts.length > 0) {
+        stockAlerts.forEach(a => {
           const icon = a.severity === 'zeroed' ? '🚨' : '⚠️';
           const msg = a.severity === 'zeroed'
             ? `${icon} ${a.productName} esgotou`
@@ -1848,7 +1671,7 @@ export default function OrdersModule() {
         });
         void notifyLowStock(db, {
           businessId: business.id,
-          alerts: stockAlertsFromOrder,
+          alerts: stockAlerts,
           actorId: user.uid,
           actorName: user.name,
           sourceLabel: `Pedido #${order.number}`,
@@ -1863,7 +1686,7 @@ export default function OrdersModule() {
       console.error('[Orders] Status change failed:', err);
       const msg = err instanceof Error && err.message.startsWith('DeliveryOrder FSM:')
         ? 'Transição de status inválida'
-        : err instanceof Error && err.message.startsWith('ONLINE_UNPAID')
+        : err instanceof Error && (err.message.startsWith('ONLINE_UNPAID') || err.message.includes('pagamento online'))
           ? 'Pedido online ainda não foi pago'
           : 'Erro ao alterar status';
       toast.error(msg);
@@ -1923,32 +1746,24 @@ export default function OrdersModule() {
     if (!confirm(`Cancelar o pedido #${order.number}? O pedido fica no histórico marcado como cancelado.`)) return;
     if (!user) return;
     try {
-      // Fase 5e (Tier 2): em vez de hard-delete, transitamos pra
-      // status='cancelado' com audit. Preserva doc pra reports + historico.
-      // Idempotente: se ja cancelado, skip.
+      // Idempotente: se já cancelado, skip.
       if (order.status === 'cancelado') {
         setSelectedOrder(null);
         toast.info('Pedido já estava cancelado');
         return;
       }
-      const now = new Date().toISOString();
-      // Restaura estoque se foi deduzido — MESMO guard CAS que handleStatusChange
-      // (restoreOrderStockOnce): guard por stockRestoredAt, não só stockDeductedAt,
-      // pra não duplicar o restauro após o automático (cron/webhook). STK-01/STK-02.
-      await restoreOrderStockOnce(order);
-      const patch: Record<string, unknown> = {
-        status: 'cancelado',
-        cancelledAt: now,
-        cancelledBy: user.uid,
-        cancelledByName: user.name || user.uid,
-        updatedAt: now,
-      };
-      await updateDoc(doc(db, 'deliveryOrders', order.id), patch);
+      // M02.5d: FSM validada server-side (fecha o gap desta função, que antes
+      // não validava a transição — um pedido já 'entregue' não pode mais ser
+      // "excluído" sem reverter a receita explicitamente).
+      await transitionOrder(order.id, 'cancelado');
       setSelectedOrder(null);
       toast.info('Pedido cancelado');
     } catch (err) {
       console.error('[Orders] Delete failed:', err);
-      toast.error('Erro ao cancelar');
+      const msg = err instanceof Error && err.message.startsWith('DeliveryOrder FSM:')
+        ? 'Transição de status inválida (pedido já entregue?)'
+        : 'Erro ao cancelar';
+      toast.error(msg);
     }
   };
 
@@ -1960,7 +1775,7 @@ export default function OrdersModule() {
   }, [handleStatusChange, autoPrintOnAccept, businessName, business?.id]);
 
   // Recusa do pedido novo: recebido→cancelado com motivo. Reusa o MESMO caminho
-  // de cancelamento (restoreOrderStockOnce restaura estoque idempotente).
+  // de cancelamento server-side (transitionOrder).
   const handleReject = useCallback(async (order: Order) => {
     if (!business?.id || !user) return;
     if (order.status === 'cancelado') return;
@@ -1969,20 +1784,9 @@ export default function OrdersModule() {
       : '') ?? undefined;
     if (reason === undefined) return; // cancelou o prompt
     try {
-      const now = new Date().toISOString();
-      // Valida a transição pela FSM antes de qualquer write/side-effect.
+      // Pré-checagem client-side (UX otimista — o servidor revalida de qualquer forma).
       assertTransitionDeliveryOrder(order.status, 'cancelado');
-      await restoreOrderStockOnce(order);
-      const patch: Record<string, unknown> = {
-        status: 'cancelado',
-        cancelledAt: now,
-        cancelledBy: user.uid,
-        cancelledByName: user.name || user.uid,
-        updatedAt: now,
-      };
-      const trimmed = reason.trim();
-      if (trimmed) patch.cancelReason = trimmed;
-      await updateDoc(doc(db, 'deliveryOrders', order.id), patch);
+      await transitionOrder(order.id, 'cancelado', reason.trim() || undefined);
       setSelectedOrder(prev => prev && prev.id === order.id ? null : prev);
       toast.info(`Pedido #${order.number} recusado`);
       if (business.settings?.aiAgent?.enabled && business.settings?.aiAgent?.pedidos?.notifyOnStatusChange) {
@@ -1995,7 +1799,7 @@ export default function OrdersModule() {
         : 'Erro ao recusar pedido';
       toast.error(msg);
     }
-  }, [business?.id, business?.settings?.aiAgent?.enabled, business?.settings?.aiAgent?.pedidos?.notifyOnStatusChange, user, restoreOrderStockOnce]);
+  }, [business, user, transitionOrder]);
 
   const formInitial = useMemo<OrderFormData>(() => {
     if (editingOrder) {

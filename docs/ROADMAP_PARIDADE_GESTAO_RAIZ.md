@@ -57,7 +57,7 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
 - [ ] **M02 — Vendas, PDV, Pedidos e Cardápio**
-  - Status: `Em implementação — M02.0 a M02.4 concluídas em código; M02.5a/b/c (público, manual, agente) concluídas; próxima etapa M02.5d`
+  - Status: `Em implementação — M02.0 a M02.4 concluídas em código; M02.5a-d (público, manual, agente, FSM central) concluídas; próxima etapa M02.5e`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.
@@ -485,7 +485,7 @@ O inventário, o diagnóstico e o plano completo estão em `docs/paridade/M02_PL
 - [x] **M02.2 — Coordenador de operação comercial** — checkpoints, replay, efeitos determinísticos, estoque M01 e compensação concluídos.
 - [x] **M02.3 — PDV e venda de serviços** — preço autoritativo, pagamentos por alocação, estoque, cliente, comissão e estados operacionais concluídos.
 - [x] **M02.4 — Cupons, gift cards e fidelidade** — ledgers determinísticos de cupom, gift card e fidelidade integrados ao coordenador comercial concluídos.
-- [ ] **M02.5 — Delivery, cardápio e agente** — M02.5a (cardápio público), M02.5b (pedido manual) e M02.5c (agente) concluídas; M02.5d (FSM central de transições/efeitos) é a próxima etapa.
+- [ ] **M02.5 — Delivery, cardápio e agente** — M02.5a (cardápio público), M02.5b (pedido manual), M02.5c (agente) e M02.5d (FSM central de transições/efeitos) concluídas; M02.5e (`variantId`) é a próxima etapa.
 - [ ] **M02.6 — Venda B2B e condicional**.
 - [ ] **M02.7 — Cancelamento, devolução e reembolso**.
 - [ ] **M02.8 — Experiência e desempenho comercial**.
@@ -528,3 +528,4 @@ Decisões estruturais da M02:
 | 01/09/2026 | Pedido manual: zona de entrega configurada é sempre autoritativa; atendente só propõe taxa quando nenhuma zona resolve o endereço, e só com permissão de gerente+ | Preserva a flexibilidade real do balcão/telefone (endereço fora de área configurada) sem abrir mão de que uma zona bem definida nunca seja sobrescrita por digitação |
 | 01/09/2026 | Pedido manual: estoque insuficiente passa a bloquear a criação, igual PDV/cardápio (antes era só aviso) | Consistência entre os três canais é o objetivo central da M02; decisão confirmada com o usuário |
 | 01/09/2026 | Remover a capacidade do agente de IA de aplicar desconto manual ou taxa de entrega livre, em vez de só restringir | O contrato hoje permite qualquer valor sem revisão humana — um vetor real de manipulação via conversa (prompt injection); negociação real de desconto passa a exigir escalar para um humano (pedido manual, gerente+) |
+| 01/09/2026 | Centralizar transições de status de deliveryOrders num único serviço server-side, reaproveitado pela UI e pelo agente | Duas implementações independentes já haviam divergido de verdade (fidelidade ausente no agente, exclusão sem FSM na UI, restauro de estoque mais fraco na UI) — a duplicação deixou de ser só estilo de código e virou bug real |

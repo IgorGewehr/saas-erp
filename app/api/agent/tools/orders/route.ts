@@ -9,11 +9,9 @@ import type {
   Product, DeliveryOrderAddress, Business,
 } from '@/lib/types';
 import { Timestamp, FieldValue } from 'firebase-admin/firestore';
-import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
-import { restoreOrderStockRecoverable } from '@/lib/services/order-stock-restore';
-import { recordClientPurchaseAdmin } from '@/lib/services/clients/recordPurchase';
 import { assertOrdersAcceptedNow } from '@/lib/services/orders/acceptance';
 import { createDeliveryOrderWithSideEffects } from '@/lib/services/delivery-order-server';
+import { transitionDeliveryOrderAdmin } from '@/lib/services/delivery-order-transition-admin';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -223,118 +221,14 @@ async function listByClient(businessId: string, lookupKey: string, limit: number
 }
 
 async function updateStatus(businessId: string, orderId: string, status: DeliveryOrderStatus) {
-  const ref = adminDb.collection('deliveryOrders').doc(orderId);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('Order not found');
-  const data = snap.data() as DeliveryOrder;
-  if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  // R4/P1.9: bloqueia pulos de estado (ex: recebido→entregue) antes do write.
-  assertTransitionDeliveryOrder(data.status, status);
-
-  const now = new Date().toISOString();
-
-  if (status === 'entregue') {
-    // Receita de delivery → Transaction com ID DETERMINÍSTICO {orderId}_revenue,
-    // gravada de forma idempotente numa runTransaction com CAS em transactionId
-    // (mesmo padrão de sales-server `${saleId}_revenue`). O ID estável + o guard
-    // CAS garantem que entregar pela tool do agente, pela UI (OrdersModule) ou
-    // pelo fluxo de pagamento online aprovado NUNCA duplica a receita: todos
-    // convergem para o mesmo doc. status/deliveredAt e a FK transactionId são
-    // escritos na MESMA transação (atômico).
-    //
-    // X1-gate: pagamento online (paymentProvider definido — dinheiro regido pela
-    // FSM de pagamento) só vira receita 'pago' quando a FSM confirma
-    // (paymentFsmStatus === 'paid'). Entregar um pedido online ainda não pago NÃO
-    // lança receita aqui — o dinheiro não entrou; a receita será lançada pelo
-    // fluxo de aprovação do pagamento usando o MESMO ID determinístico.
-    const txRef = adminDb.collection('transactions').doc(`${orderId}_revenue`);
-    let revenueRecognized = false;
-    let purchaseClientId: string | undefined;
-    let purchaseAmount = 0;
-    let purchaseCountVisit = true;
-    await adminDb.runTransaction(async (t) => {
-      const cur = await t.get(ref);
-      if (!cur.exists) throw new Error('Order not found');
-      const curData = cur.data() as DeliveryOrder;
-      const orderPatch: Record<string, unknown> = { status, deliveredAt: now, updatedAt: now };
-
-      const isOnlinePayment = !!curData.paymentProvider;
-      const onlineUnpaid = isOnlinePayment && curData.paymentFsmStatus !== 'paid';
-
-      // F2 — gate pagamento→entrega (espelha a UI): pedido online ainda NÃO pago
-      // NÃO pode ser entregue — aborta antes de mudar o status (antes só pulava a
-      // receita mas marcava 'entregue', criando receita pendente fantasma/assimetria).
-      if (onlineUnpaid) {
-        throw new Error('Pedido com pagamento online ainda não confirmado — só pode ser entregue após o pagamento aprovar.');
-      }
-
-      revenueRecognized = true;
-      purchaseClientId = curData.clientId;
-      purchaseAmount = curData.total;
-      // CLI-1 — 'site' (cardápio público) já contou a visita na criação; não recontar.
-      purchaseCountVisit = curData.channel !== 'site';
-
-      // CAS em transactionId: só lança se ainda não houver receita E o gate online passar.
-      if (!curData.transactionId && !onlineUnpaid) {
-        t.set(txRef, {
-          businessId,
-          type: 'receita',
-          category: 'Vendas',
-          description: `Pedido #${curData.number}${curData.clientName ? ` - ${curData.clientName}` : ''}`,
-          amount: curData.total,
-          dueDate: now.split('T')[0],
-          paymentDate: now.split('T')[0],
-          status: 'pago',
-          clientId: curData.clientId || null,
-          contactId: curData.clientId || null,
-          clientName: curData.clientName || null,
-          deliveryOrderId: orderId,
-          paymentMethod: curData.paymentMethod || null,
-          createdAt: now,
-          updatedAt: now,
-        });
-        orderPatch.transactionId = txRef.id;
-      }
-      t.update(ref, orderPatch);
-    });
-
-    // Atribui a compra à ficha do cliente — espelha a receita acima e o fluxo da UI
-    // (OrdersModule). Idempotente por clients/{clientId}/purchases/{orderId}, então
-    // entregar pela tool, pela UI ou pelo fluxo de pagamento converge num único
-    // registro. countVisit default (true): o createOrder do agente não conta visita
-    // na origem (≠ cardápio público, que conta na criação). Side-effect: falha aqui
-    // não reverte a entrega — apenas loga, como no estorno de estoque.
-    if (revenueRecognized && purchaseClientId) {
-      try {
-        await recordClientPurchaseAdmin({
-          db: adminDb,
-          businessId,
-          clientId: purchaseClientId,
-          sourceId: orderId,
-          amount: purchaseAmount,
-          countVisit: purchaseCountVisit,
-        });
-      } catch (purchaseErr) {
-        console.error('[orders/updateStatus] recordClientPurchase failed:', purchaseErr);
-      }
-    }
-    return { id: orderId, status };
-  }
-
-  // Cancelamento via updateStatus também restaura estoque (mesmo helper único do
-  // cancelOrder) — antes este catch-all marcava 'cancelado' sem devolver estoque.
-  if (status === 'cancelado' && data.stockDeductedAt) {
-    try {
-      await restoreOrderStockRecoverable(orderId, businessId, {
-        operatorName: 'Agente (cancelamento)',
-        context: 'pedido cancelado',
-      });
-    } catch (stockErr) {
-      console.error('[orders/updateStatus] stock restore failed:', stockErr);
-    }
-  }
-  await ref.update({ status, updatedAt: now });
-  return { id: orderId, status };
+  // M02.5d: FSM, gate X1, receita de entrega (com fidelidade — antes ausente
+  // neste caminho) e restauro de estoque no cancelamento passam a vir da MESMA
+  // função usada pela rota autenticada de pedido manual (OrdersModule).
+  const result = await transitionDeliveryOrderAdmin({
+    orderId, businessId, targetStatus: status,
+    actor: { id: 'agent', name: 'Agente IA', type: 'agent' },
+  });
+  return { id: orderId, status: result.order.status };
 }
 
 async function updateItems(
@@ -394,37 +288,11 @@ async function updateItems(
 }
 
 async function cancelOrder(businessId: string, orderId: string, reason?: string) {
-  const ref = adminDb.collection('deliveryOrders').doc(orderId);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('Order not found');
-  const data = snap.data() as DeliveryOrder;
-  if (data.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  // R4/P1.9: cancelar só a partir de estado não-terminal (entregue/cancelado bloqueiam).
-  assertTransitionDeliveryOrder(data.status, 'cancelado');
-
-  const now = new Date().toISOString();
-  await ref.update({
-    status: 'cancelado',
-    internalNotes: reason ? `${data.internalNotes ? data.internalNotes + ' · ' : ''}Cancelado: ${reason}` : data.internalNotes,
-    updatedAt: now,
+  const result = await transitionDeliveryOrderAdmin({
+    orderId, businessId, targetStatus: 'cancelado', reason,
+    actor: { id: 'agent', name: 'Agente IA', type: 'agent' },
   });
-
-  // Restaura estoque (se debitado na criação) via helper ÚNICO recuperável: claim
-  // distinguível anti duplo-restauro + linhas COM insumos de modificadores. O
-  // buildStockBucket antigo ignorava modificadores (subcontagem) e não tinha guard
-  // de claim (duplo-restauro após cron/webhook).
-  if (data.stockDeductedAt) {
-    try {
-      await restoreOrderStockRecoverable(orderId, businessId, {
-        operatorName: 'Agente (cancelamento)',
-        context: 'pedido cancelado',
-      });
-    } catch (stockErr) {
-      console.error('[orders/cancel] stock restore failed:', stockErr);
-    }
-  }
-
-  return { id: orderId, status: 'cancelado' };
+  return { id: orderId, status: result.order.status };
 }
 
 async function listRecent(businessId: string, limit: number) {
