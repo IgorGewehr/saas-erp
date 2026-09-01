@@ -251,17 +251,22 @@ async function buildNewOperationRequest(params: {
 
   // Preço obsoleto/adulterado por item (mesma tolerância do route legado):
   // a cotação nunca lê o preço do cliente, então uma divergência aqui só
-  // significa "o catálogo mudou desde que o carrinho foi montado".
-  const PRICE_TOLERANCE_CENTS = 2;
-  quote.lines.forEach((line, index) => {
-    const clientTotalCents = reaisToCents(input.items[index]!.total);
-    if (Math.abs(line.totalCents - clientTotalCents) > PRICE_TOLERANCE_CENTS) {
-      throw new CommercialOperationError(
-        'ITEM_PRICE_CHANGED',
-        `Preço inválido para ${line.nameSnapshot}. Atualize o carrinho e tente novamente.`,
-      );
-    }
-  });
+  // significa "o catálogo mudou desde que o carrinho foi montado". Só faz
+  // sentido quando existe uma UI que pré-calculou e exibiu um preço pro
+  // usuário conferir (site/manual) — o agente (M02.5c) nunca teve preço por
+  // item pra enviar, então não há nada real para comparar aqui.
+  if (channel === 'site' || channel === 'manual') {
+    const PRICE_TOLERANCE_CENTS = 2;
+    quote.lines.forEach((line, index) => {
+      const clientTotalCents = reaisToCents(input.items[index]!.total);
+      if (Math.abs(line.totalCents - clientTotalCents) > PRICE_TOLERANCE_CENTS) {
+        throw new CommercialOperationError(
+          'ITEM_PRICE_CHANGED',
+          `Preço inválido para ${line.nameSnapshot}. Atualize o carrinho e tente novamente.`,
+        );
+      }
+    });
+  }
 
   const benefitResources = await loadCommercialBenefitResourcesAdmin({
     db,

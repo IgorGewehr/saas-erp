@@ -6,7 +6,7 @@
 >
 > Referência funcional: Gestão Raiz
 >
-> Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a (cardápio público) e M02.5b (pedido manual) concluídas; próxima etapa M02.5c
+> Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a (cardápio público), M02.5b (pedido manual) e M02.5c (agente) concluídas; próxima etapa M02.5d
 
 ## 1. Resultado esperado
 
@@ -248,8 +248,8 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 ### M02.5 — Delivery, cardápio e agente
 
-- [x] Fazer pedido público e manual usarem a mesma criação server-side (agente pendente — M02.5c).
-- [x] Preservar horário, zona, entrega/retirada, modificadores, tracking e numeração no canal público e manual.
+- [x] Fazer pedido público, manual e do agente usarem a mesma criação server-side.
+- [x] Preservar horário, zona, entrega/retirada, modificadores, tracking e numeração nos três canais de criação.
 - [ ] Adicionar variação ao carrinho, contrato, estoque, impressão, fiscal e repetição de pedido.
 - [ ] Mover transições críticas de status para endpoint/serviço autenticado com FSM server-side.
 - [ ] Definir quando o estoque é reservado/deduzido em cada forma de pagamento e canal.
@@ -259,7 +259,9 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 **M02.5a concluída em código:** `/api/orders/public` migrado para o núcleo comercial (cotação, coordenador, ledgers de benefício) via `lib/services/delivery-order-server.ts`. Corrigidos dois bugs latentes do núcleo M02.4 que só apareciam com frete (cupom de entrega e teto de desconto do gift card). Duas mudanças de comportamento deliberadas (estoque de insumo/modificador agora bloqueia; gift card em corrida aborta o pedido) documentadas em `docs/paridade/M02_DELIVERY_CARDAPIO.md`.
 
-**M02.5b concluída em código:** criação de pedido manual (`OrdersModule.tsx`) migrada para a MESMA função `createDeliveryOrderWithSideEffects`, generalizada para o canal `manual`, via nova rota autenticada `app/api/orders/manual/route.ts` (`operator+` cria, `manager+` desconto/override de frete). Núcleo ganhou suporte a taxa de entrega manual fora de zona (`canOverrideDeliveryFee`, `resolution:'manual'`). Estoque insuficiente e preço de item adulterado agora bloqueiam duro (antes eram só aviso/sem checagem) — decisão confirmada com o usuário. Detalhes em `docs/paridade/M02_PEDIDO_MANUAL.md`. Agente, FSM central, `variantId` e Mercado Pago ficam para M02.5c–f.
+**M02.5b concluída em código:** criação de pedido manual (`OrdersModule.tsx`) migrada para a MESMA função `createDeliveryOrderWithSideEffects`, generalizada para o canal `manual`, via nova rota autenticada `app/api/orders/manual/route.ts` (`operator+` cria, `manager+` desconto/override de frete). Núcleo ganhou suporte a taxa de entrega manual fora de zona (`canOverrideDeliveryFee`, `resolution:'manual'`). Estoque insuficiente e preço de item adulterado agora bloqueiam duro (antes eram só aviso/sem checagem) — decisão confirmada com o usuário. Detalhes em `docs/paridade/M02_PEDIDO_MANUAL.md`.
+
+**M02.5c concluída em código:** criação de pedido do agente de IA (`/api/agent/tools/orders`, action `create`) migrada para a MESMA função, canal `agent`. Agente perdeu a capacidade de aplicar desconto manual ou taxa de entrega fora de zona — decisão de segurança confirmada com o usuário, contra manipulação via conversa (prompt injection); frete agora sempre resolvido por zona, igual ao cardápio público. Checagem de preço obsoleto por item (M02.5a) passou a ser pulada para o canal `agent`, que nunca teve preço real de item para enviar. Detalhes em `docs/paridade/M02_AGENTE_PEDIDOS.md`. Com isso, os três canais de criação (público, manual, agente) estão unificados. FSM central, `variantId` e Mercado Pago ficam para M02.5d–f.
 
 **Saída:** delivery omnichannel consistente, sem divergência entre site, atendente e agente.
 

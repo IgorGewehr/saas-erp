@@ -534,3 +534,33 @@ describe('M02.5b — pedido manual (canal manual, autenticado)', () => {
     expect(result.order.paymentStatus).toBe('pago');
   });
 });
+
+describe('M02.5c — pedido do agente (canal agent)', () => {
+  it('ignora unitPrice/total=0 do item (agente nunca teve preço real pra enviar) e usa o preço do catálogo', async () => {
+    const fake = makeFakeDb(initialDocuments());
+    const result = await createDeliveryOrderWithSideEffects(baseInput({
+      items: [{ productId: 'p1', productName: 'p1', quantity: 1, unitPrice: 0, total: 0 }],
+      operatorId: 'agent', operatorName: 'Agente IA',
+    }), fake.db, { now: () => NOW, channel: 'agent', actorType: 'agent' });
+
+    expect(result.order.total).toBe(40);
+    expect(result.order.items[0]).toMatchObject({ productName: 'Pizza autoritativa', unitPrice: 40 });
+  });
+
+  it('não permite desconto manual nem override de frete mesmo se enviados (sem permissão concedida ao canal)', async () => {
+    const fake = makeFakeDb({
+      ...initialDocuments(),
+      'businesses/biz1': business({
+        settings: { aiAgent: { deliveryZones: [{ id: 'z1', name: 'Centro', type: 'neighborhood', value: 'Centro', fee: 6 }] } },
+      }),
+    });
+    await expect(createDeliveryOrderWithSideEffects(baseInput({
+      items: [{ productId: 'p1', productName: 'p1', quantity: 1, unitPrice: 0, total: 0 }],
+      deliveryType: 'entrega',
+      deliveryAddress: { logradouro: 'Rua X', numero: '1', bairro: 'Fora De Área', municipio: 'POA', uf: 'RS' },
+      manualDeliveryFee: 15,
+      operatorId: 'agent', operatorName: 'Agente IA',
+    }), fake.db, { now: () => NOW, channel: 'agent', actorType: 'agent' }))
+      .rejects.toBeInstanceOf(CommercialQuoteError);
+  });
+});

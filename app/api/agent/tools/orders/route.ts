@@ -9,13 +9,11 @@ import type {
   Product, DeliveryOrderAddress, Business,
 } from '@/lib/types';
 import { Timestamp, FieldValue } from 'firebase-admin/firestore';
-import { deductStockAdmin } from '@/lib/services/stock-admin';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
-import { allocateOrderNumberAdmin } from '@/lib/services/orderNumber';
 import { restoreOrderStockRecoverable } from '@/lib/services/order-stock-restore';
 import { recordClientPurchaseAdmin } from '@/lib/services/clients/recordPurchase';
-import { resolveClientIdentityAdmin } from '@/lib/services/clients/resolveIdentity';
 import { assertOrdersAcceptedNow } from '@/lib/services/orders/acceptance';
+import { createDeliveryOrderWithSideEffects } from '@/lib/services/delivery-order-server';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -35,8 +33,8 @@ interface CreateParams {
   items: Array<{ productId: string; quantity: number; notes?: string }>;
   deliveryType: DeliveryType;
   deliveryAddress?: DeliveryOrderAddress;
-  deliveryFee?: number;
-  discount?: number;
+  // deliveryFee/discount removidos (M02.5c): frete sempre por zona, sem
+  // desconto manual do agente — decisão de segurança (ver M02_AGENTE_PEDIDOS.md).
   paymentMethod?: DeliveryOrderPaymentMethod;
   paymentStatus?: DeliveryOrderPaymentStatus;
   changeFor?: number;
@@ -125,168 +123,75 @@ async function createOrder(businessId: string, params: CreateParams) {
   const { result } = await withIdempotency(
     adminDb,
     { businessId, key: idempotencyKey, endpoint: 'POST /api/agent/tools/orders#create' },
-    () => createOrderInner(businessId, params),
+    () => createOrderInner(businessId, params, idempotencyKey),
   );
   return result;
 }
 
-async function createOrderInner(businessId: string, params: CreateParams) {
+async function createOrderInner(businessId: string, params: CreateParams, idempotencyKey: string) {
   // Guardrail off-hours (M13): se o business NÃO aceita pedidos fora do horário
-  // e está fechado agora, recusa no servidor. Antes o flag só "torcia" pro LLM
-  // recusar (prompt) — a tool criava o pedido a qualquer hora. `open===null`
-  // (sem grade de 7 dias) = indeterminado → não bloqueia.
+  // e está fechado agora, recusa no servidor. `open===null` (sem grade de 7
+  // dias) = indeterminado → não bloqueia.
   const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
   const biz = bizSnap.exists ? (bizSnap.data() as Business) : null;
   // COER-01: fonte ÚNICA do guard de horário — o MESMO helper do cardápio público
   // (lib/services/orders/acceptance), evitando drift entre os dois caminhos.
   if (biz) assertOrdersAcceptedNow(biz);
 
-  // Validate products exist & are deliverable, compute prices, pre-check stock (incl BOM)
-  const productRefs = await Promise.all(
-    params.items.map(i => adminDb.collection('products').doc(i.productId).get()),
-  );
-  const productIndex = new Map<string, Product>();
-  for (let i = 0; i < params.items.length; i++) {
-    const snap = productRefs[i];
-    if (snap.exists) productIndex.set(snap.id, snap.data() as Product);
-  }
-
-  // Stock validation — expands BOM and sums totals per leaf SKU
-  const stockBucket = new Map<string, number>();
-  for (let i = 0; i < params.items.length; i++) {
-    const line = params.items[i];
-    const product = productIndex.get(line.productId);
-    if (!product) throw new Error(`Produto não encontrado: ${line.productId}`);
-    // "Não controlar estoque" (trackStock===false): fora do pré-check e da dedução.
-    if (product.trackStock === false) continue;
-    if (product.components && product.components.length > 0) {
-      for (const comp of product.components) {
-        stockBucket.set(comp.productId, (stockBucket.get(comp.productId) || 0) + comp.quantity * line.quantity);
-      }
-    } else {
-      stockBucket.set(product.id, (stockBucket.get(product.id) || 0) + line.quantity);
-    }
-  }
-  // Fetch any leaf products that aren't already in the index
-  const missingLeafIds = Array.from(stockBucket.keys()).filter(id => !productIndex.has(id));
-  if (missingLeafIds.length > 0) {
-    const extra = await Promise.all(
-      missingLeafIds.map(id => adminDb.collection('products').doc(id).get()),
-    );
-    extra.forEach(s => { if (s.exists) productIndex.set(s.id, s.data() as Product); });
-  }
-  const shortages: string[] = [];
-  for (const [pid, qty] of stockBucket.entries()) {
-    const prod = productIndex.get(pid);
-    if (!prod) continue;
-    if ((prod.currentStock || 0) < qty) {
-      shortages.push(`${prod.name} (pedido: ${qty}, disponível: ${prod.currentStock || 0})`);
-    }
-  }
-  if (shortages.length > 0) {
-    throw new Error(`Estoque insuficiente: ${shortages.join('; ')}`);
-  }
-
-  const resolvedItems: DeliveryOrderItem[] = [];
-  for (let i = 0; i < params.items.length; i++) {
-    const line = params.items[i];
-    const snap = productRefs[i];
-    if (!snap.exists) throw new Error(`Product ${line.productId} not found`);
-    const p = snap.data() as Product;
-    if (p.businessId !== businessId) throw new Error('Cross-tenant product access denied');
-    // Alinha ao cardápio público (orders/public): produto desativado não vende.
-    if (p.isActive === false) throw new Error(`Produto "${p.name}" está desativado`);
-    if (!p.isDeliverable) throw new Error(`Product "${p.name}" is not on the menu`);
-    if (p.menuAvailable === false) throw new Error(`Produto "${p.name}" está indisponível hoje`);
-    resolvedItems.push({
-      productId: snap.id,
-      productName: p.name,
-      quantity: line.quantity,
-      unitPrice: p.salePrice,
-      total: p.salePrice * line.quantity,
-      ...(line.notes ? { notes: line.notes } : {}),
-      ...(p.imageUrl ? { imageUrl: p.imageUrl } : {}),
-    });
-  }
-
-  const subtotal = resolvedItems.reduce((s, i) => s + i.total, 0);
-  const total = Math.max(0, subtotal + (params.deliveryFee || 0) - (params.discount || 0));
-
-  // Numeração: fonte ÚNICA (business.lastOrderNumber), compartilhada com a UI
-  // (OrdersModule) e o cardápio público (orders/public). Antes este canal usava
-  // um contador SEPARADO (counters/deliveryOrder) → números colidiam entre canais.
-  const number = await allocateOrderNumberAdmin(adminDb, businessId);
-  const orderRef = adminDb.collection('deliveryOrders').doc();
-
-  const now = new Date().toISOString();
-  const estimatedDeliveryAt = new Date(Date.now() + (params.estimatedMinutes || 45) * 60000).toISOString();
-
-  // P1.7: dedução atômica de estoque ANTES de persistir o pedido. deductStockAdmin
-  // roda em runTransaction única (lê o estoque real dentro da tx → sem oversell por
-  // concorrência) e grava um doc em stockMovements por SKU folha (trilha de auditoria).
-  // Se a dedução falhar, a exceção propaga e o pedido NÃO é criado (abort) — em vez do
-  // comportamento antigo de salvar o pedido e só logar a falha. O productIndex já tem
-  // os produtos top-level + folhas de BOM; passamos as linhas top-level e o serviço
-  // expande o BOM internamente (mesma expansão usada na pré-checagem acima).
-  const stockLines = params.items
-    .filter((line) => productIndex.get(line.productId)?.trackStock !== false)
-    .map((line) => ({ productId: line.productId, quantity: line.quantity }));
-  await deductStockAdmin(adminDb, stockLines, {
+  // M02.5c: preço, modificadores, zona de entrega, estoque e cliente passam a
+  // ser resolvidos pelo mesmo núcleo comercial do cardápio público/pedido
+  // manual (lib/services/delivery-order-server.ts), canal 'agent'. O agente
+  // PERDE a capacidade de aplicar desconto manual ou taxa de entrega fora de
+  // zona (decisão de segurança — evita que uma conversa manipule o modelo pra
+  // conceder desconto sem revisão humana); endereço fora de área agora é
+  // rejeitado, igual ao cardápio público.
+  const result = await createDeliveryOrderWithSideEffects({
     businessId,
-    operatorId: 'agent',
-    operatorName: 'Agente IA',
-    sourceType: 'order',
-    sourceId: orderRef.id,
-    sourceDocument: { collection: 'deliveryOrders', id: orderRef.id, existence: 'if-present' },
-    idempotencyKey: `order:${orderRef.id}:deduct`,
-    reason: `Pedido #${number}`,
-    productIndex,
-    negativeStockPolicy: 'prevent',
-  });
-
-  // Identidade canônica do cliente quando veio só o telefone (sem clientId):
-  // dedup compartilhado com cardápio/PDV + garante clientId no pedido pra a
-  // entrega registrar a compra (recordClientPurchase precisa dele). Best-effort.
-  let resolvedClientId = params.clientId;
-  if (!resolvedClientId && params.clientPhone) {
-    try {
-      const r = await resolveClientIdentityAdmin({ db: adminDb, businessId, phone: params.clientPhone, name: params.clientName });
-      resolvedClientId = r.clientId ?? undefined;
-    } catch (e) {
-      console.warn('[orders/create] resolveClientIdentity falhou:', e);
-    }
-  }
-
-  const doc: Omit<DeliveryOrder, 'id'> = {
-    businessId,
-    number,
-    status: 'recebido',
-    clientId: resolvedClientId,
-    clientName: params.clientName.trim(),
+    clientId: params.clientId,
+    clientName: params.clientName,
     clientPhone: params.clientPhone,
-    channel: params.channel || 'manual',
-    conversationId: params.conversationId,
-    contactExternalId: params.contactExternalId,
-    items: resolvedItems,
-    subtotal,
-    deliveryFee: params.deliveryFee,
-    discount: params.discount,
-    total,
+    items: params.items.map((item) => ({
+      productId: item.productId,
+      // Placeholder: o agente nunca teve preço/nome por item pra enviar (só
+      // productId/quantity/notes) — sobrescrito pelo snapshot autoritativo da
+      // cotação. A checagem de preço obsoleto por item é pulada para o canal
+      // 'agent' em delivery-order-server.ts (não há preço real do cliente
+      // para comparar).
+      productName: item.productId,
+      quantity: item.quantity,
+      unitPrice: 0,
+      total: 0,
+      ...(item.notes ? { notes: item.notes } : {}),
+    })),
     deliveryType: params.deliveryType,
     deliveryAddress: params.deliveryType === 'entrega' ? params.deliveryAddress : undefined,
     paymentMethod: params.paymentMethod,
-    paymentStatus: params.paymentStatus || 'pendente',
+    paymentStatus: params.paymentStatus,
     changeFor: params.changeFor,
     customerNotes: params.customerNotes,
-    estimatedDeliveryAt,
-    stockDeductedAt: now,
-    createdAt: now,
-    updatedAt: now,
-  };
-  const cleaned = Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== undefined));
-  await orderRef.set(cleaned);
+    estimatedMinutes: params.estimatedMinutes,
+    // Contrato do agente (lib/contracts/api/agent/_shared.ts) tem 'web' como
+    // canal possível, que não existe em DeliveryOrderChannelSchema — normaliza
+    // pra 'site'. CreateParams não declara 'web' (o runtime não é validado
+    // contra o contrato Zod aqui), daí o cast defensivo.
+    originChannel: (params.channel as string) === 'web' ? 'site' : (params.channel || 'manual'),
+    conversationId: params.conversationId,
+    contactExternalId: params.contactExternalId,
+    operatorId: 'agent',
+    operatorName: 'Agente IA',
+    idempotencyKey,
+  }, adminDb, {
+    channel: 'agent',
+    actorType: 'agent',
+  });
 
-  return { id: orderRef.id, number, total, subtotal, estimatedDeliveryAt };
+  return {
+    id: result.order.id,
+    number: result.orderNumber,
+    total: result.total,
+    subtotal: result.order.subtotal,
+    estimatedDeliveryAt: result.order.estimatedDeliveryAt,
+  };
 }
 
 async function getOrder(businessId: string, orderId: string) {

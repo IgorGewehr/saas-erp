@@ -46,8 +46,9 @@ export const OrdersCreateParamsSchema = z.object({
   items: z.array(OrderItemInputSchema).min(1),
   deliveryType: z.enum(['entrega', 'retirada']),
   deliveryAddress: AddressSchema.optional(),
-  deliveryFee: MoneySchema.optional(),
-  discount: MoneySchema.optional(),
+  // deliveryFee/discount removidos (M02.5c): o frete é sempre resolvido por
+  // zona (igual ao cardápio público) e não há desconto manual pelo agente —
+  // decisão de segurança contra manipulação via conversa (prompt injection).
   paymentMethod: PaymentMethodSchema.optional(),
   paymentStatus: z.string().default('pendente'),
   changeFor: MoneySchema.optional(),
