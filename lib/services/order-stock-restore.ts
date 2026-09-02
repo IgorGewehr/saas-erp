@@ -20,12 +20,62 @@
  *     se restoreStockAdmin falhar, o campo fica null e a varredura de recuperação
  *     reprocessa no próximo run (sem vazamento de estoque).
  */
+import type { Firestore } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/config/firebaseAdmin';
-import type { DeliveryOrder } from '@/lib/types';
+import type { DeliveryOrder, DeliveryOrderItem, Product } from '@/lib/types';
 import { loadProductIndex, restoreStockAdmin } from '@/lib/services/stock-admin';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
 
 const CLAIM_STALE_MS = 5 * 60 * 1000;
+
+/**
+ * Resolve o productIndex completo (itens + insumos de modificadores + folhas
+ * de BOM) pra um conjunto de itens de pedido — 3 passes, extraído daqui pra
+ * ser reaproveitado por qualquer caller que precise reconstruir linhas de
+ * estoque a partir de itens de DeliveryOrder (hoje: este módulo e
+ * delivery-order-edit-admin.ts). Fonte única — evita a resolução divergir
+ * entre restauro e reconciliação de edição (gap G4).
+ *
+ * CRÍTICO: sem os 3 passes, componentes de produtos compostos e insumos de
+ * modificador nunca entram no índice e `buildOrderStockLines`/`restoreStockAdmin`
+ * silenciosamente pulam essas linhas (produto ausente do índice).
+ */
+export async function resolveOrderStockProductIndex(
+  db: Firestore,
+  items: DeliveryOrderItem[],
+  businessId: string,
+): Promise<Map<string, Product>> {
+  const itemIds = items.map((i) => i.productId);
+  if (itemIds.length === 0) return new Map();
+
+  // 1º passe: produtos dos itens p/ descobrir linkedProductIds dos modificadores;
+  // 2º passe: índice completo (itens + insumos) p/ a restauração.
+  const itemIndex = await loadProductIndex(db, itemIds, businessId);
+  const linkedIds: string[] = [];
+  for (const item of items) {
+    const product = itemIndex.get(item.productId);
+    for (const sm of item.selectedModifiers ?? []) {
+      const group = product?.modifierGroups?.find((g) => g.id === sm.groupId);
+      if (!group) continue;
+      for (const opt of sm.selectedOptions) {
+        const srcOpt = group.options.find((o) => o.id === opt.optionId);
+        if (srcOpt?.linkedProductId) linkedIds.push(srcOpt.linkedProductId);
+      }
+    }
+  }
+
+  // Índice base (itens + insumos de modificadores).
+  const baseIndex = await loadProductIndex(db, [...itemIds, ...linkedIds], businessId);
+  // CRÍTICO — simetria EXATA com a dedução: inclui as FOLHAS de BOM dos
+  // produtos compostos. Sem isto o estoque de COMPONENTES nunca era
+  // restaurado/reconciliado → corrupção de inventário.
+  const componentIds = [...itemIds, ...linkedIds].flatMap((id) =>
+    (baseIndex.get(id)?.components ?? []).map((c) => c.productId),
+  );
+  return componentIds.length
+    ? loadProductIndex(db, [...itemIds, ...linkedIds, ...componentIds], businessId)
+    : baseIndex;
+}
 
 export async function restoreOrderStockRecoverable(
   orderId: string,
@@ -50,38 +100,10 @@ export async function restoreOrderStockRecoverable(
   });
   if (!order) return false;
 
-  const itemIds = (order.items ?? []).map((i) => i.productId);
-  if (itemIds.length === 0) return false;
+  const items = order.items ?? [];
+  if (items.length === 0) return false;
 
-  // 1º passe: produtos dos itens p/ descobrir linkedProductIds dos modificadores;
-  // 2º passe: índice completo (itens + insumos) p/ a restauração.
-  const itemIndex = await loadProductIndex(adminDb, itemIds, businessId);
-  const linkedIds: string[] = [];
-  for (const item of order.items ?? []) {
-    const product = itemIndex.get(item.productId);
-    for (const sm of item.selectedModifiers ?? []) {
-      const group = product?.modifierGroups?.find((g) => g.id === sm.groupId);
-      if (!group) continue;
-      for (const opt of sm.selectedOptions) {
-        const srcOpt = group.options.find((o) => o.id === opt.optionId);
-        if (srcOpt?.linkedProductId) linkedIds.push(srcOpt.linkedProductId);
-      }
-    }
-  }
-
-  // Índice base (itens + insumos de modificadores).
-  const baseIndex = await loadProductIndex(adminDb, [...itemIds, ...linkedIds], businessId);
-  // CRÍTICO — simetria EXATA com a dedução (orders/public carrega
-  // [...baseIds, ...componentIds]): inclui as FOLHAS de BOM dos produtos
-  // compostos. restoreStockAdmin PULA linhas cujo produto não está no índice,
-  // então SEM isto o estoque de COMPONENTES de produtos compostos nunca era
-  // restaurado (cancelamento/PIX expirado/estorno) → corrupção de inventário.
-  const componentIds = [...itemIds, ...linkedIds].flatMap((id) =>
-    (baseIndex.get(id)?.components ?? []).map((c) => c.productId),
-  );
-  const productIndex = componentIds.length
-    ? await loadProductIndex(adminDb, [...itemIds, ...linkedIds, ...componentIds], businessId)
-    : baseIndex;
+  const productIndex = await resolveOrderStockProductIndex(adminDb, items, businessId);
   const lines = buildOrderStockLines(order, productIndex);
 
   const adjustments = await restoreStockAdmin(adminDb, lines, {

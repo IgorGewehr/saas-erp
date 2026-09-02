@@ -12,6 +12,7 @@ import { Timestamp, FieldValue } from 'firebase-admin/firestore';
 import { assertOrdersAcceptedNow } from '@/lib/services/orders/acceptance';
 import { createDeliveryOrderWithSideEffects } from '@/lib/services/delivery-order-server';
 import { transitionDeliveryOrderAdmin } from '@/lib/services/delivery-order-transition-admin';
+import { editDeliveryOrderAdmin } from '@/lib/services/delivery-order-edit-admin';
 
 // ─── Action schemas ──────────────────────────────────────────────────────────
 
@@ -238,22 +239,9 @@ async function updateItems(
 ) {
   if (!newItems?.length) throw new Error('items required');
 
-  const ref = adminDb.collection('deliveryOrders').doc(orderId);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('Pedido não encontrado');
-  const existing = snap.data() as DeliveryOrder;
-  if (existing.businessId !== businessId) throw new Error('Cross-tenant access denied');
-
-  // Only allow item edits before the kitchen starts
-  if (existing.status === 'preparando' || existing.status === 'pronto' || existing.status === 'saiu_entrega' || existing.status === 'entregue') {
-    throw new Error(`Não é possível editar itens — pedido já está com status "${existing.status}"`);
-  }
-  // Block if stock was already deducted (defense in depth)
-  if (existing.stockDeductedAt) {
-    throw new Error('Itens não podem ser alterados após dedução de estoque');
-  }
-
-  // Resolve new items + recompute totals
+  // Resolve preço no catálogo — agente nunca tem preço real pra enviar (mesmo
+  // motivo do `create`, ver M02_AGENTE_PEDIDOS.md). Status/estoque/reconciliação
+  // ficam por conta de editDeliveryOrderAdmin (fonte única, mesma da UI).
   const productRefs = await Promise.all(
     newItems.map(i => adminDb.collection('products').doc(i.productId).get()),
   );
@@ -276,15 +264,14 @@ async function updateItems(
     });
   }
 
-  const subtotal = resolvedItems.reduce((s, i) => s + i.total, 0);
-  const total = Math.max(0, subtotal + (existing.deliveryFee || 0) - (existing.discount || 0));
-  await ref.update({
-    items: resolvedItems,
-    subtotal,
-    total,
-    updatedAt: new Date().toISOString(),
+  const result = await editDeliveryOrderAdmin({
+    db: adminDb,
+    orderId,
+    businessId,
+    patch: { items: resolvedItems },
+    actor: { id: 'agent', name: 'Agente IA', type: 'agent' },
   });
-  return { id: orderId, itemsCount: resolvedItems.length, subtotal, total };
+  return { id: orderId, itemsCount: result.order.items.length, subtotal: result.order.subtotal, total: result.order.total };
 }
 
 async function cancelOrder(businessId: string, orderId: string, reason?: string) {

@@ -654,6 +654,13 @@ async function persistCommercialDocument(params: {
         stockOperationId: stock.stockOperationId,
         stockMovementIds: stock.movementIds,
         commercialStockAdjustments: stock.adjustments,
+        // DeliveryOrder-only: sem isto, delivery-order-transition-admin.ts
+        // tratava TODO pedido novo como "legado sem stockDeductedAt" na
+        // transição recebido→preparando e debitava o estoque de novo (chave
+        // de idempotência diferente da usada aqui, então o dedup não pegava)
+        // — e order-stock-restore.ts se recusava a restaurar pedido
+        // cancelado ainda em recebido. Bug real, corrigido aqui.
+        ...(context.request.sourceType === 'deliveryOrder' ? { stockDeductedAt: now.toISOString() } : {}),
       } : {}),
       updatedAt: now.toISOString(),
     }));

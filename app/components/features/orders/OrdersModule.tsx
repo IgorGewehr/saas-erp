@@ -1513,37 +1513,36 @@ export default function OrdersModule() {
   // Persist new/edit
   const persistOrder = async (data: OrderFormData, idempotencyKey: string) => {
     if (!business?.id || !user) return;
-    const now = new Date().toISOString();
-    const subtotal = data.items.reduce((s, i) => s + i.total, 0);
-    const total = Math.max(0, subtotal + (data.deliveryFee || 0) - (data.discount || 0));
     const estimatedDeliveryAt = new Date(Date.now() + data.estimatedMinutes * 60000).toISOString();
 
     try {
       if (editingOrder) {
-        // Grupo 9: pedido Mercado Pago tem status/método controlados pelo webhook
-        // (paymentFsmStatus). Edição manual desses campos é proibida — não os
-        // incluímos no payload mesmo que a UI venha adulterada.
-        const lockPayment = editingOrder.paymentProvider === 'mercadopago';
-        const payload: Partial<Order> = {
+        // M02_EDICAO_PEDIDO_POS_EFEITO: edição delega ao endpoint autenticado
+        // server-side (editDeliveryOrderAdmin, mesma função usada pelo agente)
+        // — o estoque já é debitado NA CRIAÇÃO do pedido (núcleo comercial),
+        // então trocar itens aqui exige reconciliar estoque, não só sobrescrever
+        // o documento. O servidor bloqueia a troca de itens/valores quando o
+        // pedido já saiu de 'recebido' (cancelar e criar novo é o caminho).
+        // Grupo 9: pedido Mercado Pago tem status/método controlados pelo
+        // webhook (paymentFsmStatus) — o servidor já ignora esses campos nesse caso.
+        const payload = {
           clientId: data.clientId || undefined,
           clientName: data.clientName.trim(),
           clientPhone: data.clientPhone || undefined,
           items: data.items,
-          subtotal,
           deliveryFee: data.deliveryFee || undefined,
           discount: data.discount || undefined,
-          total,
           deliveryType: data.deliveryType,
           deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
-          ...(lockPayment ? {} : { paymentMethod: data.paymentMethod, paymentStatus: data.paymentStatus }),
+          paymentMethod: data.paymentMethod,
+          paymentStatus: data.paymentStatus,
           changeFor: data.changeFor || undefined,
           customerNotes: data.customerNotes || undefined,
           internalNotes: data.internalNotes || undefined,
           estimatedDeliveryAt,
-          updatedAt: now,
         };
         const cleaned = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined));
-        await updateDoc(doc(db, 'deliveryOrders',editingOrder.id), cleaned);
+        await editOrder(editingOrder.id, cleaned);
         toast.success('Pedido atualizado');
       } else {
         // M02.5b: criação delega preço, modificadores, zona de entrega, desconto
@@ -1604,6 +1603,26 @@ export default function OrdersModule() {
       toast.error('Erro ao salvar pedido');
     }
   };
+
+  // M02_EDICAO_PEDIDO_POS_EFEITO: edição delega ao endpoint autenticado
+  // server-side (editDeliveryOrderAdmin) — reconcilia estoque quando itens
+  // mudam com o pedido ainda em 'recebido', ou rejeita (409) se já saiu dali.
+  const editOrder = useCallback(async (
+    orderId: string,
+    patch: Record<string, unknown>,
+  ): Promise<void> => {
+    if (!business?.id || !firebaseUser) throw new Error('Sessão expirada. Entre novamente.');
+    const token = await firebaseUser.getIdToken();
+    const response = await fetch(`/api/orders/${orderId}/edit`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ businessId: business.id, patch }),
+    });
+    const payload = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || 'Erro ao editar pedido');
+    }
+  }, [business?.id, firebaseUser]);
 
   // M02.5d: transição de status delega ao endpoint autenticado server-side
   // (mesma função usada pelo agente — transitionDeliveryOrderAdmin), que

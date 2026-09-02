@@ -33,7 +33,7 @@ External
 | Módulo | UI principal | Coleções primárias | Side-effects críticos |
 |---|---|---|---|
 | Vendas / PDV | `app/components/features/pdv/PDVModule.tsx` | sales, products, stockMovements, transactions | deductStock + Transaction + NFC-e + loyalty + giftCard (batch) |
-| Pedidos | `app/components/features/orders/OrdersModule.tsx` | deliveryOrders, products, stockMovements | FSM 6 estados; `/api/orders/public` é entrada anônima rate-limited |
+| Pedidos | `app/components/features/orders/OrdersModule.tsx` | deliveryOrders, products, stockMovements | FSM 6 estados; `/api/orders/public` é entrada anônima rate-limited; edição de itens/valores server-side (`editDeliveryOrderAdmin` via `PATCH /api/orders/[id]/edit`) — bloqueada fora de `recebido`, reconcilia estoque (restaura+deduz) dentro dele |
 | Estoque | `app/components/features/inventory/InventoryModule.tsx` | products (com `components[]` BOM, `modifierGroups`), stockMovements | Catálogo apenas |
 | Compras | `app/components/features/purchases/ComprasModule.tsx` | purchaseNotes, products, stockMovements, transactions | XML NF-e fornecedor → match manual → addStock; idempotência via `stockImportedAt` |
 | Cardápio | `app/components/features/cardapio/CardapioModule.tsx` | products, menuCategories | — |

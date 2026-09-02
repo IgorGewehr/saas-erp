@@ -11,6 +11,7 @@ import {
 import { CommercialOperationError, CommercialOperationIdempotencyConflictError } from '@/lib/services/commercial-operation-admin';
 import { CommercialQuoteError } from '@/lib/services/commercial-quote';
 import { createDeliveryOrderWithSideEffects } from '@/lib/services/delivery-order-server';
+import { transitionDeliveryOrderAdmin } from '@/lib/services/delivery-order-transition-admin';
 
 interface FakeQuery {
   _coll: string;
@@ -280,6 +281,10 @@ describe('M02.5a — checkout comercial do cardápio público', () => {
     expect(result.trackingToken).toHaveLength(43); // 32 bytes base64url
     expect(fake.list('deliveryOrders')).toHaveLength(1);
     expect(fake.get('products/p1')?.currentStock).toBe(4);
+    // Regressão: sem isto, delivery-order-transition-admin.ts tratava todo
+    // pedido novo como "legado sem stockDeductedAt" e debitava o estoque de
+    // novo na transição recebido→preparando (dedução dupla).
+    expect(result.order.stockDeductedAt).toBeTruthy();
   });
 
   it('rejeita preço de item adulterado antes de tocar estoque ou número', async () => {
@@ -378,6 +383,20 @@ describe('M02.5a — checkout comercial do cardápio público', () => {
     }), fake.db, { now: () => NOW })).rejects.toBeInstanceOf(CommercialOperationError);
     expect(fake.list('deliveryOrders')).toHaveLength(0);
     expect(fake.get('products/p1')?.currentStock).toBe(5);
+  });
+
+  it('regressão: transição recebido→preparando não debita o estoque de novo (dedução dupla corrigida)', async () => {
+    const fake = makeFakeDb(initialDocuments());
+    const created = await createDeliveryOrderWithSideEffects(baseInput(), fake.db, { now: () => NOW });
+    expect(fake.get('products/p1')?.currentStock).toBe(4); // já debitado na criação
+
+    const result = await transitionDeliveryOrderAdmin({
+      db: fake.db, orderId: created.order.id, businessId: 'biz1', targetStatus: 'preparando',
+      actor: { id: 'user-1', name: 'Atendente', type: 'user' }, now: NOW,
+    });
+
+    expect(result.stockApplied).toBe(false); // stockDeductedAt já estava setado — não é "legado"
+    expect(fake.get('products/p1')?.currentStock).toBe(4); // inalterado, não debitou de novo
   });
 
   it('bloqueia produto sem estoque (mesma regra do PDV: nenhum canal aceita saldo negativo)', async () => {

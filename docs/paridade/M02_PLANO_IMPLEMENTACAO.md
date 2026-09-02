@@ -253,7 +253,7 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 - [ ] Adicionar variação ao carrinho, contrato, estoque, impressão, fiscal e repetição de pedido.
 - [x] Mover transições críticas de status para endpoint/serviço autenticado com FSM server-side.
 - [x] Definir quando o estoque é reservado/deduzido em cada forma de pagamento e canal (dedução na criação pelos três canais; dedução legada em `preparando` só para pedidos anteriores à migração).
-- [ ] Bloquear edição insegura após efeitos; quando permitida, calcular e aplicar delta compensatório.
+- [x] Bloquear edição insegura após efeitos; quando permitida, calcular e aplicar delta compensatório. Ver `docs/paridade/M02_EDICAO_PEDIDO_POS_EFEITO.md` — de quebra corrigiu um bug real de dedução dupla de estoque (não relacionado a edição).
 - [ ] Integrar Mercado Pago ao mesmo `operationId` e aos mesmos efeitos reconciliáveis.
 - [ ] Manter jobs de expiração/reconciliação, eliminando caminhos paralelos de estorno.
 
