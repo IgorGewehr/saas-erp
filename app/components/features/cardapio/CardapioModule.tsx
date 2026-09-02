@@ -4,9 +4,9 @@ import { useMemo, useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UtensilsCrossed, Search, Clock, Package, ImageOff, Plus, Tag, AlertCircle,
-  Sparkles, ShoppingCart, X, ChevronRight, Minus, Leaf, Check,
+  Sparkles, ShoppingCart, X, ChevronRight, Minus, Leaf, Check, Ban, Undo2,
 } from 'lucide-react';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
@@ -18,6 +18,7 @@ import type {
 } from '@/lib/types';
 import { computeModifierDelta, round2, validateAndCleanModifiers } from '@/lib/services/orders/pricing';
 import { isOutOfStock, type StockResolver } from '@/lib/utils/menu-availability';
+import { toast } from 'react-toastify';
 
 type DietaryTag = NonNullable<Product['dietary']>[number];
 
@@ -534,17 +535,19 @@ function ModifierOptionRow({
 
 // ─── Product card ─────────────────────────────────────────────────────────────
 function ProductCard({
-  product, cartQty, onOpen, onAdd, resolveStock,
+  product, cartQty, onOpen, onAdd, onToggleAvailability, resolveStock,
 }: {
   product: Product;
   cartQty: number;
   onOpen: (p: Product) => void;
   onAdd: (p: Product) => void;
+  onToggleAvailability: (p: Product) => void;
   resolveStock: StockResolver;
 }) {
   const hasComponents = !!(product.components && product.components.length > 0);
   const hasMods = hasModifierGroups(product);
   const outOfStock = isOutOfStock(product, resolveStock);
+  const manuallyMarkedOut = product.menuAvailable === false;
   const dietaryTags = DIETARY_OPTIONS.filter(d => product.dietary?.includes(d.id as DietaryTag));
 
   return (
@@ -639,20 +642,38 @@ function ProductCard({
               </span>
             )}
           </div>
-          {!outOfStock && (
+          <div className="flex items-center gap-1.5">
+            {/* Toggle rápido "esgotado hoje" — independente do outOfStock por
+                estoque real (regra 5 de menu-availability.ts vence tudo). Só
+                afeta a flag manual; item sem estoque real continua esgotado
+                mesmo com menuAvailable=true. */}
             <button
-              onClick={e => { e.stopPropagation(); onAdd(product); }}
+              onClick={e => { e.stopPropagation(); onToggleAvailability(product); }}
+              title={manuallyMarkedOut ? 'Restaurar disponibilidade' : 'Marcar esgotado hoje'}
               className={cn(
-                'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors',
-                cartQty > 0
-                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                  : 'bg-red-600 hover:bg-red-700 text-white',
+                'inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors flex-shrink-0',
+                manuallyMarkedOut
+                  ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-200 dark:hover:bg-emerald-500/25'
+                  : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-amber-100 dark:hover:bg-amber-500/15 hover:text-amber-700 dark:hover:text-amber-400',
               )}
             >
-              <Plus className="w-3 h-3" />
-              {hasMods ? (cartQty > 0 ? `Escolher (${cartQty})` : 'Escolher') : cartQty > 0 ? `+1 (${cartQty})` : 'Adicionar'}
+              {manuallyMarkedOut ? <Undo2 className="w-3.5 h-3.5" /> : <Ban className="w-3.5 h-3.5" />}
             </button>
-          )}
+            {!outOfStock && (
+              <button
+                onClick={e => { e.stopPropagation(); onAdd(product); }}
+                className={cn(
+                  'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors',
+                  cartQty > 0
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                    : 'bg-red-600 hover:bg-red-700 text-white',
+                )}
+              >
+                <Plus className="w-3 h-3" />
+                {hasMods ? (cartQty > 0 ? `Escolher (${cartQty})` : 'Escolher') : cartQty > 0 ? `+1 (${cartQty})` : 'Adicionar'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </motion.div>
@@ -774,6 +795,22 @@ export default function CardapioModule() {
     );
     return () => unsub();
   }, [business?.id]);
+
+  // Toggle rápido de "esgotado hoje" direto no card — antes só dava pra marcar
+  // abrindo o formulário completo de edição em Estoque, inviável durante o
+  // rush. onSnapshot já propaga o novo estado pra todos os dispositivos
+  // (inclusive o cardápio público) sem precisar de refresh.
+  const handleToggleAvailability = async (product: Product) => {
+    try {
+      await updateDoc(doc(db, 'products', product.id), {
+        menuAvailable: product.menuAvailable === false,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error('[Cardapio] toggle menuAvailable failed:', err);
+      toast.error('Não foi possível atualizar a disponibilidade do item.');
+    }
+  };
 
   // Sync selectedProduct com snapshot — fecha modal se produto foi
   // desativado/removido por outro user; refresca display se preço mudou.
@@ -1092,6 +1129,7 @@ export default function CardapioModule() {
                         cartQty={productQtyInCart(p.id)}
                         onOpen={openProduct}
                         onAdd={quickAdd}
+                        onToggleAvailability={handleToggleAvailability}
                         resolveStock={resolveStock}
                       />
                     ))}
