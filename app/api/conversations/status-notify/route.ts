@@ -31,7 +31,9 @@ const ORDER_TEMPLATES: Partial<Record<DeliveryOrderStatus, (o: DeliveryOrder) =>
   preparando: (o) => `Olá ${firstName(o.clientName)}! Seu pedido #${o.number} já está sendo preparado 👨‍🍳`,
   pronto: (o) => o.deliveryType === 'retirada'
     ? `${firstName(o.clientName)}, seu pedido #${o.number} está pronto para retirada! 🎉`
-    : `Pedido #${o.number} pronto e aguardando o entregador.`,
+    : o.deliveryType === 'mesa'
+      ? `Pedido #${o.number} está pronto! 🎉`
+      : `Pedido #${o.number} pronto e aguardando o entregador.`,
   saiu_entrega: (o) => `${firstName(o.clientName)}, seu pedido #${o.number} saiu para entrega 🏍️ Chegando em breve!`,
   entregue: (o) => `Pedido #${o.number} entregue ✅ Muito obrigado pela preferência!`,
   cancelado: (o) => `Olá ${firstName(o.clientName)}, seu pedido #${o.number} foi cancelado. Se foi um engano, é só nos chamar.`,

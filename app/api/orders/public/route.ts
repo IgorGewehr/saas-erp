@@ -96,6 +96,7 @@ export async function POST(req: NextRequest) {
           result.total,
           result.order.deliveryType,
           result.order.items,
+          result.order.tableNumber,
         ).catch(() => {});
 
         return {
@@ -161,6 +162,7 @@ async function notifyBusiness(
   total: number,
   deliveryType: DeliveryType,
   items: DeliveryOrderItem[],
+  tableNumber?: string,
 ) {
   try {
     const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
@@ -168,7 +170,9 @@ async function notifyBusiness(
     if (!biz) return;
 
     const totalStr = formatCurrency(total);
-    const modeStr = deliveryType === 'entrega' ? '🛵 Entrega' : '🏠 Retirada';
+    const modeStr = deliveryType === 'entrega' ? '🛵 Entrega'
+      : deliveryType === 'mesa' ? `🍽️ Mesa ${tableNumber || '?'}`
+        : '🏠 Retirada';
 
     const itemLines = items.slice(0, 8).map(i => {
       let line = `• ${i.quantity}× ${i.productName}`;

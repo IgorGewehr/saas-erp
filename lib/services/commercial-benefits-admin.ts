@@ -12,7 +12,7 @@ import type {
   CommercialOperationRequest,
   CommercialOperationStepEffectsInput,
 } from '@/lib/contracts/domain/commercialOperation';
-import type { GiftCard, LoyaltyConfig } from '@/lib/types';
+import type { GiftCard, LoyaltyConfig, DeliveryType } from '@/lib/types';
 import type {
   CommercialOperationError,
   CommercialOperationHandlerContext,
@@ -56,7 +56,7 @@ function nowIso(context: CommercialOperationHandlerContext): string {
  */
 function deliveryContextFrom(context: CommercialOperationHandlerContext): {
   deliveryFee: number;
-  deliveryType: 'entrega' | 'retirada';
+  deliveryType: DeliveryType;
 } {
   const delivery = context.request.quote.delivery;
   return {

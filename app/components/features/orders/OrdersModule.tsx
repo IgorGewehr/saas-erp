@@ -9,7 +9,7 @@ import {
   X, ChefHat, Package, Truck, XCircle, Edit3, Trash2, Phone, DollarSign,
   ChevronDown, ArrowRight, ArrowLeft, MessageSquare, Timer, Sparkles,
   LayoutGrid, List, Filter, Home, Volume2, VolumeX, Bell, Printer, Check, Ban,
-  Receipt, FileCheck2,
+  Receipt, FileCheck2, UtensilsCrossed,
 } from 'lucide-react';
 import {
   collection, query, where, orderBy, onSnapshot, getDocs, updateDoc,
@@ -50,7 +50,8 @@ const ORDER_STATUS_LABELS = DELIVERY_ORDER_STATUS_LABELS;
 // direto, já permitido pela FSM). ENTREGA segue o fluxo completo. Sem deliveryType
 // (retrocompat) usa o fluxo completo. Filtro só remove a etapa de logística de rota.
 function statusFlowFor(deliveryType?: DeliveryType): OrderStatus[] {
-  if (deliveryType === 'retirada') {
+  // Mesa (salão) e retirada não têm etapa de "saiu para entrega".
+  if (deliveryType === 'retirada' || deliveryType === 'mesa') {
     return ORDER_STATUS_ORDER.filter(s => s !== 'saiu_entrega');
   }
   return ORDER_STATUS_ORDER;
@@ -274,11 +275,15 @@ function OrderCard({
         <div className="flex items-center gap-1.5">
           {order.deliveryType === 'entrega' ? (
             <Bike className="w-3 h-3 text-gray-400" />
+          ) : order.deliveryType === 'mesa' ? (
+            <UtensilsCrossed className="w-3 h-3 text-gray-400" />
           ) : (
             <Home className="w-3 h-3 text-gray-400" />
           )}
           <span className="text-[10px] text-gray-500 dark:text-gray-400 font-medium">
-            {order.deliveryType === 'entrega' ? 'Entrega' : 'Retirada'}
+            {order.deliveryType === 'entrega' ? 'Entrega'
+              : order.deliveryType === 'mesa' ? `Mesa ${order.tableNumber || '?'}`
+                : 'Retirada'}
           </span>
           <span className={cn(
             'ml-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold',
@@ -378,6 +383,7 @@ interface OrderFormData {
   deliveryFee: number;
   discount: number;
   address: OrderAddress;
+  tableNumber: string;
   paymentMethod: OrderPaymentMethod;
   paymentStatus: OrderPaymentStatus;
   changeFor: number;
@@ -396,6 +402,7 @@ function emptyOrderForm(): OrderFormData {
     deliveryFee: 0,
     discount: 0,
     address: {},
+    tableNumber: '',
     paymentMethod: 'pix',
     paymentStatus: 'pendente',
     changeFor: 0,
@@ -631,8 +638,8 @@ function OrderFormDialog({
             {/* Delivery type */}
             <div>
               <label className={labelCls}>Tipo de atendimento</label>
-              <div className="grid grid-cols-2 gap-2">
-                {(['entrega', 'retirada'] as DeliveryType[]).map(t => (
+              <div className="grid grid-cols-3 gap-2">
+                {(['entrega', 'retirada', 'mesa'] as DeliveryType[]).map(t => (
                   <button
                     key={t}
                     type="button"
@@ -644,11 +651,26 @@ function OrderFormDialog({
                         : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
                     )}
                   >
-                    {t === 'entrega' ? <><Bike className="w-4 h-4" /> Entrega</> : <><Home className="w-4 h-4" /> Retirada</>}
+                    {t === 'entrega' ? <><Bike className="w-4 h-4" /> Entrega</>
+                      : t === 'retirada' ? <><Home className="w-4 h-4" /> Retirada</>
+                        : <><UtensilsCrossed className="w-4 h-4" /> Mesa</>}
                   </button>
                 ))}
               </div>
             </div>
+
+            {/* Table number (if mesa) */}
+            {form.deliveryType === 'mesa' && (
+              <div>
+                <label className={labelCls}>Número da mesa</label>
+                <input
+                  value={form.tableNumber}
+                  onChange={e => setForm(f => ({ ...f, tableNumber: e.target.value }))}
+                  placeholder="Ex: 12"
+                  className={inputCls}
+                />
+              </div>
+            )}
 
             {/* Address (if delivery) */}
             {form.deliveryType === 'entrega' && (
@@ -1023,6 +1045,19 @@ function OrderDetailDrawer({
           </div>
         )}
 
+        {/* Mesa (salão) */}
+        {order.deliveryType === 'mesa' && (
+          <div className="space-y-2">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Mesa</p>
+            <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 dark:bg-gray-800/40">
+              <UtensilsCrossed className="w-4 h-4 text-gray-400 flex-shrink-0" />
+              <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                Mesa {order.tableNumber || '(não informada)'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Notes */}
         {order.customerNotes && (
           <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30">
@@ -1157,8 +1192,14 @@ function NewOrderCard({
           {order.items.length > 2 ? ` +${order.items.length - 2}` : ''}
         </p>
         <div className="mt-1 flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400">
-          {order.deliveryType === 'entrega' ? <Bike className="w-3 h-3" /> : <Home className="w-3 h-3" />}
-          <span>{order.deliveryType === 'entrega' ? 'Entrega' : 'Retirada'}</span>
+          {order.deliveryType === 'entrega' ? <Bike className="w-3 h-3" />
+            : order.deliveryType === 'mesa' ? <UtensilsCrossed className="w-3 h-3" />
+              : <Home className="w-3 h-3" />}
+          <span>
+            {order.deliveryType === 'entrega' ? 'Entrega'
+              : order.deliveryType === 'mesa' ? `Mesa ${order.tableNumber || '?'}`
+                : 'Retirada'}
+          </span>
           <span className="text-gray-300 dark:text-gray-600">·</span>
           <span className="font-semibold text-gray-700 dark:text-gray-300">{formatCurrency(order.total)}</span>
         </div>
@@ -1534,6 +1575,7 @@ export default function OrdersModule() {
           discount: data.discount || undefined,
           deliveryType: data.deliveryType,
           deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
+          tableNumber: data.deliveryType === 'mesa' ? (data.tableNumber || undefined) : undefined,
           paymentMethod: data.paymentMethod,
           paymentStatus: data.paymentStatus,
           changeFor: data.changeFor || undefined,
@@ -1569,6 +1611,7 @@ export default function OrdersModule() {
             items: data.items,
             deliveryType: data.deliveryType,
             deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
+            tableNumber: data.deliveryType === 'mesa' ? (data.tableNumber || undefined) : undefined,
             manualDeliveryFee: data.deliveryFee || undefined,
             discount: data.discount || undefined,
             discountReason: data.discount ? 'Desconto manual no pedido' : undefined,
@@ -1831,6 +1874,7 @@ export default function OrdersModule() {
         deliveryFee: editingOrder.deliveryFee || 0,
         discount: editingOrder.discount || 0,
         address: editingOrder.deliveryAddress || {},
+        tableNumber: editingOrder.tableNumber || '',
         paymentMethod: editingOrder.paymentMethod || 'pix',
         paymentStatus: editingOrder.paymentStatus,
         changeFor: editingOrder.changeFor || 0,

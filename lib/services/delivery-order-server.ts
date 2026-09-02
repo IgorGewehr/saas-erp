@@ -415,6 +415,7 @@ async function buildNewOperationRequest(params: {
     total: centsToReais(effectiveQuote.pricing.totalCents),
     deliveryType: input.deliveryType,
     ...(input.deliveryType === 'entrega' ? { deliveryAddress: input.deliveryAddress } : {}),
+    ...(input.tableNumber ? { tableNumber: input.tableNumber } : {}),
     paymentMethod: input.paymentMethod ?? 'pix',
     paymentStatus: input.paymentStatus ?? 'pendente',
     ...(input.changeFor && input.changeFor > centsToReais(effectiveQuote.pricing.totalCents) ? { changeFor: input.changeFor } : {}),

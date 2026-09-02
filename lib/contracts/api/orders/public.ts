@@ -33,6 +33,8 @@ export const CreatePublicOrderBodySchema = z.object({
   items: z.array(PublicOrderItemSchema).min(1).max(50),
   deliveryType: DeliveryTypeSchema,
   deliveryAddress: DeliveryOrderAddressSchema.optional(),
+  /** Número/identificador da mesa no salão — só relevante pra deliveryType='mesa'. */
+  tableNumber: z.string().min(1).max(20).optional(),
   /** Valor informativo do cliente; é ignorado e recalculado pela rota. */
   deliveryFee: z.number().nonnegative().optional(),
   paymentMethod: z.union([

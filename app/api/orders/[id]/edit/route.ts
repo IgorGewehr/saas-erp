@@ -28,6 +28,7 @@ const PatchSchema = z.object({
   discount: z.number().nonnegative().optional(),
   deliveryType: DeliveryTypeSchema.optional(),
   deliveryAddress: DeliveryOrderAddressSchema.optional(),
+  tableNumber: z.string().min(1).max(20).optional(),
   paymentMethod: DeliveryOrderPaymentMethodSchema.optional(),
   paymentStatus: DeliveryOrderPaymentStatusSchema.optional(),
   changeFor: z.number().nonnegative().optional(),

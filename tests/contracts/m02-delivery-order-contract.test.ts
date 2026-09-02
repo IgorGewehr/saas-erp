@@ -57,4 +57,31 @@ describe('M02.5a — contrato DeliveryOrder com campos aditivos do núcleo comer
     const result = DeliveryOrderSchema.safeParse(document);
     expect(result.success).toBe(true);
   });
+
+  it('aceita deliveryType=mesa com tableNumber, sem exigir endereço nem taxa de entrega', () => {
+    const base = structuredClone(publicFixture.document);
+    const document = {
+      ...base,
+      deliveryType: 'mesa',
+      deliveryAddress: undefined,
+      tableNumber: '12',
+      deliveryFee: 0,
+      total: base.subtotal - base.discount, // 44 - 5 = 39, sem deliveryFee
+    };
+    const result = DeliveryOrderSchema.safeParse(document);
+    expect(result.success).toBe(true);
+  });
+
+  it('aceita deliveryType=mesa sem tableNumber (garçom pode esquecer de preencher)', () => {
+    const base = structuredClone(publicFixture.document);
+    const document = {
+      ...base,
+      deliveryType: 'mesa',
+      deliveryAddress: undefined,
+      deliveryFee: 0,
+      total: base.subtotal - base.discount,
+    };
+    const result = DeliveryOrderSchema.safeParse(document);
+    expect(result.success).toBe(true);
+  });
 });

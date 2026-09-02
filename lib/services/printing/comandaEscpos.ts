@@ -85,7 +85,9 @@ export function buildComandaEscPos(
 
   // Tipo de pedido (destaque).
   b.rule(cols).bold(true).size(false, true);
-  b.line(order.deliveryType === 'entrega' ? 'ENTREGA' : 'RETIRADA');
+  b.line(order.deliveryType === 'entrega' ? 'ENTREGA'
+    : order.deliveryType === 'mesa' ? `MESA ${order.tableNumber || '?'}`
+      : 'RETIRADA');
   b.size(false, false).bold(false).rule(cols);
 
   // Cliente + endereço.

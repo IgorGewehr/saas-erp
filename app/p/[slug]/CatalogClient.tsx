@@ -6,7 +6,7 @@ import {
   ShoppingCart, Plus, Minus, X, ChevronRight, MapPin, Phone,
   CreditCard, Wallet, Banknote, QrCode, Truck, Store,
   CheckCircle2, Clock, Star, Search, ArrowLeft, AlertCircle,
-  ChevronDown, Loader2, Package, Sparkles, Tag, RotateCcw,
+  ChevronDown, Loader2, Package, Sparkles, Tag, RotateCcw, UtensilsCrossed,
 } from 'lucide-react';
 import type {
   Business, Product, DeliveryOrderPaymentMethod, DeliveryType,
@@ -86,6 +86,7 @@ export interface PublicBusiness {
 
 interface CheckoutForm {
   deliveryType: DeliveryType;
+  tableNumber: string;
   cep: string;
   logradouro: string;
   numero: string;
@@ -266,9 +267,12 @@ interface Props {
   business: PublicBusiness;
   products: Product[];
   categories: MenuCategory[];
+  /** Veio de `?mesa=` na URL (QR code na mesa) — pré-preenche e trava o tipo
+   *  de atendimento como 'mesa', escondendo o seletor (a mesa já é conhecida). */
+  tableNumber?: string;
 }
 
-export default function CatalogClient({ business, products, categories }: Props) {
+export default function CatalogClient({ business, products, categories, tableNumber: qrTableNumber }: Props) {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [step, setStep] = useState<CheckoutStep>('cart');
@@ -308,7 +312,10 @@ export default function CatalogClient({ business, products, categories }: Props)
   const pillRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const [form, setForm] = useState<CheckoutForm>({
-    deliveryType: 'entrega',
+    // QR na mesa (?mesa=N) já chega com o tipo/mesa resolvidos — sem isso o
+    // hóspede teria que escolher "Mesa" manualmente depois de escanear.
+    deliveryType: qrTableNumber ? 'mesa' : 'entrega',
+    tableNumber: qrTableNumber || '',
     cep: '', logradouro: '', numero: '', complemento: '', bairro: '', municipio: '', uf: '',
     name: '', phone: '',
     paymentMethod: 'pix',
@@ -822,6 +829,7 @@ export default function CatalogClient({ business, products, categories }: Props)
           complemento: form.complemento || undefined, bairro: form.bairro,
           municipio: form.municipio, uf: form.uf,
         } : undefined,
+        tableNumber: form.deliveryType === 'mesa' ? (form.tableNumber.trim() || undefined) : undefined,
         deliveryFee: form.deliveryType === 'entrega' ? deliveryFee : 0,
         paymentMethod: recordedMethod,
         changeFor: !onlineMethod && form.paymentMethod === 'dinheiro' && form.changeFor ? parseFloat(form.changeFor) : undefined,
@@ -951,7 +959,7 @@ export default function CatalogClient({ business, products, categories }: Props)
   }
 
   // ── Validation ────────────────────────────────────────────────────────────
-  const addressValid = form.deliveryType === 'retirada' || (
+  const addressValid = form.deliveryType !== 'entrega' || (
     form.logradouro.trim().length > 2 && form.numero.trim().length > 0
     && form.bairro.trim().length > 0
     && form.municipio.trim().length > 0 && form.uf.trim().length === 2
@@ -1375,40 +1383,67 @@ export default function CatalogClient({ business, products, categories }: Props)
                       initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
                       className="p-5 space-y-4 pb-[calc(1.25rem+env(safe-area-inset-bottom,0px))]">
 
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                          Como prefere receber?
-                        </label>
-                        <div className="grid grid-cols-2 gap-2">
-                          {([
-                            {
-                              value: 'entrega', label: 'Entrega', icon: Truck,
-                              sub: hasDeliveryZones && zoneResolution.status !== 'matched'
-                                ? 'Por região'
-                                : deliveryFee > 0 ? formatBRL(deliveryFee) : 'Grátis',
-                            },
-                            { value: 'retirada', label: 'Retirada', sub: 'No local', icon: Store },
-                          ] as const).map(opt => (
-                            <button
-                              key={opt.value}
-                              onClick={() => setForm(f => ({ ...f, deliveryType: opt.value }))}
-                              className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${
-                                form.deliveryType === opt.value
-                                  ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
-                                  : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
-                              }`}
-                            >
-                              <opt.icon className={`w-5 h-5 ${form.deliveryType === opt.value ? 'text-red-500' : 'text-gray-400'}`} />
-                              <div className="text-left">
-                                <p className={`font-semibold text-sm ${form.deliveryType === opt.value ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-gray-300'}`}>
-                                  {opt.label}
-                                </p>
-                                <p className="text-xs text-gray-400">{opt.sub}</p>
-                              </div>
-                            </button>
-                          ))}
+                      {qrTableNumber ? (
+                        // Chegou via QR code da mesa — tipo/mesa já resolvidos,
+                        // sem sentido perguntar "entrega ou retirada".
+                        <div className="flex items-center gap-3 p-4 rounded-2xl border-2 border-red-500 bg-red-50 dark:bg-red-500/10">
+                          <UtensilsCrossed className="w-5 h-5 text-red-500" />
+                          <div className="text-left">
+                            <p className="font-semibold text-sm text-red-600 dark:text-red-400">Mesa {qrTableNumber}</p>
+                            <p className="text-xs text-gray-400">Seu pedido vai direto pra sua mesa</p>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                            Como prefere receber?
+                          </label>
+                          <div className="grid grid-cols-3 gap-2">
+                            {([
+                              {
+                                value: 'entrega', label: 'Entrega', icon: Truck,
+                                sub: hasDeliveryZones && zoneResolution.status !== 'matched'
+                                  ? 'Por região'
+                                  : deliveryFee > 0 ? formatBRL(deliveryFee) : 'Grátis',
+                              },
+                              { value: 'retirada', label: 'Retirada', sub: 'No local', icon: Store },
+                              { value: 'mesa', label: 'Mesa', sub: 'No salão', icon: UtensilsCrossed },
+                            ] as const).map(opt => (
+                              <button
+                                key={opt.value}
+                                onClick={() => setForm(f => ({ ...f, deliveryType: opt.value }))}
+                                className={`flex items-center gap-3 p-4 rounded-2xl border-2 transition-all ${
+                                  form.deliveryType === opt.value
+                                    ? 'border-red-500 bg-red-50 dark:bg-red-500/10'
+                                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-300'
+                                }`}
+                              >
+                                <opt.icon className={`w-5 h-5 ${form.deliveryType === opt.value ? 'text-red-500' : 'text-gray-400'}`} />
+                                <div className="text-left">
+                                  <p className={`font-semibold text-sm ${form.deliveryType === opt.value ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-gray-300'}`}>
+                                    {opt.label}
+                                  </p>
+                                  <p className="text-xs text-gray-400">{opt.sub}</p>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {form.deliveryType === 'mesa' && !qrTableNumber && (
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                            Número da mesa
+                          </label>
+                          <input
+                            value={form.tableNumber}
+                            onChange={e => setForm(f => ({ ...f, tableNumber: e.target.value }))}
+                            placeholder="Ex: 12"
+                            className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm focus:border-red-500 outline-none"
+                          />
+                        </div>
+                      )}
 
                       <AnimatePresence>
                         {form.deliveryType === 'entrega' && (
@@ -1563,7 +1598,7 @@ export default function CatalogClient({ business, products, categories }: Props)
                                 <p className="text-[11px] text-amber-600 dark:text-amber-400 leading-tight">
                                   <span className="font-bold">Ambiente de testes.</span>{' '}
                                   Os pagamentos online aqui são de sandbox e não cobram de verdade —
-                                  prefira pagar na {form.deliveryType === 'entrega' ? 'entrega' : 'retirada'}.
+                                  prefira pagar na {form.deliveryType === 'entrega' ? 'entrega' : form.deliveryType === 'mesa' ? 'mesa' : 'retirada'}.
                                 </p>
                               </div>
                             )}
@@ -1597,7 +1632,7 @@ export default function CatalogClient({ business, products, categories }: Props)
 
                         {onlinePaymentEnabled && (
                           <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">
-                            Ou pagar na {form.deliveryType === 'entrega' ? 'entrega' : 'retirada'}
+                            Ou pagar na {form.deliveryType === 'entrega' ? 'entrega' : form.deliveryType === 'mesa' ? 'mesa' : 'retirada'}
                           </p>
                         )}
                         <div className="grid grid-cols-3 gap-2">
@@ -1771,11 +1806,15 @@ export default function CatalogClient({ business, products, categories }: Props)
                       </p>
                       <div className="mt-6 space-y-2 w-full max-w-xs">
                         <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl text-left">
-                          {form.deliveryType === 'entrega' ? <Truck className="w-4 h-4 text-red-500 flex-shrink-0" /> : <Store className="w-4 h-4 text-red-500 flex-shrink-0" />}
+                          {form.deliveryType === 'entrega' ? <Truck className="w-4 h-4 text-red-500 flex-shrink-0" />
+                            : form.deliveryType === 'mesa' ? <UtensilsCrossed className="w-4 h-4 text-red-500 flex-shrink-0" />
+                              : <Store className="w-4 h-4 text-red-500 flex-shrink-0" />}
                           <div>
                             <p className="text-xs text-gray-400">Modalidade</p>
                             <p className="text-sm font-semibold text-gray-900 dark:text-white">
-                              {form.deliveryType === 'entrega' ? 'Entrega' : 'Retirada no local'}
+                              {form.deliveryType === 'entrega' ? 'Entrega'
+                                : form.deliveryType === 'mesa' ? `Mesa ${form.tableNumber || '?'}`
+                                  : 'Retirada no local'}
                             </p>
                           </div>
                         </div>

@@ -321,6 +321,19 @@ describe('editDeliveryOrderAdmin — reconciliação/bloqueio de edição pós-e
     expect(fake.get('products/p1')?.currentStock).toBe(5);
   });
 
+  it('permite editar tableNumber em qualquer status, sem tocar estoque (campo livre)', async () => {
+    const fake = makeFakeDb(initialDocuments({ 'deliveryOrders/order-1': order({ status: 'preparando', deliveryType: 'mesa', tableNumber: '5' }) }));
+
+    const result = await editDeliveryOrderAdmin({
+      db: fake.db, orderId: 'order-1', businessId: 'biz1', actor, now: NOW,
+      patch: { tableNumber: '12' },
+    });
+
+    expect(result.stockReconciled).toBe(false);
+    expect(result.order.tableNumber).toBe('12');
+    expect(fake.get('products/p1')?.currentStock).toBe(5);
+  });
+
   it('rejeita quando os itens novos não cabem no estoque projetado (pré-checagem, nada é tocado)', async () => {
     const fake = makeFakeDb(initialDocuments({ 'deliveryOrders/order-1': order() }));
 

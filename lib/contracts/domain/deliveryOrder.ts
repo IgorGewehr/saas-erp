@@ -19,7 +19,7 @@ export const DeliveryOrderPaymentStatusSchema = z.enum(DELIVERY_ORDER_PAYMENT_ST
 export const DELIVERY_ORDER_CHANNELS = ['whatsapp', 'facebook', 'instagram', 'manual', 'site'] as const;
 export const DeliveryOrderChannelSchema = z.enum(DELIVERY_ORDER_CHANNELS);
 
-export const DELIVERY_TYPES = ['entrega', 'retirada'] as const;
+export const DELIVERY_TYPES = ['entrega', 'retirada', 'mesa'] as const;
 export const DeliveryTypeSchema = z.enum(DELIVERY_TYPES);
 
 export const DELIVERY_PAYMENT_METHODS = [
@@ -90,6 +90,9 @@ export const DeliveryOrderSchema = z.object({
   total: z.number().nonnegative(),
   deliveryType: DeliveryTypeSchema,
   deliveryAddress: DeliveryOrderAddressSchema.optional(),
+  /** Número/identificador da mesa no salão — só relevante pra deliveryType='mesa'.
+   *  Opcional mesmo nesse caso (não trava o fluxo se o garçom esquecer). */
+  tableNumber: z.string().min(1).max(20).optional(),
   deliveryPersonId: z.string().optional(),
   deliveryPersonName: z.string().optional(),
   estimatedDeliveryAt: z.string().optional(),

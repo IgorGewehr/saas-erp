@@ -488,7 +488,7 @@ export function buildCommercialQuote(
       delivery: {
         type: input.delivery.type,
         feeCents: deliveryFeeCents,
-        resolution: input.delivery.type === 'retirada' ? 'none' : resources.delivery?.resolution ?? 'flat',
+        resolution: input.delivery.type !== 'entrega' ? 'none' : resources.delivery?.resolution ?? 'flat',
         ...(resources.delivery?.zoneName ? { zoneName: resources.delivery.zoneName } : {}),
         ...(resources.delivery?.estimatedMinutes !== undefined
           ? { estimatedMinutes: resources.delivery.estimatedMinutes }

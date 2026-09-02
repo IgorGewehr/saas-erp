@@ -66,6 +66,9 @@ export interface DeliveryOrderEditPatch {
   discount?: number;
   deliveryType?: DeliveryType;
   deliveryAddress?: DeliveryOrderAddress;
+  /** Número/identificador da mesa — campo livre (não afeta estoque/total),
+   *  editável em qualquer status (ex: hóspede trocou de mesa). */
+  tableNumber?: string;
   paymentMethod?: DeliveryOrderPaymentMethod;
   paymentStatus?: DeliveryOrderPaymentStatus;
   changeFor?: number;
@@ -235,6 +238,7 @@ export async function editDeliveryOrderAdmin(params: {
   if (patch.internalNotes !== undefined) update.internalNotes = patch.internalNotes;
   if (patch.changeFor !== undefined) update.changeFor = patch.changeFor;
   if (patch.estimatedDeliveryAt !== undefined) update.estimatedDeliveryAt = patch.estimatedDeliveryAt;
+  if (patch.tableNumber !== undefined) update.tableNumber = patch.tableNumber;
   // Pagamento trava só pra pedidos Mercado Pago (mesmo padrão já usado hoje).
   if (order.paymentProvider !== 'mercadopago') {
     if (patch.paymentMethod !== undefined) update.paymentMethod = patch.paymentMethod;

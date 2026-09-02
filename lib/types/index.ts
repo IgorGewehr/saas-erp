@@ -1950,7 +1950,7 @@ export type DeliveryOrderPaymentStatus = 'pendente' | 'pago' | 'estornado';
 
 export type DeliveryOrderChannel = 'whatsapp' | 'facebook' | 'instagram' | 'manual' | 'site';
 
-export type DeliveryType = 'entrega' | 'retirada';
+export type DeliveryType = 'entrega' | 'retirada' | 'mesa';
 
 export type DeliveryOrderPaymentMethod =
   | 'dinheiro'
@@ -2041,6 +2041,8 @@ export interface DeliveryOrder {
 
   deliveryType: DeliveryType;
   deliveryAddress?: DeliveryOrderAddress;
+  /** Número/identificador da mesa no salão — só relevante pra deliveryType='mesa'. */
+  tableNumber?: string;
   deliveryPersonId?: string;
   deliveryPersonName?: string;
   estimatedDeliveryAt?: string;

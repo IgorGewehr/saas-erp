@@ -38,6 +38,8 @@ export const CreateDeliveryOrderWithSideEffectsInputSchema = z.object({
   items: z.array(PublicOrderItemSchema).min(1).max(50),
   deliveryType: DeliveryTypeSchema,
   deliveryAddress: DeliveryOrderAddressSchema.optional(),
+  /** Número/identificador da mesa no salão — só relevante pra deliveryType='mesa'. */
+  tableNumber: z.string().min(1).max(20).optional(),
   /** Taxa proposta pelo operador (reais) quando nenhuma zona resolve o
    *  endereço. Só tem efeito com permissão de gerente+ (ver executionContext
    *  de delivery-order-server.ts); ignorada quando uma zona casa. */

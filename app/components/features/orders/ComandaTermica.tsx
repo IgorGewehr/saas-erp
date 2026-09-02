@@ -92,6 +92,7 @@ export function ComandaTermica({
   businessName: string;
 }) {
   const isEntrega = order.deliveryType === 'entrega';
+  const isMesa = order.deliveryType === 'mesa';
   const addr = addressLines(order);
 
   return (
@@ -107,7 +108,7 @@ export function ComandaTermica({
 
       <Divider />
       <div className="text-center font-bold text-[13px]">
-        {isEntrega ? 'ENTREGA' : 'RETIRADA'}
+        {isEntrega ? 'ENTREGA' : isMesa ? `MESA ${order.tableNumber || '?'}` : 'RETIRADA'}
       </div>
       <Divider />
 
@@ -202,6 +203,7 @@ function esc(s: string): string {
 
 function buildComandaHTML(order: DeliveryOrder, businessName: string, paperWidth: 58 | 80 = 80): string {
   const isEntrega = order.deliveryType === 'entrega';
+  const isMesa = order.deliveryType === 'mesa';
   const addr = addressLines(order);
 
   const rows: string[] = [];
@@ -209,7 +211,7 @@ function buildComandaHTML(order: DeliveryOrder, businessName: string, paperWidth
   rows.push(`<div class="c">Pedido #${order.number} · ${esc(orderTime(order))}</div>`);
   if (orderDate(order)) rows.push(`<div class="c">${esc(orderDate(order))}</div>`);
   rows.push(divider());
-  rows.push(`<div class="c b big">${isEntrega ? 'ENTREGA' : 'RETIRADA'}</div>`);
+  rows.push(`<div class="c b big">${isEntrega ? 'ENTREGA' : isMesa ? `MESA ${esc(order.tableNumber || '?')}` : 'RETIRADA'}</div>`);
   rows.push(divider());
   rows.push(`<div class="b">${esc(order.clientName || 'Cliente')}</div>`);
   if (order.clientPhone) rows.push(`<div>Tel: ${esc(order.clientPhone)}</div>`);

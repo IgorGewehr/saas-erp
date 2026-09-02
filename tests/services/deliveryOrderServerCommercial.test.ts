@@ -287,6 +287,21 @@ describe('M02.5a — checkout comercial do cardápio público', () => {
     expect(result.order.stockDeductedAt).toBeTruthy();
   });
 
+  it('cria pedido de mesa com tableNumber, sem exigir endereço nem taxa de entrega', async () => {
+    const fake = makeFakeDb(initialDocuments());
+    const result = await createDeliveryOrderWithSideEffects(
+      baseInput({ deliveryType: 'mesa', tableNumber: '7' }),
+      fake.db,
+      { now: () => NOW },
+    );
+
+    expect(result.order).toMatchObject({
+      businessId: 'biz1', status: 'recebido', deliveryType: 'mesa', tableNumber: '7', deliveryFee: 0, total: 40,
+    });
+    expect(result.order.deliveryAddress).toBeUndefined();
+    expect(fake.get('products/p1')?.currentStock).toBe(4);
+  });
+
   it('rejeita preço de item adulterado antes de tocar estoque ou número', async () => {
     const fake = makeFakeDb(initialDocuments());
     await expect(createDeliveryOrderWithSideEffects(baseInput({

@@ -30,10 +30,15 @@ async function resolveBusiness(slug: string): Promise<Business | null> {
 
 export default async function PublicMenuPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  // ?mesa=12 — QR code por mesa (salão do restaurante). Pré-preenche e trava
+  // o número da mesa no checkout, ver CatalogClient.tsx.
+  searchParams: Promise<{ mesa?: string }>;
 }) {
   const { slug } = await params;
+  const { mesa: tableNumber } = await searchParams;
 
   let business: Business | null = null;
   let products: Product[] = [];
@@ -101,5 +106,12 @@ export default async function PublicMenuPage({
     },
   };
 
-  return <CatalogClient business={publicBusiness} products={products} categories={categories} />;
+  return (
+    <CatalogClient
+      business={publicBusiness}
+      products={products}
+      categories={categories}
+      tableNumber={tableNumber?.trim().slice(0, 20) || undefined}
+    />
+  );
 }

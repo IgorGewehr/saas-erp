@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { DeliveryTypeSchema } from './deliveryOrder';
 
 export const COMMERCIAL_V2_VERSION = 2 as const;
 
@@ -51,7 +52,7 @@ export const CommercialQuoteLineRequestSchema = z.object({
 });
 
 export const CommercialDeliveryQuoteSchema = z.object({
-  type: z.enum(['entrega', 'retirada']),
+  type: DeliveryTypeSchema,
   cep: z.string().max(12).optional(),
   bairro: z.string().max(160).optional(),
   /** Taxa proposta pelo operador quando nenhuma zona resolve o endereço (M02.5b,
@@ -210,7 +211,7 @@ export const CommercialQuoteSchema = z.object({
     shortages: z.array(CommercialStockRequirementSchema),
   }),
   delivery: z.object({
-    type: z.enum(['entrega', 'retirada']),
+    type: DeliveryTypeSchema,
     feeCents: MoneyCentsSchema,
     resolution: z.enum(['matched', 'flat', 'none', 'manual']),
     zoneName: z.string().optional(),
