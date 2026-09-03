@@ -1253,33 +1253,39 @@ export default function PDVModule() {
     try {
       const service = services.find(s => s.id === pbServiceId);
       if (!service) return;
-      const now = new Date().toISOString();
       const duration = service.duration || 60;
       const [h, m] = pbTime.split(':').map(Number);
       const endMin = h * 60 + m + duration;
       const endTime = `${String(Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`;
-      await addDoc(collection(db, 'appointments'), {
-        businessId: business.id,
-        clientId: selectedClient.id,
-        clientName: selectedClient.name,
-        clientPhone: selectedClient.phone || null,
-        serviceId: service.id,
-        serviceName: service.name,
-        date: pbDate,
-        startTime: pbTime,
-        endTime,
-        duration,
-        status: 'agendado',
-        price: service.price,
-        color: service.color || '#DC2626',
-        createdAt: now,
-        updatedAt: now,
+      // M06.1: criação via rota autoritativa server-side (POST /api/appointments)
+      // em vez de addDoc direto. Sem seletor de profissional nesta tela ainda
+      // (fora do escopo desta fatia).
+      const { getAuth } = await import('firebase/auth');
+      const token = await getAuth().currentUser?.getIdToken();
+      if (!token) throw new Error('Sessão expirada — faça login novamente.');
+      const res = await fetch('/api/appointments', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          clientId: selectedClient.id,
+          clientName: selectedClient.name,
+          ...(selectedClient.phone ? { clientPhone: selectedClient.phone } : {}),
+          serviceId: service.id,
+          serviceName: service.name,
+          date: pbDate,
+          startTime: pbTime,
+          endTime,
+          duration,
+          price: service.price,
+        }),
       });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.ok) throw new Error(body?.error || 'Erro ao criar agendamento.');
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
       toast.success(`Retorno agendado para ${new Date(pbDate + 'T12:00:00').toLocaleDateString('pt-BR')} às ${pbTime}`);
       resetSale();
     } catch (err) {
-      toast.error('Erro ao criar agendamento.');
+      toast.error(err instanceof Error ? err.message : 'Erro ao criar agendamento.');
       console.error(err);
     } finally {
       setIsSavingPreBooking(false);

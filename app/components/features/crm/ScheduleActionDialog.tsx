@@ -48,23 +48,31 @@ export function ScheduleActionDialog({ open, onClose, contact, businessId, userI
         const endMinutes = parseInt(time.split(':')[0]) * 60 + parseInt(time.split(':')[1]) + 60;
         const endTime = `${String(Math.floor(endMinutes / 60)).padStart(2, '0')}:${String(endMinutes % 60).padStart(2, '0')}`;
 
+        // M06.1: criação via rota autoritativa server-side (POST /api/appointments)
+        // em vez de addDoc direto — mesmo contrato/idempotência dos demais canais.
+        // Sem seletor de profissional nesta tela ainda (fora do escopo desta fatia).
         try {
-          await addDoc(collection(db, 'appointments'), {
-            businessId,
-            clientId: contact.id,
-            clientName: contact.name,
-            clientPhone: contact.phone || contact.whatsapp || '',
-            serviceName: t('crm.schedule.crmConsultation', 'Consulta CRM'),
-            date,
-            startTime: time,
-            endTime,
-            duration: 60,
-            status: 'agendado',
-            price: 0,
-            notes: `Lead CRM: ${contact.name}. ${notes}`.trim(),
-            createdAt: now,
-            updatedAt: now,
+          const { getAuth } = await import('firebase/auth');
+          const token = await getAuth().currentUser?.getIdToken();
+          if (!token) throw new Error('Sessão expirada — faça login novamente.');
+          const res = await fetch('/api/appointments', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              clientId: contact.id,
+              clientName: contact.name,
+              clientPhone: contact.phone || contact.whatsapp || '',
+              serviceName: t('crm.schedule.crmConsultation', 'Consulta CRM'),
+              date,
+              startTime: time,
+              endTime,
+              duration: 60,
+              price: 0,
+              notes: `Lead CRM: ${contact.name}. ${notes}`.trim(),
+            }),
           });
+          const body = await res.json().catch(() => null);
+          if (!res.ok || !body?.ok) throw new Error(body?.error || 'Erro ao criar agendamento na agenda');
         } catch (err) {
           console.error('[ScheduleDialog] Failed to create appointment:', err);
           toast.error(t('crm.schedule.errorAppointment', 'Erro ao criar agendamento na agenda'));

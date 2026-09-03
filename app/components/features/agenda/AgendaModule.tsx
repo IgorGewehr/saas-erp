@@ -188,6 +188,36 @@ async function emitAppointmentTrialCompletedEvent(args: {
   }
 }
 
+/**
+ * M06.2: transição de status via rota server-side única
+ * (PATCH /api/appointments/[id]/transition) — FSM validada e efeitos de
+ * conclusão/reversão aplicados na MESMA chamada, eliminando a janela de dois
+ * passos separados (updateDoc + emitAppointment*Event) que existia antes.
+ * Usada por handleStatusChange/handleCancelAppointment/handleDeleteAppointment/
+ * handleDeleteSeries. `handleSaveAppointment` (edição via formulário) segue
+ * usando emitAppointmentCompletedEvent/emitAppointmentCanceledEvent
+ * diretamente — fora do escopo desta fatia.
+ */
+async function transitionAppointmentViaApi(
+  appointmentId: string,
+  businessId: string,
+  status: AppointmentStatus,
+): Promise<{ status: AppointmentStatus; dispatched: boolean }> {
+  const { getAuth } = await import('firebase/auth');
+  const token = await getAuth().currentUser?.getIdToken();
+  if (!token) throw new Error('Sessão expirada — faça login novamente.');
+  const res = await fetch(`/api/appointments/${appointmentId}/transition`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ businessId, status }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok || !body?.ok) {
+    throw new Error(body?.error || 'Não foi possível alterar o agendamento.');
+  }
+  return body.data;
+}
+
 // ==========================================
 // CONSTANTS
 // ==========================================
@@ -2689,14 +2719,9 @@ export default function AgendaModule() {
     }
     setDeleteLoading(true);
     try {
-      const now = new Date().toISOString();
-      await updateDoc(doc(db, 'appointments', editingAppointment.id), {
-        status: 'cancelado',
-        cancelledAt: now,
-        cancelledBy: user.uid,
-        cancelledByName: user.name || user.uid,
-        updatedAt: now,
-      });
+      // M06.2: FSM validada + efeito de reversão (se estava concluido)
+      // aplicados na MESMA chamada de servidor — ver transitionAppointmentViaApi.
+      await transitionAppointmentViaApi(editingAppointment.id, business.id, 'cancelado');
       // Google Calendar sync — remove event
       if (editingAppointment.googleCalendarEventId) {
         syncToGoogleCalendar('delete', {
@@ -2708,10 +2733,7 @@ export default function AgendaModule() {
           googleCalendarEventId: editingAppointment.googleCalendarEventId,
         }).catch(() => {});
       }
-      // Reverte efeitos de conclusão (comissão + métricas) se estava concluido —
-      // mesma fonte única server-side do resto do módulo (appointmentCanceled.ts).
       if (editingAppointment.status === 'concluido') {
-        await emitAppointmentCanceledEvent({ appointmentId: editingAppointment.id });
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
@@ -2722,11 +2744,11 @@ export default function AgendaModule() {
       setSnackbar({ open: true, message: t('agenda.appointmentCancelled', 'Agendamento cancelado.'), severity: 'info' });
     } catch (err) {
       console.error('Error cancelling appointment:', err);
-      setSnackbar({ open: true, message: t('agenda.errorCancellingAppointment', 'Erro ao cancelar agendamento.'), severity: 'error' });
+      setSnackbar({ open: true, message: err instanceof Error ? err.message : t('agenda.errorCancellingAppointment', 'Erro ao cancelar agendamento.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, user?.uid, user?.name, queryClient, t]);
+  }, [editingAppointment, business?.id, user?.uid, queryClient, t]);
 
   const handleDeleteSeries = useCallback(async () => {
     if (!editingAppointment?.recurrenceId || !business?.id || !user?.uid) return;
@@ -2739,29 +2761,34 @@ export default function AgendaModule() {
         a => a.recurrenceId === editingAppointment.recurrenceId && a.status !== 'cancelado',
       );
 
-      // Ids concluídos da série — cada um reverte seus PRÓPRIOS efeitos via
-      // evento (appointmentCanceled.ts), sem agregação aqui.
-      const completedIds = seriesItems.filter(a => a.status === 'concluido').map(a => a.id);
+      // M06.2: itens CONCLUÍDOS precisam reverter efeito (comissão/fidelidade)
+      // — cada um passa pela rota de transição (FSM + dispatch na mesma
+      // chamada), fora do batch abaixo pra não gravar o status duas vezes.
+      // Os demais (sem efeito a reverter) cancelam em lote, como antes.
+      const completedItems = seriesItems.filter(a => a.status === 'concluido');
+      const otherItems = seriesItems.filter(a => a.status !== 'concluido');
       const now = new Date().toISOString();
-      const cancelMeta = {
-        status: 'cancelado' as const,
-        cancelledAt: now,
-        cancelledBy: user.uid,
-        cancelledByName: user.name || user.uid,
-        updatedAt: now,
-      };
-      const batch = writeBatch(db);
-      for (const a of seriesItems) {
-        // Fase 5: status-driven em vez de hard-delete. Preserva doc na FSM.
-        batch.update(doc(db, 'appointments', a.id), cancelMeta);
-      }
-      await batch.commit();
 
-      await Promise.all(completedIds.map(appointmentId =>
-        emitAppointmentCanceledEvent({ appointmentId })
-          .catch(err => console.warn('[Agenda] series appointment.canceled falhou:', err))
-      ));
-      if (completedIds.length > 0) {
+      if (otherItems.length > 0) {
+        const batch = writeBatch(db);
+        for (const a of otherItems) {
+          // Fase 5: status-driven em vez de hard-delete. Preserva doc na FSM.
+          batch.update(doc(db, 'appointments', a.id), {
+            status: 'cancelado', cancelledAt: now, cancelledBy: user.uid, cancelledByName: user.name || user.uid, updatedAt: now,
+          });
+        }
+        await batch.commit();
+      }
+
+      const completedResults = await Promise.allSettled(
+        completedItems.map(a => transitionAppointmentViaApi(a.id, business.id, 'cancelado')),
+      );
+      completedResults.forEach((result, i) => {
+        if (result.status === 'rejected') {
+          console.warn(`[Agenda] series appointment.canceled falhou (${completedItems[i].id}):`, result.reason);
+        }
+      });
+      if (completedItems.length > 0) {
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
 
@@ -2787,18 +2814,10 @@ export default function AgendaModule() {
     if (!editingAppointment || !business?.id || !user?.uid) return;
     setDeleteLoading(true);
     try {
-      // Fase 5: grava audit junto com a transicao FSM. Mesma operacao do
-      // handleDeleteAppointment — Tier 2 unificou ambos os fluxos.
-      const now = new Date().toISOString();
-      await updateDoc(doc(db, 'appointments', editingAppointment.id), {
-        status: 'cancelado',
-        cancelledAt: now,
-        cancelledBy: user.uid,
-        cancelledByName: user.name || user.uid,
-        updatedAt: now,
-      });
+      // M06.2: mesma rota de handleDeleteAppointment — Tier 2 já unificou os
+      // dois fluxos; agora ambos passam pela mesma transição server-side.
+      await transitionAppointmentViaApi(editingAppointment.id, business.id, 'cancelado');
       if (editingAppointment.status === 'concluido') {
-        await emitAppointmentCanceledEvent({ appointmentId: editingAppointment.id });
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
       queryClient.invalidateQueries({ queryKey: ['appointments', business.id] });
@@ -2809,11 +2828,11 @@ export default function AgendaModule() {
       setSnackbar({ open: true, message: t('agenda.appointmentCancelled', 'Agendamento cancelado.'), severity: 'info' });
     } catch (err) {
       console.error('Error cancelling appointment:', err);
-      setSnackbar({ open: true, message: t('agenda.errorCancellingAppointment', 'Erro ao cancelar agendamento.'), severity: 'error' });
+      setSnackbar({ open: true, message: err instanceof Error ? err.message : t('agenda.errorCancellingAppointment', 'Erro ao cancelar agendamento.'), severity: 'error' });
     } finally {
       setDeleteLoading(false);
     }
-  }, [editingAppointment, business?.id, user?.uid, user?.name, queryClient, t]);
+  }, [editingAppointment, business?.id, user?.uid, queryClient, t]);
 
   const handleStatusChange = useCallback(async (status: AppointmentStatus) => {
     if (!selectedAppointment || !business?.id) return;
@@ -2838,10 +2857,12 @@ export default function AgendaModule() {
 
     setStatusChanging(true);
     try {
-      await updateDoc(doc(db, 'appointments', selectedAppointment.id), {
-        status,
-        updatedAt: new Date().toISOString(),
-      });
+      // M06.2: FSM revalidada no servidor + efeito de conclusão/reversão
+      // (comissão, fidelidade, baixa de insumo, métricas) aplicados na MESMA
+      // chamada — ver transitionAppointmentViaApi. Antes eram dois passos
+      // separados (updateDoc + fetch de evento); se o navegador morresse
+      // entre os dois, o atendimento ficava concluido sem nenhum efeito.
+      await transitionAppointmentViaApi(selectedAppointment.id, business.id, status);
 
       // Auto-notify customer if agent enabled (appointment notifications always on when agent is on)
       if (business.settings?.aiAgent?.enabled) {
@@ -2864,22 +2885,9 @@ export default function AgendaModule() {
       const wasDone = prevStatus === 'concluido';
       const isDone = status === 'concluido';
 
-      // ── Efeitos de conclusão/reversão — fonte única server-side ──────────
-      // (métricas, comissão, fidelidade, baixa de insumo — ver
-      // lib/contracts/_runtime/handlers/appointmentCompleted.ts / appointmentCanceled.ts).
       // commissionTransactionId chega no selectedAppointment via onSnapshot
       // assim que o handler grava — não precisa setState otimista aqui.
-      if (!wasDone && isDone) {
-        await emitAppointmentCompletedEvent({
-          appointmentId: selectedAppointment.id,
-          clientId: selectedAppointment.clientId,
-          professionalId: selectedAppointment.professionalId,
-          serviceId: selectedAppointment.serviceId,
-          amount: selectedAppointment.price || 0,
-        });
-        queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
-      } else if (wasDone && !isDone) {
-        await emitAppointmentCanceledEvent({ appointmentId: selectedAppointment.id });
+      if (wasDone !== isDone) {
         queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
       }
       setSelectedAppointment(prev => prev ? { ...prev, status } : null);
@@ -2904,7 +2912,7 @@ export default function AgendaModule() {
       });
     } catch (err) {
       console.error('Error changing status:', err);
-      setSnackbar({ open: true, message: t('agenda.errorChangingStatus', 'Erro ao alterar status.'), severity: 'error' });
+      setSnackbar({ open: true, message: err instanceof Error ? err.message : t('agenda.errorChangingStatus', 'Erro ao alterar status.'), severity: 'error' });
     } finally {
       setStatusChanging(false);
     }

@@ -26,6 +26,15 @@ function makeFakeAdminDb(initial: Record<string, FakeDoc[]> = {}) {
     return collections[name];
   };
 
+  function matchesFilter(actual: unknown, op: string, expected: unknown): boolean {
+    if (op === 'in') return Array.isArray(expected) && expected.includes(actual);
+    if (op === 'array-contains-any') {
+      return Array.isArray(actual) && Array.isArray(expected) && actual.some(v => expected.includes(v));
+    }
+    if (op === 'array-contains') return Array.isArray(actual) && actual.includes(expected);
+    return actual === expected; // '=='
+  }
+
   function makeQuery(name: string, filters: Array<[string, string, unknown]>) {
     return {
       where(field: string, op: string, val: unknown) {
@@ -34,8 +43,8 @@ function makeFakeAdminDb(initial: Record<string, FakeDoc[]> = {}) {
       async get() {
         const state = ensure(name);
         const docs = state.docs.filter(d => {
-          for (const [f, , v] of filters) {
-            if (d.data[f] !== v) return false;
+          for (const [f, op, v] of filters) {
+            if (!matchesFilter(d.data[f], op, v)) return false;
           }
           return true;
         });
@@ -260,6 +269,40 @@ describe('createAppointmentSafeAdmin', () => {
     });
     expect(typeof id).toBe('string');
     expect(env.collections.appointments.docs.length).toBe(2);
+  });
+
+  it('M06.1: professionalIds[] sem professionalId legado NAO pula mais a tx (fecha gap P1.5)', async () => {
+    env.collections.appointments.docs.push({
+      id: 'a-old',
+      data: apt({ id: 'a-old', professionalId: 'p9', professionalIds: ['p9', 'p1'], startTime: '09:00', endTime: '10:00' }) as unknown as Record<string, unknown>,
+    });
+    // Payload novo só tem professionalIds (sem professionalId legado) —
+    // antes da correção isso pulava a tx inteira e criava sem checar nada.
+    await expect(
+      createAppointmentSafeAdmin(env.fake as never, {
+        businessId,
+        professionalIds: ['p1'],
+        date: '2026-05-22',
+        startTime: '09:30',
+        endTime: '10:30',
+      }),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
+  });
+
+  it('M06.1: encontra conflito com appointment existente que só tem o profissional em professionalIds[]', async () => {
+    env.collections.appointments.docs.push({
+      id: 'a-old',
+      data: apt({ id: 'a-old', professionalId: 'p9', professionalIds: ['p9', 'p1'], startTime: '09:00', endTime: '10:00' }) as unknown as Record<string, unknown>,
+    });
+    await expect(
+      createAppointmentSafeAdmin(env.fake as never, {
+        businessId,
+        professionalId: 'p1',
+        date: '2026-05-22',
+        startTime: '09:30',
+        endTime: '10:30',
+      }),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
   });
 
   it('TURMA: appointment de OUTRO sessionKey sobreposto BLOQUEIA (prof dando aula)', async () => {

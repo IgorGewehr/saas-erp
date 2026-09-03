@@ -11,19 +11,30 @@
  * Regras (na ordem de prioridade):
  *   1. Profissional não trabalha no dia da semana escolhido
  *   2. Slot fora do horário de trabalho do profissional
- *   3. Overlap com outro appointment não-cancelado do mesmo professionalId
- *      no mesmo dia
+ *   3. Overlap com outro appointment não-cancelado de QUALQUER profissional
+ *      em comum (campo legado `professionalId` OU `professionalIds[]`) no
+ *      mesmo dia
+ *
+ * M06.1: antes só olhava `professionalId` (legado) — um profissional em 2ª
+ * posição+ de um atendimento multi-profissional era invisível ao check e
+ * podia ser duplo-agendado. `professionalIds` (plural, opcional) resolve
+ * isso; passar só `professionalId` (singular) continua funcionando idêntico
+ * a antes — retrocompat total com os callers existentes.
  *
  * Caller passa `t` opcional para internacionalização das mensagens; sem
  * ele, usa strings em pt-BR (default do projeto).
  */
 
 import type { Appointment, User } from '@/lib/types';
+import { getAppointmentProfessionalIds } from '@/lib/utils/appointment';
 
 export interface ConflictCheckInput {
   appointments: Appointment[];
   members: User[];
   professionalId: string;
+  /** Conjunto completo de profissionais do agendamento sendo criado/editado.
+   *  Quando ausente, cai pra `[professionalId]` (comportamento legado). */
+  professionalIds?: string[];
   date: string;       // 'YYYY-MM-DD'
   startTime: string;  // 'HH:mm'
   endTime: string;    // 'HH:mm'
@@ -44,15 +55,20 @@ export function checkAppointmentConflict(input: ConflictCheckInput): ConflictChe
   const { appointments, members, professionalId, date, startTime, endTime, excludeId } = input;
   const t = input.t ?? defaultT;
 
+  const effectiveIds = input.professionalIds?.filter(Boolean).length
+    ? [...new Set(input.professionalIds.filter(Boolean))]
+    : (professionalId ? [professionalId] : []);
+
   // Sem profissional escolhido: não há contra o que conflitar. Operador pode
   // estar agendando "qualquer um disponível" — verificação cai pro fluxo
   // operacional posterior.
-  if (!professionalId) return { hasConflict: false, message: '' };
+  if (effectiveIds.length === 0) return { hasConflict: false, message: '' };
 
-  const professional = members.find((m) => m.id === professionalId);
-
-  // Check 1: Working hours (se o profissional cadastrou)
-  if (professional?.workingHours) {
+  // Check 1: Working hours — cada profissional do conjunto precisa estar
+  // disponível nesse dia/horário (se tiver workingHours cadastrado).
+  for (const id of effectiveIds) {
+    const professional = members.find((m) => m.id === id);
+    if (!professional?.workingHours) continue;
     // `new Date(date + 'T12:00:00')` força midday no fuso local — evita
     // bug clássico de TZ que joga o dia anterior em fusos negativos.
     const dayOfWeek = new Date(date + 'T12:00:00').getDay();
@@ -74,11 +90,13 @@ export function checkAppointmentConflict(input: ConflictCheckInput): ConflictChe
     }
   }
 
-  // Check 2: Overlap com appointments existentes. Status 'cancelado' não
-  // conta (slot foi liberado). Overlap test clássico: A não sobrepõe B sse
-  // A termina antes de B começar OU A começa depois de B terminar.
+  // Check 2: Overlap com appointments existentes que compartilham QUALQUER
+  // profissional do conjunto. Status 'cancelado' não conta (slot foi
+  // liberado). Overlap test clássico: A não sobrepõe B sse A termina antes
+  // de B começar OU A começa depois de B terminar.
+  const idSet = new Set(effectiveIds);
   const existing = appointments.filter((a) =>
-    a.professionalId === professionalId &&
+    getAppointmentProfessionalIds(a).some((id) => idSet.has(id)) &&
     a.date === date &&
     a.status !== 'cancelado' &&
     a.id !== excludeId &&

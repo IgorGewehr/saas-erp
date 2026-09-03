@@ -12,6 +12,7 @@
     "audit:m01": "tsx --env-file=.env.local scripts/audit-m01-homologation.ts",
     "audit:m02": "tsx --env-file=.env.local scripts/audit-m02-commercial.ts",
     "audit:m06": "tsx --env-file=.env.local scripts/audit-m06-agenda.ts",
+    "reconcile:m06": "tsx --env-file=.env.local scripts/reconcile-appointment-completions.ts",
     "migrate:m01": "tsx --env-file=.env.local scripts/migrate-m01-parity.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest",

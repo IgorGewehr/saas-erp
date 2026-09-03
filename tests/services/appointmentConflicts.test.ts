@@ -179,6 +179,79 @@ describe('checkAppointmentConflict', () => {
     expect(r.hasConflict).toBe(false);
   });
 
+  it('professionalIds[] detecta overlap mesmo quando o professionalId legado não bate (M06.1)', () => {
+    // Agendamento EXISTENTE só tem o profissional em professionalIds[1] (não
+    // é o legado professionalId) — antes da correção isso era invisível.
+    const r = checkAppointmentConflict({
+      appointments: [apt({
+        professionalId: 'p9', // legado aponta pra outro
+        professionalIds: ['p9', 'p1'],
+        startTime: '09:00',
+        endTime: '10:00',
+      })],
+      members: [mem({})],
+      professionalId: 'p1',
+      professionalIds: ['p1'],
+      date: '2026-05-13',
+      startTime: '09:30',
+      endTime: '10:30',
+    });
+    expect(r.hasConflict).toBe(true);
+  });
+
+  it('novo agendamento com múltiplos profissionais conflita se QUALQUER um deles já está ocupado', () => {
+    const r = checkAppointmentConflict({
+      appointments: [apt({ professionalId: 'p2', startTime: '09:00', endTime: '10:00' })],
+      members: [mem({}), mem({ id: 'p2', uid: 'p2' })],
+      professionalId: 'p1',
+      professionalIds: ['p1', 'p2'],
+      date: '2026-05-13',
+      startTime: '09:30',
+      endTime: '10:30',
+    });
+    expect(r.hasConflict).toBe(true);
+  });
+
+  it('horário de trabalho é checado para CADA profissional do conjunto, não só o primeiro', () => {
+    const r = checkAppointmentConflict({
+      appointments: [],
+      members: [
+        mem({}), // p1 sem workingHours = sempre disponível
+        mem({
+          id: 'p2', uid: 'p2',
+          workingHours: {
+            0: { enabled: false, start: '09:00', end: '18:00' },
+            1: { enabled: true, start: '09:00', end: '18:00' },
+            2: { enabled: true, start: '09:00', end: '18:00' },
+            3: { enabled: false, start: '09:00', end: '18:00' }, // quarta = off
+            4: { enabled: true, start: '09:00', end: '18:00' },
+            5: { enabled: true, start: '09:00', end: '18:00' },
+            6: { enabled: false, start: '09:00', end: '18:00' },
+          },
+        }),
+      ],
+      professionalId: 'p1',
+      professionalIds: ['p1', 'p2'],
+      date: '2026-05-13', // quarta — p2 não trabalha
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    expect(r.hasConflict).toBe(true);
+    expect(r.message).toContain('não trabalha');
+  });
+
+  it('sem professionalIds explícito, comportamento idêntico ao legado (retrocompat)', () => {
+    const r = checkAppointmentConflict({
+      appointments: [apt({ startTime: '08:30', endTime: '09:30' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    expect(r.hasConflict).toBe(true);
+  });
+
   it('translator customizado é usado quando passado', () => {
     const r = checkAppointmentConflict({
       appointments: [apt({})],

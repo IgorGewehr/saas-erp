@@ -13,9 +13,26 @@
  *
  * Ver lib/services/appointmentTxGuard.ts pra contexto da brecha original
  * (race condition em 2 operadores salvando no mesmo slot em <200ms).
+ *
+ * M06.1: generalizado pra honrar `professionalIds[]` (multi-profissional),
+ * não só o campo legado `professionalId`. Antes, um appointment com o
+ * profissional em 2ª posição+ do array era invisível tanto à QUERY (só
+ * filtrava `professionalId==`) quanto ao CHECK (`checkAppointmentConflict`
+ * só recebia 1 id) — dois profissionais podiam ficar duplo-agendados sem
+ * nenhum aviso. Fecha de quebra o gap de `!professionalId` pular a tx
+ * inteira mesmo com `professionalIds[]` preenchido.
+ *
+ * Limitação que PERMANECE (documentada, não resolvida aqui): o lock/retry
+ * nativo do `runTransaction` protege contra a MESMA operação que já lê essa
+ * query — ou seja, duas criações CONCORRENTES continuam serializadas
+ * corretamente porque ambas leem/escrevem dentro da mesma transação
+ * Firestore (que já detecta e reexecuta em conflito de leitura). O que esta
+ * fatia fecha é o BLIND SPOT estático da query/check, não introduz um lock
+ * dedicado por profissional secundário — não precisa: a transação em si já
+ * serializa qualquer escrita concorrente que bata nos MESMOS documentos lidos.
  */
 
-import type { Firestore } from 'firebase-admin/firestore';
+import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 import type { Appointment, User } from '@/lib/types';
 
@@ -31,6 +48,9 @@ export class AppointmentConflictError extends Error {
 export interface AdminAppointmentPayload {
   businessId: string;
   professionalId?: string;
+  /** Conjunto completo de profissionais (M06.1). Quando presente e não-vazio,
+   *  tem prioridade sobre `professionalId` pra fins de conflito/horário. */
+  professionalIds?: string[];
   date: string;       // 'YYYY-MM-DD'
   startTime: string;  // 'HH:mm'
   endTime: string;    // 'HH:mm'
@@ -46,6 +66,13 @@ export interface AdminAppointmentPayload {
   [key: string]: unknown;
 }
 
+/** `professionalIds[]` (deduplicado) se presente e não-vazio; senão `[professionalId]`; senão `[]`. */
+function resolveEffectiveIds(payload: Pick<AdminAppointmentPayload, 'professionalId' | 'professionalIds'>): string[] {
+  const ids = payload.professionalIds?.filter(Boolean) ?? [];
+  if (ids.length > 0) return [...new Set(ids)];
+  return payload.professionalId ? [payload.professionalId] : [];
+}
+
 /**
  * Remove da lista os appointments da MESMA turma (mesmo sessionKey) — colegas
  * não conflitam entre si. Sem sessionKey: retorna a lista intacta (exclusivo).
@@ -55,16 +82,51 @@ function excludeSameSession(appointments: Appointment[], sessionKey?: string): A
   return appointments.filter((a) => a.sessionKey !== sessionKey);
 }
 
-/** Carrega so o member relevante pro check (working hours). N busca todos
- *  os users do business — overhead desnecessario quando so 1 prof importa. */
-async function loadProfessional(adminDb: Firestore, professionalId: string): Promise<User[]> {
+/** Carrega os members relevantes pro check (working hours) — só os ids
+ *  pedidos, não busca todos os users do business. */
+async function loadProfessionals(adminDb: Firestore, professionalIds: string[]): Promise<User[]> {
   try {
-    const snap = await adminDb.collection('users').doc(professionalId).get();
-    if (!snap.exists) return [];
-    return [{ id: snap.id, ...snap.data() } as User];
+    const snaps = await Promise.all(professionalIds.map((id) => adminDb.collection('users').doc(id).get()));
+    return snaps.filter((s) => s.exists).map((s) => ({ id: s.id, ...s.data() } as User));
   } catch {
     return [];
   }
+}
+
+/**
+ * Busca appointments do dia que compartilham QUALQUER um dos profissionais
+ * pedidos — 2 queries transacionalmente rastreadas (`tx.get`), mergeadas por
+ * doc.id. `in`/`array-contains-any` usam os mesmos índices compostos já
+ * declarados pra `==`/`array-contains` (nenhum índice novo necessário).
+ * `tx.get(query)` (não `query.get()`) é o que garante que uma escrita
+ * concorrente batendo nesses mesmos docs entre a leitura e o commit force a
+ * transação a reexecutar — perder isso reintroduziria a race original.
+ */
+async function fetchDayAppointmentsForProfessionalsTx(
+  tx: Transaction,
+  adminDb: Firestore,
+  businessId: string,
+  date: string,
+  professionalIds: string[],
+): Promise<Appointment[]> {
+  const legacyQ = adminDb.collection('appointments')
+    .where('businessId', '==', businessId)
+    .where('professionalId', 'in', professionalIds)
+    .where('date', '==', date);
+  const arrayQ = adminDb.collection('appointments')
+    .where('businessId', '==', businessId)
+    .where('professionalIds', 'array-contains-any', professionalIds)
+    .where('date', '==', date);
+  const [legacySnap, arraySnap] = await Promise.all([tx.get(legacyQ), tx.get(arrayQ)]);
+  const seen = new Set<string>();
+  const out: Appointment[] = [];
+  for (const doc of [...legacySnap.docs, ...arraySnap.docs]) {
+    if (!seen.has(doc.id)) {
+      seen.add(doc.id);
+      out.push({ id: doc.id, ...doc.data() } as Appointment);
+    }
+  }
+  return out;
 }
 
 /**
@@ -77,36 +139,30 @@ export async function createAppointmentSafeAdmin(
   adminDb: Firestore,
   payload: AdminAppointmentPayload,
 ): Promise<string> {
-  const { businessId, professionalId, date, startTime, endTime } = payload;
+  const { businessId, date, startTime, endTime } = payload;
   if (!businessId) throw new Error('createAppointmentSafeAdmin: businessId obrigatorio (R1)');
 
   const newDocRef = adminDb.collection('appointments').doc();
+  const effectiveIds = resolveEffectiveIds(payload);
 
-  // Sem profissional escolhido: pula tx, write direto. Caso raro.
-  if (!professionalId) {
+  // Sem NENHUM profissional escolhido (nem legado, nem professionalIds[]):
+  // pula tx, write direto. Caso raro.
+  if (effectiveIds.length === 0) {
     await newDocRef.set(payload);
     return newDocRef.id;
   }
 
-  const members = await loadProfessional(adminDb, professionalId);
+  const members = await loadProfessionals(adminDb, effectiveIds);
 
   await adminDb.runTransaction(async (tx) => {
-    // Admin SDK aceita query reads em tx nativamente — diferente do client.
-    const q = adminDb
-      .collection('appointments')
-      .where('businessId', '==', businessId)
-      .where('professionalId', '==', professionalId)
-      .where('date', '==', date);
-    const snap = await tx.get(q);
-    const appointments = excludeSameSession(
-      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
-      payload.sessionKey,
-    );
+    const dayAppointments = await fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, date, effectiveIds);
+    const appointments = excludeSameSession(dayAppointments, payload.sessionKey);
 
     const result = checkAppointmentConflict({
       appointments,
       members,
-      professionalId,
+      professionalId: effectiveIds[0],
+      professionalIds: effectiveIds,
       date,
       startTime,
       endTime,
@@ -149,36 +205,32 @@ export async function updateAppointmentSafeAdmin(
   }
 
   // Resolve campos finais herdando do existente quando n vem no patch.
-  const finalProfessionalId = (patch.professionalId ?? existing.professionalId) as string | undefined;
   const finalDate = (patch.date ?? existing.date) as string;
   const finalStartTime = (patch.startTime ?? existing.startTime) as string;
   const finalEndTime = (patch.endTime ?? existing.endTime) as string;
   const finalSessionKey = (patch.sessionKey ?? existing.sessionKey) as string | undefined;
+  const finalEffectiveIds = resolveEffectiveIds({
+    professionalId: (patch.professionalId ?? existing.professionalId) as string | undefined,
+    professionalIds: (patch.professionalIds ?? existing.professionalIds) as string[] | undefined,
+  });
 
-  // Sem prof: pula re-check.
-  if (!finalProfessionalId) {
+  // Sem NENHUM profissional (nem legado, nem array): pula re-check.
+  if (finalEffectiveIds.length === 0) {
     await targetRef.update(patch);
     return;
   }
 
-  const members = await loadProfessional(adminDb, finalProfessionalId);
+  const members = await loadProfessionals(adminDb, finalEffectiveIds);
 
   await adminDb.runTransaction(async (tx) => {
-    const q = adminDb
-      .collection('appointments')
-      .where('businessId', '==', businessId)
-      .where('professionalId', '==', finalProfessionalId)
-      .where('date', '==', finalDate);
-    const snap = await tx.get(q);
-    const appointments = excludeSameSession(
-      snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment)),
-      finalSessionKey,
-    );
+    const dayAppointments = await fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, finalDate, finalEffectiveIds);
+    const appointments = excludeSameSession(dayAppointments, finalSessionKey);
 
     const result = checkAppointmentConflict({
       appointments,
       members,
-      professionalId: finalProfessionalId,
+      professionalId: finalEffectiveIds[0],
+      professionalIds: finalEffectiveIds,
       date: finalDate,
       startTime: finalStartTime,
       endTime: finalEndTime,

@@ -8,9 +8,9 @@
 >
 > Lente desta rodada: **odontologia** — cliente pagante real, módulo operacional central.
 >
-> Estado: M06 aberto formalmente. O módulo já recebeu hardening pontual FORA da sequência do
-> roadmap (efeitos server-side, NFSe manual, cobrança/parcelamento, notas no histórico,
-> lembretes). Este plano consolida o que existe, o que está divergente e o que falta.
+> Estado: M06.0a (auditoria read-only) e M06.1+M06.2 (núcleo de conflito/transição
+> reconciliável) concluídos em código em 03/09/2026. Próxima etapa: M06.0b (congelar
+> comportamento por canal + fixtures dedicadas) ou M06.3 (bloqueios de agenda/no-show).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -261,25 +261,53 @@ real.
 
 ### M06.1 — Núcleo único de agendamento
 
-- [ ] Criar `lib/services/appointment-server.ts` com criação/edição autoritativa (Admin SDK).
-- [ ] **Um** algoritmo de conflito, honrando `professionalIds[]` via os helpers já existentes.
-- [ ] Validar horário de trabalho, grade de turma e capacidade dentro da mesma transação.
-- [ ] Expor `/api/appointments` (create/update) autenticada, `operator+`.
-- [ ] Migrar por canal, do menor risco para o maior: **CRM e PDV primeiro** (hoje sem nenhuma
-      checagem, superfície mínima), depois agente/booking, depois `AgendaModule`.
-- [ ] Fechar o caso "sem `professionalId`" do guard Admin (P1.5).
+- [x] Criar `lib/services/appointment-server.ts` com criação/edição autoritativa (Admin SDK).
+- [x] **Um** algoritmo de conflito, honrando `professionalIds[]` via os helpers já existentes
+      (`getAppointmentProfessionalIds`) — antes só olhava o campo legado `professionalId`.
+- [ ] Validar horário de trabalho, grade de turma e capacidade dentro da mesma transação —
+      horário de trabalho e overlap já validados (`checkAppointmentConflict` generalizado);
+      grade de turma (`isBookingSlotOnGrade`) e capacidade no guard Admin seguem fora desta
+      fatia (P1.6, não regrediu — já era gap conhecido).
+- [x] Expor `POST /api/appointments` autenticada, `operator+`. `PUT`/edição fica pra quando
+      `AgendaModule` (que já tem seu próprio fluxo de edição client-side) precisar migrar.
+- [x] Migrar por canal, do menor risco para o maior: **CRM e PDV primeiro**.
+- [x] Fechar o caso "sem `professionalId`" do guard Admin (P1.5) — `professionalIds[]` sem o
+      campo legado não pula mais a transação.
 
-**Saída:** impossível criar dois atendimentos sobrepostos por qualquer caminho.
+**M06.1 concluída em código:** achado importante durante a implementação — nem CRM
+(`ScheduleActionDialog.tsx`) nem PDV (`PDVModule.tsx` `handlePreBooking`) deixam escolher
+profissional na UI, então migrá-los pro núcleo **não fecha risco de colisão hoje** (o guard já
+trata "sem profissional" como "sem o que conflitar" — regra intencional, não bug). O ganho real
+desses dois é consistência de contrato/idempotência/auditoria e infraestrutura pronta pro
+futuro. Quem realmente fecha risco de colisão de verdade é a generalização do algoritmo de
+conflito pra `professionalIds[]` — usada por TODOS os canais que já assinalam profissional
+(Agenda, Conversas, API v1). Detalhes em `docs/agenda/AGENDA_NUCLEO_UNIFICADO.md`.
+
+**Saída:** query e check de conflito não têm mais o blind spot de profissional secundário;
+CRM/PDV criam pelo mesmo contrato que os demais canais.
 
 ### M06.2 — Transição e conclusão reconciliáveis
 
-- [ ] `PATCH /api/appointments/[id]/transition` como única forma de mudar status — mesmo padrão que
+- [x] `PATCH /api/appointments/[id]/transition` como única forma de mudar status — mesmo padrão que
       a M02.5d aplicou a `deliveryOrders`.
-- [ ] FSM validada no servidor; interface passa a exibir o erro, não a decidir.
-- [ ] Aplicar os efeitos na **mesma** chamada da transição, eliminando a janela do P0.3.
-- [ ] Varredura de reconciliação (cron): `concluido && !completionAppliedAt` → reemite o efeito,
-      idempotente pelo CAS já existente.
-- [ ] Restringir nas rules a escrita direta de `status` pelo cliente depois da migração.
+- [x] FSM validada no servidor; interface passa a exibir o erro, não a decidir.
+- [x] Aplicar os efeitos na **mesma** chamada da transição, eliminando a janela do P0.3.
+- [x] Varredura de reconciliação: `concluido && !completionAppliedAt` → reemite o efeito,
+      idempotente pelo CAS já existente. **Script manual** (`npm run reconcile:m06`), não cron —
+      sem tenant real em produção ainda; virar cron fica pra quando houver demanda.
+- [ ] Restringir nas rules a escrita direta de `status` pelo cliente — não feito nesta fatia
+      (a rota nova é o caminho recomendado, mas `firestore.rules` ainda permite update direto
+      via SDK; endurecer as rules exigiria auditar TODOS os campos que a Agenda ainda escreve
+      direto — como notas, horário — antes de restringir, pra não quebrar edição legítima).
+
+**M06.2 concluída em código:** descoberto e corrigido de quebra um problema real na própria FSM
+— `concluido` estava declarado como estado totalmente terminal, mas `handleCancelAppointment`/
+`handleDeleteAppointment` já dependiam de poder reverter um atendimento concluído por engano
+(cancelar desfaz comissão/fidelidade). Sem corrigir a FSM primeiro, migrar esses handlers pra
+rota nova teria BLOQUEADO uma capacidade que a Agenda já oferece hoje — `concluido → cancelado`
+agora é uma transição declarada (reversão), não um bug silencioso. `AgendaModule.tsx`
+(`handleStatusChange`, `handleCancelAppointment`, `handleDeleteAppointment`,
+`handleDeleteSeries`) migrados pra rota única.
 
 **Saída:** nenhum atendimento concluído fica sem comissão, fidelidade, insumo e métricas.
 

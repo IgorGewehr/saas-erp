@@ -80,6 +80,9 @@ export class SessionFullError extends Error {
 export interface AppointmentTxPayload {
   businessId: string;
   professionalId?: string;
+  /** Conjunto completo de profissionais (M06.1). Quando presente e não-vazio,
+   *  tem prioridade sobre `professionalId` pra fins de conflito/horário. */
+  professionalIds?: string[];
   date: string;       // 'YYYY-MM-DD'
   startTime: string;  // 'HH:mm'
   endTime: string;    // 'HH:mm'
@@ -103,6 +106,52 @@ export interface AppointmentTxPayload {
 /** true quando o payload descreve uma reserva de turma com contagem de vagas. */
 function isGroupPayload(payload: AppointmentTxPayload): boolean {
   return !!payload.sessionKey && typeof payload.capacity === 'number' && payload.capacity > 1;
+}
+
+/** `professionalIds[]` (deduplicado) se presente e não-vazio; senão `[professionalId]`; senão `[]`. */
+function resolveEffectiveIds(payload: Pick<AppointmentTxPayload, 'professionalId' | 'professionalIds'>): string[] {
+  const ids = payload.professionalIds?.filter(Boolean) ?? [];
+  if (ids.length > 0) return [...new Set(ids)];
+  return payload.professionalId ? [payload.professionalId] : [];
+}
+
+/**
+ * Busca appointments do dia que compartilham QUALQUER um dos profissionais
+ * pedidos — 2 queries mergeadas por doc.id (mesmo formato Admin de
+ * `fetchDayAppointmentsForProfessionalsTx` em appointmentTxGuardAdmin.ts,
+ * mas com `getDocs` client SDK — tx client não aceita query reads, então
+ * roda fora do `tx.get`, dentro do callback, pra reexecutar fresco em
+ * reattempt). `in`/`array-contains-any` usam os mesmos índices compostos já
+ * declarados pra `==`/`array-contains`.
+ */
+async function fetchDayAppointmentsForProfessionalsClient(
+  db: Firestore,
+  businessId: string,
+  date: string,
+  professionalIds: string[],
+): Promise<Appointment[]> {
+  const legacyQ = query(
+    collection(db, 'appointments'),
+    where('businessId', '==', businessId),
+    where('professionalId', 'in', professionalIds),
+    where('date', '==', date),
+  );
+  const arrayQ = query(
+    collection(db, 'appointments'),
+    where('businessId', '==', businessId),
+    where('professionalIds', 'array-contains-any', professionalIds),
+    where('date', '==', date),
+  );
+  const [legacySnap, arraySnap] = await Promise.all([getDocs(legacyQ), getDocs(arrayQ)]);
+  const seen = new Set<string>();
+  const out: Appointment[] = [];
+  for (const d of [...legacySnap.docs, ...arraySnap.docs]) {
+    if (!seen.has(d.id)) {
+      seen.add(d.id);
+      out.push({ id: d.id, ...d.data() } as Appointment);
+    }
+  }
+  return out;
 }
 
 /**
@@ -166,13 +215,14 @@ export async function createAppointmentSafe(
   members: User[],
   t?: (key: string, fallback: string) => string,
 ): Promise<string> {
-  const { businessId, professionalId, date, startTime, endTime } = payload;
+  const { businessId, date, startTime, endTime } = payload;
   if (!businessId) throw new Error('createAppointmentSafe: businessId obrigatorio (R1)');
 
   const newDocRef = doc(collection(db, 'appointments'));
+  const effectiveIds = resolveEffectiveIds(payload);
 
-  // Sem profissional escolhido (slot "da casa" / turma aberta 'any').
-  if (!professionalId) {
+  // Sem NENHUM profissional escolhido (slot "da casa" / turma aberta 'any').
+  if (effectiveIds.length === 0) {
     // Turma aberta: ainda precisa de contagem de vagas atômica. Serializa via
     // session-lock (chaveado por sessionKey, já que não há prof). Sem isso, 2
     // operadores estouravam a capacidade da última vaga.
@@ -210,7 +260,15 @@ export async function createAppointmentSafe(
     return newDocRef.id;
   }
 
-  const lockRef = dayLockRef(db, businessId, professionalId, date);
+  // Day-lock só do profissional PRIMÁRIO (effectiveIds[0]) — limitação
+  // documentada: a QUERY abaixo já enxerga conflito em qualquer profissional
+  // do conjunto (fecha o blind spot estático), mas a serialização atômica
+  // via lock/retry continua garantida só pro primário. Duas reservas
+  // concorrentes (<200ms) pra um profissional secundário não têm essa MESMA
+  // garantia de retry — caso real de conflito em profissional secundário
+  // fica pra quando houver demanda (M06.3+).
+  const primaryId = effectiveIds[0];
+  const lockRef = dayLockRef(db, businessId, primaryId, date);
 
   await runTransaction(db, async (tx) => {
     // 1. tx.get(lockRef) — leitura rastreada. Qualquer write no lockRef
@@ -220,22 +278,17 @@ export async function createAppointmentSafe(
 
     // 2. getDocs fora da tx mas dentro do callback — re-roda na reattempt
     //    com dado fresco. Necessario pq tx Firestore client n aceita
-    //    query reads (so doc reads).
-    const q = query(
-      collection(db, 'appointments'),
-      where('businessId', '==', businessId),
-      where('professionalId', '==', professionalId),
-      where('date', '==', date),
-    );
-    const snap = await getDocs(q);
-    const dayAppts = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    //    query reads (so doc reads). Generalizado (M06.1) pra enxergar
+    //    QUALQUER profissional do conjunto, não só o primário.
+    const dayAppts = await fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds);
     const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
     // 3. Check overlap puro (colegas da mesma turma já foram excluídos acima).
     const result = checkAppointmentConflict({
       appointments,
       members,
-      professionalId,
+      professionalId: primaryId,
+      professionalIds: effectiveIds,
       date,
       startTime,
       endTime,
@@ -252,7 +305,7 @@ export async function createAppointmentSafe(
     // 4. Bump lock — invalida txs concorrentes que ja leram version antiga.
     tx.set(lockRef, {
       businessId,
-      professionalId,
+      professionalId: primaryId,
       date,
       version: currentVersion + 1,
       updatedAt: new Date().toISOString(),
@@ -281,14 +334,15 @@ export async function updateAppointmentSafe(
   previous?: { professionalId?: string; date?: string },
   t?: (key: string, fallback: string) => string,
 ): Promise<void> {
-  const { businessId, professionalId, date, startTime, endTime } = payload;
+  const { businessId, date, startTime, endTime } = payload;
   if (!businessId) throw new Error('updateAppointmentSafe: businessId obrigatorio (R1)');
   if (!appointmentId) throw new Error('updateAppointmentSafe: appointmentId obrigatorio');
 
   const targetRef = doc(db, 'appointments', appointmentId);
+  const effectiveIds = resolveEffectiveIds(payload);
 
-  // Sem profissional novo: pula tx (raro em edits, mas defensivo).
-  if (!professionalId) {
+  // Sem NENHUM profissional novo: pula tx (raro em edits, mas defensivo).
+  if (effectiveIds.length === 0) {
     // Turma aberta ('any'): valida vagas no destino via session-lock, excluindo
     // o próprio doc. Espelha o caminho de create pra mover de turma com
     // segurança de capacidade.
@@ -320,10 +374,13 @@ export async function updateAppointmentSafe(
     return;
   }
 
-  const destLockRef = dayLockRef(db, businessId, professionalId, date);
+  // Lock só do profissional PRIMÁRIO — mesma limitação documentada em
+  // createAppointmentSafe.
+  const primaryId = effectiveIds[0];
+  const destLockRef = dayLockRef(db, businessId, primaryId, date);
   // Origem so se houve mudanca real (prof OU date diferentes) — senao seria
   // bumpar o mesmo lock 2x na mesma tx (no-op redundante).
-  const movedProf = previous?.professionalId && previous.professionalId !== professionalId;
+  const movedProf = previous?.professionalId && previous.professionalId !== primaryId;
   const movedDate = previous?.date && previous.date !== date;
   const origLockRef = (movedProf || movedDate) && previous?.professionalId && previous?.date
     ? dayLockRef(db, businessId, previous.professionalId, previous.date)
@@ -340,22 +397,16 @@ export async function updateAppointmentSafe(
       origVersion = (origSnap.data()?.version as number | undefined) ?? 0;
     }
 
-    // 2. getDocs no destino (prof+date novo).
-    const q = query(
-      collection(db, 'appointments'),
-      where('businessId', '==', businessId),
-      where('professionalId', '==', professionalId),
-      where('date', '==', date),
-    );
-    const snap = await getDocs(q);
-    const dayAppts = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Appointment));
+    // 2. getDocs no destino (conjunto de profissionais + date novos).
+    const dayAppts = await fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds);
     const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
     // 3. Check overlap, ignorando o proprio doc.
     const result = checkAppointmentConflict({
       appointments,
       members,
-      professionalId,
+      professionalId: primaryId,
+      professionalIds: effectiveIds,
       date,
       startTime,
       endTime,
@@ -373,7 +424,7 @@ export async function updateAppointmentSafe(
     // 4. Bump destino sempre.
     tx.set(destLockRef, {
       businessId,
-      professionalId,
+      professionalId: primaryId,
       date,
       version: destVersion + 1,
       updatedAt: new Date().toISOString(),

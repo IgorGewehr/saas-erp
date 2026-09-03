@@ -159,6 +159,34 @@ describe('createAppointmentSafe', () => {
     expect(typeof id).toBe('string');
   });
 
+  it('M06.1: professionalIds[] múltiplo conflita se QUALQUER um dos profissionais já está ocupado', async () => {
+    docsResolver.mockReturnValue([
+      { id: 'a-p2', data: () => apt({ id: 'a-p2', professionalId: 'p2', startTime: '09:00', endTime: '10:00' }) },
+    ]);
+    await expect(
+      createAppointmentSafe(
+        fakeDb,
+        { businessId, professionalId: 'p1', professionalIds: ['p1', 'p2'], date: '2026-05-22', startTime: '09:30', endTime: '10:30' },
+        [prof, { ...prof, id: 'p2' } as User],
+      ),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
+  });
+
+  it('M06.1: encontra conflito com appointment existente só via professionalIds[] (sem legado)', async () => {
+    // Doc existente: legado aponta pra p9 (irrelevante), profissional real
+    // do check está só no array — antes da correção isso era invisível.
+    docsResolver.mockReturnValue([
+      { id: 'a-array', data: () => apt({ id: 'a-array', professionalId: 'p9', professionalIds: ['p9', 'p1'], startTime: '09:00', endTime: '10:00' }) },
+    ]);
+    await expect(
+      createAppointmentSafe(
+        fakeDb,
+        { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:30', endTime: '10:30' },
+        [prof],
+      ),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
+  });
+
   it('detecta overlap parcial (10:30-11:30 conflita com 11:00-12:00)', async () => {
     docsResolver.mockReturnValue([
       { id: 'a-x', data: () => apt({ id: 'a-x', startTime: '10:30', endTime: '11:30' }) },
