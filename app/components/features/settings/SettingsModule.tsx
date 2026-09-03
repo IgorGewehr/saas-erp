@@ -3968,6 +3968,18 @@ function AgenteTab() {
   const current = business?.settings?.aiAgent;
   const useCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
 
+  // Checagem simplificada (só pra aviso visual, não é a fonte de verdade da
+  // aba Canais) — sem isto, os lembretes automáticos pareciam ativos no
+  // toggle mas silenciosamente não enviavam nada por falta de canal conectado.
+  const channelsForCheck = (business as Business & {
+    channels?: { whatsapp?: { isConnected?: boolean }; whatsappCloud?: { isConnected?: boolean }; whatsappBaileys?: { isConnected?: boolean } };
+  })?.channels;
+  const whatsappConnected = Boolean(
+    channelsForCheck?.whatsappCloud?.isConnected
+    || channelsForCheck?.whatsappBaileys?.isConnected
+    || channelsForCheck?.whatsapp?.isConnected,
+  );
+
   const [enabled, setEnabled] = useState<boolean>(current?.enabled ?? false);
   const [tone, setTone] = useState<'formal' | 'casual' | 'friendly'>(current?.tone || 'friendly');
   const [segment, setSegment] = useState<BusinessSegment>(current?.segment || 'generico');
@@ -4334,6 +4346,18 @@ function AgenteTab() {
             </p>
           </div>
 
+          {/* Aviso real: sem WhatsApp conectado, os toggles abaixo não têm efeito
+              nenhum — o cron silenciosamente pula o negócio. Sem isto, o dono
+              achava que "está ligado" bastava. */}
+          {(sendReminder || confirmationBeforeAppointment || followUpAfter) && !whatsappConnected && (
+            <div className="mb-4 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 rounded-xl p-3 flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700 dark:text-amber-300 leading-relaxed">
+                <strong>Nenhum WhatsApp conectado.</strong> Com os toggles ligados mas sem um canal ativo (Configurações → Canais), nenhuma mensagem automática é enviada — o envio falha em silêncio.
+              </p>
+            </div>
+          )}
+
           <div className="space-y-4">
             {/* Lembrete antes */}
             <div className="flex items-start justify-between gap-4">
@@ -4381,6 +4405,13 @@ function AgenteTab() {
                 <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                   Um dia antes, pergunta se o cliente confirma — resposta "confirmo" atualiza o status do agendamento.
                 </p>
+                {confirmationBeforeAppointment && !enabled && (
+                  <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-1 leading-relaxed">
+                    A pergunta é enviada mesmo assim, mas a atualização automática do status pela resposta do cliente
+                    só funciona com o <strong>Agente IA</strong> ligado (seção acima) — sem ele, alguém precisa
+                    confirmar manualmente na Agenda.
+                  </p>
+                )}
                 {confirmationBeforeAppointment && (
                   <ReminderTemplateField
                     value={confirmationTemplate}

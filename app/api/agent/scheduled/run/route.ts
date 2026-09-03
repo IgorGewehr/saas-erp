@@ -28,6 +28,7 @@ import { sendBaileysBroadcastMessage, getConnectedSession } from '@/app/api/what
 import { dispatchReengagementToAgent } from '@/lib/agent/dispatch';
 import { FieldValue } from 'firebase-admin/firestore';
 import type { Appointment, Business, Conversation } from '@/lib/types';
+import { isRelevantForScheduling, resolveAgendaSchedulingConfig } from '@/lib/services/agenda/schedulingEligibility';
 
 type ReminderKind = 'reminder' | 'confirmation' | 'followup';
 
@@ -66,12 +67,6 @@ async function authorize(req: NextRequest): Promise<AuthResult> {
   return { kind: 'deny', reason: 'unauthorized', status: 401 };
 }
 
-function isRelevantForScheduling(b: Business): boolean {
-  const agenda = b.settings?.aiAgent?.agenda;
-  const hasReminders = agenda?.sendReminder || agenda?.confirmationBeforeAppointment || agenda?.followUpAfter;
-  const hasAgent = b.settings?.aiAgent?.enabled;
-  return !!(hasReminders || hasAgent);
-}
 
 interface RunStats {
   remindersSent: number;
@@ -397,15 +392,7 @@ async function processStalledConversations(
 // ─── Per-business sweep ──────────────────────────────────────────────────────
 
 async function processBusiness(business: Business & { id: string }, stats: RunStats): Promise<void> {
-  const ai = business.settings?.aiAgent;
-  // M5: negócio de SERVIÇOS com o agente ligado mas que ainda não salvou a aba
-  // Agenda usa os MESMOS defaults que a UI já exibe (lembrete ON, 24h antes),
-  // em vez de ficar mudo até o primeiro Save. Pedidos/outros useCases nunca
-  // recebem lembrete de agendamento por default.
-  const agenda = ai?.agenda
-    ?? (ai?.enabled && business.settings?.useCase === 'servicos'
-      ? { sendReminder: true, reminderHoursBefore: 24, confirmationBeforeAppointment: true, followUpAfter: false }
-      : undefined);
+  const agenda = resolveAgendaSchedulingConfig(business);
   if (!agenda) return;
 
   const now = new Date();

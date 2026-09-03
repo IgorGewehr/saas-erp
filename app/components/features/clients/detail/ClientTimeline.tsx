@@ -31,6 +31,10 @@ interface TimelineEvent {
   kind: TimelineEventKind;
   title: string;
   subtitle?: string;
+  /** Nota livre do atendimento (Appointment.notes) — único lugar hoje onde o
+   *  profissional registra o que foi feito na visita. Sem isto, essa
+   *  informação existia só dentro do dialog de detalhe do agendamento. */
+  notes?: string;
   amount?: number;
   status?: string;
   timestamp: string;
@@ -121,6 +125,7 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
           id: `appt_${d.id}`, kind: 'appointment',
           title: v.serviceName || 'Agendamento',
           subtitle: v.professionalName ? `com ${v.professionalName} • ${v.date} ${v.startTime}` : `${v.date ?? ''} às ${v.startTime ?? ''}`,
+          notes: v.notes || undefined,
           amount: v.price,
           status: v.status,
           timestamp: dateStr,
@@ -242,6 +247,11 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
                   <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400">
                     {statusLabel}
                   </span>
+                )}
+                {ev.notes && (
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 italic mt-1 line-clamp-2">
+                    &ldquo;{ev.notes}&rdquo;
+                  </p>
                 )}
               </div>
             </div>
