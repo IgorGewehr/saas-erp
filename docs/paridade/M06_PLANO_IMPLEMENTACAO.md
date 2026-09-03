@@ -230,12 +230,32 @@ autoridade sobre "esse horário pode".
 
 ### M06.0 — Baseline e caracterização
 
-- [ ] Registrar todos os escritores de `appointments` e a regra de cada um (a tabela §2 é o início).
-- [ ] Congelar em teste o comportamento **válido** de cada canal antes de convergir.
-- [ ] Fixtures: exclusivo, turma, multi-profissional, série recorrente, sem profissional atribuído.
-- [ ] Auditoria read-only por tenant: concluídos sem `completionAppliedAt`; sobreposições já
-      existentes na base; agendamentos sem `professionalIds`; agendamentos fora do horário de
-      trabalho do profissional.
+- [x] Registrar todos os escritores de `appointments` e a regra de cada um (a tabela §2).
+- [x] Auditoria read-only por tenant: concluídos sem `completionAppliedAt`; sobreposições reais
+      (honrando `professionalIds[]`, não só o campo legado); schema legado vs. sem profissional
+      algum; fora do horário de trabalho; turma acima da capacidade; referência financeira/fiscal
+      quebrada (`billingTransactionId`/`billingInstallmentGroupId`/`fiscalDocumentId`).
+- [ ] Congelar em teste o comportamento **válido** de cada canal (PDV, CRM, Agenda, Conversas,
+      agente, API v1) *como existe hoje*, antes de convergir — parcialmente coberto pelos testes já
+      existentes de `appointmentConflicts`/`appointmentTxGuard`/`appointmentTxGuardAdmin`/turmas
+      (63 casos), mas nenhum deles caracteriza os dois canais sem guard (PDV, CRM) nem o algoritmo
+      próprio do agente — ainda não feito.
+- [ ] Fixtures dedicadas por cenário (exclusivo, turma, multi-profissional, série recorrente, sem
+      profissional) como arquivos versionados (`tests/fixtures/m06/*.json`, mesmo padrão do M02) —
+      hoje os cenários da auditoria vivem inline no teste do snapshot, suficiente para validar a
+      auditoria em si, mas não reutilizável pelas próximas etapas.
+- [ ] Executar `npm run audit:m06 -- --businessId=<tenant real>` em homologação e revisar os
+      números antes de iniciar a M06.1 — a auditoria existe em código, mas ainda não rodou contra
+      dado de produção.
+
+**M06.0a concluída em código:** auditoria read-only (`lib/services/m06-agenda-audit.ts`,
+`scripts/audit-m06-agenda.ts`, `npm run audit:m06`) — mesmo formato before/after da M02
+(`buildM06AgendaSnapshot`/`compareM06AgendaSnapshots`), 13 testes cobrindo cada código de issue.
+Detecta especificamente as lacunas do diagnóstico §3: sobreposição real que os 3 algoritmos atuais
+não veem entre si, conclusão sem efeito, schema de profissional legado, turma sobrecarregada e
+vínculo financeiro/fiscal quebrado. Congelamento de comportamento por canal e fixtures dedicadas
+(M06.0b) ficam para a próxima etapa — a auditoria não depende deles para já poder rodar num tenant
+real.
 
 **Saída:** evidência de quanto do problema já existe nos dados reais antes de mudar qualquer regra.
 
