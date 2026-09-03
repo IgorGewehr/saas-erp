@@ -6,7 +6,7 @@ import {
   Armchair, Plus, X, Clock, Receipt, ChefHat, Package, CheckCircle2, RotateCcw,
   Ban, Users, ArrowRight, Loader2, UtensilsCrossed, ClipboardList, QrCode, Settings2,
 } from 'lucide-react';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useAppContext } from '@/app/app/AppContext';
@@ -130,6 +130,7 @@ export default function MesasModule() {
       collection(db, 'deliveryOrders'),
       where('businessId', '==', business.id),
       where('createdAt', '>=', ordersWindowStartIso()),
+      orderBy('createdAt', 'desc'),
     );
     const unsub = onSnapshot(q, (snap) => {
       setOrders(snap.docs.map(d => ({ ...(d.data() as DeliveryOrder), id: d.id })));

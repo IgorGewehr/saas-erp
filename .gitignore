@@ -9,6 +9,9 @@ whatsapp-sessions/
 # Firebase Admin service account — SECRET, montado via volume no docker-compose
 firebase-admin-service-account.json
 *-service-account.json
+
+# Scripts de seed/limpeza de demo (rodados manualmente, fora do repo)
+_demo_*.mjs
 AUDIT_REPORT.md
 FINANCIAL_ROADMAP.md
 NOTES_ROADMAP.md
