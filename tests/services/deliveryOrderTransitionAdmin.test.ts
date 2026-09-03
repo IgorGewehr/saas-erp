@@ -376,4 +376,42 @@ describe('M02.5d — transição de status centralizada de deliveryOrders', () =
       db: fake.db, orderId: 'order-1', businessId: 'biz1', targetStatus: 'preparando', actor, now: NOW,
     })).rejects.toBeInstanceOf(DeliveryOrderTransitionError);
   });
+
+  // ── Comanda de mesa: entrega SEM receita própria (settleViaSaleId) ─────────
+  it('entrega pedido de mesa com settleViaSaleId sem lançar receita própria', async () => {
+    const fake = makeFakeDb(initialDocuments({
+      'deliveryOrders/order-1': order({ status: 'pronto', deliveryType: 'mesa', tableNumber: '12', tableSessionId: 'sess-1' }),
+    }));
+    const result = await transitionDeliveryOrderAdmin({
+      db: fake.db, orderId: 'order-1', businessId: 'biz1', targetStatus: 'entregue',
+      actor, now: NOW, settleViaSaleId: 'sale-9',
+    });
+
+    expect(result.order).toMatchObject({ status: 'entregue', deliveredAt: NOW.toISOString(), settledViaSaleId: 'sale-9' });
+    expect(result.order.transactionId).toBeUndefined();
+    expect(result.revenueBooked).toBe(false);
+    expect(fake.get('transactions/order-1_revenue')).toBeUndefined();
+    expect(fake.get('clients/client-1/purchases/order-1')).toBeFalsy();
+  });
+
+  it('rejeita settleViaSaleId em pedido SEM tableSessionId', async () => {
+    const fake = makeFakeDb(initialDocuments({
+      'deliveryOrders/order-1': order({ status: 'pronto', deliveryType: 'mesa', tableNumber: '12' }),
+    }));
+    await expect(transitionDeliveryOrderAdmin({
+      db: fake.db, orderId: 'order-1', businessId: 'biz1', targetStatus: 'entregue',
+      actor, now: NOW, settleViaSaleId: 'sale-9',
+    })).rejects.toMatchObject({ code: 'SETTLE_WITHOUT_TABLE_SESSION' });
+  });
+
+  it('sem settleViaSaleId, pedido de mesa ainda lança receita normal (mesa "solta")', async () => {
+    const fake = makeFakeDb(initialDocuments({
+      'deliveryOrders/order-1': order({ status: 'pronto', deliveryType: 'mesa', tableNumber: '12' }),
+    }));
+    const result = await transitionDeliveryOrderAdmin({
+      db: fake.db, orderId: 'order-1', businessId: 'biz1', targetStatus: 'entregue', actor, now: NOW,
+    });
+    expect(result.revenueBooked).toBe(true);
+    expect(fake.get('transactions/order-1_revenue')).toMatchObject({ type: 'receita', amount: 40 });
+  });
 });

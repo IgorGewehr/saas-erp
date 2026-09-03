@@ -186,6 +186,22 @@ async function buildNewOperationRequest(params: {
   const actorId = input.operatorId ?? 'public';
   const actorName = input.operatorName ?? 'Cardápio online';
 
+  // ── Comanda de mesa: valida a sessão ANTES de criar o pedido. O arrayUnion
+  // do orderId acontece depois de persistir (em createDeliveryOrderWithSideEffects).
+  if (input.tableSessionId) {
+    const sessionSnap = await db.collection('tableSessions').doc(input.tableSessionId).get();
+    if (!sessionSnap.exists) {
+      throw new CommercialOperationError('TABLE_SESSION_NOT_FOUND', 'Comanda de mesa não encontrada.');
+    }
+    const session = sessionSnap.data() as { businessId?: string; status?: string };
+    if (session.businessId !== input.businessId) {
+      throw new CommercialOperationError('TENANT_MISMATCH', 'Comanda pertence a outro negócio.');
+    }
+    if (session.status !== 'aberta') {
+      throw new CommercialOperationError('TABLE_SESSION_CLOSED', 'Esta mesa não está mais aberta para novos pedidos.');
+    }
+  }
+
   // ── Cliente: clientId (já resolvido pelo operador) tem precedência sobre
   // clientPhone (resolução por telefone, canal público). O formulário manual
   // manda os dois juntos ao escolher um cliente existente — não são exclusivos.
@@ -416,6 +432,7 @@ async function buildNewOperationRequest(params: {
     deliveryType: input.deliveryType,
     ...(input.deliveryType === 'entrega' ? { deliveryAddress: input.deliveryAddress } : {}),
     ...(input.tableNumber ? { tableNumber: input.tableNumber } : {}),
+    ...(input.tableSessionId ? { tableSessionId: input.tableSessionId } : {}),
     paymentMethod: input.paymentMethod ?? 'pix',
     paymentStatus: input.paymentStatus ?? 'pendente',
     ...(input.changeFor && input.changeFor > centsToReais(effectiveQuote.pricing.totalCents) ? { changeFor: input.changeFor } : {}),
@@ -483,6 +500,18 @@ export async function createDeliveryOrderWithSideEffects(
     await db.collection('clients').doc(order.clientId)
       .update({ visitCount: FieldValue.increment(1) })
       .catch(() => {});
+  }
+
+  // Vincula o pedido à comanda da mesa (arrayUnion é idempotente por si, mas o
+  // guard !replayed evita o round-trip numa retentativa). A sessão já foi
+  // validada como 'aberta' + mesmo businessId em buildNewOperationRequest.
+  if (order.tableSessionId && !result.replayed) {
+    await db.collection('tableSessions').doc(order.tableSessionId)
+      .update({
+        orderIds: FieldValue.arrayUnion(order.id),
+        updatedAt: new Date().toISOString(),
+      })
+      .catch((err) => console.warn('[deliveryOrderServer] arrayUnion tableSession falhou:', err));
   }
 
   const operationSnapshot = await db.collection('commercialOperations').doc(result.operationId).get();

@@ -93,6 +93,15 @@ export const DeliveryOrderSchema = z.object({
   /** Número/identificador da mesa no salão — só relevante pra deliveryType='mesa'.
    *  Opcional mesmo nesse caso (não trava o fluxo se o garçom esquecer). */
   tableNumber: z.string().min(1).max(20).optional(),
+  /** FK pra `tableSessions/{id}` — presente quando o pedido faz parte de uma
+   *  comanda de mesa (ver lib/contracts/domain/tableSession.ts). Pedido com
+   *  tableSessionId NÃO lança receita própria na entrega: a receita sai uma vez
+   *  pela Sale do PDV no fechamento da conta. */
+  tableSessionId: z.string().min(1).optional(),
+  /** FK pra `sales/{id}` — gravado quando a comanda da mesa é fechada e paga no
+   *  PDV. Presença ⇒ este pedido foi liquidado pela Sale consolidada, sem
+   *  `transactions/{orderId}_revenue`. */
+  settledViaSaleId: z.string().min(1).optional(),
   deliveryPersonId: z.string().optional(),
   deliveryPersonName: z.string().optional(),
   estimatedDeliveryAt: z.string().optional(),
@@ -137,6 +146,11 @@ export const DeliveryOrderSchema = z.object({
   // INVARIANTE 4: status='entregue' ⇒ deliveredAt set
   if (o.status === 'entregue' && !o.deliveredAt) {
     ctx.addIssue({ code: 'custom', message: 'status=entregue exige deliveredAt', path: ['deliveredAt'] });
+  }
+  // INVARIANTE 5: settledViaSaleId ⇒ status='entregue' + tableSessionId (só a
+  // liquidação de comanda de mesa grava esse campo).
+  if (o.settledViaSaleId && (o.status !== 'entregue' || !o.tableSessionId)) {
+    ctx.addIssue({ code: 'custom', message: 'settledViaSaleId exige status=entregue e tableSessionId', path: ['settledViaSaleId'] });
   }
 });
 

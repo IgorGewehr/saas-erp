@@ -24,6 +24,7 @@ const ConversasModule  = lazy(() => import('@/app/components/features/conversati
 const VendasModule     = lazy(() => import('@/app/components/features/sales/VendasModule'));
 const ComprasModule    = lazy(() => import('@/app/components/features/purchases/ComprasModule'));
 const OrdersModule     = lazy(() => import('@/app/components/features/orders/OrdersModule'));
+const MesasModule      = lazy(() => import('@/app/components/features/mesas/MesasModule'));
 const CardapioModule   = lazy(() => import('@/app/components/features/cardapio/CardapioModule'));
 const ReportsModule    = lazy(() => import('@/app/components/features/reports/ReportsModule'));
 const SenhasModule     = lazy(() => import('@/app/components/features/senhas/SenhasModule'));
@@ -31,7 +32,7 @@ const NotasModule      = lazy(() => import('@/app/components/features/notas/Nota
 const SpreadsheetsModule = lazy(() => import('@/app/components/features/spreadsheets/SpreadsheetsModule'));
 
 // Full-height pages — fill the viewport, no outer scroll (each manages its own scroll internally)
-const FULL_HEIGHT_PAGES = new Set<MenuPage>(['Dashboard', 'Agenda', 'PDV', 'Kanban', 'Conversas', 'CRM', 'Pedidos', 'Planilhas']);
+const FULL_HEIGHT_PAGES = new Set<MenuPage>(['Dashboard', 'Agenda', 'PDV', 'Kanban', 'Conversas', 'CRM', 'Pedidos', 'Mesas', 'Planilhas']);
 
 // ─── Full-height loading fallback ─────────────────────────────────────────────
 function FullHeightFallback() {
@@ -128,6 +129,7 @@ function renderModule(page: MenuPage, financialV2Enabled: boolean) {
         );
       case 'Estoque':      return <Suspense fallback={fallback}><InventoryModule /></Suspense>;
       case 'Pedidos':      return <Suspense fallback={fallback}><OrdersModule /></Suspense>;
+      case 'Mesas':        return <Suspense fallback={fallback}><MesasModule /></Suspense>;
       case 'Cardápio':     return <Suspense fallback={fallback}><CardapioModule /></Suspense>;
       case 'NFSe':         return <Suspense fallback={fallback}><FiscalModule type="nfse" /></Suspense>;
       case 'NFCe':         return <Suspense fallback={fallback}><FiscalModule type="nfce" /></Suspense>;

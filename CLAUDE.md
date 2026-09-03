@@ -123,6 +123,7 @@ app/components/features/
 ├── dashboard       KPIs + heatmap presença
 ├── pdv             Ponto de venda → sales, stockMovements, transactions, fiscal
 ├── orders          Pedidos delivery → deliveryOrders + stock
+├── mesas           Comandas de mesa (salão) → tableSessions; fechar conta → PDV (1 venda, sem receita dobrada)
 ├── sales           Listagem/filtro de vendas
 ├── inventory       Produtos + BOM (components[]) + modifiers
 ├── purchases       Importação NF-e fornecedor → addStock
@@ -151,7 +152,8 @@ app/api/
 ├── booking/chat    Chat IA público para agendamento
 ├── broadcasts/{send,process-scheduled}   Cron processado
 ├── birthday-campaigns/run    Cron horário
-├── orders/public   Recebe pedido anônimo do cardápio
+├── orders/public   Recebe pedido anônimo do cardápio (QR `?mesa=N` auto-abre tableSession)
+├── table-sessions/*  Comanda de mesa: open / close / reopen / cancel / settle (Admin SDK)
 ├── fiscal/*        Wrapper SEFAZ
 ├── financial/*     PIX/Boleto/OCR/OpenBanking (stubs)
 ├── integrations/*  Proxies servidor pras APIs externas

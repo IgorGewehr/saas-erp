@@ -35,6 +35,7 @@ import {
   KeyRound,
   StickyNote,
   FileSpreadsheet,
+  Armchair,
 } from 'lucide-react';
 import type { UseCase, UserRole } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
@@ -53,6 +54,7 @@ export type MenuPage =
   | 'Financeiro'
   | 'Estoque'
   | 'Pedidos'
+  | 'Mesas'
   | 'Cardápio'
   | 'NFSe'
   | 'NFCe'
@@ -103,6 +105,7 @@ function useMenuSections(): MenuSection[] {
       title: t('sidebar.sections.gestao'),
       items: [
         { id: 'Pedidos', label: t('sidebar.pedidos', 'Pedidos'), icon: ClipboardCheck, useCases: ['pedidos'] },
+        { id: 'Mesas', label: t('sidebar.mesas', 'Mesas'), icon: Armchair, useCases: ['pedidos'] },
         { id: 'Cardápio', label: t('sidebar.cardapio', 'Cardápio'), icon: UtensilsCrossed, useCases: ['pedidos'] },
         { id: 'Vendas', label: t('sidebar.vendas'), icon: ClipboardList, useCases: ['pedidos', 'servicos', 'simples'] },
         { id: 'Kanban', label: t('sidebar.kanban'), icon: Kanban, enterpriseOnly: true },

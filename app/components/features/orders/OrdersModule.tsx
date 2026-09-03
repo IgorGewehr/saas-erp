@@ -9,7 +9,7 @@ import {
   X, ChefHat, Package, Truck, XCircle, Edit3, Trash2, Phone, DollarSign,
   ChevronDown, ArrowRight, ArrowLeft, MessageSquare, Timer, Sparkles,
   LayoutGrid, List, Filter, Home, Volume2, VolumeX, Bell, Printer, Check, Ban,
-  Receipt, FileCheck2, UtensilsCrossed,
+  Receipt, FileCheck2, UtensilsCrossed, Armchair,
 } from 'lucide-react';
 import {
   collection, query, where, orderBy, onSnapshot, getDocs, updateDoc,
@@ -17,6 +17,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useAppContext } from '@/app/app/AppContext';
 import { formatCurrency, formatDateTime } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
@@ -228,6 +229,19 @@ function OrderCard({
         isDragging && 'opacity-50 rotate-1',
       )}
     >
+      {order.deliveryType === 'mesa' && (
+        <div className="-mx-3 -mt-3 mb-2 px-3 py-1.5 rounded-t-xl bg-indigo-600 text-white flex items-center gap-1.5">
+          <Armchair className="w-3.5 h-3.5" />
+          <span className="text-[13px] font-bold tracking-wide uppercase">
+            Mesa {order.tableNumber || '—'}
+          </span>
+          {order.tableSessionId && (
+            <span className="ml-auto text-[9px] font-semibold bg-white/20 px-1.5 py-0.5 rounded">
+              comanda
+            </span>
+          )}
+        </div>
+      )}
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex items-center gap-1.5 min-w-0">
           {order.channel && (
@@ -413,7 +427,7 @@ function emptyOrderForm(): OrderFormData {
 }
 
 function OrderFormDialog({
-  open, onClose, onSave, initial, clients, products, isEditing, lockPayment,
+  open, onClose, onSave, initial, clients, products, isEditing, lockPayment, lockedTableLabel,
 }: {
   open: boolean;
   onClose: () => void;
@@ -425,6 +439,9 @@ function OrderFormDialog({
   /** Pedido pago via Mercado Pago: status/método de pagamento são geridos pelo
    *  webhook (paymentFsmStatus), edição manual é proibida (grupo 9). */
   lockPayment: boolean;
+  /** Pedido criado a partir de uma comanda de mesa (tela Mesas) — tipo/mesa
+   *  travados; o pedido é vinculado à sessão pelo caller. */
+  lockedTableLabel?: string;
 }) {
   const [form, setForm] = useState<OrderFormData>(initial);
   const [saving, setSaving] = useState(false);
@@ -636,40 +653,51 @@ function OrderFormDialog({
             </div>
 
             {/* Delivery type */}
-            <div>
-              <label className={labelCls}>Tipo de atendimento</label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['entrega', 'retirada', 'mesa'] as DeliveryType[]).map(t => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setForm(f => ({ ...f, deliveryType: t }))}
-                    className={cn(
-                      'flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border-2 text-sm font-medium transition-all',
-                      form.deliveryType === t
-                        ? 'border-red-500 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
-                        : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
-                    )}
-                  >
-                    {t === 'entrega' ? <><Bike className="w-4 h-4" /> Entrega</>
-                      : t === 'retirada' ? <><Home className="w-4 h-4" /> Retirada</>
-                        : <><UtensilsCrossed className="w-4 h-4" /> Mesa</>}
-                  </button>
-                ))}
+            {lockedTableLabel ? (
+              <div className="rounded-xl border-2 border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10 px-3 py-2.5 flex items-center gap-2">
+                <Armchair className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <span className="text-sm font-bold text-indigo-700 dark:text-indigo-300">
+                  Pedido para a comanda da {lockedTableLabel}
+                </span>
               </div>
-            </div>
+            ) : (
+              <>
+                <div>
+                  <label className={labelCls}>Tipo de atendimento</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['entrega', 'retirada', 'mesa'] as DeliveryType[]).map(t => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setForm(f => ({ ...f, deliveryType: t }))}
+                        className={cn(
+                          'flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg border-2 text-sm font-medium transition-all',
+                          form.deliveryType === t
+                            ? 'border-red-500 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400'
+                            : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400',
+                        )}
+                      >
+                        {t === 'entrega' ? <><Bike className="w-4 h-4" /> Entrega</>
+                          : t === 'retirada' ? <><Home className="w-4 h-4" /> Retirada</>
+                            : <><UtensilsCrossed className="w-4 h-4" /> Mesa</>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-            {/* Table number (if mesa) */}
-            {form.deliveryType === 'mesa' && (
-              <div>
-                <label className={labelCls}>Número da mesa</label>
-                <input
-                  value={form.tableNumber}
-                  onChange={e => setForm(f => ({ ...f, tableNumber: e.target.value }))}
-                  placeholder="Ex: 12"
-                  className={inputCls}
-                />
-              </div>
+                {/* Table number (if mesa) */}
+                {form.deliveryType === 'mesa' && (
+                  <div>
+                    <label className={labelCls}>Número da mesa</label>
+                    <input
+                      value={form.tableNumber}
+                      onChange={e => setForm(f => ({ ...f, tableNumber: e.target.value }))}
+                      placeholder="Ex: 12"
+                      className={inputCls}
+                    />
+                  </div>
+                )}
+              </>
             )}
 
             {/* Address (if delivery) */}
@@ -905,7 +933,7 @@ function OrderFormDialog({
 // ─── Order Detail Drawer ─────────────────────────────────────────────────────
 
 function OrderDetailDrawer({
-  order, onClose, onStatusChange, onEdit, onDelete, onEmitNfce,
+  order, onClose, onStatusChange, onEdit, onDelete, onEmitNfce, onGoToMesas,
 }: {
   order: Order;
   onClose: () => void;
@@ -914,13 +942,19 @@ function OrderDetailDrawer({
   onDelete: () => void;
   /** Abre o EmitirNotaDialog pré-preenchido pra emitir a NFC-e deste pedido. */
   onEmitNfce: () => void;
+  /** Navega pra tela Mesas (pedido faz parte de uma comanda). */
+  onGoToMesas: () => void;
 }) {
   const cfg = STATUS_CONFIG[order.status];
   const statusFlow = statusFlowFor(order.deliveryType);
   const statusIdx = statusFlow.indexOf(order.status);
-  const nextStatus = statusIdx >= 0 && statusIdx < statusFlow.length - 1
+  const rawNextStatus = statusIdx >= 0 && statusIdx < statusFlow.length - 1
     ? statusFlow[statusIdx + 1]
     : null;
+  // Pedido vinculado a uma comanda de mesa: a entrega/receita acontece 1x no
+  // fechamento da conta pelo PDV (tela Mesas) — nunca aqui, senão duplica receita.
+  const lockedByTableSession = !!order.tableSessionId && rawNextStatus === 'entregue';
+  const nextStatus = lockedByTableSession ? null : rawNextStatus;
   const prevStatus = statusIdx > 0 ? statusFlow[statusIdx - 1] : null;
 
   return (
@@ -1049,11 +1083,16 @@ function OrderDetailDrawer({
         {order.deliveryType === 'mesa' && (
           <div className="space-y-2">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Mesa</p>
-            <div className="flex items-center gap-2 p-3 rounded-xl bg-gray-50 dark:bg-gray-800/40">
-              <UtensilsCrossed className="w-4 h-4 text-gray-400 flex-shrink-0" />
-              <span className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+            <div className="flex items-center gap-3 p-3 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/30">
+              <Armchair className="w-5 h-5 text-indigo-500 flex-shrink-0" />
+              <span className="text-lg font-bold text-indigo-700 dark:text-indigo-300">
                 Mesa {order.tableNumber || '(não informada)'}
               </span>
+              {order.tableSessionId && (
+                <span className="ml-auto text-[10px] font-semibold text-indigo-600/80 dark:text-indigo-400/80">
+                  parte de uma comanda
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -1075,6 +1114,13 @@ function OrderDetailDrawer({
 
       {/* Action Bar */}
       <div className="sticky bottom-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 p-4 space-y-2">
+        {lockedByTableSession && order.status !== 'cancelado' && (
+          <button onClick={onGoToMesas}
+            className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold shadow-md shadow-indigo-600/20">
+            <Armchair className="w-4 h-4" />
+            Fechar conta na tela de Mesas
+          </button>
+        )}
         {order.status !== 'entregue' && order.status !== 'cancelado' && (
           <div className="flex gap-2">
             {prevStatus && (
@@ -1350,9 +1396,11 @@ const AUTO_PRINT_PREF_KEY = 'orders:autoPrintOnAccept';
 
 export default function OrdersModule() {
   const { user, business, firebaseUser } = useAuth();
+  const { setActivePage } = useAppContext();
 
   const [viewMode, setViewMode] = useState<ViewMode>('board');
   const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | DeliveryType>('all');
   const [printerSetupOpen, setPrinterSetupOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -1388,6 +1436,8 @@ export default function OrdersModule() {
     contactExternalId?: string;
   } | null>(null);
   const [prefillCartItems, setPrefillCartItems] = useState<OrderItem[]>([]);
+  // Pedido vindo da tela Mesas ("+ Pedido") — vincula à comanda da mesa.
+  const [prefillTableSession, setPrefillTableSession] = useState<{ tableSessionId: string; tableLabel: string } | null>(null);
 
   // Detect incoming prefill from ConversasModule's "Criar Pedido" button
   useEffect(() => {
@@ -1419,6 +1469,22 @@ export default function OrdersModule() {
       }
     } catch { /* ignore */ }
     sessionStorage.removeItem('pendingCartItems');
+  }, []);
+
+  // Detect "+ Pedido" handoff from the Mesas module
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = sessionStorage.getItem('pendingTableOrder');
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw) as { tableSessionId?: string; tableLabel?: string };
+      if (data.tableSessionId && data.tableLabel) {
+        setPrefillTableSession({ tableSessionId: data.tableSessionId, tableLabel: data.tableLabel });
+        setEditingOrder(null);
+        setFormOpen(true);
+      }
+    } catch { /* ignore */ }
+    sessionStorage.removeItem('pendingTableOrder');
   }, []);
 
   // Real-time orders subscription
@@ -1492,14 +1558,25 @@ export default function OrdersModule() {
   // Filtered orders
   const filteredOrders = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return orders;
-    return orders.filter(o =>
-      o.clientName.toLowerCase().includes(term) ||
-      o.clientPhone?.includes(term) ||
-      String(o.number).includes(term) ||
-      o.items.some(i => i.productName.toLowerCase().includes(term)),
-    );
-  }, [orders, search]);
+    return orders.filter(o => {
+      if (typeFilter !== 'all' && o.deliveryType !== typeFilter) return false;
+      if (!term) return true;
+      return o.clientName.toLowerCase().includes(term)
+        || o.clientPhone?.includes(term)
+        || String(o.number).includes(term)
+        || o.tableNumber?.toLowerCase().includes(term)
+        || o.items.some(i => i.productName.toLowerCase().includes(term));
+    });
+  }, [orders, search, typeFilter]);
+
+  const typeCounts = useMemo(() => {
+    const c = { entrega: 0, retirada: 0, mesa: 0 };
+    for (const o of orders) {
+      if (o.status === 'entregue' || o.status === 'cancelado') continue;
+      if (o.deliveryType && o.deliveryType in c) c[o.deliveryType as keyof typeof c]++;
+    }
+    return c;
+  }, [orders]);
 
   // Group by status (for board)
   const byStatus = useMemo(() => {
@@ -1612,6 +1689,7 @@ export default function OrdersModule() {
             deliveryType: data.deliveryType,
             deliveryAddress: data.deliveryType === 'entrega' ? data.address : undefined,
             tableNumber: data.deliveryType === 'mesa' ? (data.tableNumber || undefined) : undefined,
+            tableSessionId: prefillTableSession?.tableSessionId,
             manualDeliveryFee: data.deliveryFee || undefined,
             discount: data.discount || undefined,
             discountReason: data.discount ? 'Desconto manual no pedido' : undefined,
@@ -1640,6 +1718,7 @@ export default function OrdersModule() {
       setEditingOrder(null);
       setPrefillFromConversation(null);
       setPrefillCartItems([]);
+      setPrefillTableSession(null);
       setFormOpen(false);
     } catch (err) {
       console.error('[Orders] Save failed:', err);
@@ -1907,11 +1986,19 @@ export default function OrdersModule() {
         } : base.address,
       };
     }
+    if (prefillTableSession) {
+      return {
+        ...emptyOrderForm(),
+        deliveryType: 'mesa',
+        tableNumber: prefillTableSession.tableLabel,
+        items: prefillCartItems,
+      };
+    }
     if (prefillCartItems.length > 0) {
       return { ...emptyOrderForm(), items: prefillCartItems };
     }
     return emptyOrderForm();
-  }, [editingOrder, prefillFromConversation, prefillCartItems, clients]);
+  }, [editingOrder, prefillFromConversation, prefillCartItems, prefillTableSession, clients]);
 
   return (
     <div className="flex flex-col h-full">
@@ -1981,15 +2068,39 @@ export default function OrdersModule() {
           />
         </div>
 
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar por #, cliente, telefone ou item..."
-            className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
-          />
+        {/* Search + type filter */}
+        <div className="flex flex-col sm:flex-row gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar por #, cliente, telefone, mesa ou item..."
+              className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+            />
+          </div>
+          <div className="flex items-center bg-gray-100 dark:bg-gray-800/60 rounded-xl p-0.5 self-start">
+            {([
+              ['all', 'Todos', null],
+              ['entrega', 'Entrega', typeCounts.entrega],
+              ['retirada', 'Retirada', typeCounts.retirada],
+              ['mesa', 'Mesa', typeCounts.mesa],
+            ] as const).map(([val, lbl, count]) => (
+              <button
+                key={val}
+                onClick={() => setTypeFilter(val)}
+                className={cn(
+                  'px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-all whitespace-nowrap',
+                  typeFilter === val ? 'bg-white dark:bg-gray-900 shadow-sm text-gray-900 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400',
+                )}
+              >
+                {lbl}
+                {count != null && count > 0 && (
+                  <span className="px-1 rounded bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400 text-[10px]">{count}</span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -2105,13 +2216,14 @@ export default function OrdersModule() {
       {/* Form dialog */}
       <OrderFormDialog
         open={formOpen}
-        onClose={() => { setFormOpen(false); setEditingOrder(null); setPrefillFromConversation(null); setPrefillCartItems([]); }}
+        onClose={() => { setFormOpen(false); setEditingOrder(null); setPrefillFromConversation(null); setPrefillCartItems([]); setPrefillTableSession(null); }}
         onSave={persistOrder}
         initial={formInitial}
         clients={clients}
         products={products}
         isEditing={!!editingOrder}
         lockPayment={editingOrder?.paymentProvider === 'mercadopago'}
+        lockedTableLabel={prefillTableSession?.tableLabel}
       />
 
       <PrinterSetupDialog
@@ -2139,6 +2251,7 @@ export default function OrdersModule() {
               onEdit={() => { setEditingOrder(selectedOrder); setSelectedOrder(null); setFormOpen(true); }}
               onDelete={() => handleDelete(selectedOrder)}
               onEmitNfce={() => { setNfceOrder(selectedOrder); setSelectedOrder(null); }}
+              onGoToMesas={() => { setSelectedOrder(null); setActivePage('Mesas'); }}
             />
           </>
         )}

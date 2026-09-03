@@ -37,6 +37,7 @@ export const PAGE_TITLES: Record<MenuPage, string> = {
   Financeiro: 'Financeiro',
   Estoque: 'Estoque',
   Pedidos: 'Pedidos',
+  Mesas: 'Mesas',
   'Cardápio': 'Cardápio',
   NFSe: 'NFS-e',
   NFCe: 'NFC-e',

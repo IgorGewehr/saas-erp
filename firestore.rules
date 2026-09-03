@@ -604,6 +604,22 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Comanda de mesa (salão do restaurante). Agrega vários deliveryOrders
+    // (deliveryType='mesa') de uma mesa, some a conta, e no fechamento liquida
+    // tudo como 1 venda no PDV. FSM aberta->fechada->paga | cancelada
+    // (lib/contracts/fsm/tableSession.ts).
+    //
+    // WRITE É ADMIN-SDK-ONLY: toda mutação passa pelas rotas autenticadas
+    // /api/table-sessions/* (open/close/reopen/cancel/settle) e por
+    // /api/orders/public (auto-abre via QR). O client (MesasModule) só LÊ via
+    // onSnapshot. Isso impede o SDK web de marcar 'paga'/gravar saleId sem o
+    // checkout do PDV — mesma preocupação de paymentFieldsLocked() em
+    // deliveryOrders. Hard-delete proibido (histórico de conta).
+    match /tableSessions/{sessionId} {
+      allow read: if isAuthenticated() && isOwnBusiness();
+      allow create, update, delete: if false;
+    }
+
     // ============================================
     // KANBAN BOARDS COLLECTION
     // ============================================

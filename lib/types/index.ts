@@ -681,6 +681,10 @@ export interface AiAgentSettings {
     maxWaitMinutes?: number;
     /** Taxa de entrega padrão (R$) — usada pelo agente ao criar pedido do tipo entrega */
     deliveryFee?: number;
+    /** Mesas do salão — geram QR codes por mesa (/p/{slug}?mesa={label}) e
+     *  alimentam o seletor de "Abrir mesa" no módulo Mesas. Schema em
+     *  lib/contracts/domain/tableSession.ts (BusinessTableSchema). */
+    tables?: { id: string; label: string }[];
   };
 
   /** === Modo: serviços (agenda) === */
@@ -2043,6 +2047,12 @@ export interface DeliveryOrder {
   deliveryAddress?: DeliveryOrderAddress;
   /** Número/identificador da mesa no salão — só relevante pra deliveryType='mesa'. */
   tableNumber?: string;
+  /** FK pra `tableSessions/{id}` — pedido faz parte de uma comanda de mesa.
+   *  Pedido com tableSessionId não lança receita própria: sai pela Sale do PDV
+   *  no fechamento da conta. Ver lib/contracts/domain/tableSession.ts. */
+  tableSessionId?: string;
+  /** FK pra `sales/{id}` — gravado quando a comanda foi fechada e paga no PDV. */
+  settledViaSaleId?: string;
   deliveryPersonId?: string;
   deliveryPersonName?: string;
   estimatedDeliveryAt?: string;

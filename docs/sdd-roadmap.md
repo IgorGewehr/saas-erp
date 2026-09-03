@@ -40,6 +40,7 @@
 - [x] `domain/stockMovement.ts` — invariante: `newStock === previousStock ± quantity` por type.
 - [x] `domain/purchaseNote.ts` — `importada ⇒ stockImportedAt`; `stockImportedAt ⇒ status=importada` (idempotência).
 - [x] `fsm/sale.ts`, `fsm/order.ts`, `fsm/deliveryOrder.ts`, `fsm/purchaseNote.ts` com `assertTransition` + side-effects documentados.
+- [x] `domain/tableSession.ts` + `fsm/tableSession.ts` — comanda de mesa do salão (`aberta→fechada→paga|cancelada`). Invariantes de fechamento/pagamento; `settle` marca pedidos `entregue` com `settledViaSaleId` (receita única no PDV). Ver `docs/paridade/M02_MESAS_COMANDA.md`.
 - [x] `api/v1/sales.ts`, `products.ts`, `stock-movements.ts`, `services.ts` — Request/Response + IdempotencyHeader.
 - [x] `api/orders/public.ts` — schema do payload anônimo + `clientExpectedTotal` (server recomputa).
 - [x] `_runtime/bom.ts` — `expandBomLines()` + `checkBomAvailability()` + `buildProductIndex()` unificados (fecha G4).

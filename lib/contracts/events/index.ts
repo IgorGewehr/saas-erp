@@ -356,6 +356,48 @@ export const CashSessionClosedSchema = EventEnvelopeBase.extend({
   difference: z.number(),
 });
 
+/**
+ * Comanda de mesa (`tableSessions`) — ciclo abrir → fechar conta → pagar.
+ *
+ * AUDIT-ONLY: sem subscriber registrado no bus. Os efeitos rodam INLINE em
+ * `lib/services/table-session-admin.ts` com guards CAS:
+ *   - `table.opened`  — nasce da UI de Mesas ou do QR `?mesa=N` (auto-abre em
+ *     `/api/orders/public`). `openTableSessionAdmin` é idempotente (reusa a
+ *     sessão `aberta` da mesma mesa).
+ *   - `table.closed`  — `closeTableSessionAdmin` congela `subtotalSnapshot`.
+ *   - `table.settled` — `settleTableSessionAdmin`: recebe o `saleId` da Sale
+ *     única do checkout do PDV e marca CADA pedido vinculado como `entregue`
+ *     com `settledViaSaleId` (via `transitionDeliveryOrderAdmin`, param
+ *     `settleViaSaleId`) — SEM `transactions/{orderId}_revenue`. A receita, a
+ *     compra do cliente e a fidelidade vão pela Sale, não pelos pedidos.
+ *
+ * ISENÇÃO DE RECEITA POR PEDIDO (decisão v1): pedido de mesa vinculado a uma
+ * comanda NUNCA lança receita própria — a conta é sempre fechada no PDV. Só
+ * pedido de mesa "solto" (texto livre, sem `tableSessionId`) segue o caminho
+ * normal de receita-na-entrega.
+ */
+export const TableOpenedSchema = EventEnvelopeBase.extend({
+  type: z.literal('table.opened'),
+  tableSessionId: z.string().min(1),
+  tableLabel: z.string().min(1),
+});
+
+export const TableClosedSchema = EventEnvelopeBase.extend({
+  type: z.literal('table.closed'),
+  tableSessionId: z.string().min(1),
+  tableLabel: z.string().min(1),
+  subtotalSnapshot: z.number().nonnegative(),
+  orderCount: z.number().int().nonnegative(),
+});
+
+export const TableSettledSchema = EventEnvelopeBase.extend({
+  type: z.literal('table.settled'),
+  tableSessionId: z.string().min(1),
+  tableLabel: z.string().min(1),
+  saleId: z.string().min(1),
+  ordersDelivered: z.array(z.string().min(1)),
+});
+
 // ============================================================================
 // Discriminated union — fonte da verdade dos eventos do sistema
 // ============================================================================
@@ -378,6 +420,9 @@ export const DomainEventSchema = z.discriminatedUnion('type', [
   PaymentApprovedSchema,
   PaymentRefundedSchema,
   CashSessionClosedSchema,
+  TableOpenedSchema,
+  TableClosedSchema,
+  TableSettledSchema,
 ]);
 
 export type DomainEvent = z.infer<typeof DomainEventSchema>;
@@ -401,6 +446,9 @@ export const DOMAIN_EVENT_TYPES = [
   'payment.approved',
   'payment.refunded',
   'caixa.fechado',
+  'table.opened',
+  'table.closed',
+  'table.settled',
 ] as const satisfies readonly DomainEventType[];
 
 /** Extrai o evento concreto de um tipo da union. */

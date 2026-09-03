@@ -13,6 +13,7 @@ import {
   CommercialOperationUnavailableError,
 } from '@/lib/services/commercial-operation-admin';
 import { createDeliveryOrderWithSideEffects } from '@/lib/services/delivery-order-server';
+import { openTableSessionAdmin } from '@/lib/services/table-session-admin';
 import { formatCurrency } from '@/lib/utils/format';
 import type { Business, DeliveryOrderItem, DeliveryType } from '@/lib/types';
 
@@ -82,8 +83,23 @@ export async function POST(req: NextRequest) {
         const biz = bizSnap.data() as Business;
         assertOrdersAcceptedNow(biz, now);
 
+        // Pedido via QR de mesa (?mesa=N) — resolve/abre a comanda daquela mesa
+        // no servidor (o client anônimo nunca escolhe tableSessionId direto) e
+        // vincula o pedido a ela. A receita sairá 1x pelo PDV no fechamento.
+        let tableSessionId: string | undefined;
+        if (body.deliveryType === 'mesa' && body.tableNumber) {
+          const { session } = await openTableSessionAdmin({
+            db: adminDb,
+            businessId,
+            tableLabel: body.tableNumber,
+            actor: { id: 'public', name: 'Cardápio online', type: 'public' },
+            now,
+          });
+          tableSessionId = session.id;
+        }
+
         const result = await createDeliveryOrderWithSideEffects(
-          { ...body, idempotencyKey: idempotencyKey ?? undefined },
+          { ...body, ...(tableSessionId ? { tableSessionId } : {}), idempotencyKey: idempotencyKey ?? undefined },
           adminDb,
           { now: () => now },
         );

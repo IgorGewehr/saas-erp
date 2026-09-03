@@ -1230,6 +1230,9 @@ function EmpresaTab() {
   const [slug, setSlug] = useState('');
   const [slugStatus, setSlugStatus] = useState<'idle' | 'checking' | 'available' | 'taken' | 'invalid'>('idle');
   const slugTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Mesas do salão (settings.pedidos.tables) — QR code por mesa + módulo Mesas.
+  const [tables, setTables] = useState<{ id: string; label: string }[]>([]);
+  const [tableGenCount, setTableGenCount] = useState('');
   const [cnpj, setCnpj] = useState('');
   const [cpf, setCpf] = useState('');
   const [inscricaoEstadual, setInscricaoEstadual] = useState('');
@@ -1288,6 +1291,7 @@ function EmpresaTab() {
     setLoyaltyPointValueCents(String(lc?.pointValueInCentavos ?? 1));
     setLoyaltyMinRedeem(String(lc?.minPointsToRedeem ?? 100));
     setLoyaltyExpirationDays(lc?.expirationDays ? String(lc.expirationDays) : '');
+    setTables(business.settings?.aiAgent?.pedidos?.tables ?? []);
   }, [business]);
 
   // CEP auto-lookup
@@ -1399,6 +1403,7 @@ function EmpresaTab() {
             minPointsToRedeem: Number(loyaltyMinRedeem) || 100,
             expirationDays: loyaltyExpirationDays ? Number(loyaltyExpirationDays) : null,
           },
+          'settings.aiAgent.pedidos.tables': tables.map(tbl => ({ id: tbl.id, label: tbl.label.trim() })).filter(tbl => tbl.label),
         },
         { merge: true }
       );
@@ -1823,6 +1828,73 @@ function EmpresaTab() {
             <p className="text-xs text-gray-400 dark:text-gray-500">
               Apenas letras minúsculas, números e hífens. Salve a empresa para aplicar.
             </p>
+
+            {/* ── Mesas do salão ─────────────────────────────────────────── */}
+            <div className="pt-4 border-t border-gray-200 dark:border-gray-700/50 space-y-3">
+              <div>
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Mesas do salão</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Cada mesa gera um QR code (<span className="font-mono">/p/{slug || 'seu-slug'}?mesa=…</span>) e aparece no módulo Mesas. Imprima a folha de QR codes na tela Cardápio.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {tables.map((tbl, idx) => (
+                  <div key={tbl.id} className="flex items-center gap-1 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 pl-2 pr-1 py-1">
+                    <input
+                      value={tbl.label}
+                      onChange={e => setTables(prev => prev.map((x, i) => i === idx ? { ...x, label: e.target.value } : x))}
+                      disabled={!canEditSettings}
+                      className="w-24 bg-transparent text-sm text-gray-900 dark:text-white outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setTables(prev => prev.filter((_, i) => i !== idx))}
+                      disabled={!canEditSettings}
+                      className="p-1 rounded text-gray-400 hover:text-red-500"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTables(prev => [...prev, { id: `t${Date.now()}`, label: `Mesa ${prev.length + 1}` }])}
+                  disabled={!canEditSettings}
+                  className="px-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400 text-xs font-medium transition-colors disabled:opacity-40"
+                >
+                  + Adicionar mesa
+                </button>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="1"
+                    max="200"
+                    value={tableGenCount}
+                    onChange={e => setTableGenCount(e.target.value)}
+                    placeholder="qtd"
+                    disabled={!canEditSettings}
+                    className="w-16 px-2 py-1.5 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const n = parseInt(tableGenCount, 10);
+                      if (!Number.isFinite(n) || n < 1 || n > 200) return;
+                      setTables(Array.from({ length: n }, (_, i) => ({ id: `t${i + 1}`, label: `Mesa ${i + 1}` })));
+                      setTableGenCount('');
+                    }}
+                    disabled={!canEditSettings}
+                    className="px-2.5 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 text-xs font-medium transition-colors disabled:opacity-40"
+                  >
+                    Gerar 1…N
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </SectionCard>
 
