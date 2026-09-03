@@ -6,7 +6,9 @@
 >
 > Referência funcional: Gestão Raiz
 >
-> Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a-d (cardápio público, pedido manual, agente, FSM central) concluídas; próxima etapa M02.5e
+> Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a-d (cardápio público, pedido manual, agente, FSM central + bloqueio de edição pós-efeito) concluídas.
+>
+> **Pausado em 03/09/2026** a partir de M02.5e — foco ativo virou os dois clientes pagantes (odontologia = prioridade; restaurante = mínimo funcional). O restante da M02 (`variantId`, B2B, Mercado Pago tokenizado) é vitrine de produto/varejo, não serve a odontologia. Ver "Prioridade atual" em `docs/ROADMAP_PARIDADE_GESTAO_RAIZ.md`.
 
 ## 1. Resultado esperado
 
@@ -263,7 +265,7 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 **M02.5c concluída em código:** criação de pedido do agente de IA (`/api/agent/tools/orders`, action `create`) migrada para a MESMA função, canal `agent`. Agente perdeu a capacidade de aplicar desconto manual ou taxa de entrega fora de zona — decisão de segurança confirmada com o usuário, contra manipulação via conversa (prompt injection); frete agora sempre resolvido por zona, igual ao cardápio público. Checagem de preço obsoleto por item (M02.5a) passou a ser pulada para o canal `agent`, que nunca teve preço real de item para enviar. Detalhes em `docs/paridade/M02_AGENTE_PEDIDOS.md`. Com isso, os três canais de criação (público, manual, agente) estão unificados.
 
-**M02.5d concluída em código:** transições de status (aceitar/preparar/entregar/cancelar/excluir/recusar) centralizadas em `lib/services/delivery-order-transition-admin.ts`, usada pela nova rota autenticada `PATCH /api/orders/[id]/transition` (UI) e diretamente pelo agente — substituindo duas implementações independentes que haviam divergido de verdade: fidelidade não acumulava em pedidos entregues pelo agente (corrigido), "excluir" um pedido pela UI pulava a validação de FSM e não impedia excluir um pedido já entregue (corrigido), e o restauro de estoque no cancelamento pela UI usava uma resolução de produtos mais fraca que a do agente/Mercado Pago (unificado). Mercado Pago não foi tocado — já não mexia em `status` e já usava a função de restauro correta. Detalhes em `docs/paridade/M02_FSM_TRANSICOES.md`. `variantId`, bloqueio de edição pós-efeito e Mercado Pago com `operationId` ficam para M02.5e–f.
+**M02.5d concluída em código:** transições de status (aceitar/preparar/entregar/cancelar/excluir/recusar) centralizadas em `lib/services/delivery-order-transition-admin.ts`, usada pela nova rota autenticada `PATCH /api/orders/[id]/transition` (UI) e diretamente pelo agente — substituindo duas implementações independentes que haviam divergido de verdade: fidelidade não acumulava em pedidos entregues pelo agente (corrigido), "excluir" um pedido pela UI pulava a validação de FSM e não impedia excluir um pedido já entregue (corrigido), e o restauro de estoque no cancelamento pela UI usava uma resolução de produtos mais fraca que a do agente/Mercado Pago (unificado). Mercado Pago não foi tocado — já não mexia em `status` e já usava a função de restauro correta. Detalhes em `docs/paridade/M02_FSM_TRANSICOES.md`. `variantId` e Mercado Pago com `operationId` ficam para M02.5e–f (pausados — foco atual é odontologia, não restaurante/varejo); bloqueio de edição pós-efeito já foi concluído depois, ver `docs/paridade/M02_EDICAO_PEDIDO_POS_EFEITO.md`.
 
 **Saída:** delivery omnichannel consistente, sem divergência entre site, atendente e agente.
 

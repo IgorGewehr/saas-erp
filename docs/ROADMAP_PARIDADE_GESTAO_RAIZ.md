@@ -38,6 +38,42 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
 
 ---
 
+## Prioridade atual — foco odontologia (pivô confirmado em 03/09/2026)
+
+A paridade sequencial (M02.5e em diante, na ordem original) está **pausada**. O trabalho ativo é guiado pelos dois clientes pagantes reais — e entre eles, a odontologia é a prioridade; o restaurante de hotel (Cardápio/Pedidos/Mesa) recebeu o mínimo pra funcionar e não deve consumir mais esforço agora, salvo pedido explícito.
+
+Classificação de relevância de cada módulo do roadmap **para uma clínica odontológica** (não para o restaurante nem para o AEVO em geral):
+
+| Módulo | Relevância | Por quê |
+|---|---|---|
+| **M06 — Agenda, Serviços, Booking** | 🔴 Crítica | Módulo operacional central da clínica — é onde o dentista vive o dia inteiro. Nunca foi aberto formalmente no roadmap (segue `Planejado`), apesar de já ter recebido hardening real fora da sequência: efeitos server-side, NFSe manual, cobrança/parcelamento, notas do atendimento, lembretes de WhatsApp. |
+| **M04 — Fiscal e Contábil** | 🔴 Alta | Toda consulta concluída pode virar NFS-e — é dinheiro e obrigação legal todo dia. Já ~95% pronto **fora** deste roadmap (módulo pré-existente, ver `docs/roadmap/ROADMAP_FISCAL_BACKLOG.md`); falta reconciliar o status real aqui e fechar o backlog residual. |
+| **M03 — Financeiro e Conciliação** | 🔴 Alta | Cobrança/parcelamento de procedimento é fluxo de caixa diário. Acabamos de plugar Agenda→Financeiro nesta sessão, mas o módulo Financeiro clássico em si (parcelamento robusto, conciliação, DRE) nunca passou pelo mesmo hardening que M01/M02 receberam. |
+| **M07 — Conversas, Canais e Campanhas** | 🟠 Alta | Comunicação com paciente via WhatsApp (lembrete, confirmação, reengajamento) já é crítica hoje — é o canal real de relacionamento da clínica com quem agenda. |
+| **M10 — Automações, Notificações e Eventos** | 🟠 Alta | Sustenta a confiabilidade de tudo que M06/M07 prometem (lembrete que não é enviado em silêncio é exatamente o bug que corrigimos nesta sessão). Sem isso, os módulos acima ficam bonitos na tela e mudos na prática. |
+| **M13 — Segurança, Desempenho e Produção** | 🟠 Alta (gate) | Cliente pagante real com dado de paciente em produção. Não é feature nova, é pré-requisito de continuar operando com segurança — deve andar em paralelo, não no fim da fila. |
+| **M05 — Clientes, CRM e Jornada Comercial** | 🟡 Média-alta | Histórico do paciente e recall/reativação (aniversário, retorno de check-up) têm valor real pra uma clínica, mas dependem de M06/M07 estarem sólidos primeiro. |
+| **M09 — Equipe, Permissões e Colaboração** | 🟡 Média | Equipe pequena (dentista(s) + recepção) — o que já existe (roles, setores) provavelmente basta por enquanto. |
+| **M08 — Dashboard, Relatórios e Indicadores** | 🟡 Média | Útil pra gestão da clínica, não bloqueia operação do dia a dia. |
+| **M11 — Agente de IA, API pública e Integrações** | 🟢 Baixa-média | Agente já cobre agendamento básico via booking público; evoluir mais não é urgente agora. |
+| **M01 — Catálogo, Estoque, Fornecedores, Compras** | 🟢 Baixa | Clínica não tem estoque relevante além de materiais de consumo pontuais. Já 100% em código; falta só aceite operacional em homologação, que pode esperar. |
+| **M02 — restante (M02.5e+)** | ⚪ Pausado (restaurante) | `variantId` no carrinho, B2B condicional, Mercado Pago tokenizado, cardápio — é vitrine de produto/varejo, não é o que uma clínica cobra. O núcleo já entregue (M02.0–M02.5d) já é suficiente pro PDV eventual da clínica. |
+| **M12 — Onboarding, Planos e Billing SaaS** | ⚪ Baixa agora | É billing nosso (do AEVO), não da clínica — não afeta se a odontologia consegue operar. |
+| **M00 — Baseline técnico** | ⚫ Transversal | Nunca foi formalizado como módulo à parte; cada módulo (M01, M02) criou seu próprio baseline na prática. Não bloqueia nada específico da odontologia. |
+
+**Ordem de trabalho recomendada a partir de agora:**
+
+1. **M06 (Agenda)** — abrir formalmente: consolidar o que já foi feito ad-hoc num plano detalhado (mesmo formato de `M02_PLANO_IMPLEMENTACAO.md`), mapear o que ainda falta.
+2. **M04 (Fiscal)** — reconciliar o status real do módulo pré-existente com este roadmap; fechar lacunas do backlog fiscal restante.
+3. **M03 (Financeiro)** — hardening do módulo clássico (parcelamento, conciliação) no mesmo nível de rigor que M01/M02 receberam.
+4. **M07 + M10** — comunicação com paciente e confiabilidade da automação, em paralelo com M06 (são a mesma superfície na prática).
+5. **M05** — CRM/histórico do paciente, depois do operacional estar sólido.
+6. **M13** — auditoria de segurança/produção antes de qualquer expansão de escala real de clientes.
+
+**Deliberadamente sem esforço adicional agora**: M02.5e+ (restaurante), M01 aceite em homologação, M08, M09, M11, M12 — não são urgência da odontologia; retomam quando houver demanda real ou tempo sobrando.
+
+---
+
 ## Roadmap geral
 
 ### Fase 0 — Base e governança da evolução
@@ -56,21 +92,21 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
-- [ ] **M02 — Vendas, PDV, Pedidos e Cardápio**
-  - Status: `Em implementação — M02.0 a M02.4 concluídas em código; M02.5a-d (público, manual, agente, FSM central) concluídas; próxima etapa M02.5e`
+- [ ] **M02 — Vendas, PDV, Pedidos e Cardápio** ⚪ Restante pausado (foco odontologia)
+  - Status: `Em implementação — M02.0 a M02.4 e M02.5a-d concluídas em código (público, manual, agente, FSM central, bloqueio de edição pós-efeito). M02.5e em diante PAUSADO em 03/09/2026 — variantId/B2B/Mercado Pago tokenizado servem restaurante/varejo, não a odontologia`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.
   - Plano detalhado: `docs/paridade/M02_PLANO_IMPLEMENTACAO.md`.
 
-- [ ] **M03 — Financeiro e Conciliação**
-  - Status: `Planejado`
+- [ ] **M03 — Financeiro e Conciliação** 🔴 Prioridade atual (odontologia)
+  - Status: `Planejado` — cobrança/parcelamento por atendimento já existe via ligação pontual com a Agenda (`docs/agenda/AGENDA_COBRANCA.md`); o módulo Financeiro clássico em si ainda não recebeu hardening
   - Consolidar Financeiro atual e Financeiro V2 antes de adicionar novas capacidades.
   - Contas a pagar/receber, caixa e bancos, recorrência, parcelamento, DRE, fluxo projetado, orçamento e conciliação.
   - Integrar compras, vendas, comissões, estornos e documentos fiscais sem lançamentos duplicados.
 
-- [ ] **M04 — Fiscal e Contábil**
-  - Status: `Planejado`
+- [ ] **M04 — Fiscal e Contábil** 🔴 Prioridade atual (odontologia)
+  - Status: `Planejado` neste roadmap, mas **na prática já ~95% pronto** — módulo pré-existente e maduro, nunca formalmente reconciliado com esta lista. Backlog residual em `docs/roadmap/ROADMAP_FISCAL_BACKLOG.md`.
   - Revisar certificado, NFC-e, NF-e, NFS-e, eventos, cancelamento, carta de correção, contingência e sincronização de status.
   - Adaptar rotinas contábeis e exportações ao perfil tributário dos pequenos negócios.
   - MDF-e e rotinas estritamente industriais/logísticas permanecem fora do escopo inicial.
@@ -82,13 +118,14 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Cadastro unificado, deduplicação, histórico, scoring, origem, pipeline, atividades, segmentos e formulários.
   - Integrar cliente com vendas, agenda, conversas, financeiro e fiscal.
 
-- [ ] **M06 — Agenda, Serviços, Booking e Assinaturas**
-  - Status: `Planejado`
+- [ ] **M06 — Agenda, Serviços, Booking e Assinaturas** 🔴 Prioridade atual (odontologia)
+  - Status: `Em análise — hardening real já ocorreu fora da sequência formal (efeitos server-side, NFSe manual, cobrança/parcelamento, notas do atendimento, lembretes de WhatsApp); falta consolidar num plano detalhado como o do M02`
   - Agenda, conflitos, recursos, recorrência, comissões, lembretes, booking público e calendários.
   - Evoluir memberships, cobrança recorrente e proteção contra no-show quando o gateway estiver disponível.
+  - Detalhes do que já foi entregue: `docs/agenda/AGENDA_HARDENING_EFEITOS_SERVIDOR.md`, `docs/agenda/AGENDA_NFSE_MANUAL.md`, `docs/agenda/AGENDA_LEMBRETES_E_HISTORICO.md`, `docs/agenda/AGENDA_COBRANCA.md`.
 
-- [ ] **M07 — Conversas, Canais e Campanhas**
-  - Status: `Planejado`
+- [ ] **M07 — Conversas, Canais e Campanhas** 🟠 Prioridade atual (odontologia)
+  - Status: `Planejado` — lembretes/confirmação automáticos via WhatsApp já existem e foram hardenizados nesta sessão (`docs/agenda/AGENDA_LEMBRETES_E_HISTORICO.md`); o restante do módulo (campanhas, inbox, atribuição) segue não iniciado
   - WhatsApp, Facebook, Instagram, caixa de entrada, atribuição, setores, snippets e notas internas.
   - Campanhas, listas, aniversário, consentimento, templates, entregabilidade e auditoria.
   - Preservar deduplicação e isolamento de tenant nos webhooks.
@@ -106,8 +143,8 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Usuários, convites, funções, setores, presença e visibilidade por departamento.
   - Kanban, notas, chat de equipe, planilhas e cofre com autorização consistente.
 
-- [ ] **M10 — Automações, Notificações e Eventos de Domínio**
-  - Status: `Planejado`
+- [ ] **M10 — Automações, Notificações e Eventos de Domínio** 🟠 Prioridade atual (odontologia)
+  - Status: `Planejado` — mas já sustenta um bug real corrigido nesta sessão (sweep de lembretes silenciosamente inativo pra tenants sem Agente IA); é a base de confiabilidade de M06/M07
   - Alertas operacionais, lembretes, jobs agendados, eventos entre módulos e reprocessamento.
   - Transformar eventos hoje apenas auditáveis em integrações controladas quando houver caso de uso.
   - Garantir idempotência, tentativas, dead-letter e rastreabilidade.
@@ -126,8 +163,8 @@ Paridade não significa copiar telas, coleções ou regras industriais. Para cad
   - Onboarding por segmento e ativação apenas dos módulos relevantes ao negócio.
   - Planos, limites, cobrança do SaaS e experiência de upgrade/downgrade.
 
-- [ ] **M13 — Segurança, Desempenho e Preparação para Produção**
-  - Status: `Planejado`
+- [ ] **M13 — Segurança, Desempenho e Preparação para Produção** 🟠 Gate antes de escalar
+  - Status: `Planejado` — deve andar em paralelo com o foco odontologia, não no fim da fila, por já haver cliente pagante real com dado de paciente em produção
   - Auditoria final de regras/índices, autorização, paginação, custos do Firestore e dados sensíveis.
   - Testes de regressão, carga e concorrência dos fluxos críticos.
   - Observabilidade, backups, runbooks, deploy progressivo e plano de rollback.
@@ -485,12 +522,12 @@ O inventário, o diagnóstico e o plano completo estão em `docs/paridade/M02_PL
 - [x] **M02.2 — Coordenador de operação comercial** — checkpoints, replay, efeitos determinísticos, estoque M01 e compensação concluídos.
 - [x] **M02.3 — PDV e venda de serviços** — preço autoritativo, pagamentos por alocação, estoque, cliente, comissão e estados operacionais concluídos.
 - [x] **M02.4 — Cupons, gift cards e fidelidade** — ledgers determinísticos de cupom, gift card e fidelidade integrados ao coordenador comercial concluídos.
-- [ ] **M02.5 — Delivery, cardápio e agente** — M02.5a (cardápio público), M02.5b (pedido manual), M02.5c (agente) e M02.5d (FSM central de transições/efeitos) concluídas; M02.5e (`variantId`) é a próxima etapa.
-- [ ] **M02.6 — Venda B2B e condicional**.
-- [ ] **M02.7 — Cancelamento, devolução e reembolso**.
-- [ ] **M02.8 — Experiência e desempenho comercial**.
-- [ ] **M02.9 — Migração, regras e observabilidade**.
-- [ ] **M02.10 — Testes, homologação e aceite**.
+- [ ] **M02.5 — Delivery, cardápio e agente** — M02.5a (cardápio público), M02.5b (pedido manual), M02.5c (agente) e M02.5d (FSM central de transições/efeitos, incluindo bloqueio de edição pós-efeito) concluídas; M02.5e (`variantId`) e M02.5f (Mercado Pago com `operationId`) ⚪ **pausadas — restaurante, não é foco odontologia agora**.
+- [ ] **M02.6 — Venda B2B e condicional** ⚪ pausado — restaurante/varejo, não é foco odontologia agora.
+- [ ] **M02.7 — Cancelamento, devolução e reembolso** ⚪ pausado — idem.
+- [ ] **M02.8 — Experiência e desempenho comercial** ⚪ pausado — idem.
+- [ ] **M02.9 — Migração, regras e observabilidade** ⚪ pausado — idem.
+- [ ] **M02.10 — Testes, homologação e aceite** ⚪ pausado — idem.
 
 Decisões estruturais da M02:
 
@@ -529,3 +566,4 @@ Decisões estruturais da M02:
 | 01/09/2026 | Pedido manual: estoque insuficiente passa a bloquear a criação, igual PDV/cardápio (antes era só aviso) | Consistência entre os três canais é o objetivo central da M02; decisão confirmada com o usuário |
 | 01/09/2026 | Remover a capacidade do agente de IA de aplicar desconto manual ou taxa de entrega livre, em vez de só restringir | O contrato hoje permite qualquer valor sem revisão humana — um vetor real de manipulação via conversa (prompt injection); negociação real de desconto passa a exigir escalar para um humano (pedido manual, gerente+) |
 | 01/09/2026 | Centralizar transições de status de deliveryOrders num único serviço server-side, reaproveitado pela UI e pelo agente | Duas implementações independentes já haviam divergido de verdade (fidelidade ausente no agente, exclusão sem FSM na UI, restauro de estoque mais fraco na UI) — a duplicação deixou de ser só estilo de código e virou bug real |
+| 03/09/2026 | Pausar a sequência formal a partir de M02.5e e priorizar M06/M04/M03/M07/M10/M13 pela lente da odontologia; restaurante de hotel recebe só o mínimo funcional | Dois clientes pagantes reais definem a prioridade agora, não a ordem original do roadmap; a odontologia é o foco confirmado, o restaurante não deve consumir mais esforço sem pedido explícito. Classificação completa de relevância por módulo na seção "Prioridade atual" |
