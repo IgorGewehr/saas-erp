@@ -21,11 +21,18 @@
  * isso; passar só `professionalId` (singular) continua funcionando idêntico
  * a antes — retrocompat total com os callers existentes.
  *
+ * M06.3a: `blocks` (opcional) — bloqueios de agenda (férias, feriado,
+ * indisponibilidade) checados ANTES de tudo, inclusive antes do early-return
+ * de "sem profissional escolhido": um bloqueio do NEGÓCIO INTEIRO (sem
+ * `professionalId`) vale mesmo pra um agendamento "com qualquer profissional
+ * disponível". Omitir `blocks` = nenhum bloqueio considerado (retrocompat).
+ *
  * Caller passa `t` opcional para internacionalização das mensagens; sem
  * ele, usa strings em pt-BR (default do projeto).
  */
 
 import type { Appointment, User } from '@/lib/types';
+import type { ScheduleBlock } from '@/contracts/domain/scheduleBlock';
 import { getAppointmentProfessionalIds } from '@/lib/utils/appointment';
 
 export interface ConflictCheckInput {
@@ -40,6 +47,9 @@ export interface ConflictCheckInput {
   endTime: string;    // 'HH:mm'
   /** ID de appointment a ignorar (caso de edição — não conflita consigo mesmo). */
   excludeId?: string;
+  /** Bloqueios de agenda relevantes (negócio inteiro + dos profissionais do
+   *  conjunto). Quando ausente, nenhum bloqueio é considerado. */
+  blocks?: ScheduleBlock[];
   /** Translator opcional. Recebe key + fallback default. */
   t?: (key: string, fallback: string) => string;
 }
@@ -51,6 +61,18 @@ export interface ConflictCheckResult {
 
 const defaultT = (_key: string, fallback: string) => fallback;
 
+/** true quando o bloqueio cobre essa data/horário (dia inteiro se sem horário próprio). */
+function blockCoversSlot(
+  block: Pick<ScheduleBlock, 'startDate' | 'endDate' | 'startTime' | 'endTime'>,
+  date: string,
+  startTime: string,
+  endTime: string,
+): boolean {
+  if (date < block.startDate || date > block.endDate) return false;
+  if (!block.startTime || !block.endTime) return true; // dia inteiro bloqueado
+  return !(endTime <= block.startTime || startTime >= block.endTime);
+}
+
 export function checkAppointmentConflict(input: ConflictCheckInput): ConflictCheckResult {
   const { appointments, members, professionalId, date, startTime, endTime, excludeId } = input;
   const t = input.t ?? defaultT;
@@ -59,9 +81,26 @@ export function checkAppointmentConflict(input: ConflictCheckInput): ConflictChe
     ? [...new Set(input.professionalIds.filter(Boolean))]
     : (professionalId ? [professionalId] : []);
 
-  // Sem profissional escolhido: não há contra o que conflitar. Operador pode
-  // estar agendando "qualquer um disponível" — verificação cai pro fluxo
-  // operacional posterior.
+  // Check 0: Bloqueios de agenda — negócio inteiro (sem professionalId no
+  // bloqueio) vale pra QUALQUER agendamento, mesmo sem profissional
+  // escolhido; por profissional só se aplica quando esse profissional está
+  // no conjunto do agendamento sendo checado.
+  for (const block of input.blocks ?? []) {
+    if (block.status !== 'ativo') continue;
+    if (block.professionalId && !effectiveIds.includes(block.professionalId)) continue;
+    if (!blockCoversSlot(block, date, startTime, endTime)) continue;
+    return {
+      hasConflict: true,
+      message: t(
+        'agenda.scheduleBlocked',
+        `Horário bloqueado${block.reason ? `: ${block.reason}` : ''} (${block.startDate} a ${block.endDate})`,
+      ),
+    };
+  }
+
+  // Sem profissional escolhido: não há contra o que conflitar (fora de
+  // bloqueio do negócio, já checado acima). Operador pode estar agendando
+  // "qualquer um disponível" — verificação cai pro fluxo operacional posterior.
   if (effectiveIds.length === 0) return { hasConflict: false, message: '' };
 
   // Check 1: Working hours — cada profissional do conjunto precisa estar

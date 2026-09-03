@@ -34,6 +34,7 @@
 
 import type { Firestore, Transaction } from 'firebase-admin/firestore';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
+import type { ScheduleBlock } from '@/contracts/domain/scheduleBlock';
 import type { Appointment, User } from '@/lib/types';
 
 /** Erro tipado pra que o caller diferencie conflito vs falha generica. */
@@ -130,6 +131,77 @@ async function fetchDayAppointmentsForProfessionalsTx(
 }
 
 /**
+ * Filtra em memória o que a query não conseguiu (só `startDate <= date` foi
+ * pro servidor — Firestore não aceita range em dois campos diferentes na
+ * mesma query). Blocos são raros (dúzia/ano por negócio) — filtro em memória
+ * é apropriado, mesmo padrão pragmático das auditorias M02/M06.
+ */
+function filterActiveBlocksForDate(
+  docs: FirebaseFirestore.QueryDocumentSnapshot[],
+  date: string,
+): ScheduleBlock[] {
+  return docs
+    .map((d) => ({ id: d.id, ...d.data() } as ScheduleBlock))
+    .filter((b) => b.status === 'ativo' && b.endDate >= date);
+}
+
+/**
+ * Busca bloqueios ativos relevantes: do negócio inteiro (`professionalId`
+ * gravado explicitamente como `null` — Firestore só bate `==null` contra
+ * valor explícito, não campo ausente) + dos profissionais pedidos. 2 queries
+ * (`tx.get`, rastreadas — mesma razão de `fetchDayAppointmentsForProfessionalsTx`).
+ */
+async function fetchActiveBlocksTx(
+  tx: Transaction,
+  adminDb: Firestore,
+  businessId: string,
+  date: string,
+  professionalIds: string[],
+): Promise<ScheduleBlock[]> {
+  const businessWideQuery = adminDb.collection('scheduleBlocks')
+    .where('businessId', '==', businessId)
+    .where('professionalId', '==', null)
+    .where('startDate', '<=', date);
+  const queries = [tx.get(businessWideQuery)];
+  if (professionalIds.length > 0) {
+    queries.push(tx.get(
+      adminDb.collection('scheduleBlocks')
+        .where('businessId', '==', businessId)
+        .where('professionalId', 'in', professionalIds)
+        .where('startDate', '<=', date),
+    ));
+  }
+  const snapshots = await Promise.all(queries);
+  return filterActiveBlocksForDate(snapshots.flatMap((s) => s.docs), date);
+}
+
+/** Mesma busca de {@link fetchActiveBlocksTx}, sem transação — usada no caminho
+ *  "sem profissional escolhido" (write direto, fora de tx). */
+async function fetchActiveBlocks(
+  adminDb: Firestore,
+  businessId: string,
+  date: string,
+  professionalIds: string[],
+): Promise<ScheduleBlock[]> {
+  const businessWideQuery = adminDb.collection('scheduleBlocks')
+    .where('businessId', '==', businessId)
+    .where('professionalId', '==', null)
+    .where('startDate', '<=', date);
+  const queries = [businessWideQuery.get()];
+  if (professionalIds.length > 0) {
+    queries.push(
+      adminDb.collection('scheduleBlocks')
+        .where('businessId', '==', businessId)
+        .where('professionalId', 'in', professionalIds)
+        .where('startDate', '<=', date)
+        .get(),
+    );
+  }
+  const snapshots = await Promise.all(queries);
+  return filterActiveBlocksForDate(snapshots.flatMap((s) => s.docs), date);
+}
+
+/**
  * Cria appointment com re-check atomico via Admin SDK tx. Lanca
  * AppointmentConflictError em race lost.
  *
@@ -146,8 +218,13 @@ export async function createAppointmentSafeAdmin(
   const effectiveIds = resolveEffectiveIds(payload);
 
   // Sem NENHUM profissional escolhido (nem legado, nem professionalIds[]):
-  // pula tx, write direto. Caso raro.
+  // pula a tx de conflito, mas AINDA checa bloqueio do negócio inteiro (ex.:
+  // feriado) — isso vale mesmo sem profissional selecionado. Não-transacional
+  // (bloqueio é raro e admin-gerenciado, não alvo de corrida real).
   if (effectiveIds.length === 0) {
+    const blocks = await fetchActiveBlocks(adminDb, businessId, date, []);
+    const result = checkAppointmentConflict({ appointments: [], members: [], professionalId: '', date, startTime, endTime, blocks });
+    if (result.hasConflict) throw new AppointmentConflictError(result.message);
     await newDocRef.set(payload);
     return newDocRef.id;
   }
@@ -155,7 +232,10 @@ export async function createAppointmentSafeAdmin(
   const members = await loadProfessionals(adminDb, effectiveIds);
 
   await adminDb.runTransaction(async (tx) => {
-    const dayAppointments = await fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, date, effectiveIds);
+    const [dayAppointments, blocks] = await Promise.all([
+      fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, date, effectiveIds),
+      fetchActiveBlocksTx(tx, adminDb, businessId, date, effectiveIds),
+    ]);
     const appointments = excludeSameSession(dayAppointments, payload.sessionKey);
 
     const result = checkAppointmentConflict({
@@ -166,6 +246,7 @@ export async function createAppointmentSafeAdmin(
       date,
       startTime,
       endTime,
+      blocks,
     });
     if (result.hasConflict) {
       throw new AppointmentConflictError(result.message);
@@ -214,8 +295,12 @@ export async function updateAppointmentSafeAdmin(
     professionalIds: (patch.professionalIds ?? existing.professionalIds) as string[] | undefined,
   });
 
-  // Sem NENHUM profissional (nem legado, nem array): pula re-check.
+  // Sem NENHUM profissional (nem legado, nem array): pula re-check de
+  // overlap, mas ainda checa bloqueio do negócio inteiro pra essa data.
   if (finalEffectiveIds.length === 0) {
+    const blocks = await fetchActiveBlocks(adminDb, businessId, finalDate, []);
+    const result = checkAppointmentConflict({ appointments: [], members: [], professionalId: '', date: finalDate, startTime: finalStartTime, endTime: finalEndTime, excludeId: appointmentId, blocks });
+    if (result.hasConflict) throw new AppointmentConflictError(result.message);
     await targetRef.update(patch);
     return;
   }
@@ -223,7 +308,10 @@ export async function updateAppointmentSafeAdmin(
   const members = await loadProfessionals(adminDb, finalEffectiveIds);
 
   await adminDb.runTransaction(async (tx) => {
-    const dayAppointments = await fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, finalDate, finalEffectiveIds);
+    const [dayAppointments, blocks] = await Promise.all([
+      fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, finalDate, finalEffectiveIds),
+      fetchActiveBlocksTx(tx, adminDb, businessId, finalDate, finalEffectiveIds),
+    ]);
     const appointments = excludeSameSession(dayAppointments, finalSessionKey);
 
     const result = checkAppointmentConflict({
@@ -235,6 +323,7 @@ export async function updateAppointmentSafeAdmin(
       startTime: finalStartTime,
       endTime: finalEndTime,
       excludeId: appointmentId,
+      blocks,
     });
     if (result.hasConflict) {
       throw new AppointmentConflictError(result.message);

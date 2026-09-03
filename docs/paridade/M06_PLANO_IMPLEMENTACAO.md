@@ -8,9 +8,9 @@
 >
 > Lente desta rodada: **odontologia** — cliente pagante real, módulo operacional central.
 >
-> Estado: M06.0a (auditoria read-only) e M06.1+M06.2 (núcleo de conflito/transição
-> reconciliável) concluídos em código em 03/09/2026. Próxima etapa: M06.0b (congelar
-> comportamento por canal + fixtures dedicadas) ou M06.3 (bloqueios de agenda/no-show).
+> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável) e
+> M06.3a (bloqueios de agenda) concluídos em código em 03/09/2026. Próxima etapa: M06.0b
+> (congelar comportamento por canal), M06.3 restante (no-show, buffer) ou M06.4 (anamnese).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -313,12 +313,28 @@ agora é uma transição declarada (reversão), não um bug silencioso. `AgendaM
 
 ### M06.3 — Disponibilidade, bloqueios e no-show
 
-- [ ] Bloqueios de agenda (férias, feriado, almoço, sala/equipamento indisponível) como entidade.
+- [x] Bloqueios de agenda (férias, feriado, almoço) como entidade — negócio inteiro ou
+      profissional específico, dia inteiro ou janela de horário. Reaproveita
+      `checkAppointmentConflict` (parâmetro `blocks?`) em vez de um 4º algoritmo — cobre
+      Agenda, Conversas→agendar e API v1 automaticamente via `appointmentTxGuard*.ts`.
 - [ ] Intervalo/buffer configurável entre atendimentos.
-- [ ] Horário de trabalho respeitado em **todos** os canais (hoje o agente não revalida ao gravar).
+- [ ] Horário de trabalho respeitado em **todos** os canais — **achado nesta rodada**: o
+      agente (`checkAvailability`) tem um cast morto (`WorkSchedule[]`) que nunca bate contra
+      o schema real, então nunca respeitou o `workingHours` individual de um profissional,
+      só o horário do negócio ou um fallback fixo. Não corrigido — mesmo destino de M06.7.
 - [ ] Política de no-show: marcar, medir e opcionalmente gerar cobrança — hoje só existe o status.
 
-**Saída:** a agenda reflete a disponibilidade real da clínica, não só a ausência de conflito.
+**M06.3a concluída em código:** bloqueios de agenda (`lib/contracts/domain/scheduleBlock.ts`,
+`lib/services/scheduleBlock-admin.ts`, `POST /api/schedule-blocks`,
+`PATCH /api/schedule-blocks/[id]/cancel`, `ScheduleBlocksDialog.tsx`). Deliberadamente **não**
+estendido ao agente de IA/booking público (`app/api/agent/tools/agenda/route.ts`) — mesmo
+destino de unificação já planejado em M06.7, evita misturar duas fatias de escopo diferente.
+Criar um bloqueio não cancela agendamentos existentes automaticamente — retorna a lista como
+aviso. Detalhes em `docs/agenda/AGENDA_BLOQUEIOS.md`. Verificado por suíte automatizada (29
+testes novos) — **não testado manualmente em navegador** nesta rodada.
+
+**Saída:** a agenda reflete a disponibilidade real da clínica pros canais humanos
+(recepção/dentista, Conversas); booking público/agente ainda não, nomeado explicitamente.
 
 ### M06.4 — Ficha do paciente e anamnese
 

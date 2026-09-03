@@ -201,6 +201,50 @@ describe('createAppointmentSafe', () => {
   });
 });
 
+describe('createAppointmentSafe — bloqueios de agenda (M06.3a)', () => {
+  const blockDoc = (over: Record<string, unknown> = {}) => ({
+    id: 'block-1',
+    data: () => ({
+      businessId, startDate: '2026-05-01', endDate: '2026-05-31', status: 'ativo',
+      createdBy: 'admin', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      ...over,
+    }),
+  });
+
+  it('bloqueio do profissional rejeita a criação citando o bloqueio', async () => {
+    docsResolver.mockReturnValue([blockDoc({ professionalId: 'p1', reason: 'Férias' })]);
+    await expect(
+      createAppointmentSafe(
+        fakeDb,
+        { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00' },
+        [prof],
+      ),
+    ).rejects.toThrow(/bloqueado/);
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('bloqueio do negócio inteiro (sem professionalId) rejeita mesmo sem profissional escolhido', async () => {
+    docsResolver.mockReturnValue([blockDoc({ reason: 'Feriado' })]);
+    await expect(
+      createAppointmentSafe(
+        fakeDb,
+        { businessId, date: '2026-05-22', startTime: '09:00', endTime: '10:00' },
+        [prof],
+      ),
+    ).rejects.toThrow(/bloqueado/);
+  });
+
+  it('bloqueio de OUTRO profissional não afeta a criação', async () => {
+    docsResolver.mockReturnValue([blockDoc({ professionalId: 'p2' })]);
+    const id = await createAppointmentSafe(
+      fakeDb,
+      { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00' },
+      [prof],
+    );
+    expect(typeof id).toBe('string');
+  });
+});
+
 describe('createAppointmentSafe — turmas (capacity)', () => {
   // sessionKey canonico de uma turma com prof fixo p1.
   const sk = 's1_2026-05-22_09:00_p1';

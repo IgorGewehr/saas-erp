@@ -49,6 +49,7 @@ import {
   LayoutGrid,
   Columns3,
   CalendarDays,
+  CalendarOff,
   Search,
   ChevronDown,
   Settings2,
@@ -1577,6 +1578,7 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, onDeleteSeries
 // ./shared. Re-import aqui mantém a API interna do AgendaModule intacta.
 import { AppointmentFormDialog } from './AppointmentFormDialog';
 import type { AppointmentFormData } from './AppointmentFormDialog';
+import ScheduleBlocksDialog from './ScheduleBlocksDialog';
 import EmitirNotaDialog from '@/app/components/features/fiscal/EmitirNotaDialog';
 import { buildAppointmentNfseInput } from '@/lib/services/fiscal/appointmentNfse';
 import { buildAppointmentBillingPrefill } from '@/lib/services/agenda/appointmentBilling';
@@ -1997,6 +1999,10 @@ export default function AgendaModule() {
   const queryClient = useQueryClient();
 
   const isAdmin = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['admin'];
+  // M06.3a: bloqueio de agenda é decisão sobre a disponibilidade de outra
+  // pessoa — mesmo nível de permissão de NFSe/NFCe (manager+), não operador.
+  const canManageScheduleBlocks = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['manager'];
+  const [showScheduleBlocksDialog, setShowScheduleBlocksDialog] = useState(false);
 
   const canEditAppointment = useCallback((appt: Appointment) => {
     if (isAdmin) return true;
@@ -3642,6 +3648,22 @@ export default function AgendaModule() {
             <span className="hidden sm:inline">{t('agenda.services', 'Serviços')}</span>
           </button>
 
+          {/* Schedule blocks (M06.3a) — férias, feriado, indisponibilidade */}
+          {canManageScheduleBlocks && (
+            <button
+              onClick={() => setShowScheduleBlocksDialog(true)}
+              className={cn(
+                'flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium',
+                'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] border border-gray-200 dark:border-gray-700',
+                'transition-all duration-200',
+              )}
+              title={t('agenda.scheduleBlocksTitle', 'Bloquear férias, feriado ou indisponibilidade')}
+            >
+              <CalendarOff className="w-4 h-4" />
+              <span className="hidden sm:inline">{t('agenda.scheduleBlocks', 'Bloqueios')}</span>
+            </button>
+          )}
+
           {/* New appointment button */}
           <button
             onClick={() => handleNewAppointment()}
@@ -3788,6 +3810,16 @@ export default function AgendaModule() {
           ? buildAppointmentNfseInput(nfseAppointment, services.find(s => s.id === nfseAppointment.serviceId), business)
           : undefined}
       />
+
+      {/* Bloqueios de agenda (M06.3a) — férias, feriado, indisponibilidade. */}
+      {canManageScheduleBlocks && business && (
+        <ScheduleBlocksDialog
+          open={showScheduleBlocksDialog}
+          onClose={() => setShowScheduleBlocksDialog(false)}
+          businessId={business.id}
+          members={members}
+        />
+      )}
 
       <AppointmentFormDialog
         open={showFormDialog}

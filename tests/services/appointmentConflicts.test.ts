@@ -252,6 +252,122 @@ describe('checkAppointmentConflict', () => {
     expect(r.hasConflict).toBe(true);
   });
 
+  it('M06.3a: bloqueio do profissional recusa agendamento dentro do intervalo', () => {
+    const r = checkAppointmentConflict({
+      appointments: [],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-09-15',
+      startTime: '09:00',
+      endTime: '10:00',
+      blocks: [{
+        id: 'b1', businessId: 'biz', professionalId: 'p1',
+        startDate: '2026-09-10', endDate: '2026-09-20', status: 'ativo',
+        createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      }],
+    });
+    expect(r.hasConflict).toBe(true);
+    expect(r.message).toContain('bloqueado');
+  });
+
+  it('M06.3a: bloqueio do negócio inteiro (sem professionalId) recusa mesmo sem profissional escolhido', () => {
+    const r = checkAppointmentConflict({
+      appointments: [],
+      members: [],
+      professionalId: '',
+      date: '2026-09-07',
+      startTime: '09:00',
+      endTime: '10:00',
+      blocks: [{
+        id: 'b2', businessId: 'biz',
+        startDate: '2026-09-07', endDate: '2026-09-07', reason: 'Feriado', status: 'ativo',
+        createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      }],
+    });
+    expect(r.hasConflict).toBe(true);
+    expect(r.message).toContain('Feriado');
+  });
+
+  it('M06.3a: bloqueio do negócio inteiro NÃO afeta profissional específico fora do escopo do teste (mesmo assim recusa — é o negócio inteiro)', () => {
+    const r = checkAppointmentConflict({
+      appointments: [],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-09-07',
+      startTime: '09:00',
+      endTime: '10:00',
+      blocks: [{
+        id: 'b2', businessId: 'biz',
+        startDate: '2026-09-07', endDate: '2026-09-07', status: 'ativo',
+        createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      }],
+    });
+    expect(r.hasConflict).toBe(true);
+  });
+
+  it('M06.3a: bloqueio de OUTRO profissional não afeta o profissional pedido', () => {
+    const r = checkAppointmentConflict({
+      appointments: [],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-09-15',
+      startTime: '09:00',
+      endTime: '10:00',
+      blocks: [{
+        id: 'b3', businessId: 'biz', professionalId: 'p2',
+        startDate: '2026-09-10', endDate: '2026-09-20', status: 'ativo',
+        createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      }],
+    });
+    expect(r.hasConflict).toBe(false);
+  });
+
+  it('M06.3a: bloqueio com janela de horário só recusa overlap real, não o dia inteiro', () => {
+    const blocks = [{
+      id: 'b4', businessId: 'biz', professionalId: 'p1',
+      startDate: '2026-09-15', endDate: '2026-09-15', startTime: '12:00', endTime: '13:00',
+      reason: 'Almoço estendido', status: 'ativo' as const,
+      createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+    }];
+    const overlapping = checkAppointmentConflict({
+      appointments: [], members: [mem({})], professionalId: 'p1',
+      date: '2026-09-15', startTime: '12:30', endTime: '13:30', blocks,
+    });
+    expect(overlapping.hasConflict).toBe(true);
+
+    const notOverlapping = checkAppointmentConflict({
+      appointments: [], members: [mem({})], professionalId: 'p1',
+      date: '2026-09-15', startTime: '09:00', endTime: '10:00', blocks,
+    });
+    expect(notOverlapping.hasConflict).toBe(false);
+  });
+
+  it('M06.3a: bloqueio cancelado é ignorado', () => {
+    const r = checkAppointmentConflict({
+      appointments: [], members: [mem({})], professionalId: 'p1',
+      date: '2026-09-15', startTime: '09:00', endTime: '10:00',
+      blocks: [{
+        id: 'b5', businessId: 'biz', professionalId: 'p1',
+        startDate: '2026-09-10', endDate: '2026-09-20', status: 'cancelado',
+        createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      }],
+    });
+    expect(r.hasConflict).toBe(false);
+  });
+
+  it('M06.3a: bloqueio fora do intervalo de data não afeta', () => {
+    const r = checkAppointmentConflict({
+      appointments: [], members: [mem({})], professionalId: 'p1',
+      date: '2026-09-25', startTime: '09:00', endTime: '10:00',
+      blocks: [{
+        id: 'b6', businessId: 'biz', professionalId: 'p1',
+        startDate: '2026-09-10', endDate: '2026-09-20', status: 'ativo',
+        createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      }],
+    });
+    expect(r.hasConflict).toBe(false);
+  });
+
   it('translator customizado é usado quando passado', () => {
     const r = checkAppointmentConflict({
       appointments: [apt({})],

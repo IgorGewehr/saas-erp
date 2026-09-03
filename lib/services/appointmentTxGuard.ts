@@ -51,6 +51,7 @@ import {
 } from 'firebase/firestore';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 import { countSeatsTaken } from '@/lib/services/groupSession';
+import type { ScheduleBlock } from '@/contracts/domain/scheduleBlock';
 import type { Appointment, User } from '@/lib/types';
 
 /** Erro tipado pra que o caller diferencie conflito vs falha generica. */
@@ -154,6 +155,48 @@ async function fetchDayAppointmentsForProfessionalsClient(
   return out;
 }
 
+/** Filtra em memória o que a query não pôde (só `startDate<=date` foi pro
+ *  servidor) — mesmo padrão pragmático do lado Admin. */
+function filterActiveBlocksForDate(
+  docs: Array<{ id: string; data: () => unknown }>,
+  date: string,
+): ScheduleBlock[] {
+  return docs
+    .map((d) => ({ id: d.id, ...(d.data() as object) } as ScheduleBlock))
+    .filter((b) => b.status === 'ativo' && b.endDate >= date);
+}
+
+/**
+ * Busca bloqueios ativos relevantes (negócio inteiro + profissionais
+ * pedidos) — mesma lógica de `fetchActiveBlocksTx` em
+ * appointmentTxGuardAdmin.ts, com `getDocs` client SDK.
+ */
+async function fetchActiveBlocksClient(
+  db: Firestore,
+  businessId: string,
+  date: string,
+  professionalIds: string[],
+): Promise<ScheduleBlock[]> {
+  const queries = [
+    getDocs(query(
+      collection(db, 'scheduleBlocks'),
+      where('businessId', '==', businessId),
+      where('professionalId', '==', null),
+      where('startDate', '<=', date),
+    )),
+  ];
+  if (professionalIds.length > 0) {
+    queries.push(getDocs(query(
+      collection(db, 'scheduleBlocks'),
+      where('businessId', '==', businessId),
+      where('professionalId', 'in', professionalIds),
+      where('startDate', '<=', date),
+    )));
+  }
+  const snapshots = await Promise.all(queries);
+  return filterActiveBlocksForDate(snapshots.flatMap((s) => s.docs), date);
+}
+
 /**
  * Remove da lista os appointments da MESMA turma (mesmo sessionKey) — colegas
  * não conflitam. Sem sessionKey: lista intacta (exclusivo).
@@ -223,6 +266,15 @@ export async function createAppointmentSafe(
 
   // Sem NENHUM profissional escolhido (slot "da casa" / turma aberta 'any').
   if (effectiveIds.length === 0) {
+    // Bloqueio do negócio inteiro (feriado/fechamento) vale mesmo sem
+    // profissional escolhido. Não-transacional — bloqueio é raro/admin-
+    // gerenciado, não alvo de corrida real (mesmo racional do lado Admin).
+    const businessBlocks = await fetchActiveBlocksClient(db, businessId, date, []);
+    const blockCheck = checkAppointmentConflict({
+      appointments: [], members, professionalId: '', date, startTime, endTime, blocks: businessBlocks, t,
+    });
+    if (blockCheck.hasConflict) throw new AppointmentConflictError(blockCheck.message);
+
     // Turma aberta: ainda precisa de contagem de vagas atômica. Serializa via
     // session-lock (chaveado por sessionKey, já que não há prof). Sem isso, 2
     // operadores estouravam a capacidade da última vaga.
@@ -279,8 +331,12 @@ export async function createAppointmentSafe(
     // 2. getDocs fora da tx mas dentro do callback — re-roda na reattempt
     //    com dado fresco. Necessario pq tx Firestore client n aceita
     //    query reads (so doc reads). Generalizado (M06.1) pra enxergar
-    //    QUALQUER profissional do conjunto, não só o primário.
-    const dayAppts = await fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds);
+    //    QUALQUER profissional do conjunto, não só o primário. M06.3a:
+    //    busca bloqueios de agenda junto.
+    const [dayAppts, blocks] = await Promise.all([
+      fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds),
+      fetchActiveBlocksClient(db, businessId, date, effectiveIds),
+    ]);
     const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
     // 3. Check overlap puro (colegas da mesma turma já foram excluídos acima).
@@ -292,6 +348,7 @@ export async function createAppointmentSafe(
       date,
       startTime,
       endTime,
+      blocks,
       t,
     });
     if (result.hasConflict) {
@@ -341,8 +398,15 @@ export async function updateAppointmentSafe(
   const targetRef = doc(db, 'appointments', appointmentId);
   const effectiveIds = resolveEffectiveIds(payload);
 
-  // Sem NENHUM profissional novo: pula tx (raro em edits, mas defensivo).
+  // Sem NENHUM profissional novo: pula tx (raro em edits, mas defensivo),
+  // mas ainda checa bloqueio do negócio inteiro pra essa data.
   if (effectiveIds.length === 0) {
+    const businessBlocks = await fetchActiveBlocksClient(db, businessId, date, []);
+    const blockCheck = checkAppointmentConflict({
+      appointments: [], members, professionalId: '', date, startTime, endTime, excludeId: appointmentId, blocks: businessBlocks, t,
+    });
+    if (blockCheck.hasConflict) throw new AppointmentConflictError(blockCheck.message);
+
     // Turma aberta ('any'): valida vagas no destino via session-lock, excluindo
     // o próprio doc. Espelha o caminho de create pra mover de turma com
     // segurança de capacidade.
@@ -397,8 +461,12 @@ export async function updateAppointmentSafe(
       origVersion = (origSnap.data()?.version as number | undefined) ?? 0;
     }
 
-    // 2. getDocs no destino (conjunto de profissionais + date novos).
-    const dayAppts = await fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds);
+    // 2. getDocs no destino (conjunto de profissionais + date novos). M06.3a:
+    //    busca bloqueios de agenda junto.
+    const [dayAppts, blocks] = await Promise.all([
+      fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds),
+      fetchActiveBlocksClient(db, businessId, date, effectiveIds),
+    ]);
     const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
     // 3. Check overlap, ignorando o proprio doc.
@@ -411,6 +479,7 @@ export async function updateAppointmentSafe(
       startTime,
       endTime,
       excludeId: appointmentId,
+      blocks,
       t,
     });
     if (result.hasConflict) {

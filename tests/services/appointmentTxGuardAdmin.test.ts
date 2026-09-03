@@ -32,6 +32,10 @@ function makeFakeAdminDb(initial: Record<string, FakeDoc[]> = {}) {
       return Array.isArray(actual) && Array.isArray(expected) && actual.some(v => expected.includes(v));
     }
     if (op === 'array-contains') return Array.isArray(actual) && actual.includes(expected);
+    if (op === '<=') return (actual as string) <= (expected as string);
+    if (op === '<') return (actual as string) < (expected as string);
+    if (op === '>=') return (actual as string) >= (expected as string);
+    if (op === '>') return (actual as string) > (expected as string);
     return actual === expected; // '=='
   }
 
@@ -320,6 +324,78 @@ describe('createAppointmentSafeAdmin', () => {
         endTime: '10:30',
       }),
     ).rejects.toBeInstanceOf(AppointmentConflictError);
+  });
+});
+
+describe('createAppointmentSafeAdmin — bloqueios de agenda (M06.3a)', () => {
+  let env: ReturnType<typeof makeFakeAdminDb>;
+
+  beforeEach(() => {
+    env = makeFakeAdminDb({
+      users: [{ id: 'p1', data: { id: 'p1', name: 'Joao', businessId, role: 'operator', isActive: true } }],
+      appointments: [],
+      scheduleBlocks: [],
+    });
+  });
+
+  it('bloqueio do profissional rejeita criação com AppointmentConflictError', async () => {
+    env.collections.scheduleBlocks.docs.push({
+      id: 'block-1',
+      data: {
+        businessId, professionalId: 'p1', startDate: '2026-09-10', endDate: '2026-09-20', status: 'ativo',
+        createdBy: 'admin', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      },
+    });
+    await expect(
+      createAppointmentSafeAdmin(env.fake as never, {
+        businessId, professionalId: 'p1', date: '2026-09-15', startTime: '09:00', endTime: '10:00',
+      }),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
+    expect(env.collections.appointments.docs.length).toBe(0);
+  });
+
+  it('bloqueio do negócio inteiro (professionalId null) rejeita mesmo SEM profissional escolhido', async () => {
+    env.collections.scheduleBlocks.docs.push({
+      id: 'block-2',
+      data: {
+        businessId, professionalId: null, startDate: '2026-09-07', endDate: '2026-09-07', status: 'ativo', reason: 'Feriado',
+        createdBy: 'admin', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      },
+    });
+    await expect(
+      createAppointmentSafeAdmin(env.fake as never, {
+        businessId, date: '2026-09-07', startTime: '09:00', endTime: '10:00',
+      }),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
+    expect(env.collections.appointments.docs.length).toBe(0);
+  });
+
+  it('bloqueio cancelado é ignorado — criação passa normalmente', async () => {
+    env.collections.scheduleBlocks.docs.push({
+      id: 'block-3',
+      data: {
+        businessId, professionalId: 'p1', startDate: '2026-09-10', endDate: '2026-09-20', status: 'cancelado',
+        createdBy: 'admin', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      },
+    });
+    const id = await createAppointmentSafeAdmin(env.fake as never, {
+      businessId, professionalId: 'p1', date: '2026-09-15', startTime: '09:00', endTime: '10:00',
+    });
+    expect(typeof id).toBe('string');
+  });
+
+  it('bloqueio de OUTRO profissional não afeta a criação', async () => {
+    env.collections.scheduleBlocks.docs.push({
+      id: 'block-4',
+      data: {
+        businessId, professionalId: 'p2', startDate: '2026-09-10', endDate: '2026-09-20', status: 'ativo',
+        createdBy: 'admin', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      },
+    });
+    const id = await createAppointmentSafeAdmin(env.fake as never, {
+      businessId, professionalId: 'p1', date: '2026-09-15', startTime: '09:00', endTime: '10:00',
+    });
+    expect(typeof id).toBe('string');
   });
 });
 

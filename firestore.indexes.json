@@ -1,6 +1,15 @@
 {
   "indexes": [
     {
+      "collectionGroup": "scheduleBlocks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "professionalId", "order": "ASCENDING" },
+        { "fieldPath": "startDate", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "coupons",
       "queryScope": "COLLECTION",
       "fields": [

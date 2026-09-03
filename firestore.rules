@@ -348,6 +348,34 @@ service cloud.firestore {
     }
 
     // ============================================
+    // SCHEDULE BLOCKS COLLECTION (M06.3a)
+    // ============================================
+    // Bloqueio de agenda (férias, feriado, indisponibilidade). Criação/
+    // cancelamento na prática passam por /api/schedule-blocks* (Admin SDK,
+    // bypassa estas regras) — ficam aqui como camada de autorização real
+    // caso algum caller futuro escreva direto pelo client SDK.
+    match /scheduleBlocks/{blockId} {
+      allow read: if isAuthenticated()
+                  && isOwnBusiness()
+                  && isOperator();
+
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && request.resource.data.status in ['ativo', 'cancelado']
+                    && isNonEmptyString(request.resource.data.startDate)
+                    && isNonEmptyString(request.resource.data.endDate);
+
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness();
+
+      // Tier 2 status-driven — cancelar é update de status, não delete.
+      allow delete: if false;
+    }
+
+    // ============================================
     // APPOINTMENT DAY LOCKS COLLECTION
     // ============================================
     // Doc-lock por professionalId+date usado pelo appointmentTxGuard pra
