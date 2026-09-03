@@ -60,6 +60,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import type { SidebarPrefs, SidebarSectionPref, UseCase, UserRole } from '@/lib/types';
+import { computeSidebarPrefsSyncKey } from '@/lib/services/settings/sidebarPrefsSync';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -440,9 +441,17 @@ export default function SidebarEditorTab() {
     return () => window.removeEventListener('mousemove', onMove);
   }, [activeId]);
 
-  // Sync with server prefs (multi-device) and recompute when mode/role/enterprise changes
+  // Sync with server prefs (multi-device) e recompute quando modo/role/enterprise
+  // mudam. Guard por CONTEÚDO (computeSidebarPrefsSyncKey), não só referência
+  // — ver doc do helper pro bug que isso corrige (heartbeat de presença
+  // sobrescrevendo edições locais não salvas).
+  const lastSyncedKeyRef = useRef<string | null>(null);
   useEffect(() => {
     const savedPrefs = user?.sidebarPrefs;
+    const key = computeSidebarPrefsSyncKey(user?.uid, savedPrefs, isEnterprise, currentUseCase, userRoleValue);
+    if (key === lastSyncedKeyRef.current) return;
+    lastSyncedKeyRef.current = key;
+
     if (savedPrefs?.sections?.length) {
       setSections(mergeWithAccessible(
         savedPrefs.sections,
