@@ -1038,6 +1038,15 @@ export interface Appointment {
    *  sem chave ainda. */
   fiscalAccessKey?: string | null;
   fiscalStatus?: string;
+  // ── Vínculo financeiro (cobrança/parcelamento) — writeback do botão "Cobrar" ──
+  /** FK pra transação única (à vista) criada a partir deste atendimento.
+   *  Presença = cobrança já lançada ⇒ idempotência visual (mostra "Cobrança
+   *  lançada" em vez do botão "Cobrar"). Mutuamente exclusivo na prática com
+   *  billingInstallmentGroupId (um atendimento é cobrado à vista OU parcelado). */
+  billingTransactionId?: string;
+  /** FK pro installmentGroupId compartilhado pelas N transações criadas
+   *  quando a cobrança deste atendimento foi parcelada. */
+  billingInstallmentGroupId?: string;
 }
 
 /**

@@ -104,6 +104,7 @@ import { db, storage } from '@/lib/config/firebase';
 import { logAudit } from '@/lib/services/audit';
 import ConciliacaoTab from './ConciliacaoTab';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import { useAppContext } from '@/app/app/AppContext';
 import { useQuery as useTanstackQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
@@ -267,6 +268,7 @@ function FinancialModuleBody() {
   const { t } = useTranslation();
   const { isDark } = useTheme();
   const { business, user, sectors } = useAuth();
+  const { activePage } = useAppContext();
   const queryClient = useQueryClient();
   const [showSpreadsheetView, setShowSpreadsheetView] = useState(false);
 
@@ -396,6 +398,11 @@ function FinancialModuleBody() {
   const [formProjectId, setFormProjectId] = useState('');
   const [formInstallments, setFormInstallments] = useState(1);
   const [formInstallmentInterval, setFormInstallmentInterval] = useState<'monthly' | 'weekly'>('monthly');
+  // Vínculo com o atendimento de origem quando o form foi aberto via botão
+  // "Cobrar" da Agenda (sessionStorage 'pendingTransactionPrefill', mesmo
+  // mecanismo de pendingOrderPrefill de Conversas → Pedidos). Null = criação
+  // normal, sem writeback pro Appointment.
+  const [prefillAppointmentId, setPrefillAppointmentId] = useState<string | null>(null);
   const [formRecurrence, setFormRecurrence] = useState(false);
   const [formRecurrenceFrequency, setFormRecurrenceFrequency] = useState<'weekly' | 'biweekly' | 'biweekly_fixed' | 'monthly' | 'quarterly' | 'semiannual' | 'yearly'>('monthly');
   const [formRecurrenceEndDate, setFormRecurrenceEndDate] = useState('');
@@ -1015,8 +1022,37 @@ function FinancialModuleBody() {
     setFormAttachments([]);
     setFormFilesToUpload([]);
     setFormAttachmentsToDelete([]);
+    setPrefillAppointmentId(null);
     setShowForm(true);
   }, []);
+
+  // Detecta prefill vindo do botão "Cobrar" da Agenda (mesmo mecanismo de
+  // pendingOrderPrefill de Conversas → Pedidos, adaptado). Diferente do
+  // OrdersModule (que roda isso só no mount), o app mantém módulos montados
+  // depois da primeira visita à aba (ver `mountedTabs` em app/app/page.tsx) —
+  // um efeito só-no-mount jamais dispararia de novo depois da 1ª vez que o
+  // usuário abrisse o Financeiro. Por isso o gate é em `activePage`, não em
+  // `[]`: dispara toda vez que a aba VIRA 'Financeiro', mesmo já montada.
+  // openNewForm() já reseta tudo pro estado em branco; os set* seguintes
+  // sobrescrevem só os campos vindos do atendimento.
+  useEffect(() => {
+    if (activePage !== 'Financeiro') return;
+    if (typeof window === 'undefined') return;
+    const raw = sessionStorage.getItem('pendingTransactionPrefill');
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      openNewForm();
+      setFormDescription(data.description || '');
+      setFormAmount(maskMoney(data.amount || 0));
+      setFormClientName(data.clientName || '');
+      setFormDueDate(data.dueDate || new Date().toISOString().slice(0, 10));
+      setPrefillAppointmentId(data.appointmentId || null);
+    } catch {
+      /* ignore */
+    }
+    sessionStorage.removeItem('pendingTransactionPrefill');
+  }, [activePage, openNewForm]);
 
   const openEditForm = useCallback(async (transaction: Transaction) => {
     // Always fetch fresh data from Firestore before opening the edit form.
@@ -1223,6 +1259,7 @@ function FinancialModuleBody() {
             dueDate: due.toISOString().slice(0, 10),
             paymentDate: null,       // parcels default to pending
             status: 'pendente',
+            appointmentId: prefillAppointmentId || null,
             installmentGroupId: groupId,
             installmentNumber: i + 1,
             installmentTotal: formInstallments,
@@ -1244,10 +1281,19 @@ function FinancialModuleBody() {
             description: `${formDescription} (parcelada ${formInstallments}x)`,
           });
         }
+        // Writeback pro atendimento de origem (botão "Cobrar" da Agenda) —
+        // idempotência visual: some o botão, aparece "Cobrança lançada".
+        if (prefillAppointmentId) {
+          await updateDoc(doc(db, 'appointments', prefillAppointmentId), {
+            billingInstallmentGroupId: groupId,
+            updatedAt: now,
+          });
+        }
         toast.success(`${formInstallments} parcelas criadas`);
       } else {
         const ref = await addDoc(collection(db, 'transactions'), {
           ...baseTx,
+          appointmentId: prefillAppointmentId || null,
           createdBy: user.uid,
           createdByName: user.name,
           createdAt: now,
@@ -1261,10 +1307,18 @@ function FinancialModuleBody() {
           amount,
           description: formDescription,
         });
+        // Writeback pro atendimento de origem (botão "Cobrar" da Agenda).
+        if (prefillAppointmentId) {
+          await updateDoc(doc(db, 'appointments', prefillAppointmentId), {
+            billingTransactionId: ref.id,
+            updatedAt: now,
+          });
+        }
         toast.success(t('financial.toast.transactionCreated', 'Transação criada'));
       }
 
       queryClient.invalidateQueries({ queryKey: ['transactions', business.id] });
+      setPrefillAppointmentId(null);
       setShowForm(false);
     } catch (err) {
       console.error('Error saving transaction:', err);
@@ -1272,7 +1326,7 @@ function FinancialModuleBody() {
     } finally {
       setIsSaving(false);
     }
-  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formProjectId, projects, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceSecondDay, formRecurrenceLabel, formRecurrenceHolidayAdjust, formRecurrenceLateFeePct, formRecurrenceInterestPct, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, queryClient, t]);
+  }, [business?.id, user, formType, formDescription, formCategory, formAmount, formDueDate, formPaymentDate, formPaymentMethod, formNotes, formClientName, formBankAccount, formStatus, formSectorId, formProjectId, projects, formInstallments, formInstallmentInterval, formRecurrence, formRecurrenceFrequency, formRecurrenceEndDate, formRecurrenceDay, formRecurrenceSecondDay, formRecurrenceLabel, formRecurrenceHolidayAdjust, formRecurrenceLateFeePct, formRecurrenceInterestPct, formAttachments, formFilesToUpload, formAttachmentsToDelete, editingTransaction, prefillAppointmentId, queryClient, t]);
 
   const handleDeleteTransaction = useCallback(async (id: string) => {
     if (!business?.id || !user) return;

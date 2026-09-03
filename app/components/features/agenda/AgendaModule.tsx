@@ -1549,6 +1549,7 @@ import { AppointmentFormDialog } from './AppointmentFormDialog';
 import type { AppointmentFormData } from './AppointmentFormDialog';
 import EmitirNotaDialog from '@/app/components/features/fiscal/EmitirNotaDialog';
 import { buildAppointmentNfseInput } from '@/lib/services/fiscal/appointmentNfse';
+import { buildAppointmentBillingPrefill } from '@/lib/services/agenda/appointmentBilling';
 import type { RecurrenceFrequency } from './shared';
 
 // ---- View Appointment Dialog ----
@@ -1561,6 +1562,7 @@ interface ViewAppointmentDialogProps {
   onStatusChange: (status: AppointmentStatus) => void;
   onOpenConversation: () => void;
   onEmitNfse: () => void;
+  onBillAppointment: () => void;
   statusChanging: boolean;
 }
 
@@ -1573,6 +1575,7 @@ function ViewAppointmentDialog({
   onStatusChange,
   onOpenConversation,
   onEmitNfse,
+  onBillAppointment,
   statusChanging,
 }: ViewAppointmentDialogProps) {
   const { t, i18n } = useTranslation();
@@ -1867,6 +1870,31 @@ function ViewAppointmentDialog({
                 >
                   <Receipt className="w-3.5 h-3.5" />
                   {t('agenda.emitNfse', 'Emitir NFSe')}
+                </button>
+              )
+            )}
+
+            {/* Cobrança: lançada → badge (idempotência visual); senão,
+                concluído → botão. Criação real da transação vive no
+                FinancialModule (sessionStorage + setActivePage, mesmo
+                mecanismo de pendingOrderPrefill de Conversas → Pedidos) —
+                não reimplementada aqui. */}
+            {appointment.status === 'concluido' && (
+              (appointment.billingTransactionId || appointment.billingInstallmentGroupId) ? (
+                <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10">
+                  <DollarSign className="w-3.5 h-3.5" />
+                  {t('agenda.billingLaunched', 'Cobrança lançada')}
+                </span>
+              ) : canEdit && (
+                <button
+                  onClick={onBillAppointment}
+                  className={cn(
+                    'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
+                    'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
+                  )}
+                >
+                  <DollarSign className="w-3.5 h-3.5" />
+                  {t('agenda.billAppointment', 'Cobrar')}
                 </button>
               )
             )}
@@ -3724,6 +3752,17 @@ export default function AgendaModule() {
         onEmitNfse={() => {
           setNfseAppointment(selectedAppointment);
           setShowViewDialog(false);
+        }}
+        onBillAppointment={() => {
+          if (!selectedAppointment) return;
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem(
+              'pendingTransactionPrefill',
+              JSON.stringify(buildAppointmentBillingPrefill(selectedAppointment)),
+            );
+          }
+          setShowViewDialog(false);
+          setActivePage('Financeiro');
         }}
         statusChanging={statusChanging}
       />

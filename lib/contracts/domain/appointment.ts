@@ -105,6 +105,11 @@ export const AppointmentSchema = z.object({
   fiscalDocumentId: z.string().optional(),
   fiscalAccessKey: z.string().nullable().optional(),
   fiscalStatus: z.string().optional(),
+  // ── Vínculo financeiro (cobrança/parcelamento) — writeback do botão "Cobrar" ──
+  // Presença de billingTransactionId (à vista) OU billingInstallmentGroupId
+  // (parcelado) ⇒ cobrança já lançada ⇒ mostra badge em vez do botão "Cobrar".
+  billingTransactionId: z.string().optional(),
+  billingInstallmentGroupId: z.string().optional(),
 }).superRefine((a, ctx) => {
   // INVARIANTE: turma é coerente — se isGroupSession então precisa de sessionKey.
   if (a.isGroupSession && !a.sessionKey) {
