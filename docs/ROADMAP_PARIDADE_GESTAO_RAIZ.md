@@ -119,10 +119,11 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
   - Integrar cliente com vendas, agenda, conversas, financeiro e fiscal.
 
 - [ ] **M06 — Agenda, Serviços, Booking e Assinaturas** 🔴 Prioridade atual (odontologia)
-  - Status: `Em análise — hardening real já ocorreu fora da sequência formal (efeitos server-side, NFSe manual, cobrança/parcelamento, notas do atendimento, lembretes de WhatsApp); falta consolidar num plano detalhado como o do M02`
+  - Status: `Em análise — plano detalhado concluído em 03/09/2026; próxima etapa M06.0 (baseline e caracterização)`
   - Agenda, conflitos, recursos, recorrência, comissões, lembretes, booking público e calendários.
   - Evoluir memberships, cobrança recorrente e proteção contra no-show quando o gateway estiver disponível.
-  - Detalhes do que já foi entregue: `docs/agenda/AGENDA_HARDENING_EFEITOS_SERVIDOR.md`, `docs/agenda/AGENDA_NFSE_MANUAL.md`, `docs/agenda/AGENDA_LEMBRETES_E_HISTORICO.md`, `docs/agenda/AGENDA_COBRANCA.md`.
+  - **Plano detalhado: `docs/paridade/M06_PLANO_IMPLEMENTACAO.md`** — diagnóstico confirmado no código: 6 canais gravam `appointments` com 3 algoritmos de conflito distintos e 2 sem nenhum (PDV e CRM); check de conflito ignora `professionalIds[]`; conclusão pode ficar sem efeito se o navegador morrer entre o write e o dispatch; FSM só imposta no cliente. **Não é reescrita — é convergência**: o núcleo (guard transacional, FSM, handlers server-side, 71 testes) já existe, mas nem todo canal usa.
+  - Já entregue fora da sequência: `docs/agenda/AGENDA_HARDENING_EFEITOS_SERVIDOR.md`, `docs/agenda/AGENDA_NFSE_MANUAL.md`, `docs/agenda/AGENDA_LEMBRETES_E_HISTORICO.md`, `docs/agenda/AGENDA_COBRANCA.md`.
 
 - [ ] **M07 — Conversas, Canais e Campanhas** 🟠 Prioridade atual (odontologia)
   - Status: `Planejado` — lembretes/confirmação automáticos via WhatsApp já existem e foram hardenizados nesta sessão (`docs/agenda/AGENDA_LEMBRETES_E_HISTORICO.md`); o restante do módulo (campanhas, inbox, atribuição) segue não iniciado
