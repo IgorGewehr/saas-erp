@@ -97,6 +97,8 @@ export const AppointmentSchema = z.object({
   // Client.relationshipHistory.noShowCount). Nunca revertido — nao_compareceu
   // é terminal de verdade, sem transição de volta na FSM.
   noShowAppliedAt: z.string().optional(),
+  // Origem da confirmação (M06.5a) — ausente = manual (atendente).
+  confirmedVia: z.literal('whatsapp-auto').optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
   cancelledAt: z.string().optional(),

@@ -21,6 +21,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { isOptOutKeyword } from '@/lib/utils/optOutKeywords';
+import { tryAutoConfirmFromWhatsAppReply } from '@/lib/services/agenda/whatsappConfirmation';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
@@ -679,13 +680,21 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
           timestamp: new Date(parseInt(msg.timestamp) * 1000).toISOString(),
         });
 
+        // Hoist único de resolveBusinessId pros checks de keyword abaixo —
+        // reusa resolvedBusinessId se o ramo de mídia já resolveu (linha
+        // ~615); senão resolve uma vez aqui. Evita 2-3 chamadas redundantes
+        // de resolveBusinessId por mensagem de texto.
+        if (!resolvedBusinessId) {
+          resolvedBusinessId = await resolveBusinessId('whatsapp', phoneNumberId);
+        }
+
         // 5.11 — Auto opt-out por keyword: se mensagem é só "PARAR"/"STOP"/etc.,
         // grava em marketingOptOuts. O agent ainda pode responder confirmando
         // (mensagem não é descartada — só evita futuras campanhas).
         if (isOptOutKeyword(extracted.content)) {
           try {
-            const businessId = await resolveBusinessId('whatsapp', phoneNumberId);
-            if (businessId) {
+            if (resolvedBusinessId) {
+              const businessId = resolvedBusinessId;
               const identifier = msg.from.toLowerCase(); // E.164 sem +
               const docId = `${businessId}_whatsapp_${identifier.replace(/[^a-z0-9._@+-]/g, '_').slice(0, 200)}`;
               await adminDb.collection('marketingOptOuts').doc(docId).set({
@@ -703,6 +712,24 @@ async function handleWhatsAppEvent(entry: MetaWebhookEntry) {
             }
           } catch (optOutErr) {
             console.error('[Meta Webhook] Failed to record opt-out:', optOutErr);
+          }
+        }
+
+        // M06.5a — confirmação leve do paciente ("confirmo"), sem exigir o
+        // Agente IA completo. Roda incondicionalmente (não gated por
+        // aiAgent.enabled) — o pedido é "sem EXIGIR o agente", e resolver
+        // isso de forma síncrona/determinística é uma melhoria mesmo pra
+        // tenants com agente ligado (ver docs/agenda/AGENDA_CONFIRMACAO_WHATSAPP.md).
+        if (resolvedBusinessId) {
+          try {
+            await tryAutoConfirmFromWhatsAppReply({
+              db: adminDb,
+              businessId: resolvedBusinessId,
+              phone: msg.from,
+              messageText: extracted.content || '',
+            });
+          } catch (confirmErr) {
+            console.error('[Meta Webhook] Failed to process WhatsApp confirmation reply:', confirmErr);
           }
         }
       }

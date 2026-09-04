@@ -26,6 +26,7 @@ import pino from 'pino';
 import { FieldValue } from 'firebase-admin/firestore';
 import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { tryAutoConfirmFromWhatsAppReply } from '@/lib/services/agenda/whatsappConfirmation';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 
@@ -1132,6 +1133,21 @@ async function handleInboundMessage(
     } catch (agentErr) {
       console.warn('[Baileys] Agent dispatch import/call failed:', agentErr);
     }
+
+    // M06.5a — confirmação leve do paciente ("confirmo"), sem exigir o
+    // Agente IA completo. Roda incondicionalmente, mesmo racional do lado
+    // Meta — ver docs/agenda/AGENDA_CONFIRMACAO_WHATSAPP.md.
+    try {
+      await tryAutoConfirmFromWhatsAppReply({
+        db: adminDb,
+        businessId,
+        phone: senderPhone,
+        messageText: text || '',
+      });
+    } catch (confirmErr) {
+      console.warn('[Baileys] Failed to process WhatsApp confirmation reply:', confirmErr);
+    }
+
     return { conversationId, messageId: msgRef.id, phone: senderPhone };
   } catch (err) {
     console.error('[Baileys] Erro ao salvar mensagem inbound:', err);

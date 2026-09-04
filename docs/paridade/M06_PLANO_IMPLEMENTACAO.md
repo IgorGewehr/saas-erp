@@ -8,10 +8,11 @@
 >
 > Lente desta rodada: **odontologia** — cliente pagante real, módulo operacional central.
 >
-> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável) e
-> M06.3 completo (M06.3a bloqueios, M06.3b no-show, M06.3c buffer) concluídos em código —
-> M06.3c em 04/09/2026, junto com M06.4a (ficha do paciente/anamnese). Próxima etapa: M06.0b
-> (congelar comportamento por canal) ou M06.5 (lembretes/confirmação).
+> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável), M06.3
+> completo (M06.3a bloqueios, M06.3b no-show, M06.3c buffer), M06.4a (ficha do
+> paciente/anamnese) e M06.5a (confirmação leve via WhatsApp) concluídos em código em
+> 04/09/2026. Próxima etapa: resto do M06.5 (consolidar lembretes, fuso, reengajamento) ou
+> M06.0b (congelar comportamento por canal).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -382,9 +383,22 @@ manualmente em navegador** nesta rodada.
 ### M06.5 — Lembretes, confirmação e reengajamento
 
 - [ ] Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência.
-- [ ] Confirmação do paciente ("confirmo") atualizando status **sem** exigir o Agente IA completo.
+- [x] Confirmação do paciente ("confirmo") atualizando status **sem** exigir o Agente IA completo.
 - [ ] Fuso horário por negócio, substituindo o `-03:00` fixo.
 - [ ] Reengajamento de paciente sem retorno há N meses (recall), reaproveitando CRM/campanhas.
+
+**M06.5a concluída em código:** confirmação leve via WhatsApp, sem depender do Agente IA.
+Detector de palavra-chave (`lib/utils/confirmationKeywords.ts`, mesmo formato do detector de
+opt-out já existente) + correlação por telefone (`lib/services/agenda/whatsappConfirmation.ts`,
+reaproveita `brPhonesMatch`) — só age quando há exatamente um agendamento candidato inequívoco,
+nunca adivinha. Confirma via `transitionAppointmentAdmin` (núcleo da M06.2), sem reimplementar
+FSM. Ligado nos dois webhooks de WhatsApp (Meta e Baileys), sem gate em `aiAgent.enabled` —
+funciona pra todo tenant, e converge sem conflito com o caminho do agente pra quem já tem ele
+ligado. Deliberadamente não trata "cancelar" (colide com palavra-chave de opt-out já em
+produção). Novo campo `Appointment.confirmedVia` distingue confirmação manual de automática.
+Detalhes em `docs/agenda/AGENDA_CONFIRMACAO_WHATSAPP.md`. Verificado por suíte automatizada
+(958 testes, 23 novos em 2 arquivos novos, sem regressão) — **não testado contra WhatsApp real**
+nesta rodada.
 
 **Saída:** menos cadeira vazia, sem depender de configuração escondida.
 

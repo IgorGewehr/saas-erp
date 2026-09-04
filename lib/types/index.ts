@@ -1040,6 +1040,12 @@ export interface Appointment {
    *  completionAppliedAt, NUNCA é revertido — nao_compareceu é estado
    *  terminal de verdade na FSM (sem caminho de volta). */
   noShowAppliedAt?: string;
+  /** Origem da confirmação — ausente = confirmado manualmente por um
+   *  atendente (comportamento/padrão de sempre). `'whatsapp-auto'` = o
+   *  próprio paciente confirmou respondendo "confirmo" no WhatsApp, sem
+   *  passar por um atendente (M06.5a). Mesma convenção de
+   *  FormResponse.submittedVia. */
+  confirmedVia?: 'whatsapp-auto';
   // ── Vínculo fiscal (NFSe) — writeback de /api/fiscal/emit ──────────────
   /** FK para o fiscalDocument (NFSe) emitido a partir deste atendimento.
    *  Presença = nota já emitida ⇒ idempotência visual (mostra "NFSe emitida"
