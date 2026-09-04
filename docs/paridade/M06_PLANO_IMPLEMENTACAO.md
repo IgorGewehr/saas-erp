@@ -10,11 +10,12 @@
 >
 > Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável), M06.3
 > completo (M06.3a bloqueios, M06.3b no-show, M06.3c buffer), M06.4a (ficha do
-> paciente/anamnese) e M06.5 quase completo (M06.5a confirmação leve via WhatsApp, M06.5b fuso
+> paciente/anamnese) e M06.5 fechado (M06.5a confirmação leve via WhatsApp, M06.5b fuso
 > horário por negócio — corrigiu bug real de ~3h no lembrete/confirmação —, M06.5c
-> reengajamento — corrigiu dois bugs reais numa automação de CRM já existente) concluídos em
-> código em 04/09/2026. Falta só consolidar os dois sistemas de lembrete pro M06.5 fechar.
-> Próxima etapa: essa consolidação (mais arriscada, cron já em produção) ou M06.0b.
+> reengajamento — corrigiu dois bugs reais numa automação de CRM já existente; consolidação dos
+> dois sistemas de lembrete analisada e deliberadamente adiada, ver checklist abaixo)
+> concluídos em código em 04/09/2026. Próxima etapa: M06.0b (congelar comportamento por canal)
+> ou M06.8 (custo/segurança).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -384,7 +385,19 @@ manualmente em navegador** nesta rodada.
 
 ### M06.5 — Lembretes, confirmação e reengajamento
 
-- [ ] Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência.
+- [ ] ~~Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência~~
+      — **analisado e deliberadamente adiado** (04/09/2026): os dois sistemas
+      (`appointmentReminderRunner.ts` notifica ATENDENTE in-app; `scheduled/run/route.ts`
+      notifica PACIENTE por WhatsApp) são features de audiência diferente, não a mesma lógica
+      duplicada — idempotência por status-flag no appointment (1 paciente) vs. log por
+      (appointment, minutosAntes) (N atendentes) são formatos DIFERENTES por razão real, não
+      por acidente, e forçar um formato único seria pior design, não melhor. A parte
+      genuinamente unificável (a aritmética de "janela": cada um dos 4 checks entre os dois
+      arquivos usa uma forma ligeiramente diferente — tolerância simétrica, banda semi-aberta,
+      intervalo fechado) é baixo valor / risco moderado de mexer de novo no mesmo cron que já
+      recebeu 2 correções reais nesta mesma sessão (M06.5b fuso, M06.5c idempotência de
+      automação) — risco desproporcional ao ganho de "mesmo esqueleto de código" sem mudança de
+      comportamento. Fica documentado aqui como analisado e não uma lacuna esquecida.
 - [x] Confirmação do paciente ("confirmo") atualizando status **sem** exigir o Agente IA completo.
 - [x] Fuso horário por negócio, substituindo o `-03:00` fixo.
 - [x] Reengajamento de paciente sem retorno há N meses (recall), reaproveitando CRM/campanhas.
