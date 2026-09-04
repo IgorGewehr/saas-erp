@@ -11,9 +11,9 @@
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
 > Estado: investigação de abertura concluída em 04/09/2026. M03.5 (testes de conciliação),
-> M03.0 (baseline/auditoria) e M03.1 (contrato de domínio Zod) concluídos em código o mesmo
-> dia — nenhum dos três depende da decisão V1 vs V2. Próxima etapa recomendada: M03.2 (núcleo
-> de criação/transição).
+> M03.0 (baseline/auditoria), M03.1 (contrato de domínio Zod) e M03.2 (núcleo de criação/
+> transição) concluídos em código o mesmo dia — nenhum depende da decisão V1 vs V2. Próxima
+> etapa recomendada: M03.3 (migrar os caminhos de maior risco pro núcleo).
 
 ---
 
@@ -154,22 +154,38 @@ de passagem, não corrigido: `PaymentMethodSchema` do agente tem valores DIFEREN
 `docs/financeiro/FINANCEIRO_M03_1_CONTRATO_DOMINIO.md`. Verificado por `tsc --noEmit` limpo e
 suíte completa (1050 testes/78 arquivos, sem regressão).
 
-### M03.2 — Núcleo de criação/transição (o que nunca existiu)
+### M03.2 — Núcleo de criação/transição (o que nunca existiu) ✅ Concluído (04/09/2026)
 
-- [ ] `lib/services/transactionTxGuard.ts` (client SDK) + `transactionTxGuardAdmin.ts` (Admin SDK)
-      — mesma dupla já usada por Appointment (`appointmentTxGuard(Admin).ts`): criação com
-      idempotência real (idempotency key ou fingerprint determinístico, não check-then-act) e
-      aplicação do FSM (`assertTransitionTransaction`) em toda mudança de status.
-- [ ] `POST /api/transactions` (Admin SDK, autoritativo) — mirror de `POST /api/appointments`
-      (M06.1) e `POST /api/sales/checkout` — substitui os `addDoc`/`updateDoc` diretos do
-      clássico e do V2 pra criação/baixa manual.
-- [ ] Idempotência real (R3): toda criação aceita `X-Idempotency-Key` OU deriva uma chave
-      determinística (ex.: `saleId`/`appointmentId`+tipo, quando a origem existe) — fecha o
-      double-click auto-documentado em `AGENDA_COBRANCA.md`.
+- [x] `lib/services/transactionTxGuardAdmin.ts` (Admin SDK) — mirror de
+      `appointmentTxGuardAdmin.ts`: criação com idempotência real (ID determinístico + `tx.create()`,
+      mesmo padrão de `purchase-financial-admin.ts` — o Firestore rejeita atomicamente se o doc
+      já existe, sem precisar de lock separado) e aplicação do FSM
+      (`assertTransitionTransaction`) em toda mudança de status.
+- [ ] ~~`lib/services/transactionTxGuard.ts` (client SDK)~~ — **analisado, deliberadamente não
+      construído**: diferente da Agenda (calendário em tempo real, múltiplos operadores editando
+      o mesmo dia), não há caso de uso comprovado de escrita direta browser→Firestore com
+      pré-check local pra Transaction — os caminhos já hardenizados do Financeiro são todos
+      Admin SDK via rota server-side. Construir se a migração do clássico/V2 (M03.3) revelar
+      necessidade real.
+- [ ] ~~`POST /api/transactions` (Admin SDK, autoritativo)~~ — **adiado pra M03.3**: o núcleo
+      (guard) e a rota que o expõe são passos distintos; a rota nasce junto com a migração do
+      primeiro caller real, não antes (evita uma rota sem consumidor).
+- [x] Idempotência real (R3): chave derivada de `saleId`/`purchaseNoteId`/`appointmentId`/
+      `deliveryOrderId`+tipo (+`installmentNumber` quando presente) — MESMA combinação que
+      `m03-financial-audit.ts` usa como chave de duplicidade, de propósito. `idempotencyKey`
+      explícito do caller tem prioridade. Fecha o double-click auto-documentado em
+      `AGENDA_COBRANCA.md`.
 
 **Não é reescrita dos 5 caminhos já hardenizados** (venda PDV, compra, delivery, estorno,
 liquidação MP) — esses já têm seu próprio guard transacional específico por módulo, correto e
 testado. Este núcleo serve especificamente os caminhos MANUAIS (clássico, V2, API v1, agente).
+
+**Entregue:** 12 testes novos (`tests/services/transactionTxGuardAdmin.test.ts`) — replay
+idempotente sem duplicar, parcelas distintas da mesma origem não colidem, origens diferentes
+nunca colidem, chave explícita tem prioridade, transição válida/inválida/no-op, tenant cruzado.
+Nenhuma rota/UI usa este guard ainda — isso é M03.3. Detalhes em
+`docs/financeiro/FINANCEIRO_M03_2_NUCLEO.md`. Verificado por `tsc --noEmit` limpo e suíte
+completa (1062 testes/79 arquivos, sem regressão).
 
 ### M03.3 — Migrar os caminhos de maior risco pro núcleo
 
@@ -293,9 +309,10 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
    zero cobertura hoje; não depende de nenhuma decisão de produto).
 2. **M03.0** ✅ — baseline/auditoria (mede antes de mexer, mesmo racional de M01/M06).
 3. **M03.1** ✅ — contrato de domínio (pré-requisito SDD pra tudo que vem depois).
-4. **M03.2** — núcleo de criação/transição novo. Próxima etapa.
+4. **M03.2** ✅ — núcleo de criação/transição novo (só Admin SDK; client SDK e a rota
+   `POST /api/transactions` deliberadamente adiados pra M03.3).
 5. **M03.3** — migrar os caminhos de maior risco (API v1 e agente primeiro — exposição externa;
-   depois clássico/V2/PDV-reversão/comissão).
+   depois clássico/V2/PDV-reversão/comissão). Próxima etapa.
 6. **M03.4** — enforcement no servidor.
 7. **M03.6** — checkpoint com o usuário: decisão V1 vs V2 (bloqueia M03.7 até vir).
 8. **M03.7** — DRE/fluxo de caixa/orçamento, conforme a decisão de M03.6.
