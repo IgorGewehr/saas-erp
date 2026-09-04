@@ -175,6 +175,16 @@ async function fetchActiveBlocksTx(
   return filterActiveBlocksForDate(snapshots.flatMap((s) => s.docs), date);
 }
 
+/**
+ * Intervalo mínimo (minutos) configurado no negócio (M06.3c). `tx.get` num
+ * doc ref simples (não query) — mesma consistência transacional dos outros
+ * reads deste arquivo, custo mínimo (1 doc por ID, não índice).
+ */
+async function fetchBusinessBufferMinutesTx(tx: Transaction, adminDb: Firestore, businessId: string): Promise<number> {
+  const snap = await tx.get(adminDb.collection('businesses').doc(businessId));
+  return (snap.data()?.settings?.appointmentBufferMinutes as number | undefined) ?? 0;
+}
+
 /** Mesma busca de {@link fetchActiveBlocksTx}, sem transação — usada no caminho
  *  "sem profissional escolhido" (write direto, fora de tx). */
 async function fetchActiveBlocks(
@@ -232,9 +242,10 @@ export async function createAppointmentSafeAdmin(
   const members = await loadProfessionals(adminDb, effectiveIds);
 
   await adminDb.runTransaction(async (tx) => {
-    const [dayAppointments, blocks] = await Promise.all([
+    const [dayAppointments, blocks, bufferMinutes] = await Promise.all([
       fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, date, effectiveIds),
       fetchActiveBlocksTx(tx, adminDb, businessId, date, effectiveIds),
+      fetchBusinessBufferMinutesTx(tx, adminDb, businessId),
     ]);
     const appointments = excludeSameSession(dayAppointments, payload.sessionKey);
 
@@ -247,6 +258,7 @@ export async function createAppointmentSafeAdmin(
       startTime,
       endTime,
       blocks,
+      bufferMinutes,
     });
     if (result.hasConflict) {
       throw new AppointmentConflictError(result.message);
@@ -308,9 +320,10 @@ export async function updateAppointmentSafeAdmin(
   const members = await loadProfessionals(adminDb, finalEffectiveIds);
 
   await adminDb.runTransaction(async (tx) => {
-    const [dayAppointments, blocks] = await Promise.all([
+    const [dayAppointments, blocks, bufferMinutes] = await Promise.all([
       fetchDayAppointmentsForProfessionalsTx(tx, adminDb, businessId, finalDate, finalEffectiveIds),
       fetchActiveBlocksTx(tx, adminDb, businessId, finalDate, finalEffectiveIds),
+      fetchBusinessBufferMinutesTx(tx, adminDb, businessId),
     ]);
     const appointments = excludeSameSession(dayAppointments, finalSessionKey);
 
@@ -324,6 +337,7 @@ export async function updateAppointmentSafeAdmin(
       endTime: finalEndTime,
       excludeId: appointmentId,
       blocks,
+      bufferMinutes,
     });
     if (result.hasConflict) {
       throw new AppointmentConflictError(result.message);

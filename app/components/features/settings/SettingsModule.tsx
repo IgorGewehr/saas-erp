@@ -1254,6 +1254,10 @@ function EmpresaTab() {
   const [loyaltyMinRedeem, setLoyaltyMinRedeem] = useState('100');
   const [loyaltyExpirationDays, setLoyaltyExpirationDays] = useState('');
 
+  // M06.3c: intervalo mínimo (minutos) entre atendimentos consecutivos do
+  // mesmo profissional na Agenda — tempo de limpeza/preparo.
+  const [appointmentBufferMinutes, setAppointmentBufferMinutes] = useState('0');
+
   // Populate from business — only when business.id changes, not on every
   // Firestore update (heartbeat writes lastSeenAt every 60s and would reset
   // whatever the user is currently typing).
@@ -1288,6 +1292,7 @@ function EmpresaTab() {
     setLoyaltyPointValueCents(String(lc?.pointValueInCentavos ?? 1));
     setLoyaltyMinRedeem(String(lc?.minPointsToRedeem ?? 100));
     setLoyaltyExpirationDays(lc?.expirationDays ? String(lc.expirationDays) : '');
+    setAppointmentBufferMinutes(String(business.settings?.appointmentBufferMinutes ?? 0));
   }, [business]);
 
   // CEP auto-lookup
@@ -1399,6 +1404,7 @@ function EmpresaTab() {
             minPointsToRedeem: Number(loyaltyMinRedeem) || 100,
             expirationDays: loyaltyExpirationDays ? Number(loyaltyExpirationDays) : null,
           },
+          'settings.appointmentBufferMinutes': Math.max(0, Number(appointmentBufferMinutes) || 0),
         },
         { merge: true }
       );
@@ -1911,6 +1917,28 @@ function EmpresaTab() {
                 </p>
               </div>
             )}
+          </div>
+        </SectionCard>
+
+        {/* Agenda — intervalo entre atendimentos (M06.3c) */}
+        <SectionCard title="Agenda" icon={Clock}>
+          <div>
+            <label className="text-xs font-medium text-gray-600 dark:text-gray-400 block mb-1">
+              Intervalo mínimo entre atendimentos (minutos)
+            </label>
+            <input
+              type="number"
+              min="0"
+              value={appointmentBufferMinutes}
+              onChange={e => setAppointmentBufferMinutes(e.target.value)}
+              disabled={!canEditSettings}
+              className="w-full max-w-[200px] px-3 py-2 text-sm rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-800 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-red-500"
+            />
+            <p className="text-[11px] text-gray-400 mt-0.5">
+              0 = sem intervalo mínimo. Exige esse tempo de vão entre dois atendimentos
+              consecutivos do mesmo profissional (limpeza/preparo) — vale pra Agenda, Conversas,
+              CRM, PDV e API.
+            </p>
           </div>
         </SectionCard>
 

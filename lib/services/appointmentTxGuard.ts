@@ -46,6 +46,7 @@ import {
   query,
   where,
   getDocs,
+  getDoc,
   runTransaction,
   type Firestore,
 } from 'firebase/firestore';
@@ -198,6 +199,17 @@ async function fetchActiveBlocksClient(
 }
 
 /**
+ * Intervalo mínimo (minutos) configurado no negócio (M06.3c). Leitura simples
+ * de doc por ID (não query) — sem custo de índice, sem tracking de tx (não
+ * precisa: o valor muda raramente, não é alvo de corrida real, mesmo racional
+ * de bloqueios não-transacionais no ramo sem profissional).
+ */
+async function fetchBusinessBufferMinutesClient(db: Firestore, businessId: string): Promise<number> {
+  const snap = await getDoc(doc(db, 'businesses', businessId));
+  return (snap.data()?.settings?.appointmentBufferMinutes as number | undefined) ?? 0;
+}
+
+/**
  * Remove da lista os appointments da MESMA turma (mesmo sessionKey) — colegas
  * não conflitam. Sem sessionKey: lista intacta (exclusivo).
  */
@@ -333,9 +345,10 @@ export async function createAppointmentSafe(
     //    query reads (so doc reads). Generalizado (M06.1) pra enxergar
     //    QUALQUER profissional do conjunto, não só o primário. M06.3a:
     //    busca bloqueios de agenda junto.
-    const [dayAppts, blocks] = await Promise.all([
+    const [dayAppts, blocks, bufferMinutes] = await Promise.all([
       fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds),
       fetchActiveBlocksClient(db, businessId, date, effectiveIds),
+      fetchBusinessBufferMinutesClient(db, businessId),
     ]);
     const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
@@ -349,6 +362,7 @@ export async function createAppointmentSafe(
       startTime,
       endTime,
       blocks,
+      bufferMinutes,
       t,
     });
     if (result.hasConflict) {
@@ -463,9 +477,10 @@ export async function updateAppointmentSafe(
 
     // 2. getDocs no destino (conjunto de profissionais + date novos). M06.3a:
     //    busca bloqueios de agenda junto.
-    const [dayAppts, blocks] = await Promise.all([
+    const [dayAppts, blocks, bufferMinutes] = await Promise.all([
       fetchDayAppointmentsForProfessionalsClient(db, businessId, date, effectiveIds),
       fetchActiveBlocksClient(db, businessId, date, effectiveIds),
+      fetchBusinessBufferMinutesClient(db, businessId),
     ]);
     const appointments = excludeSameSession(dayAppts, payload.sessionKey);
 
@@ -480,6 +495,7 @@ export async function updateAppointmentSafe(
       endTime,
       excludeId: appointmentId,
       blocks,
+      bufferMinutes,
       t,
     });
     if (result.hasConflict) {

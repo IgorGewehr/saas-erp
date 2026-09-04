@@ -8,11 +8,10 @@
 >
 > Lente desta rodada: **odontologia** — cliente pagante real, módulo operacional central.
 >
-> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável),
-> M06.3a (bloqueios de agenda), M06.4a (ficha do paciente/anamnese) e M06.3b (política de
-> no-show) concluídos em código — M06.3b em 04/09/2026. Próxima etapa: M06.0b (congelar
-> comportamento por canal), buffer entre atendimentos (resto do M06.3) ou M06.5
-> (lembretes/confirmação).
+> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável) e
+> M06.3 completo (M06.3a bloqueios, M06.3b no-show, M06.3c buffer) concluídos em código —
+> M06.3c em 04/09/2026, junto com M06.4a (ficha do paciente/anamnese). Próxima etapa: M06.0b
+> (congelar comportamento por canal) ou M06.5 (lembretes/confirmação).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -319,7 +318,7 @@ agora é uma transição declarada (reversão), não um bug silencioso. `AgendaM
       profissional específico, dia inteiro ou janela de horário. Reaproveita
       `checkAppointmentConflict` (parâmetro `blocks?`) em vez de um 4º algoritmo — cobre
       Agenda, Conversas→agendar e API v1 automaticamente via `appointmentTxGuard*.ts`.
-- [ ] Intervalo/buffer configurável entre atendimentos.
+- [x] Intervalo/buffer configurável entre atendimentos.
 - [ ] Horário de trabalho respeitado em **todos** os canais — **achado nesta rodada**: o
       agente (`checkAvailability`) tem um cast morto (`WorkSchedule[]`) que nunca bate contra
       o schema real, então nunca respeitou o `workingHours` individual de um profissional,
@@ -349,6 +348,18 @@ Detalhes em `docs/agenda/AGENDA_NO_SHOW.md`. Achado documentado, não corrigido:
 `noShowCount` em updates parciais externos) — bug pré-existente, mais amplo que esta fatia.
 Verificado por suíte automatizada (921 testes, 9 novos, sem regressão) — **não testado
 manualmente em navegador** nesta rodada.
+
+**M06.3c concluída em código — M06.3 completo.** Intervalo/buffer mínimo (minutos) entre
+atendimentos consecutivos do mesmo profissional, configurável em Configurações → Empresa →
+Agenda (`BusinessSettings.appointmentBufferMinutes`, 0/ausente = comportamento atual).
+Terceiro parâmetro opcional retrocompatível em `checkAppointmentConflict`
+(`bufferMinutes?`, mesmo padrão de `professionalIds?`/`blocks?`), aplicado só no overlap entre
+atendimentos — não em bloqueios nem horário de trabalho. Cobertura automática de todos os
+canais que já usam o núcleo (Agenda, Conversas, CRM, PDV, API v1) sem tocar nesses call-sites,
+incluindo o reagendamento do agente de IA (`updateAppointment` — efeito desejado; a criação do
+agente continua com algoritmo próprio, fora do escopo). Detalhes em
+`docs/agenda/AGENDA_BUFFER.md`. Verificado por suíte automatizada (935 testes, 14 novos, sem
+regressão) — **não testado manualmente em navegador** nesta rodada.
 
 ### M06.4 — Ficha do paciente e anamnese
 
@@ -410,7 +421,7 @@ manualmente em navegador** nesta rodada.
 2. **M06.1** — núcleo único (elimina duplo agendamento).
 3. **M06.2** — transição/conclusão reconciliável (elimina perda silenciosa de dinheiro).
 4. **M06.4** — anamnese (maior valor clínico novo, escopo pequeno, campo já existe).
-5. **M06.3** — bloqueios e no-show (ambos concluídos; falta só buffer configurável).
+5. **M06.3** — bloqueios, no-show e buffer entre atendimentos (completo).
 6. **M06.5** — lembretes consolidados.
 7. **M06.8** — custo e segurança.
 8. **M06.6** e **M06.7** — cobrança/assinaturas e canais externos.

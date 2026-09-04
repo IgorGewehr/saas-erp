@@ -368,6 +368,138 @@ describe('checkAppointmentConflict', () => {
     expect(r.hasConflict).toBe(false);
   });
 
+  it('M06.3c: sem bufferMinutes, back-to-back continua ok (comportamento atual inalterado)', () => {
+    const r = checkAppointmentConflict({
+      appointments: [apt({ startTime: '10:00', endTime: '11:00' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+    });
+    expect(r.hasConflict).toBe(false);
+  });
+
+  it('M06.3c: com bufferMinutes, recusa encaixe exato (volta a volta) que antes era aceito', () => {
+    const r = checkAppointmentConflict({
+      appointments: [apt({ startTime: '10:00', endTime: '11:00' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: 15,
+    });
+    expect(r.hasConflict).toBe(true);
+    expect(r.message).toContain('Maria');
+  });
+
+  it('M06.3c: com bufferMinutes, aceita quando o vão real já é suficiente', () => {
+    const r = checkAppointmentConflict({
+      appointments: [apt({ startTime: '10:15', endTime: '11:00' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: 15,
+    });
+    expect(r.hasConflict).toBe(false);
+  });
+
+  it('M06.3c: mensagem distingue overlap real de conflito só-por-buffer', () => {
+    const trueOverlap = checkAppointmentConflict({
+      appointments: [apt({ startTime: '09:30', endTime: '10:30' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: 15,
+      t: (key) => `[${key}]`,
+    });
+    expect(trueOverlap.message).toBe('[agenda.conflictWith]');
+
+    const bufferOnly = checkAppointmentConflict({
+      appointments: [apt({ startTime: '10:00', endTime: '11:00' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: 15,
+      t: (key) => `[${key}]`,
+    });
+    expect(bufferOnly.message).toBe('[agenda.bufferConflict]');
+  });
+
+  it('M06.3c: buffer não afeta bloqueios de agenda (Check 0)', () => {
+    const r = checkAppointmentConflict({
+      appointments: [],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-09-15',
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: 30,
+      blocks: [{
+        id: 'b1', businessId: 'biz', professionalId: 'p2',
+        startDate: '2026-09-10', endDate: '2026-09-20', status: 'ativo',
+        createdBy: 'u1', createdByName: 'Admin', createdAt: '', updatedAt: '',
+      }],
+    });
+    expect(r.hasConflict).toBe(false); // bloqueio é de outro profissional, buffer não interfere
+  });
+
+  it('M06.3c: buffer não afeta checagem de horário de trabalho (Check 1)', () => {
+    const r = checkAppointmentConflict({
+      appointments: [],
+      members: [mem({
+        workingHours: {
+          0: { enabled: false, start: '09:00', end: '18:00' },
+          1: { enabled: false, start: '09:00', end: '18:00' },
+          2: { enabled: false, start: '09:00', end: '18:00' },
+          3: { enabled: true, start: '09:00', end: '18:00' },
+          4: { enabled: false, start: '09:00', end: '18:00' },
+          5: { enabled: false, start: '09:00', end: '18:00' },
+          6: { enabled: false, start: '09:00', end: '18:00' },
+        },
+      })],
+      professionalId: 'p1',
+      date: '2026-05-13', // quarta, dentro do expediente
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: 30,
+    });
+    expect(r.hasConflict).toBe(false);
+  });
+
+  it('M06.3c: buffer ignora appointment cancelado (mesma regra do overlap clássico)', () => {
+    const r = checkAppointmentConflict({
+      appointments: [apt({ status: 'cancelado', startTime: '10:00', endTime: '11:00' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: 30,
+    });
+    expect(r.hasConflict).toBe(false);
+  });
+
+  it('M06.3c: bufferMinutes negativo é tratado como 0 (clamp) — não reduz o overlap clássico', () => {
+    const r = checkAppointmentConflict({
+      appointments: [apt({ startTime: '09:30', endTime: '10:30' })],
+      members: [mem({})],
+      professionalId: 'p1',
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '10:00',
+      bufferMinutes: -100,
+    });
+    expect(r.hasConflict).toBe(true); // overlap real continua bloqueando mesmo com buffer negativo
+  });
+
   it('translator customizado é usado quando passado', () => {
     const r = checkAppointmentConflict({
       appointments: [apt({})],

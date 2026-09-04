@@ -1276,6 +1276,7 @@
     "doesNotWorkThisDay": "{{name}} does not work on this day",
     "outsideWorkingHours": "Outside working hours ({{start}} - {{end}})",
     "conflictWith": "Conflict with {{name}} ({{start}} - {{end}})",
+    "bufferConflict": "Minimum interval of {{buffer}} min not respected — conflicts with {{name}} ({{start}} - {{end}})",
     "serviceCreated": "Service created successfully!",
     "serviceUpdated": "Service updated successfully!",
     "serviceDeleted": "Service deleted.",

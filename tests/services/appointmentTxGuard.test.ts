@@ -9,6 +9,9 @@ const txGet = vi.fn();
 const txSet = vi.fn();
 const txUpdate = vi.fn();
 const docsResolver = vi.fn(() => [] as Array<{ id: string; data: () => unknown }>);
+// M06.3c: dados do doc `businesses/{id}` pro fetchBusinessBufferMinutesClient
+// (getDoc, não getDocs) — default sem settings = sem buffer configurado (0).
+const businessDocResolver = vi.fn((): Record<string, unknown> | undefined => undefined);
 let runTransactionImpl = vi.fn();
 
 vi.mock('firebase/firestore', () => ({
@@ -27,6 +30,7 @@ vi.mock('firebase/firestore', () => ({
   query: vi.fn((...args) => ({ _query: args })),
   where: vi.fn((field, op, val) => ({ _where: [field, op, val] })),
   getDocs: vi.fn(async () => ({ docs: docsResolver() })),
+  getDoc: vi.fn(async () => ({ data: () => businessDocResolver() })),
   runTransaction: vi.fn(async (_db, cb) => runTransactionImpl(cb)),
   // Mocks pros fallbacks de import dinamico (sem professionalId)
   setDoc: vi.fn(),
@@ -70,6 +74,7 @@ beforeEach(() => {
   txSet.mockReset();
   txUpdate.mockReset();
   docsResolver.mockReset().mockReturnValue([]);
+  businessDocResolver.mockReset().mockReturnValue(undefined);
   runTransactionImpl = vi.fn(async (cb: (tx: unknown) => Promise<void>) => {
     const tx = { get: txGet, set: txSet, update: txUpdate };
     txGet.mockResolvedValue({ data: () => ({ version: 0 }) });
@@ -322,6 +327,49 @@ describe('createAppointmentSafe — turmas (capacity)', () => {
       ),
     ).rejects.toBeInstanceOf(SessionFullError);
     expect(txSet).not.toHaveBeenCalled();
+  });
+});
+
+describe('createAppointmentSafe — intervalo/buffer entre atendimentos (M06.3c)', () => {
+  it('sem buffer configurado, encaixe exato (volta a volta) é aceito — comportamento atual', async () => {
+    businessDocResolver.mockReturnValue(undefined);
+    docsResolver.mockReturnValue([
+      { id: 'a-prev', data: () => apt({ id: 'a-prev', startTime: '08:00', endTime: '09:00' }) },
+    ]);
+    const id = await createAppointmentSafe(
+      fakeDb,
+      { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00' },
+      [prof],
+    );
+    expect(typeof id).toBe('string');
+  });
+
+  it('com buffer configurado, recusa encaixe exato citando o intervalo mínimo', async () => {
+    businessDocResolver.mockReturnValue({ settings: { appointmentBufferMinutes: 15 } });
+    docsResolver.mockReturnValue([
+      { id: 'a-prev', data: () => apt({ id: 'a-prev', startTime: '08:00', endTime: '09:00' }) },
+    ]);
+    await expect(
+      createAppointmentSafe(
+        fakeDb,
+        { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00' },
+        [prof],
+      ),
+    ).rejects.toThrow(/intervalo m[ií]nimo/i);
+    expect(txSet).not.toHaveBeenCalled();
+  });
+
+  it('com buffer configurado, aceita quando o vão real já é suficiente', async () => {
+    businessDocResolver.mockReturnValue({ settings: { appointmentBufferMinutes: 15 } });
+    docsResolver.mockReturnValue([
+      { id: 'a-prev', data: () => apt({ id: 'a-prev', startTime: '08:00', endTime: '08:45' }) },
+    ]);
+    const id = await createAppointmentSafe(
+      fakeDb,
+      { businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00' },
+      [prof],
+    );
+    expect(typeof id).toBe('string');
   });
 });
 

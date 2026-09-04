@@ -27,6 +27,12 @@
  * `professionalId`) vale mesmo pra um agendamento "com qualquer profissional
  * disponível". Omitir `blocks` = nenhum bloqueio considerado (retrocompat).
  *
+ * M06.3c: `bufferMinutes` (opcional) — intervalo mínimo exigido entre dois
+ * atendimentos consecutivos do mesmo profissional (tempo de limpeza/preparo),
+ * aplicado só no Check 2 (overlap entre atendimentos) — bloqueios e horário
+ * de trabalho têm seus próprios limites exatos, buffer não se aplica a eles.
+ * Omitir/0 = sem intervalo mínimo (retrocompat total com o overlap clássico).
+ *
  * Caller passa `t` opcional para internacionalização das mensagens; sem
  * ele, usa strings em pt-BR (default do projeto).
  */
@@ -34,6 +40,17 @@
 import type { Appointment, User } from '@/lib/types';
 import type { ScheduleBlock } from '@/contracts/domain/scheduleBlock';
 import { getAppointmentProfessionalIds } from '@/lib/utils/appointment';
+
+/**
+ * Cópia intencional de `timeToMinutes` (app/components/features/agenda/shared.ts)
+ * — não importar de lá: este arquivo se declara "sem React, sem Firestore" e
+ * roda também no Admin SDK server-side, então não deve depender da camada de
+ * UI. Não "corrigir" essa duplicação importando de shared.ts.
+ */
+function toMinutes(time: string): number {
+  const [h, m] = time.split(':').map(Number);
+  return h * 60 + m;
+}
 
 export interface ConflictCheckInput {
   appointments: Appointment[];
@@ -50,6 +67,10 @@ export interface ConflictCheckInput {
   /** Bloqueios de agenda relevantes (negócio inteiro + dos profissionais do
    *  conjunto). Quando ausente, nenhum bloqueio é considerado. */
   blocks?: ScheduleBlock[];
+  /** Intervalo mínimo (minutos) exigido entre este agendamento e qualquer
+   *  outro do mesmo profissional. Ausente/0 = sem intervalo mínimo (só
+   *  overlap clássico, comportamento atual). Negativo é tratado como 0. */
+  bufferMinutes?: number;
   /** Translator opcional. Recebe key + fallback default. */
   t?: (key: string, fallback: string) => string;
 }
@@ -132,23 +153,42 @@ export function checkAppointmentConflict(input: ConflictCheckInput): ConflictChe
   // Check 2: Overlap com appointments existentes que compartilham QUALQUER
   // profissional do conjunto. Status 'cancelado' não conta (slot foi
   // liberado). Overlap test clássico: A não sobrepõe B sse A termina antes
-  // de B começar OU A começa depois de B terminar.
+  // de B começar OU A começa depois de B terminar. M06.3c: buffer estende
+  // essa janela nos dois lados — exige `buffer` minutos de vão real entre
+  // os dois atendimentos, não só ausência de sobreposição.
+  const buffer = Math.max(0, input.bufferMinutes ?? 0);
+  const candStart = toMinutes(startTime);
+  const candEnd = toMinutes(endTime);
   const idSet = new Set(effectiveIds);
   const existing = appointments.filter((a) =>
     getAppointmentProfessionalIds(a).some((id) => idSet.has(id)) &&
     a.date === date &&
     a.status !== 'cancelado' &&
     a.id !== excludeId &&
-    !(endTime <= a.startTime || startTime >= a.endTime),
+    !(candEnd + buffer <= toMinutes(a.startTime) || candStart >= toMinutes(a.endTime) + buffer),
   );
 
   if (existing.length > 0) {
     const other = existing[0];
+    // Distingue overlap "de verdade" (conflitaria mesmo com buffer=0) de um
+    // conflito que só existe por causa do intervalo mínimo configurado —
+    // mensagem mais clara pro operador entender por que um horário livre
+    // (sem sobreposição real) foi recusado.
+    const trueOverlap = !(candEnd <= toMinutes(other.startTime) || candStart >= toMinutes(other.endTime));
+    if (trueOverlap || buffer === 0) {
+      return {
+        hasConflict: true,
+        message: t(
+          'agenda.conflictWith',
+          `Conflito com ${other.clientName} (${other.startTime} - ${other.endTime})`,
+        ),
+      };
+    }
     return {
       hasConflict: true,
       message: t(
-        'agenda.conflictWith',
-        `Conflito com ${other.clientName} (${other.startTime} - ${other.endTime})`,
+        'agenda.bufferConflict',
+        `Intervalo mínimo de ${buffer} min não respeitado — conflita com ${other.clientName} (${other.startTime} - ${other.endTime})`,
       ),
     };
   }

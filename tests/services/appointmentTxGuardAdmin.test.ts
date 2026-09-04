@@ -399,6 +399,51 @@ describe('createAppointmentSafeAdmin — bloqueios de agenda (M06.3a)', () => {
   });
 });
 
+describe('createAppointmentSafeAdmin — intervalo/buffer entre atendimentos (M06.3c)', () => {
+  let env: ReturnType<typeof makeFakeAdminDb>;
+
+  beforeEach(() => {
+    env = makeFakeAdminDb({
+      users: [{ id: 'p1', data: { id: 'p1', name: 'Joao', businessId, role: 'operator', isActive: true } }],
+      appointments: [
+        { id: 'a-prev', data: apt({ id: 'a-prev', startTime: '08:00', endTime: '09:00' }) as unknown as Record<string, unknown> },
+      ],
+      businesses: [],
+    });
+  });
+
+  it('sem business doc (buffer indefinido = 0), encaixe exato é aceito', async () => {
+    const id = await createAppointmentSafeAdmin(env.fake as never, {
+      businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00',
+    });
+    expect(typeof id).toBe('string');
+  });
+
+  it('com appointmentBufferMinutes configurado, recusa encaixe exato', async () => {
+    env.collections.businesses.docs.push({
+      id: businessId,
+      data: { settings: { appointmentBufferMinutes: 20 } },
+    });
+    await expect(
+      createAppointmentSafeAdmin(env.fake as never, {
+        businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:00', endTime: '10:00',
+      }),
+    ).rejects.toBeInstanceOf(AppointmentConflictError);
+    expect(env.collections.appointments.docs.length).toBe(1); // não criou
+  });
+
+  it('com appointmentBufferMinutes configurado, aceita quando o vão já é suficiente', async () => {
+    env.collections.businesses.docs.push({
+      id: businessId,
+      data: { settings: { appointmentBufferMinutes: 20 } },
+    });
+    const id = await createAppointmentSafeAdmin(env.fake as never, {
+      businessId, professionalId: 'p1', date: '2026-05-22', startTime: '09:20', endTime: '10:20',
+    });
+    expect(typeof id).toBe('string');
+  });
+});
+
 describe('updateAppointmentSafeAdmin', () => {
   let env: ReturnType<typeof makeFakeAdminDb>;
 

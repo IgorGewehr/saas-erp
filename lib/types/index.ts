@@ -451,6 +451,12 @@ export interface BusinessSettings {
   paymentGateway?: PaymentGatewayConfig;
   /** Política de no-show */
   noShowPolicy?: NoShowPolicy;
+  /** Intervalo mínimo (minutos) exigido entre dois atendimentos consecutivos
+   *  do mesmo profissional — tempo de limpeza/preparo (M06.3c). 0/ausente =
+   *  sem intervalo mínimo (comportamento atual). Checado só entre
+   *  atendimentos (checkAppointmentConflict); não afeta bloqueios de agenda
+   *  nem horário de trabalho. */
+  appointmentBufferMinutes?: number;
   /** Pipeline do CRM (estágios customizáveis) */
   crmPipeline?: CRMPipelineConfig;
   /** SLA de conversas — tempo máximo de primeira resposta por prioridade */
