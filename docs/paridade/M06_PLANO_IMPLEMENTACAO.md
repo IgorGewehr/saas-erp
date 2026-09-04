@@ -21,9 +21,10 @@
 > ao vivo entregue; **achado importante sinalizado ao usuário**: documentos fiscais pendentes
 > por indisponibilidade da SEFAZ perdem o vínculo com a origem, risco real de nota fiscal
 > duplicada — mais próximo de M04 que de M06; memberships/assinaturas e consolidação
-> cobrança↔fiscal analisadas e adiadas). Próxima etapa: M06.7 (unificar agente/booking público
-> no núcleo — maior risco deste plano, muda comportamento de agendamento público de verdade;
-> checkpoint com o usuário antes de começar) ou M06.9 (aceite).
+> cobrança↔fiscal analisadas e adiadas). M06.7 concluída (agente/booking público convergidos
+> pro núcleo M06.1 — cast morto real corrigido no horário de trabalho, bloqueios e buffer
+> passaram a valer também no canal de IA). Falta só M06.9 (testes concorrentes, isolamento
+> multi-tenant, aceite/homologação) — último item do checklist do M06 inteiro.
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -508,8 +509,27 @@ nesta rodada.
 
 ### M06.7 — Booking público e agente no mesmo núcleo
 
-- [ ] Booking público e agente passam a usar o núcleo M06.1, aposentando os algoritmos próprios.
-- [ ] Capacidade de turma atômica também nesses caminhos.
+- [x] Booking público e agente passam a usar o núcleo M06.1, aposentando os algoritmos próprios.
+- [x] Capacidade de turma atômica também nesses caminhos.
+
+**M06.7 concluída em código (04/09/2026):** `app/api/agent/tools/agenda/route.ts` (única rota
+que processa todo agendamento mediado por IA — web, WhatsApp, Facebook, Instagram, todos o mesmo
+arquivo) tinha algoritmo próprio de conflito/disponibilidade, mais fraco que o núcleo usado por
+Agenda/CRM/PDV/API v1. `bookAppointment` (exclusivo) migrado pra `createAppointmentSafeAdmin`
+(mesmo guard do M06.1). `checkAvailability` teve um **cast morto confirmado** corrigido —
+`workingHours` era lido como `Record<string, WorkSchedule[]>`, mas o schema real é
+`{[dia]: {enabled,start,end}}`; o horário individual do profissional nunca era respeitado
+(sempre caía no fallback do horário do negócio), quebrando uma promessa explícita da tela de
+Configurações. `bookGroupAppointment` (turma) manteve transação própria (precisa incrementar
+mensalidade atomicamente, P2.9) mas trocou sua checagem de colisão por `checkAppointmentConflict`.
+Todos os três caminhos passam a respeitar bloqueios de agenda (M06.3a) e buffer entre
+atendimentos (M06.3c), que antes o agente nunca via. Mudanças de comportamento deliberadas (ex.:
+appointment sem profissional deixa de bloquear um profissional específico no agente — alinhando
+com a regra já em uso desde M06.1 nos outros canais) documentadas com o raciocínio completo em
+`docs/agenda/AGENDA_M06_7_NUCLEO_AGENTE.md`. Verificado por `tsc --noEmit` limpo e suíte completa
+(976 testes, mesma contagem — sem teste novo, deliberado: lógica nova é colagem de funções já
+testadas em suas próprias suítes) — **não testado contra uma conversa real do agente** nesta
+rodada.
 
 ### M06.8 — Desempenho, custo e segurança
 
@@ -567,10 +587,9 @@ sem regressão — **não testado manualmente em navegador** nesta rodada.
    analisadas, execução adiada pra quando houver navegador disponível pra validar).
 8. **M06.6** (parcial — status fiscal ao vivo entregue; achado de vínculo fiscal pendente
    sinalizado ao usuário, ver `docs/agenda/AGENDA_M06_6_COBRANCA_FISCAL.md`; memberships
-   adiadas) e **M06.7** — cobrança/assinaturas e canais externos. M06.7 é a maior mudança de
-   risco deste plano (comportamento de agendamento público real) — checkpoint com o usuário
-   antes de iniciar.
-9. **M06.9** — aceite.
+   adiadas) e **M06.7** (concluída — agente/booking público convergidos pro núcleo M06.1, ver
+   `docs/agenda/AGENDA_M06_7_NUCLEO_AGENTE.md`).
+9. **M06.9** — aceite. Único item restante do M06.
 
 **Mínimo para a odontologia operar com segurança: M06.0 → M06.1 → M06.2**, mais o bloqueio de
 agenda da M06.3. O resto é ganho incremental, não pré-requisito.

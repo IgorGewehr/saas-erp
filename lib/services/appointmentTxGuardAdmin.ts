@@ -151,7 +151,7 @@ function filterActiveBlocksForDate(
  * valor explícito, não campo ausente) + dos profissionais pedidos. 2 queries
  * (`tx.get`, rastreadas — mesma razão de `fetchDayAppointmentsForProfessionalsTx`).
  */
-async function fetchActiveBlocksTx(
+export async function fetchActiveBlocksTx(
   tx: Transaction,
   adminDb: Firestore,
   businessId: string,
@@ -180,14 +180,16 @@ async function fetchActiveBlocksTx(
  * doc ref simples (não query) — mesma consistência transacional dos outros
  * reads deste arquivo, custo mínimo (1 doc por ID, não índice).
  */
-async function fetchBusinessBufferMinutesTx(tx: Transaction, adminDb: Firestore, businessId: string): Promise<number> {
+export async function fetchBusinessBufferMinutesTx(tx: Transaction, adminDb: Firestore, businessId: string): Promise<number> {
   const snap = await tx.get(adminDb.collection('businesses').doc(businessId));
   return (snap.data()?.settings?.appointmentBufferMinutes as number | undefined) ?? 0;
 }
 
 /** Mesma busca de {@link fetchActiveBlocksTx}, sem transação — usada no caminho
- *  "sem profissional escolhido" (write direto, fora de tx). */
-async function fetchActiveBlocks(
+ *  "sem profissional escolhido" (write direto, fora de tx), e (M06.7) pelo
+ *  agente/booking público (`app/api/agent/tools/agenda/route.ts`) pra oferecer
+ *  disponibilidade que já exclui bloqueios de agenda. */
+export async function fetchActiveBlocks(
   adminDb: Firestore,
   businessId: string,
   date: string,

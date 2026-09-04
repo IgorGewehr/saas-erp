@@ -2,10 +2,19 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { createHash } from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody, resolveClientId } from '@/lib/agent/auth';
-import type { Appointment, AppointmentStatus, Service, User, WorkSchedule } from '@/lib/types';
+import type { Appointment, AppointmentStatus, Service, User } from '@/lib/types';
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { AgendaToolAction } from '@/contracts/api/agent/agenda';
-import { updateAppointmentSafeAdmin, AppointmentConflictError } from '@/lib/services/appointmentTxGuardAdmin';
+import {
+  createAppointmentSafeAdmin,
+  updateAppointmentSafeAdmin,
+  AppointmentConflictError,
+  fetchActiveBlocksTx,
+  fetchBusinessBufferMinutesTx,
+  fetchActiveBlocks,
+  type AdminAppointmentPayload,
+} from '@/lib/services/appointmentTxGuardAdmin';
+import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
 import { isGroupService } from '@/lib/contracts/domain/service';
 import { assertTransitionAppointment } from '@/lib/contracts/fsm/appointment';
 import { countSeatsTaken, findBlockingAppointment, buildGroupSlots, resolveGroupBooking, isBookingSlotOnGrade } from '@/lib/services/groupSession';
@@ -20,25 +29,12 @@ function addMinutes(hhmm: string, minutes: number): string {
   return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
-function intervalsOverlap(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
-  return aStart < bEnd && bStart < aEnd;
-}
-
 function timeToMinutes(hhmm: string): number {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
 }
 
-// Sinaliza conflito de horário dentro da transação de booking. Captura fora
-// da transação para responder com alternativas em vez de 500.
-class ConflictError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ConflictError';
-  }
-}
-
-// Turma cheia: distinto de ConflictError (slot existe, mas sem vaga). Captura
+// Turma cheia: distinto de AppointmentConflictError (slot existe, mas sem vaga). Captura
 // fora da tx pra responder status='full' + alternativas (outras sessões da
 // grade com vaga) em vez de 500.
 class SessionFullError extends Error {
@@ -314,6 +310,10 @@ async function checkAvailability(
   // Load business openingHours for fallback when professional has none
   const bizSnap = await adminDb.collection('businesses').doc(businessId).get();
   const bizHours = bizSnap.exists ? (bizSnap.data()?.settings?.openingHours as Array<{ isOpen: boolean; openTime: string; closeTime: string }> | undefined) : undefined;
+  // M06.7: mesmo campo que o guard atômico (appointmentTxGuardAdmin.ts) já
+  // aplica na hora de reservar — sem isso, um slot listado aqui como livre
+  // podia ser recusado no `book` por violar o intervalo mínimo configurado.
+  const bufferMinutes = (bizSnap.data()?.settings?.appointmentBufferMinutes as number | undefined) ?? 0;
   const dayOfWeek = new Date(date + 'T12:00:00').getDay(); // 0=Sun..6=Sat
 
   // If business is explicitly closed that day, short-circuit
@@ -367,19 +367,29 @@ async function checkAvailability(
     // else: no-one has serviceIds configured → all professionals can perform any service
   }
 
+  // M06.7: bloqueios de agenda (M06.3a) — mesma fonte usada pelo guard
+  // atômico de criação/edição. Sem isso, o agente oferecia (e depois tentava
+  // reservar, só falhando no `book`) um horário durante férias/feriado.
+  const blocks = await fetchActiveBlocks(adminDb, businessId, date, professionals.map(p => p.id));
+
   const slots: AvailabilitySlot[] = [];
   for (const prof of professionals) {
-    // Determine working window for this professional on this day of week
-    const profSchedule = (prof.workingHours as unknown as Record<string, WorkSchedule[]> | undefined);
+    // Determine working window for this professional on this day of week.
+    // M06.7: `User.workingHours` é `{[dayOfWeek]: {enabled,start,end}}` (mesmo
+    // shape usado por checkAppointmentConflict/SettingsModule) — o cast
+    // anterior pra `Record<string, WorkSchedule[]>` nunca batia esse shape
+    // (era sempre um objeto por dia, nunca array), então o horário
+    // individual do profissional NUNCA era respeitado aqui: sempre caía no
+    // fallback de horário do negócio, mesmo quando o profissional tinha
+    // horário próprio configurado (ou dia de folga marcado).
+    const daySchedule = prof.workingHours?.[dayOfWeek];
     let windowStart = '08:00';
     let windowEnd = '18:30';
 
-    if (profSchedule && Array.isArray(profSchedule[String(dayOfWeek)])) {
-      const entries = profSchedule[String(dayOfWeek)].filter(w => w.isActive !== false);
-      if (entries.length === 0) continue; // professional não trabalha nesse dia
-      // Use the widest window across their entries (we don't respect breaks here — kept simple)
-      windowStart = entries.reduce((min, e) => e.startTime < min ? e.startTime : min, '23:59');
-      windowEnd = entries.reduce((max, e) => e.endTime > max ? e.endTime : max, '00:00');
+    if (daySchedule) {
+      if (!daySchedule.enabled) continue; // profissional não trabalha nesse dia
+      windowStart = daySchedule.start;
+      windowEnd = daySchedule.end;
     } else if (bizHours && bizHours[dayOfWeek]?.isOpen) {
       windowStart = bizHours[dayOfWeek].openTime || windowStart;
       windowEnd = bizHours[dayOfWeek].closeTime || windowEnd;
@@ -395,12 +405,25 @@ async function checkAvailability(
 
     for (const start of candidates) {
       const end = addMinutes(start, durationMinutes);
-      // Unassigned appointments (no professionalId) block all professionals.
-      const conflict = appts.some(a =>
-        (!a.professionalId || a.professionalId === prof.id) &&
-        intervalsOverlap(start, end, a.startTime, a.endTime),
-      );
-      if (!conflict) {
+      // M06.7: mesmo algoritmo usado por Agenda/CRM/PDV/Conversas/API v1
+      // (checkAppointmentConflict) — substitui o overlap hand-rolled, que
+      // não considerava bloqueios nem o intervalo mínimo entre atendimentos.
+      // Nota de comportamento: appointment SEM profissional não bloqueia mais
+      // ninguém aqui (antes bloqueava todo mundo) — mesma regra que
+      // Agenda/CRM/PDV/API v1 já aplicam via este mesmo núcleo (M06.1: "sem
+      // profissional" = sem o que conflitar, decisão já tomada e em uso nos
+      // outros canais, não introduzida por esta fatia).
+      const conflict = checkAppointmentConflict({
+        appointments: appts,
+        members: [prof],
+        professionalId: prof.id,
+        date,
+        startTime: start,
+        endTime: end,
+        blocks,
+        bufferMinutes,
+      });
+      if (!conflict.hasConflict) {
         slots.push({
           startTime: start,
           endTime: end,
@@ -584,63 +607,43 @@ async function bookAppointment(businessId: string, p: BookParams) {
     });
   }
 
-  // ── Atomic transaction: conflict check + write ────────────────────────────
-  // ALL reads must happen before writes inside Firestore transactions.
-  const newRef = adminDb.collection('appointments').doc();
+  // ── Núcleo compartilhado (M06.7) ───────────────────────────────────────────
+  // `createAppointmentSafeAdmin` é o MESMO guard atômico usado por
+  // CRM/PDV/API v1 (via POST /api/appointments) — honra `professionalIds[]`,
+  // bloqueios de agenda (M06.3a), intervalo mínimo entre atendimentos
+  // (M06.3c) e o horário de trabalho real do profissional. O algoritmo
+  // anterior, hand-rolled só neste arquivo, não respeitava nenhum dos três.
+  const docData: Record<string, unknown> = {
+    businessId,
+    clientId: p.clientId || '',
+    clientName: p.clientName,
+    serviceId: p.serviceId,
+    serviceName,
+    date: p.date,
+    startTime: p.startTime,
+    endTime,
+    duration: p.durationMinutes,
+    status: 'agendado',
+    price,
+    color,
+    idempotencyKey,
+    createdAt: now,
+    updatedAt: now,
+  };
+  // Optional fields — only set if provided (Firestore rejects undefined)
+  if (p.professionalId !== undefined) docData.professionalId = p.professionalId;
+  if (p.professionalName !== undefined) docData.professionalName = p.professionalName;
+  if (p.clientPhone !== undefined) docData.clientPhone = p.clientPhone;
+  if (p.notes !== undefined) docData.notes = p.notes;
+  if (p.channelType !== undefined) docData.channelType = p.channelType;
+  if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
+  if (p.dealId !== undefined) docData.dealId = p.dealId;
 
-  const result = await adminDb.runTransaction(async (tx) => {
-    // Read: ALL appointments for the day — unassigned ones block all professionals.
-    const txQuery: FirebaseFirestore.Query = adminDb.collection('appointments')
-      .where('businessId', '==', businessId)
-      .where('date', '==', p.date);
-    const daySnap = await tx.get(txQuery);
-
-    // Evaluate conflicts: unassigned appointments block everyone;
-    // assigned appointments only block the same professional.
-    const conflicts = daySnap.docs
-      .map(d => d.data() as Appointment)
-      .filter(a => a.status !== 'cancelado')
-      .filter(a => !a.professionalId || !p.professionalId || a.professionalId === p.professionalId)
-      .filter(a => intervalsOverlap(p.startTime, endTime, a.startTime, a.endTime));
-
-    if (conflicts.length > 0) {
-      // Signal the conflict so we can build a structured response with
-      // alternatives *outside* the transaction (transactions can't issue
-      // unrelated reads cleanly). The marker is recognized below.
-      throw new ConflictError(`Horário ${p.startTime} em ${p.date} já está ocupado para este profissional`);
-    }
-
-    // Write
-    const docData: Record<string, unknown> = {
-      businessId,
-      clientId: p.clientId || '',
-      clientName: p.clientName,
-      serviceId: p.serviceId,
-      serviceName,
-      date: p.date,
-      startTime: p.startTime,
-      endTime,
-      duration: p.durationMinutes,
-      status: 'agendado',
-      price,
-      color,
-      idempotencyKey,
-      createdAt: now,
-      updatedAt: now,
-    };
-    // Optional fields — only set if provided (Firestore rejects undefined)
-    if (p.professionalId !== undefined) docData.professionalId = p.professionalId;
-    if (p.professionalName !== undefined) docData.professionalName = p.professionalName;
-    if (p.clientPhone !== undefined) docData.clientPhone = p.clientPhone;
-    if (p.notes !== undefined) docData.notes = p.notes;
-    if (p.channelType !== undefined) docData.channelType = p.channelType;
-    if (p.conversationId !== undefined) docData.conversationId = p.conversationId;
-    if (p.dealId !== undefined) docData.dealId = p.dealId;
-
-    tx.create(newRef, docData);
-    return { id: newRef.id, status: 'created' as const, date: p.date, startTime: p.startTime, endTime, serviceName };
-  }).catch(async (err: unknown) => {
-    if (!(err instanceof ConflictError)) throw err;
+  try {
+    const id = await createAppointmentSafeAdmin(adminDb, docData as AdminAppointmentPayload);
+    return { id, status: 'created' as const, date: p.date, startTime: p.startTime, endTime, serviceName };
+  } catch (err) {
+    if (!(err instanceof AppointmentConflictError)) throw err;
 
     // Carrega slots livres do mesmo dia/profissional e ranqueia pelos
     // mais próximos do horário pedido. Limita a 3 alternativas — agente
@@ -667,9 +670,7 @@ async function bookAppointment(businessId: string, p: BookParams) {
       conflictReason: err.message,
       alternatives,
     };
-  });
-
-  return result;
+  }
 }
 
 interface GroupBookContext {
@@ -689,7 +690,7 @@ interface GroupBookContext {
  *
  *  - Vagas = capacity - count(appts não-cancelados com o mesmo sessionKey).
  *  - Sobreposição com appointment de OUTRO sessionKey (1:1 ou outra turma) do
- *    mesmo profissional/não-atribuído → BLOQUEIA (ConflictError).
+ *    mesmo profissional/não-atribuído → BLOQUEIA (AppointmentConflictError).
  *  - Turma com vaga → cria Appointment do aluno (status='joined' se já havia
  *    alunos; 'created' se é o primeiro).
  *  - Turma cheia → SessionFullError → status='full' + alternativas.
@@ -708,13 +709,28 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
     ? await loadActiveMembershipForBooking(businessId, p.clientId, c.serviceId)
     : null;
 
+  // M06.7: professional fixo da turma (se houver) — carregado fora da tx
+  // (mesmo racional de appointmentTxGuardAdmin.ts: workingHours muda
+  // raramente, não é alvo de corrida real) pra que o guard de conflito
+  // também respeite o horário de trabalho de quem dá a aula, não só a grade
+  // do serviço.
+  let groupMembers: User[] = [];
+  if (effectiveProfessionalId) {
+    const profSnap = await adminDb.collection('users').doc(effectiveProfessionalId).get();
+    if (profSnap.exists) groupMembers = [{ ...(profSnap.data() as User), id: profSnap.id }];
+  }
+
   const newRef = adminDb.collection('appointments').doc();
 
   const result = await adminDb.runTransaction(async (tx) => {
     const txQuery: FirebaseFirestore.Query = adminDb.collection('appointments')
       .where('businessId', '==', businessId)
       .where('date', '==', p.date);
-    const daySnap = await tx.get(txQuery);
+    const [daySnap, blocks, bufferMinutes] = await Promise.all([
+      tx.get(txQuery),
+      fetchActiveBlocksTx(tx, adminDb, businessId, p.date, effectiveProfessionalId ? [effectiveProfessionalId] : []),
+      fetchBusinessBufferMinutesTx(tx, adminDb, businessId),
+    ]);
 
     // P2.9: re-lê a assinatura DENTRO da tx pra contagem consistente sob
     // concorrência (usesThisCycle pode ter mudado entre o pre-check e aqui).
@@ -731,20 +747,47 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
     }
 
     const dayAppts = daySnap.docs.map(d => ({ ...(d.data() as Appointment), id: d.id }));
+    // Colegas da MESMA turma (mesmo sessionKey) nunca conflitam entre si —
+    // dividem o horário legitimamente.
+    const notSameSession = dayAppts.filter(a => a.sessionKey !== sessionKey);
 
-    // Appointments do MESMO profissional efetivo (ou não-atribuídos, que
-    // bloqueiam todos) candidatos a conflito/contagem.
-    const relevant = dayAppts.filter(a =>
-      !a.professionalId || !effectiveProfessionalId || a.professionalId === effectiveProfessionalId,
-    );
-
-    // Conflito: qualquer appointment de OUTRO sessionKey que sobreponha →
-    // bloqueia (1:1 sobre a turma, ou turma diferente no mesmo horário).
-    const blocking = findBlockingAppointment(relevant, p.startTime, c.endTime, sessionKey);
-    if (blocking) {
-      throw new ConflictError(
-        `Horário ${p.startTime} em ${p.date} indisponível: o profissional já tem outro compromisso (${blocking.startTime}-${blocking.endTime}).`,
-      );
+    // M06.7: mesmo núcleo de conflito (checkAppointmentConflict) usado pela
+    // reserva exclusiva/manual — antes, turma só checava overlap puro
+    // (findBlockingAppointment), ignorando bloqueios de agenda (M06.3a),
+    // intervalo mínimo (M06.3c) e horário de trabalho do profissional.
+    if (effectiveProfessionalId) {
+      const conflictResult = checkAppointmentConflict({
+        appointments: notSameSession,
+        members: groupMembers,
+        professionalId: effectiveProfessionalId,
+        date: p.date,
+        startTime: p.startTime,
+        endTime: c.endTime,
+        blocks,
+        bufferMinutes,
+      });
+      if (conflictResult.hasConflict) {
+        throw new AppointmentConflictError(conflictResult.message);
+      }
+    } else {
+      // Sessão aberta ('any', sem profissional fixo): ainda ocupa um
+      // horário/espaço real — mantém o overlap contra QUALQUER profissional
+      // (não é o mesmo relaxamento de "sem profissional = sem conflito" que
+      // vale pro agendamento exclusivo, onde de fato não há o que checar).
+      // Bloqueio do negócio inteiro (feriado/fechamento) ainda se aplica;
+      // buffer/horário de trabalho não fazem sentido sem profissional certo.
+      const blockCheck = checkAppointmentConflict({
+        appointments: [], members: [], professionalId: '', date: p.date, startTime: p.startTime, endTime: c.endTime, blocks,
+      });
+      if (blockCheck.hasConflict) {
+        throw new AppointmentConflictError(blockCheck.message);
+      }
+      const blocking = findBlockingAppointment(notSameSession, p.startTime, c.endTime);
+      if (blocking) {
+        throw new AppointmentConflictError(
+          `Horário ${p.startTime} em ${p.date} indisponível: já existe outro compromisso (${blocking.startTime}-${blocking.endTime}).`,
+        );
+      }
     }
 
     // Vagas: conta alunos não-cancelados já nesta turma (mesmo sessionKey).
@@ -827,7 +870,7 @@ async function bookGroupAppointment(businessId: string, p: BookParams, c: GroupB
         capacity: err.capacity,
       };
     }
-    if (err instanceof ConflictError) {
+    if (err instanceof AppointmentConflictError) {
       const alternatives = await loadGroupAlternatives(businessId, p, c.serviceId, sessionKey);
       return {
         status: 'conflict' as const,
