@@ -2187,9 +2187,24 @@ export default function AgendaModule() {
   useEffect(() => {
     if (!business?.id) { setAppointmentsLoading(false); return; }
     setAppointmentsLoading(true);
+    // M06.8: janela de datas — antes carregava o histórico INTEIRO do tenant
+    // (sem where/limit de data), crescendo pra sempre com o tempo. Janela
+    // generosa (6 meses pra trás, 1 ano pra frente) cobre qualquer uso
+    // realista de uma clínica pequena/média sem virar custo de leitura
+    // ilimitado. Limitação aceita: a janela é calculada uma vez no mount
+    // (não "desliza" sozinha se a aba ficar aberta por meses sem reload) —
+    // suficiente pra sessão de trabalho normal, não resolve o caso extremo
+    // de uma aba nunca recarregada. Histórico mais antigo que isso não
+    // aparece aqui — quem precisar dele usa Relatórios ou a Timeline do
+    // cliente (queries próprias, sem essa janela).
+    const now = new Date();
+    const minDate = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const maxDate = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const q = query(
       collection(db, 'appointments'),
       where('businessId', '==', business.id),
+      where('date', '>=', minDate),
+      where('date', '<=', maxDate),
       orderBy('date', 'asc'),
     );
     const unsub = onSnapshot(

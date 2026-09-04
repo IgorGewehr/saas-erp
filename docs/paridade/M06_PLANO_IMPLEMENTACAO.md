@@ -15,8 +15,10 @@
 > (M06.5a confirmação leve via WhatsApp, M06.5b fuso horário por negócio — corrigiu bug real de
 > ~3h no lembrete/confirmação —, M06.5c reengajamento — corrigiu dois bugs reais numa automação
 > de CRM já existente; consolidação dos dois sistemas de lembrete analisada e deliberadamente
-> adiada) concluídos em código em 04/09/2026. Próxima etapa: M06.8 (custo/segurança) — tem um
-> item que é decisão de produto (visibilidade por profissional), não só engenharia.
+> adiada) concluídos em código em 04/09/2026. M06.8 parcial (janela de listener entregue;
+> visibilidade por profissional **pendente de decisão do usuário**; extração de
+> `AgendaModule.tsx` e paginação de clientes analisadas e adiadas). Próxima etapa: M06.6/M06.7
+> (cobrança/assinaturas, unificar agente no núcleo) ou M06.9 (aceite).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -479,10 +481,36 @@ consistência com a fatia anterior) e **não testado contra o cron real em produ
 
 ### M06.8 — Desempenho, custo e segurança
 
-- [ ] Janela de datas no listener da Agenda (hoje carrega o histórico inteiro do tenant).
-- [ ] Paginação/lookup sob demanda da lista de clientes.
-- [ ] Decidir explicitamente a visibilidade por profissional (rules + interface).
-- [ ] Extrair persistência e orquestração de `AgendaModule.tsx` (3848 linhas).
+- [x] Janela de datas no listener da Agenda (hoje carrega o histórico inteiro do tenant).
+- [ ] ~~Paginação/lookup sob demanda da lista de clientes~~ — **analisado e deliberadamente
+      adiado** (04/09/2026): a lista completa alimenta um seletor PESQUISÁVEL de cliente no
+      `AppointmentFormDialog`, não só um mapa id→nome — paginar/limitar cortaria clientes da
+      busca arbitrariamente, pior regressão que o custo que resolveria. Correção de verdade
+      precisa de busca no servidor ou UI de scroll infinito, nenhuma segura de fazer sem
+      navegador ao vivo pra testar. Prioridade mais baixa que o item acima: já é `useQuery`
+      cacheada (5min), não um listener ao vivo.
+- [ ] Decidir explicitamente a visibilidade por profissional (rules + interface). **Não é
+      decisão de engenharia** — o próprio verbo do item já indica isso. Depende de como a
+      clínica realmente opera; implementar qualquer resposta sem confirmar seria decidir
+      política de acesso a dado de saúde por conta própria. Fica pendente, sinalizado
+      explicitamente, aguardando o usuário.
+- [ ] ~~Extrair persistência e orquestração de `AgendaModule.tsx` (agora 4035 linhas)~~ —
+      **analisado, plano concreto registrado, execução adiada** (04/09/2026): 3 grupos de
+      componentes já autocontidos (`ServiceManagementDialog` ~920 linhas,
+      `ViewAppointmentDialog` ~400, `DeleteConfirmDialog`/`MiniCalendar`/`AppointmentBlock`/
+      helpers ~300-400) reduziriam o arquivo em ~1600 linhas com risco mecânico baixo — mas o
+      arquivo recebeu edições reais em quase toda fatia desta sessão, e mover ~1600 linhas de UI
+      sem navegador disponível pra validar visualmente é o tipo de risco que só aparece rodando
+      de verdade. Detalhes e tabela de extração em `docs/agenda/AGENDA_M06_8_DESEMPENHO.md`,
+      prontos pra uma fatia futura com sessão de navegador disponível.
+
+**M06.8 (parcial) concluída em código (04/09/2026):** janela de datas no listener de
+agendamentos (180 dias atrás, 365 à frente, reaproveitando o índice `[businessId,date]`
+existente — nenhum índice novo). Os outros 3 itens foram investigados e documentados, não
+implementados — um deles bloqueado por ser decisão de produto (visibilidade por profissional),
+não de engenharia. Detalhes, incluindo o plano de extração pronto pra execução futura, em
+`docs/agenda/AGENDA_M06_8_DESEMPENHO.md`. Verificado por `tsc --noEmit` limpo e suíte completa
+sem regressão — **não testado manualmente em navegador** nesta rodada.
 
 ### M06.9 — Testes, homologação e aceite
 
@@ -502,7 +530,9 @@ consistência com a fatia anterior) e **não testado contra o cron real em produ
 5. **M06.3** — bloqueios, no-show e buffer entre atendimentos (completo).
 6. **M06.5** — lembretes consolidados (confirmação, fuso e recall já entregues; falta só
    consolidar os dois sistemas de lembrete numa única definição de janela/idempotência).
-7. **M06.8** — custo e segurança.
+7. **M06.8** — custo e segurança (janela de listener entregue; visibilidade por profissional
+   pendente de decisão do usuário; extração de `AgendaModule.tsx` e paginação de clientes
+   analisadas, execução adiada pra quando houver navegador disponível pra validar).
 8. **M06.6** e **M06.7** — cobrança/assinaturas e canais externos.
 9. **M06.9** — aceite.
 
