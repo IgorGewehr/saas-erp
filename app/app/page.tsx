@@ -6,7 +6,6 @@ import { cn } from '@/lib/utils';
 import { useTabContext } from '@/app/components/layout/TabContext';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { FinancialV2EntryBanner } from '@/app/components/features/financial-v2/FinancialV2EntryBanner';
 
 // Lazy-loaded modules
 const DashboardModule  = lazy(() => import('@/app/components/features/dashboard/DashboardModule'));
@@ -118,13 +117,16 @@ function renderModule(page: MenuPage, financialV2Enabled: boolean) {
       case 'Compras':      return <Suspense fallback={fallback}><ComprasModule /></Suspense>;
       case 'Kanban':       return <Suspense fallback={fallback}><KanbanModule /></Suspense>;
       case 'Financeiro':
+        // M03.6: decisão de produto tomada em 04/09/2026 — clássico é o principal
+        // (V2 ainda não cobre a escrita operacional que a odontologia usa: editar/
+        // cancelar lançamento, parcelamento, comissão, "Cobrar" da Agenda). Convite
+        // de entrada removido pra ninguém migrar sem saber dos gaps; quem já tiver
+        // `financialV2Enabled` ligado continua acessando o V2 normalmente — ver
+        // docs/financeiro/FINANCEIRO_M03_6_PARIDADE_V1_V2.md.
         return financialV2Enabled ? (
           <Suspense fallback={fallback}><FinancialV2Module /></Suspense>
         ) : (
-          <>
-            <FinancialV2EntryBanner />
-            <Suspense fallback={fallback}><FinancialModule /></Suspense>
-          </>
+          <Suspense fallback={fallback}><FinancialModule /></Suspense>
         );
       case 'Estoque':      return <Suspense fallback={fallback}><InventoryModule /></Suspense>;
       case 'Pedidos':      return <Suspense fallback={fallback}><OrdersModule /></Suspense>;
