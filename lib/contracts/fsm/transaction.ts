@@ -14,18 +14,15 @@
  *
  * Estados terminais: pago (liquidada), cancelado (estornada/anulada).
  *
- * TODO(auditoria P3.6/R2): promover o status para um contrato de domínio
- * completo em lib/contracts/domain/transaction.ts (Transaction ainda vive como
- * interface em lib/types/index.ts). Por ora o enum canônico mora aqui para
- * destravar o FSM dos write paths (P1.9). Manter sincronizado com
- * lib/types/index.ts:TransactionStatus.
+ * M03.1: status promovido para o contrato de domínio completo em
+ * lib/contracts/domain/transaction.ts (TODO P3.6/R2 resolvido) — mesmo
+ * sentido de dependência de fsm/appointment.ts → domain/appointment.ts
+ * (o domínio é a fonte, o FSM importa de volta, nunca o contrário).
  */
 
-import { z } from 'zod';
+import type { TransactionStatus } from '../domain/transaction';
 
-export const TRANSACTION_STATUSES = ['pendente', 'pago', 'atrasado', 'cancelado'] as const;
-export const TransactionStatusSchema = z.enum(TRANSACTION_STATUSES);
-export type TransactionStatus = z.infer<typeof TransactionStatusSchema>;
+export type { TransactionStatus };
 
 export const TRANSACTION_TRANSITIONS: Record<TransactionStatus, ReadonlySet<TransactionStatus>> = {
   pendente:  new Set<TransactionStatus>(['pago', 'atrasado', 'cancelado']),

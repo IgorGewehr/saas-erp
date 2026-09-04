@@ -10,9 +10,10 @@
 > atendimento já existe via ligação pontual com a Agenda (`docs/agenda/AGENDA_COBRANCA.md`), mas
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
-> Estado: investigação de abertura concluída em 04/09/2026. M03.5 (testes de conciliação) e
-> M03.0 (baseline/auditoria) concluídos em código o mesmo dia — nenhum dos dois depende da
-> decisão V1 vs V2. Próxima etapa recomendada: M03.1 (contrato de domínio Zod).
+> Estado: investigação de abertura concluída em 04/09/2026. M03.5 (testes de conciliação),
+> M03.0 (baseline/auditoria) e M03.1 (contrato de domínio Zod) concluídos em código o mesmo
+> dia — nenhum dos três depende da decisão V1 vs V2. Próxima etapa recomendada: M03.2 (núcleo
+> de criação/transição).
 
 ---
 
@@ -127,16 +128,31 @@ completa (1033 testes/77 arquivos, sem regressão).
 
 **Saída:** evidência de quanto do problema já existe nos dados reais antes de mudar qualquer regra.
 
-### M03.1 — Contrato de domínio (pré-requisito SDD, R2)
+### M03.1 — Contrato de domínio (pré-requisito SDD, R2) ✅ Concluído (04/09/2026)
 
-- [ ] Promover `lib/contracts/fsm/transaction.ts` (já existe, só o FSM) + `Transaction` de
+- [x] Promover `lib/contracts/fsm/transaction.ts` (já existe, só o FSM) + `Transaction` de
       `lib/types/index.ts` pra um contrato completo em `lib/contracts/domain/transaction.ts`
       (Zod + invariantes), conforme já auto-apontado como TODO no próprio arquivo do FSM.
       `z.infer` substitui a interface solta — não redeclarar em paralelo (R2 do CLAUDE.md).
-- [ ] Decidir e documentar o shape mínimo aceitável por tipo de lançamento (receita/despesa,
-      à vista/parcelado/recorrente) — hoje o `Transaction` tem ~45 campos opcionais numa única
-      interface flat; o contrato deve deixar explícito o que é obrigatório em cada caso via
-      `superRefine`/discriminated union, não só "tudo opcional".
+- [ ] ~~Decidir e documentar o shape mínimo aceitável por tipo de lançamento (receita/despesa,
+      à vista/parcelado/recorrente) via `superRefine`/discriminated union~~ — **analisado,
+      deliberadamente adiado**: decidir o shape mínimo por variante depende de observar os 13
+      write paths reais sendo migrados em M03.2/M03.3; fazer isso agora, especulativamente,
+      arriscaria rejeitar um formato que algum caminho hoje já usa legitimamente. As invariantes
+      SEGURAS de verificar sem esse risco (`installmentTotal`/`Number` exigem
+      `installmentGroupId`; `amount > 0`) já foram aplicadas via `superRefine`/field-level.
+
+**Entregue:** `lib/contracts/domain/transaction.ts` novo (contrato completo, ~45 campos +
+objetos aninhados `recurrence`/`attachments`). Achado real durante a promoção: **3 fontes de
+verdade independentes** pro mesmo enum de status/type (`fsm/transaction.ts`, e uma 3ª hardcoded
+em `lib/contracts/api/agent/_shared.ts` que ninguém tinha notado) — consolidadas nas 1 canônica
+do domínio, mesmo sentido de dependência de `fsm/appointment.ts → domain/appointment.ts`.
+`amount` virou `.positive()` rígido desde já (sem tenant real em produção pra quebrar). Achado
+de passagem, não corrigido: `PaymentMethodSchema` do agente tem valores DIFERENTES do
+`PaymentMethod` real (`cartao_loja` vs `creditoLoja`, etc.) — escopo próprio. 17 testes novos
+(`tests/contracts/transactionDomain.test.ts`). Detalhes em
+`docs/financeiro/FINANCEIRO_M03_1_CONTRATO_DOMINIO.md`. Verificado por `tsc --noEmit` limpo e
+suíte completa (1050 testes/78 arquivos, sem regressão).
 
 ### M03.2 — Núcleo de criação/transição (o que nunca existiu)
 
@@ -276,8 +292,8 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
 1. **M03.5** ✅ — testes de conciliação primeiro (menor risco, maior urgência: dinheiro real e
    zero cobertura hoje; não depende de nenhuma decisão de produto).
 2. **M03.0** ✅ — baseline/auditoria (mede antes de mexer, mesmo racional de M01/M06).
-3. **M03.1** — contrato de domínio (pré-requisito SDD pra tudo que vem depois). Próxima etapa.
-4. **M03.2** — núcleo de criação/transição.
+3. **M03.1** ✅ — contrato de domínio (pré-requisito SDD pra tudo que vem depois).
+4. **M03.2** — núcleo de criação/transição novo. Próxima etapa.
 5. **M03.3** — migrar os caminhos de maior risco (API v1 e agente primeiro — exposição externa;
    depois clássico/V2/PDV-reversão/comissão).
 6. **M03.4** — enforcement no servidor.

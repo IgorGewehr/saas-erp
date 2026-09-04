@@ -13,6 +13,7 @@
 
 import { z } from 'zod';
 import { ErrorEnvelopeSchema, successEnvelope } from '../_envelope';
+import { TransactionTypeSchema, TransactionStatusSchema } from '../../domain/transaction';
 
 /** Headers HMAC enviados pelo agente Python ao chamar /api/agent/tools/*. */
 export const AgentHmacHeadersSchema = z.object({
@@ -62,8 +63,7 @@ export const LifecycleStageSchema = z.enum([
   'new_lead', 'contacted', 'qualified', 'proposal', 'negotiation', 'customer', 'churned',
 ]);
 
-export const TransactionTypeSchema = z.enum(['receita', 'despesa']);
-export const TransactionStatusSchema = z.enum(['pendente', 'pago', 'atrasado', 'cancelado']);
+export { TransactionTypeSchema, TransactionStatusSchema };
 export const PaymentMethodSchema = z.enum([
   'dinheiro', 'pix', 'credito', 'debito', 'boleto', 'transferencia', 'cartao_loja', 'outro',
 ]);
