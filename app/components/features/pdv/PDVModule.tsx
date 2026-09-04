@@ -59,7 +59,7 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, deleteField, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, deleteField, onSnapshot, runTransaction } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { checkStockAvailability } from '@/lib/services/stock';
 import { applyStockOperation } from '@/lib/services/stock-server-client';
@@ -1169,7 +1169,15 @@ export default function PDVModule() {
         });
       }
 
-      // 3. Cancel the linked financial transaction
+      // 3. Cancel the linked financial transaction(s) — ATOMICAMENTE (M03.3
+      // achado: um loop de updateDoc independentes podia deixar UMA transação
+      // cancelada e outra não se a conexão caísse no meio, quando a venda tem
+      // mais de uma vinculada, ex.: receita + comissão). Este trecho não usa
+      // o núcleo transactionTxGuardAdmin.ts (Admin SDK, server-side-only,
+      // M03.2) — permanece client SDK, mas ganha atomicidade real via
+      // runTransaction, com re-checagem de tenant por documento (defesa em
+      // profundidade — firestore.rules, M03.4, também garante a transição
+      // válida e amount>0 nesta escrita, mesmo sem o núcleo).
       const txSnap = await getDocs(
         query(
           collection(db, 'transactions'),
@@ -1177,10 +1185,15 @@ export default function PDVModule() {
           where('saleId', '==', sale.id),
         ),
       );
-      for (const txDoc of txSnap.docs) {
-        await updateDoc(doc(db, 'transactions', txDoc.id), {
-          status: 'cancelado',
-          updatedAt: now,
+      if (!txSnap.empty) {
+        const txRefs = txSnap.docs.map((d) => doc(db, 'transactions', d.id));
+        await runTransaction(db, async (tx) => {
+          const snaps = [];
+          for (const ref of txRefs) snaps.push(await tx.get(ref));
+          for (const snap of snaps) {
+            if (!snap.exists() || snap.data()?.businessId !== business.id) continue;
+            tx.update(snap.ref, { status: 'cancelado', updatedAt: now });
+          }
         });
       }
 

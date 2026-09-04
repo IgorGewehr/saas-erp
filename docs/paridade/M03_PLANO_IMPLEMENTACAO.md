@@ -10,10 +10,10 @@
 > atendimento já existe via ligação pontual com a Agenda (`docs/agenda/AGENDA_COBRANCA.md`), mas
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
-> Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2, a
-> primeira rodada de M03.3 e M03.4 (enforcement em `firestore.rules`) concluídos em código o
-> mesmo dia — nenhum depende da decisão V1 vs V2. Restam: os 2 follow-ups reais de M03.3
-> (contrato do agente; reversão de venda do PDV) e o checkpoint M03.6 (decisão V1 vs V2).
+> Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2, M03.3
+> (API v1 + follow-up de atomicidade no PDV) e M03.4 concluídos em código o mesmo dia — nenhum
+> depende da decisão V1 vs V2. Restam: o follow-up do contrato do agente (identificador estável
+> pra idempotência) e o checkpoint M03.6 (decisão V1 vs V2).
 
 ---
 
@@ -209,13 +209,16 @@ Ordem por risco × exposição, não por ordem alfabética:
       `BaixaDialog.tsx`~~ — adiado: depende de decidir se nasce uma rota `POST /api/transactions`
       nova (client→server) ou se essas telas continuam client SDK direto; decisão natural de
       fazer junto com M03.6 (V1 vs V2), não isoladamente.
-- [ ] ~~`PDVModule.tsx:1173-1184`~~ — **investigado, achado menos grave do que o plano supunha**:
-      toda transição PARA `cancelado` já é válida a partir de QUALQUER estado no FSM — não existe
-      hoje nenhuma sequência de estados que esse `updateDoc` cru consiga violar. O gap é
-      arquitetural (client SDK, não usa o núcleo Admin-only) mais do que funcional. Migrar de
-      verdade exigiria construir o guard client-side deliberadamente adiado no M03.2, ou mover
-      todo `handleCancelSale` (estoque + stats + transação) pra uma rota server-side — maior que
-      "trocar uma chamada". Ver `docs/financeiro/FINANCEIRO_M03_3_MIGRACAO_API_V1.md` §3.
+- [x] `PDVModule.tsx:1173-1184` — **investigado (achado menos grave do que o plano supunha: toda
+      transição PARA `cancelado` já é válida a partir de QUALQUER estado no FSM, então não havia
+      violação de FSM possível) E corrigido o gap real que sobrava**: o loop de `updateDoc`
+      independentes (um por transação vinculada à venda) não era atômico — conexão caindo no
+      meio deixava uma transação cancelada e outra não, se a venda tivesse mais de uma vinculada
+      (ex.: receita + comissão). Corrigido com `runTransaction` (client SDK) + re-checagem de
+      tenant por documento — mesmo escopo funcional de antes, agora atômico. **Não** migrado pro
+      guard Admin-SDK (M03.2) nem movido pra rota server-side — ambos continuam maiores que o
+      necessário pra fechar o gap real encontrado (atomicidade, não FSM). `firestore.rules`
+      (M03.4) já cobre `amount>0`/transição válida nesta escrita mesmo sem o núcleo.
 - [ ] `lib/services/commission.ts` — unificar `maybeCreateCommission`/`maybeCreateCommissionAdmin`
       (hoje duplicados por cópia manual, não compartilhados) numa fonte única, migrada pro núcleo.
       Não abordado nesta rodada.
