@@ -10,9 +10,10 @@
 >
 > Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável), M06.3
 > completo (M06.3a bloqueios, M06.3b no-show, M06.3c buffer), M06.4a (ficha do
-> paciente/anamnese) e M06.5a (confirmação leve via WhatsApp) concluídos em código em
-> 04/09/2026. Próxima etapa: resto do M06.5 (consolidar lembretes, fuso, reengajamento) ou
-> M06.0b (congelar comportamento por canal).
+> paciente/anamnese), M06.5a (confirmação leve via WhatsApp) e M06.5b (fuso horário por
+> negócio — corrigiu de quebra um deslocamento real de ~3h no lembrete/confirmação por
+> WhatsApp) concluídos em código em 04/09/2026. Próxima etapa: consolidar os dois sistemas de
+> lembrete e reengajamento (resto do M06.5) ou M06.0b.
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -384,7 +385,7 @@ manualmente em navegador** nesta rodada.
 
 - [ ] Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência.
 - [x] Confirmação do paciente ("confirmo") atualizando status **sem** exigir o Agente IA completo.
-- [ ] Fuso horário por negócio, substituindo o `-03:00` fixo.
+- [x] Fuso horário por negócio, substituindo o `-03:00` fixo.
 - [ ] Reengajamento de paciente sem retorno há N meses (recall), reaproveitando CRM/campanhas.
 
 **M06.5a concluída em código:** confirmação leve via WhatsApp, sem depender do Agente IA.
@@ -399,6 +400,22 @@ produção). Novo campo `Appointment.confirmedVia` distingue confirmação manua
 Detalhes em `docs/agenda/AGENDA_CONFIRMACAO_WHATSAPP.md`. Verificado por suíte automatizada
 (958 testes, 23 novos em 2 arquivos novos, sem regressão) — **não testado contra WhatsApp real**
 nesta rodada.
+
+**M06.5b concluída em código:** fuso horário por negócio. **Achado no caminho, mais sério que o
+item original**: `app/api/agent/scheduled/run/route.ts` (lembrete/confirmação por WhatsApp) não
+tinha um offset "fixo em -03:00" — não tinha offset NENHUM, então o `new Date()` sem timezone
+era interpretado no fuso do PROCESSO (container Docker sem `TZ` configurado = UTC), deslocando
+a janela de lembrete/confirmação em ~3h pra QUALQUER negócio, não só os de fuso diferente. Novo
+`lib/utils/timezone.ts` (`zonedDateTimeToUtc`, via `date-fns-tz`, banco IANA de verdade — não
+mais offset fixo) corrige os dois arquivos de lembrete
+(`appointmentReminderRunner.ts`/`scheduled/run/route.ts`), lendo `business.settings.timezone`
+(default `America/Sao_Paulo`). Fuso inválido num negócio não derruba o lote dos demais. Achado
+colateral documentado, não corrigido: o fuso do negócio nunca chega no contexto do Agente IA
+(sempre cai no fallback `America/Sao_Paulo` no lado Python) — bug real, superfície diferente
+(contexto do LLM), fora do escopo desta fatia. Detalhes em `docs/agenda/AGENDA_FUSO_HORARIO.md`.
+Verificado por suíte automatizada (968 testes, 10 novos em 2 arquivos novos — primeira suíte de
+`appointmentReminderRunner.ts`, que não tinha nenhuma antes — sem regressão) — **não verificado
+contra o cron real em produção** nesta rodada.
 
 **Saída:** menos cadeira vazia, sem depender de configuração escondida.
 

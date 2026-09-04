@@ -10,9 +10,12 @@
  * Idempotência: log composto em `appointmentReminderLogs/{appointmentId}_{minutesBefore}`.
  * Cron rodando múltiplas vezes no mesmo intervalo NÃO duplica notificações.
  *
- * Timezone: assume Brasil/SP (UTC-3, sem DST desde 2019). Generalizar pra
- * outros fusos requer parse do business.settings.timezone via Intl — fora
- * de escopo v1.
+ * Timezone (M06.5): fuso por negócio via `business.settings.timezone`
+ * (default `America/Sao_Paulo` quando ausente — mesmo comportamento de
+ * antes pra quem não configurou nada). A query é cross-tenant (1 scan pro
+ * SaaS inteiro, ver comentário abaixo), então os negócios distintos do lote
+ * são resolvidos em lote (`fetchTimezonesByBusiness`) em vez de 1 leitura
+ * por agendamento.
  *
  * Multi-prof: cada UID em `professionalIds` recebe sua própria notificação.
  * Se nenhum prof atribuído, skip (appointment "da casa" sem responsável).
@@ -21,10 +24,7 @@
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import type { Appointment } from '@/lib/types';
 import { getAppointmentProfessionalIds, getAppointmentProfessionalNames } from '@/lib/utils/appointment';
-
-// Offset BR fixo: UTC-3 sem DST desde 2019. Pra outros TZs, usar Intl
-// .DateTimeFormat com timeZoneName='longOffset' (mais complexo).
-const BR_OFFSET = '-03:00';
+import { zonedDateTimeToUtc, DEFAULT_BUSINESS_TIMEZONE } from '@/lib/utils/timezone';
 
 // Janelas de lembrete: ANTES de cada slot, em minutos. Cron roda a cada 5min,
 // então cada appt vai cair numa janela ±5min em torno do alvo.
@@ -54,11 +54,22 @@ export interface ReminderSummary {
 }
 
 /**
- * Converte `date + startTime` (locais BR) pra epoch UTC. Aceita formato
- * 'YYYY-MM-DD' + 'HH:mm'. Retorna NaN se inválido.
+ * Busca o fuso configurado de cada negócio distinto do lote (batch — 1
+ * leitura por businessId, não por appointment). Ausente/não configurado =
+ * cai pro default (mesmo comportamento de antes desta fatia).
  */
-function appointmentEpochMs(date: string, startTime: string): number {
-  return new Date(`${date}T${startTime}:00${BR_OFFSET}`).getTime();
+async function fetchTimezonesByBusiness(businessIds: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  await Promise.all(businessIds.map(async (id) => {
+    try {
+      const snap = await adminDb.collection('businesses').doc(id).get();
+      const tz = snap.data()?.settings?.timezone;
+      if (typeof tz === 'string' && tz) map.set(id, tz);
+    } catch (err) {
+      console.warn(`[appointmentReminder] falha ao buscar fuso do negócio ${id}:`, err);
+    }
+  }));
+  return map;
 }
 
 /** Hoje em formato YYYY-MM-DD no fuso BR. */
@@ -95,17 +106,25 @@ export async function runAppointmentReminders(now: Date = new Date()): Promise<R
     .where('date', 'in', [today, tomorrow])
     .get();
 
+  const appts = snap.docs.map((d) => ({ ...(d.data() as Appointment), id: d.id }));
+  const businessIds = [...new Set(appts.map((a) => a.businessId).filter(Boolean))];
+  const timezoneByBusiness = await fetchTimezonesByBusiness(businessIds);
+
   const results: ReminderResult[] = [];
   let totalNotifs = 0;
   let firedCount = 0;
 
-  for (const docSnap of snap.docs) {
-    const apt: Appointment = { ...(docSnap.data() as Appointment), id: docSnap.id };
-
+  for (const apt of appts) {
     if (SKIP_STATUSES.has(apt.status)) continue;
 
-    const aptEpoch = appointmentEpochMs(apt.date, apt.startTime);
-    if (!isFinite(aptEpoch)) continue;
+    const timezone = timezoneByBusiness.get(apt.businessId) || DEFAULT_BUSINESS_TIMEZONE;
+    let aptEpoch: number;
+    try {
+      aptEpoch = zonedDateTimeToUtc(apt.date, apt.startTime, timezone).getTime();
+    } catch (err) {
+      console.warn(`[appointmentReminder] data/fuso inválido pro appointment ${apt.id}:`, err);
+      continue;
+    }
 
     const minutesUntilAppt = (aptEpoch - nowMs) / 60_000;
 

@@ -29,6 +29,7 @@ import { dispatchReengagementToAgent } from '@/lib/agent/dispatch';
 import { FieldValue } from 'firebase-admin/firestore';
 import type { Appointment, Business, Conversation } from '@/lib/types';
 import { isRelevantForScheduling, resolveAgendaSchedulingConfig } from '@/lib/services/agenda/schedulingEligibility';
+import { zonedDateTimeToUtc, DEFAULT_BUSINESS_TIMEZONE } from '@/lib/utils/timezone';
 
 type ReminderKind = 'reminder' | 'confirmation' | 'followup';
 
@@ -397,6 +398,13 @@ async function processBusiness(business: Business & { id: string }, stats: RunSt
 
   const now = new Date();
   const nowMs = now.getTime();
+  // M06.5: fuso do negócio, não mais um `new Date()` sem offset (que era
+  // implicitamente interpretado no fuso LOCAL DO PROCESSO — em produção,
+  // container Docker sem TZ configurado = UTC, não -03:00. Achado durante
+  // esta fatia: isso deslocava sistematicamente as janelas de lembrete/
+  // confirmação em ~3h pra QUALQUER negócio, não só os de fuso diferente.
+  // Ver docs/agenda/AGENDA_FUSO_HORARIO.md.
+  const timezone = business.settings?.timezone || DEFAULT_BUSINESS_TIMEZONE;
 
   const startOfWindow = new Date(nowMs - 48 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const endOfWindow = new Date(nowMs + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -410,7 +418,14 @@ async function processBusiness(business: Business & { id: string }, stats: RunSt
   for (const doc of snap.docs) {
     const appt = { ...(doc.data() as Appointment), id: doc.id };
     if (appt.status === 'cancelado') continue;
-    const apptAt = new Date(`${appt.date}T${appt.startTime}:00`);
+
+    let apptAt: Date;
+    try {
+      apptAt = zonedDateTimeToUtc(appt.date, appt.startTime, timezone);
+    } catch (err) {
+      stats.errors.push({ appointmentId: appt.id, phase: 'timezone', error: String(err) });
+      continue;
+    }
     const diffMs = apptAt.getTime() - nowMs;
     const diffHours = diffMs / (60 * 60 * 1000);
 
@@ -450,19 +465,19 @@ async function processBusiness(business: Business & { id: string }, stats: RunSt
 
     // ── Follow-up (12–24h after appointment ended, only if completed) ──
     if (agenda.followUpAfter && !appt.followUpSentAt && appt.status === 'concluido') {
-      const apptEndAt = new Date(`${appt.date}T${appt.endTime}:00`);
-      const hoursAfter = (nowMs - apptEndAt.getTime()) / (60 * 60 * 1000);
-      if (hoursAfter >= 12 && hoursAfter <= 36) {
-        try {
+      try {
+        const apptEndAt = zonedDateTimeToUtc(appt.date, appt.endTime, timezone);
+        const hoursAfter = (nowMs - apptEndAt.getTime()) / (60 * 60 * 1000);
+        if (hoursAfter >= 12 && hoursAfter <= 36) {
           const msg = `Oi ${firstName(appt.clientName)}! Como foi seu ${appt.serviceName}? Ficamos à disposição para qualquer coisa. 🙏`;
           const result = await sendToContact(business, appt, msg, 'followup');
           if (result.sent) {
             await doc.ref.update({ followUpSentAt: new Date().toISOString() });
             stats.followUpsSent++;
           }
-        } catch (err) {
-          stats.errors.push({ appointmentId: appt.id, phase: 'follow-up', error: String(err) });
         }
+      } catch (err) {
+        stats.errors.push({ appointmentId: appt.id, phase: 'follow-up', error: String(err) });
       }
     }
   }
