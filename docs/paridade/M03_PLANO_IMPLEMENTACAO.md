@@ -10,9 +10,9 @@
 > atendimento já existe via ligação pontual com a Agenda (`docs/agenda/AGENDA_COBRANCA.md`), mas
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
-> Estado: investigação (M03.0-pré) concluída em 04/09/2026. M03.5 (testes de conciliação)
-> concluído em código o mesmo dia — primeira fatia executada, sem depender da decisão V1 vs V2.
-> Próxima etapa recomendada: M03.0 (baseline/auditoria).
+> Estado: investigação de abertura concluída em 04/09/2026. M03.5 (testes de conciliação) e
+> M03.0 (baseline/auditoria) concluídos em código o mesmo dia — nenhum dos dois depende da
+> decisão V1 vs V2. Próxima etapa recomendada: M03.1 (contrato de domínio Zod).
 
 ---
 
@@ -97,9 +97,9 @@ QUAL UI é a fonte de verdade daqui pra frente fica **explicitamente pendente do
 
 ## 3. Fases
 
-### M03.0 — Baseline (mede antes de mexer)
+### M03.0 — Baseline (mede antes de mexer) ✅ Concluído (04/09/2026)
 
-- [ ] `lib/services/m03-financial-audit.ts` (espelha `m06-agenda-audit.ts`): varre `transactions`
+- [x] `lib/services/m03-financial-audit.ts` (espelha `m06-agenda-audit.ts`): varre `transactions`
       por tenant e detecta, sem escrever nada: (a) documentos com `status` fora do enum FSM
       válido pra sua sequência de transições (indício de pulo de estado); (b) `installmentGroupId`
       com contagem de parcelas divergente de `installmentTotal`; (c) `recurrenceId` órfão (aponta
@@ -107,11 +107,23 @@ QUAL UI é a fonte de verdade daqui pra frente fica **explicitamente pendente do
       `appointmentId`/`deliveryOrderId` que apontam pra um documento de origem inexistente
       (referência quebrada); (e) duplicidade aparente (mesmo `saleId`+`type` em 2+ docs, sinal do
       risco de double-click já auto-documentado em `AGENDA_COBRANCA.md`).
-- [ ] `scripts/audit-m03-financial.ts` (CLI, mesmo formato de `scripts/audit-m06-agenda.ts`) —
+- [x] `scripts/audit-m03-financial.ts` (CLI, mesmo formato de `scripts/audit-m06-agenda.ts`) —
       roda a auditoria contra um tenant real quando houver um disponível.
-- [ ] Caracterizar em prosa (mesmo formato do M06.0b) o comportamento efetivo de cada um dos 13
-      caminhos de escrita já inventariados nesta investigação — fixar o que cada um faz HOJE
-      antes de qualquer migração, pra detectar regressão depois.
+- [ ] ~~Caracterizar em prosa (mesmo formato do M06.0b) o comportamento efetivo de cada um dos 13
+      caminhos de escrita já inventariados nesta investigação~~ — **já feito na investigação de
+      abertura do M03** (`docs/paridade/M03_PLANO_IMPLEMENTACAO.md` §0, tabela completa com
+      arquivo/linha/mecanismo/hardening de cada um dos 13 caminhos) — redundante repetir aqui.
+
+**Entregue:** 8 códigos de problema (`TENANT_MISMATCH`, `INVALID_TYPE`, `INVALID_STATUS`,
+`NON_POSITIVE_AMOUNT`, `INSTALLMENT_COUNT_MISMATCH`, `ORPHAN_RECURRENCE`,
+`BROKEN_SOURCE_REFERENCE`, `DUPLICATE_SOURCE_TRANSACTION`) — os 3 primeiros desdobram o item (a)
+original em três checks igualmente baratos (mesma causa raiz: validação rasa). Violação de
+transição do FSM deliberadamente NÃO incluída — snapshot de um instante não vê histórico, isso é
+trabalho de enforcement ao vivo (M03.4). 16 testes novos (`tests/services/
+m03FinancialAudit.test.ts`). **Não executado contra um tenant real** ainda — mesma situação do
+M06.0 (cliente não está em produção no sistema). Detalhes em
+`docs/financeiro/FINANCEIRO_M03_0_BASELINE.md`. Verificado por `tsc --noEmit` limpo e suíte
+completa (1033 testes/77 arquivos, sem regressão).
 
 **Saída:** evidência de quanto do problema já existe nos dados reais antes de mudar qualquer regra.
 
@@ -263,8 +275,8 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
 
 1. **M03.5** ✅ — testes de conciliação primeiro (menor risco, maior urgência: dinheiro real e
    zero cobertura hoje; não depende de nenhuma decisão de produto).
-2. **M03.0** — baseline/auditoria (mede antes de mexer, mesmo racional de M01/M06).
-3. **M03.1** — contrato de domínio (pré-requisito SDD pra tudo que vem depois).
+2. **M03.0** ✅ — baseline/auditoria (mede antes de mexer, mesmo racional de M01/M06).
+3. **M03.1** — contrato de domínio (pré-requisito SDD pra tudo que vem depois). Próxima etapa.
 4. **M03.2** — núcleo de criação/transição.
 5. **M03.3** — migrar os caminhos de maior risco (API v1 e agente primeiro — exposição externa;
    depois clássico/V2/PDV-reversão/comissão).
