@@ -17,6 +17,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import { assertTransitionTransaction } from '@/lib/contracts/fsm/transaction';
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
+import { createTransactionSafeAdmin, type AdminTransactionPayload } from '@/lib/services/transactionTxGuardAdmin';
 import type { Transaction, TransactionStatus, TransactionType, PaymentMethod } from '@/lib/types';
 
 type Action =
@@ -49,6 +50,13 @@ interface CreateParams {
   paymentMethod?: PaymentMethod;
   notes?: string;
   installments?: number;    // creates multiple transactions with installmentGroupId
+  /** M03.3 follow-up: identificador estável opcional (ex.: o agente gera um
+   *  UUID antes da 1ª tentativa e reenvia o MESMO valor num retry de rede).
+   *  Só se aplica quando `installments===1` — ver docs/financeiro/
+   *  FINANCEIRO_M03_3_AGENTE_IDEMPOTENCIA.md pro que falta do lado Python
+   *  pra isso proteger de verdade contra retry (hoje, sem o agente reenviar
+   *  o mesmo valor, o comportamento é idêntico ao de antes: sem dedup). */
+  idempotencyKey?: string;
 }
 
 interface MarkPaidParams {
@@ -165,30 +173,51 @@ async function createTx(businessId: string, type: TransactionType, p: CreatePara
   const installments = Math.max(1, Math.min(p.installments ?? 1, 48));
 
   if (installments === 1) {
-    const ref = adminDb.collection('transactions').doc();
-    const tx: Transaction = {
-      id: ref.id,
+    // M03.3 follow-up: passa por createTransactionSafeAdmin (M03.2) pra
+    // habilitar dedup QUANDO o caller manda idempotencyKey — sem ele, cai no
+    // ramo "sem chave possível" do guard e cria direto, comportamento
+    // equivalente ao `ref.set()` anterior.
+    //
+    // Achado real ao reescrever este trecho, não hipotético: o `Transaction`
+    // literal anterior atribuía `dueDate`/`category`/`clientId`/`clientName`/
+    // `notes` INCONDICIONALMENTE (`dueDate: p.dueDate`) — quando o campo
+    // opcional vinha ausente, a chave existia no objeto com valor
+    // `undefined`. `adminDb` não configura `ignoreUndefinedProperties`
+    // (confirmado — nenhum arquivo deste projeto chama `.settings(...)`), e
+    // o Admin SDK REJEITA `set()`/`create()` com qualquer valor `undefined`
+    // explícito. Ou seja: `create_receivable`/`create_payable` sem
+    // `dueDate` (um pedido tão comum quanto "adiciona uma conta de internet
+    // de R$50", sem data definida) provavelmente já lançava 500. Corrigido
+    // aqui com atribuição condicional — mesmo padrão já usado em
+    // app/api/agent/tools/agenda/route.ts.
+    const payload: AdminTransactionPayload = {
       businessId,
       type,
+      status: 'pendente',
       description: p.description.slice(0, 500),
       amount: Math.round(p.amount * 100) / 100,
-      dueDate: p.dueDate,
-      status: 'pendente',
-      category: p.category,
-      clientId: p.clientId,
-      clientName: p.clientName,
-      paymentMethod: p.paymentMethod && ALLOWED_METHODS.includes(p.paymentMethod) ? p.paymentMethod : undefined,
-      notes: p.notes?.slice(0, 500),
-      createdAt: now,
-      updatedAt: now,
       createdBy: 'agent',
       createdByName: 'Agente IA',
     };
-    await ref.set(tx);
-    return tx;
+    if (p.dueDate !== undefined) payload.dueDate = p.dueDate;
+    if (p.category !== undefined) payload.category = p.category;
+    if (p.clientId !== undefined) payload.clientId = p.clientId;
+    if (p.clientName !== undefined) payload.clientName = p.clientName;
+    if (p.notes !== undefined) payload.notes = p.notes.slice(0, 500);
+    if (p.paymentMethod && ALLOWED_METHODS.includes(p.paymentMethod)) payload.paymentMethod = p.paymentMethod;
+    if (p.idempotencyKey) payload.idempotencyKey = p.idempotencyKey;
+
+    const result = await createTransactionSafeAdmin(adminDb, payload);
+    const doc = await adminDb.collection('transactions').doc(result.id).get();
+    return { ...(doc.data() as Transaction), id: result.id };
   }
 
-  // Installments — split amount evenly, shift dueDate by month each
+  // Installments — split amount evenly, shift dueDate by month each.
+  // M03.3 follow-up: DELIBERADAMENTE sem idempotência aqui — dedup pra um
+  // lote exigiria um design próprio (checar TODOS os N ids determinísticos
+  // antes de criar QUALQUER um, ou aceitar perder a garantia tudo-ou-nada do
+  // batch atual chamando o guard em loop). Ver
+  // docs/financeiro/FINANCEIRO_M03_3_AGENTE_IDEMPOTENCIA.md.
   const groupId = adminDb.collection('transactions').doc().id;
   const perInstallment = Math.round((p.amount / installments) * 100) / 100;
   const baseDate = p.dueDate ? new Date(p.dueDate) : new Date();
@@ -199,6 +228,9 @@ async function createTx(businessId: string, type: TransactionType, p: CreatePara
     const ref = adminDb.collection('transactions').doc();
     const dueDate = new Date(baseDate);
     dueDate.setMonth(dueDate.getMonth() + i);
+    // Mesmo achado do ramo sem parcelamento (ver comentário acima):
+    // atribuição condicional pra nunca gravar `undefined` explícito — o
+    // Admin SDK rejeita `batch.set()` com qualquer campo `undefined`.
     const tx: Transaction = {
       id: ref.id,
       businessId,
@@ -207,11 +239,6 @@ async function createTx(businessId: string, type: TransactionType, p: CreatePara
       amount: perInstallment,
       dueDate: dueDate.toISOString().slice(0, 10),
       status: 'pendente',
-      category: p.category,
-      clientId: p.clientId,
-      clientName: p.clientName,
-      paymentMethod: p.paymentMethod && ALLOWED_METHODS.includes(p.paymentMethod) ? p.paymentMethod : undefined,
-      notes: p.notes?.slice(0, 500),
       installmentGroupId: groupId,
       installmentNumber: i + 1,
       installmentTotal: installments,
@@ -220,6 +247,11 @@ async function createTx(businessId: string, type: TransactionType, p: CreatePara
       createdBy: 'agent',
       createdByName: 'Agente IA',
     };
+    if (p.category !== undefined) tx.category = p.category;
+    if (p.clientId !== undefined) tx.clientId = p.clientId;
+    if (p.clientName !== undefined) tx.clientName = p.clientName;
+    if (p.notes !== undefined) tx.notes = p.notes.slice(0, 500);
+    if (p.paymentMethod && ALLOWED_METHODS.includes(p.paymentMethod)) tx.paymentMethod = p.paymentMethod;
     batch.set(ref, tx);
     created.push(tx);
   }
@@ -272,11 +304,14 @@ async function cancelTx(businessId: string, id: string, reason?: string): Promis
 
   const patch: Partial<Transaction> = {
     status: 'cancelado',
-    notes,
     updatedAt: now,
     updatedBy: 'agent',
     updatedByName: 'Agente IA',
   };
+  // Achado real (mesma classe de bug de createTx): `notes` fica `undefined`
+  // quando `reason` não é passado E a transação nunca teve `notes` — Admin
+  // SDK rejeita `update()` com campo `undefined` explícito.
+  if (notes !== undefined) patch.notes = notes;
   await ref.update(patch);
   return { ...tx, ...patch, id: snap.id };
 }

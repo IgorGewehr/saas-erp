@@ -11,9 +11,9 @@
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
 > Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2, M03.3
-> (API v1 + follow-up de atomicidade no PDV) e M03.4 concluídos em código o mesmo dia — nenhum
-> depende da decisão V1 vs V2. Restam: o follow-up do contrato do agente (identificador estável
-> pra idempotência) e o checkpoint M03.6 (decisão V1 vs V2).
+> (API v1 + follow-up de atomicidade no PDV + follow-up de idempotência opcional no contrato do
+> agente) e M03.4 concluídos em código o mesmo dia — nenhum depende da decisão V1 vs V2. Resta
+> apenas o checkpoint M03.6 (decisão V1 vs V2), explicitamente pendente do usuário.
 
 ---
 
@@ -197,14 +197,21 @@ Ordem por risco × exposição, não por ordem alfabética:
       antes); `PUT`/`mark-paid` usa `transitionTransactionSafeAdmin` (FSM aplicado — transição
       inválida agora responde 409 em vez de aceitar sem checar). Detalhes em
       `docs/financeiro/FINANCEIRO_M03_3_MIGRACAO_API_V1.md`.
-- [ ] ~~`app/api/agent/tools/financial/route.ts`~~ — **investigado, achado diferente do
-      esperado**: `markPaid`/`cancelTx` JÁ chamam `assertTransitionTransaction` (FSM já
-      aplicado, código melhor do que o plano supunha). O gap real (`createTx` sem idempotência)
-      não tem chave disponível pra dedup (`CreateParams` não carrega `saleId`/`appointmentId`/
-      `idempotencyKey`) — migrar seria trocar código sem ganho prático, e no ramo de
-      parcelamento (batch atômico) até REGREDIRIA a garantia atual. Corrigir de verdade exige
-      estender o contrato do agente com um identificador estável do tool-call — fora do escopo
-      desta fatia. Ver `docs/financeiro/FINANCEIRO_M03_3_MIGRACAO_API_V1.md` §3.
+- [x] `app/api/agent/tools/financial/route.ts` — **investigado (achado original: `markPaid`/
+      `cancelTx` JÁ chamavam `assertTransitionTransaction`, FSM já aplicado) E retomado**:
+      contrato do agente (`lib/contracts/api/agent/financial.ts`) ganhou `idempotencyKey`
+      opcional; `createTx` (ramo sem parcelamento) migrou pro núcleo (`createTransactionSafeAdmin`,
+      M03.2), habilitando dedup real QUANDO o caller manda a chave. Achado novo nesta rodada:
+      já existe proteção de replay em nível de TRANSPORTE (`agentNonces`/`verifyAgentRequest`,
+      HMAC por request) — o campo novo protege um cenário diferente (resposta perdida após
+      sucesso), e só funciona de ponta a ponta quando o agente Python passar a gerar/reenviar a
+      chave, o que NÃO foi feito nesta sessão (fora do repo, lado Python). Achado colateral real
+      (não hipotético): Admin SDK rejeita `undefined` explícito em qualquer campo gravado
+      (`ignoreUndefinedProperties` nunca configurado) — `createTx` (os 2 ramos) e `cancelTx`
+      atribuíam campos opcionais incondicionalmente, o que provavelmente já lançava 500 em
+      chamadas legítimas sem `dueDate`/`notes`; corrigido com atribuição condicional. Parcelamento
+      em lote continua deliberadamente sem dedup (regrediria a garantia tudo-ou-nada do batch).
+      Ver `docs/financeiro/FINANCEIRO_M03_3_AGENTE_IDEMPOTENCIA.md`.
 - [ ] ~~`financial/FinancialModule.tsx` + `financial-v2/components/LancarSheet.tsx`/
       `BaixaDialog.tsx`~~ — adiado: depende de decidir se nasce uma rota `POST /api/transactions`
       nova (client→server) ou se essas telas continuam client SDK direto; decisão natural de
@@ -339,8 +346,8 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
 3. **M03.1** ✅ — contrato de domínio (pré-requisito SDD pra tudo que vem depois).
 4. **M03.2** ✅ — núcleo de criação/transição novo (só Admin SDK; client SDK e a rota
    `POST /api/transactions` deliberadamente adiados pra M03.3).
-5. **M03.3** (1ª rodada ✅ — API v1 migrada; agente e PDV-reversão investigados e adiados com
-   achados reais; clássico/V2 adiado pra decidir junto de M03.6; comissão não abordada).
+5. **M03.3** ✅ — API v1 migrada; PDV-reversão corrigido (atomicidade); contrato do agente ganhou
+   idempotência opcional; clássico/V2 adiado pra decidir junto de M03.6; comissão não abordada.
 6. **M03.4** ✅ — enforcement no servidor (`firestore.rules`: `amount>0` + transição de status).
 7. **M03.6** — checkpoint com o usuário: decisão V1 vs V2 (bloqueia M03.7 até vir).
 8. **M03.7** — DRE/fluxo de caixa/orçamento, conforme a decisão de M03.6.

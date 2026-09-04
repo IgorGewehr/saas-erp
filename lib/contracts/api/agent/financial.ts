@@ -54,6 +54,14 @@ const CreateTxParamsBase = z.object({
   paymentMethod: PaymentMethodSchema.optional(),
   notes: z.string().max(2000).optional(),
   installments: z.number().int().min(1).max(48).default(1),
+  // M03.3 follow-up: identificador estável opcional (ex.: o agente gera um
+  // UUID antes da 1ª tentativa e reenvia o MESMO valor se precisar retry por
+  // falha de rede). Só protege quando o CALLER reenvia o mesmo valor — o
+  // agente Python ainda não faz isso hoje; ver
+  // docs/financeiro/FINANCEIRO_M03_3_AGENTE_IDEMPOTENCIA.md. Sem ele, o
+  // comportamento é idêntico ao de antes (sem dedup). Só se aplica a
+  // `installments=1` — parcelamento em lote continua sem dedup (ver mesmo doc).
+  idempotencyKey: z.string().max(200).optional(),
 });
 export const FinancialCreateReceivableParamsSchema = CreateTxParamsBase;
 export const FinancialCreatePayableParamsSchema = CreateTxParamsBase;
