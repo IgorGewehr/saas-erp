@@ -9,9 +9,10 @@
 > Lente desta rodada: **odontologia** — cliente pagante real, módulo operacional central.
 >
 > Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável),
-> M06.3a (bloqueios de agenda) e M06.4a (ficha do paciente/anamnese) concluídos em código em
-> 03/09/2026. Próxima etapa: M06.0b (congelar comportamento por canal), M06.3 restante
-> (no-show, buffer) ou M06.5 (lembretes/confirmação).
+> M06.3a (bloqueios de agenda), M06.4a (ficha do paciente/anamnese) e M06.3b (política de
+> no-show) concluídos em código — M06.3b em 04/09/2026. Próxima etapa: M06.0b (congelar
+> comportamento por canal), buffer entre atendimentos (resto do M06.3) ou M06.5
+> (lembretes/confirmação).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -323,7 +324,7 @@ agora é uma transição declarada (reversão), não um bug silencioso. `AgendaM
       agente (`checkAvailability`) tem um cast morto (`WorkSchedule[]`) que nunca bate contra
       o schema real, então nunca respeitou o `workingHours` individual de um profissional,
       só o horário do negócio ou um fallback fixo. Não corrigido — mesmo destino de M06.7.
-- [ ] Política de no-show: marcar, medir e opcionalmente gerar cobrança — hoje só existe o status.
+- [x] Política de no-show: marcar, medir e opcionalmente gerar cobrança — hoje só existe o status.
 
 **M06.3a concluída em código:** bloqueios de agenda (`lib/contracts/domain/scheduleBlock.ts`,
 `lib/services/scheduleBlock-admin.ts`, `POST /api/schedule-blocks`,
@@ -336,6 +337,18 @@ testes novos) — **não testado manualmente em navegador** nesta rodada.
 
 **Saída:** a agenda reflete a disponibilidade real da clínica pros canais humanos
 (recepção/dentista, Conversas); booking público/agente ainda não, nomeado explicitamente.
+
+**M06.3b concluída em código:** política de no-show (marcar/medir/cobrar). "Marcar" já
+funcionava (FSM + rota atômica já existiam); "medir" ganhou o evento `appointment.noShow` +
+handler incrementando `Client.relationshipHistory.noShowCount` — campo que já existia e já era
+exibido no CRM ("Faltas"), nunca escrito; "cobrar" reaproveita o botão "Cobrar" já existente
+(agora também em `nao_compareceu`, com descrição prefixada), sem cobrança automática ou UI de
+`NoShowPolicy` (depósito) — mantido simplificado, conforme decisão de escopo desta seção.
+Detalhes em `docs/agenda/AGENDA_NO_SHOW.md`. Achado documentado, não corrigido: `PUT
+/api/v1/crm/contacts` substitui `relationshipHistory` inteiro por chamada (risco de apagar
+`noShowCount` em updates parciais externos) — bug pré-existente, mais amplo que esta fatia.
+Verificado por suíte automatizada (921 testes, 9 novos, sem regressão) — **não testado
+manualmente em navegador** nesta rodada.
 
 ### M06.4 — Ficha do paciente e anamnese
 
@@ -397,7 +410,7 @@ manualmente em navegador** nesta rodada.
 2. **M06.1** — núcleo único (elimina duplo agendamento).
 3. **M06.2** — transição/conclusão reconciliável (elimina perda silenciosa de dinheiro).
 4. **M06.4** — anamnese (maior valor clínico novo, escopo pequeno, campo já existe).
-5. **M06.3** — bloqueios e no-show.
+5. **M06.3** — bloqueios e no-show (ambos concluídos; falta só buffer configurável).
 6. **M06.5** — lembretes consolidados.
 7. **M06.8** — custo e segurança.
 8. **M06.6** e **M06.7** — cobrança/assinaturas e canais externos.

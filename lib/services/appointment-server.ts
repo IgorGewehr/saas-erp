@@ -12,7 +12,8 @@
  * sempre sem nenhum efeito aplicado — e nada varria pra reprocessar. Aqui os
  * dois passos são UMA chamada de servidor: valida a FSM, aplica o patch de
  * status e — na mesma execução — despacha `appointment.completed`/
- * `appointment.canceled` via `dispatchDomainEvent` (já síncrono/aguardado).
+ * `appointment.canceled`/`appointment.noShow` via `dispatchDomainEvent`
+ * (já síncrono/aguardado).
  *
  * `createAppointmentAdmin` é um wrapper fino sobre `createAppointmentSafeAdmin`
  * (guard já corrigido pra `professionalIds[]` na M06.1) — usado pela rota
@@ -123,6 +124,26 @@ export async function transitionAppointmentAdmin(params: {
       actorId: params.actor.id,
       actorName: params.actor.name,
       appointmentId: params.appointmentId,
+    });
+    dispatched = true;
+  }
+
+  // Eixo independente do completed/canceled acima (só mutuamente exclusivo
+  // por causa da FSM — nao_compareceu é terminal, não reversível a partir
+  // de concluido). `if` separado, não `else if`, pra não misturar os dois
+  // eixos de decisão quando um 3º efeito terminal entrar aqui no futuro.
+  const wasNoShow = fromStatus === 'nao_compareceu';
+  const isNoShow = toStatus === 'nao_compareceu';
+  if (!wasNoShow && isNoShow) {
+    await dispatchDomainEvent(db, {
+      type: 'appointment.noShow',
+      businessId: params.businessId,
+      occurredAt: nowIso,
+      actorType: 'user',
+      actorId: params.actor.id,
+      actorName: params.actor.name,
+      appointmentId: params.appointmentId,
+      clientId: appointment.clientId,
     });
     dispatched = true;
   }

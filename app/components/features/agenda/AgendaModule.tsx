@@ -1993,11 +1993,14 @@ function ViewAppointmentDialog({
             )}
 
             {/* Cobrança: lançada → badge (idempotência visual); senão,
-                concluído → botão. Criação real da transação vive no
-                FinancialModule (sessionStorage + setActivePage, mesmo
-                mecanismo de pendingOrderPrefill de Conversas → Pedidos) —
-                não reimplementada aqui. */}
-            {appointment.status === 'concluido' && (
+                concluído OU não-compareceu (M06.3b: taxa de no-show, mesmo
+                fluxo manual — ver appointmentBilling.ts) → botão. Criação
+                real da transação vive no FinancialModule (sessionStorage +
+                setActivePage, mesmo mecanismo de pendingOrderPrefill de
+                Conversas → Pedidos) — não reimplementada aqui. NFSe (acima)
+                continua só concluído — taxa de no-show não é nota fiscal de
+                serviço prestado. */}
+            {(appointment.status === 'concluido' || appointment.status === 'nao_compareceu') && (
               (appointment.billingTransactionId || appointment.billingInstallmentGroupId) ? (
                 <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10">
                   <DollarSign className="w-3.5 h-3.5" />

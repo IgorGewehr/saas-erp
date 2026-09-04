@@ -47,4 +47,9 @@ describe('buildAppointmentBillingPrefill', () => {
     const prefill = buildAppointmentBillingPrefill(appointment({ id: 'appt-42' }));
     expect(prefill.appointmentId).toBe('appt-42');
   });
+
+  it('prefixa "Taxa de não comparecimento" quando o status é nao_compareceu', () => {
+    const prefill = buildAppointmentBillingPrefill(appointment({ status: 'nao_compareceu' }));
+    expect(prefill.description).toBe('Taxa de não comparecimento — Limpeza — Maria Silva');
+  });
 });

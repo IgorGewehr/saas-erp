@@ -14,6 +14,7 @@
 import { registerHandler } from '../dispatch';
 import { handleAppointmentCompleted } from './appointmentCompleted';
 import { handleAppointmentCanceled } from './appointmentCanceled';
+import { handleAppointmentNoShow } from './appointmentNoShow';
 
 let initialized = false;
 
@@ -25,6 +26,7 @@ export function ensureDomainEventHandlers(): void {
   // ─── Agenda: efeitos de conclusão/reversão (hardening odontologia) ─────
   registerHandler('appointment.completed', handleAppointmentCompleted);
   registerHandler('appointment.canceled', handleAppointmentCanceled);
+  registerHandler('appointment.noShow', handleAppointmentNoShow);
 
   // Outros handlers entram aqui conforme forem implementados.
   // Convention: cada handler em seu próprio arquivo dentro de handlers/.

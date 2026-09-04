@@ -92,6 +92,25 @@ export const AppointmentCanceledSchema = EventEnvelopeBase.extend({
 });
 
 /**
+ * Handler real (`_runtime/handlers/appointmentNoShow.ts`):
+ *   - lib/services/clientMetricsAdmin.ts → bumpClientNoShowCountAdmin
+ *     (Client.relationshipHistory.noShowCount += 1)
+ *
+ * Minimalista de propósito: o handler relê o Appointment fresco por
+ * `ctx.db` pra confirmar `status === 'nao_compareceu'` e `businessId`, não
+ * confia em campos do payload além do necessário pra localizar o doc.
+ * Idempotente via `appointment.noShowAppliedAt` (nunca revertido —
+ * nao_compareceu é terminal de verdade, sem transição de volta na FSM).
+ * Cobrança de taxa continua manual (botão "Cobrar" já existente, ver
+ * lib/services/agenda/appointmentBilling.ts) — não automatizada aqui.
+ */
+export const AppointmentNoShowSchema = EventEnvelopeBase.extend({
+  type: z.literal('appointment.noShow'),
+  appointmentId: z.string().min(1),
+  clientId: z.string().optional(),
+});
+
+/**
  * Aula experimental (trial) concluída — funil de aquisição (P2.8).
  *
  * Emitido quando um Appointment com `isTrial === true` transiciona para
@@ -363,6 +382,7 @@ export const CashSessionClosedSchema = EventEnvelopeBase.extend({
 export const DomainEventSchema = z.discriminatedUnion('type', [
   AppointmentCompletedSchema,
   AppointmentCanceledSchema,
+  AppointmentNoShowSchema,
   AppointmentTrialCompletedSchema,
   BookingCreatedSchema,
   FormSubmittedSchema,
@@ -386,6 +406,7 @@ export type DomainEventType = DomainEvent['type'];
 export const DOMAIN_EVENT_TYPES = [
   'appointment.completed',
   'appointment.canceled',
+  'appointment.noShow',
   'appointment.trialCompleted',
   'booking.created',
   'form.submitted',

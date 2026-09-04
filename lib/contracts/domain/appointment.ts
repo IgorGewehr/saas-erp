@@ -93,6 +93,10 @@ export const AppointmentSchema = z.object({
   // lib/contracts/_runtime/handlers/appointmentCompleted.ts — evita
   // duplicar em replay/retry do evento appointment.completed.
   completionAppliedAt: z.string().optional(),
+  // CAS de idempotência do efeito de no-show (increment de
+  // Client.relationshipHistory.noShowCount). Nunca revertido — nao_compareceu
+  // é terminal de verdade, sem transição de volta na FSM.
+  noShowAppliedAt: z.string().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
   cancelledAt: z.string().optional(),

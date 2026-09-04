@@ -23,3 +23,28 @@ export async function syncClientMetricsAdmin(params: {
 
   await db.collection('clients').doc(clientId).update(update);
 }
+
+/**
+ * Incrementa Client.relationshipHistory.noShowCount — chamado por
+ * appointmentNoShow.ts. Chave dot-path (não objeto aninhado): um objeto
+ * `{relationshipHistory: {...}}` faria `.update()` SUBSTITUIR o mapa
+ * inteiro, apagando os demais campos de RelationshipHistory. Mesmo padrão
+ * de lib/services/birthdayCampaignRunner.ts (incrementCampaignStats).
+ *
+ * Nota: PUT /api/v1/crm/contacts grava relationshipHistory inteiro por
+ * substituição rasa (sem merge por campo) — um caller externo que reenvie
+ * esse objeto parcialmente pode apagar noShowCount sem querer. Bug
+ * pré-existente, fora do escopo desta função corrigir.
+ */
+export async function bumpClientNoShowCountAdmin(params: {
+  db: Firestore;
+  clientId: string;
+}): Promise<void> {
+  const { db, clientId } = params;
+  if (!clientId) return;
+
+  await db.collection('clients').doc(clientId).update({
+    'relationshipHistory.noShowCount': FieldValue.increment(1),
+    updatedAt: new Date().toISOString(),
+  });
+}

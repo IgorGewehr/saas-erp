@@ -27,6 +27,11 @@ Ele:
 5. Com qualquer um dos dois setado, o botão "Cobrar" vira badge "Cobrança
    lançada" — idempotência visual, mesmo padrão do badge "NFSe emitida".
 
+> **Atualização (M06.3b, 04/09/2026):** o mesmo botão/fluxo agora também
+> aparece em atendimentos `nao_compareceu` (taxa de no-show), com a descrição
+> prefixada "Taxa de não comparecimento —". NFSe continua só `concluido`.
+> Detalhes em `docs/agenda/AGENDA_NO_SHOW.md`.
+
 ## 2. Por que não é o mesmo mecanismo do botão de NFSe
 
 O botão de NFSe reusa um dialog compartilhado (`EmitirNotaDialog`) com uma

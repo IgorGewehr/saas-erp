@@ -1028,6 +1028,12 @@ export interface Appointment {
    *  comissão, fidelidade, baixa de insumo) já foram aplicados por
    *  lib/contracts/_runtime/handlers/appointmentCompleted.ts. */
   completionAppliedAt?: string;
+  /** CAS de idempotência: setado quando o efeito de no-show (incremento de
+   *  Client.relationshipHistory.noShowCount) já foi aplicado por
+   *  lib/contracts/_runtime/handlers/appointmentNoShow.ts. Diferente de
+   *  completionAppliedAt, NUNCA é revertido — nao_compareceu é estado
+   *  terminal de verdade na FSM (sem caminho de volta). */
+  noShowAppliedAt?: string;
   // ── Vínculo fiscal (NFSe) — writeback de /api/fiscal/emit ──────────────
   /** FK para o fiscalDocument (NFSe) emitido a partir deste atendimento.
    *  Presença = nota já emitida ⇒ idempotência visual (mostra "NFSe emitida"

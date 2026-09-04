@@ -151,6 +151,35 @@ describe('transitionAppointmentAdmin', () => {
     expect(dispatchDomainEventMock).not.toHaveBeenCalled();
   });
 
+  it('confirmado → nao_compareceu: despacha appointment.noShow com os campos certos', async () => {
+    const env = makeFakeDb({ appointments: [{ id: 'appt-1', data: apt({ status: 'confirmado' }) }] });
+    const result = await transitionAppointmentAdmin({
+      db: env as never, appointmentId: 'appt-1', businessId, targetStatus: 'nao_compareceu', actor,
+    });
+    expect(result.appointment.status).toBe('nao_compareceu');
+    expect(result.dispatched).toBe(true);
+    expect(dispatchDomainEventMock).toHaveBeenCalledTimes(1);
+    const [, event] = dispatchDomainEventMock.mock.calls[0];
+    expect(event).toMatchObject({
+      type: 'appointment.noShow',
+      businessId,
+      appointmentId: 'appt-1',
+      clientId: 'c1',
+      actorType: 'user',
+      actorId: 'user-1',
+      actorName: 'Recepção',
+    });
+  });
+
+  it('repetir nao_compareceu no mesmo agendamento não despacha de novo', async () => {
+    const env = makeFakeDb({ appointments: [{ id: 'appt-1', data: apt({ status: 'nao_compareceu' }) }] });
+    const result = await transitionAppointmentAdmin({
+      db: env as never, appointmentId: 'appt-1', businessId, targetStatus: 'nao_compareceu', actor,
+    });
+    expect(result.dispatched).toBe(false);
+    expect(dispatchDomainEventMock).not.toHaveBeenCalled();
+  });
+
   it('agendamento de outro tenant rejeita com TENANT_MISMATCH', async () => {
     const env = makeFakeDb({ appointments: [{ id: 'appt-1', data: apt({ businessId: 'other-biz' }) }] });
     await expect(
