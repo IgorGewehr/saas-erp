@@ -8,9 +8,10 @@
 >
 > Lente desta rodada: **odontologia** — cliente pagante real, módulo operacional central.
 >
-> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável) e
-> M06.3a (bloqueios de agenda) concluídos em código em 03/09/2026. Próxima etapa: M06.0b
-> (congelar comportamento por canal), M06.3 restante (no-show, buffer) ou M06.4 (anamnese).
+> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável),
+> M06.3a (bloqueios de agenda) e M06.4a (ficha do paciente/anamnese) concluídos em código em
+> 03/09/2026. Próxima etapa: M06.0b (congelar comportamento por canal), M06.3 restante
+> (no-show, buffer) ou M06.5 (lembretes/confirmação).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -338,11 +339,19 @@ testes novos) — **não testado manualmente em navegador** nesta rodada.
 
 ### M06.4 — Ficha do paciente e anamnese
 
-- [ ] Implementar `Service.formTemplateId` (campo morto hoje): ao agendar um serviço que declare um
+- [x] Implementar `Service.formTemplateId` (campo morto hoje): ao agendar um serviço que declare um
       template, solicitar o formulário ao paciente.
-- [ ] Vincular a submissão ao atendimento — `/api/forms/submit` já aceita `appointmentId`.
-- [ ] Exibir formulários respondidos no histórico do paciente, ao lado das notas já entregues.
-- [ ] Deixar explícito na documentação que isto **não** é prontuário clínico estruturado.
+- [x] Vincular a submissão ao atendimento — `/api/forms/submit` já aceita `appointmentId`.
+- [x] Exibir formulários respondidos no histórico do paciente, ao lado das notas já entregues.
+- [x] Deixar explícito na documentação que isto **não** é prontuário clínico estruturado.
+
+**M06.4a concluída em código:** seletor de ficha no editor de serviço, botão "Formulários" no
+toolbar da Agenda (fora do Enterprise — `FormTemplatesDialog.tsx` reaproveitando
+`FormulariosTab.tsx` existente), botão "Enviar ficha"/badge "Ficha preenchida" no atendimento
+(envio manual via `wa.me`, decisão do usuário) e 5ª busca paralela em `ClientTimeline.tsx`.
+Detalhes em `docs/agenda/AGENDA_ANAMNESE.md`. Verificado por suíte automatizada (912 testes,
+sem regressão — nenhum teste novo, fatia é majoritariamente UI/queries) — **não testado
+manualmente em navegador** nesta rodada.
 
 **Saída:** a clínica registra anamnese/ficha de saúde sem sair do AEVO.
 

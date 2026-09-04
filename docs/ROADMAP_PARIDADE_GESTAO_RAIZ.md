@@ -119,7 +119,7 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
   - Integrar cliente com vendas, agenda, conversas, financeiro e fiscal.
 
 - [ ] **M06 — Agenda, Serviços, Booking e Assinaturas** 🔴 Prioridade atual (odontologia)
-  - Status: `Em análise — M06.0a (auditoria), M06.1 (núcleo de conflito), M06.2 (transição/conclusão reconciliável) e M06.3a (bloqueios de agenda) concluídos em código em 03/09/2026; próxima etapa M06.0b, M06.3 restante (no-show/buffer) ou M06.4 (anamnese)`
+  - Status: `Em análise — M06.0a (auditoria), M06.1 (núcleo de conflito), M06.2 (transição/conclusão reconciliável), M06.3a (bloqueios de agenda) e M06.4a (ficha do paciente/anamnese) concluídos em código em 03/09/2026; próxima etapa M06.0b, M06.3 restante (no-show/buffer) ou M06.5 (lembretes/confirmação)`
   - Agenda, conflitos, recursos, recorrência, comissões, lembretes, booking público e calendários.
   - Evoluir memberships, cobrança recorrente e proteção contra no-show quando o gateway estiver disponível.
   - **Plano detalhado: `docs/paridade/M06_PLANO_IMPLEMENTACAO.md`** — diagnóstico confirmado no código: 6 canais gravam `appointments` com 3 algoritmos de conflito distintos e 2 sem nenhum (PDV e CRM); check de conflito ignora `professionalIds[]`; conclusão pode ficar sem efeito se o navegador morrer entre o write e o dispatch; FSM só imposta no cliente. **Não é reescrita — é convergência**: o núcleo (guard transacional, FSM, handlers server-side, 71 testes) já existe, mas nem todo canal usa.

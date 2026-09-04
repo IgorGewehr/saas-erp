@@ -820,6 +820,14 @@
       ]
     },
     {
+      "collectionGroup": "formResponses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "appointmentId", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "automationRules",
       "queryScope": "COLLECTION",
       "fields": [

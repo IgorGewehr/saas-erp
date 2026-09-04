@@ -3,12 +3,12 @@
 /**
  * Timeline agregada de eventos do cliente — aba "Timeline" do detalhe.
  *
- * Faz 4 queries paralelas (conversations / appointments / sales / transactions)
- * filtrando por businessId + clientId, mescla resultados, deduplica por ID e
- * ordena descendente. Cada query usa safeQuery pra que falha em uma coleção
- * (ex: rules bloqueando) não derrube as outras.
+ * Faz 5 queries paralelas (conversations / appointments / sales / transactions /
+ * formResponses) filtrando por businessId + clientId, mescla resultados,
+ * deduplica por ID e ordena descendente. Cada query usa safeQuery pra que
+ * falha em uma coleção (ex: rules bloqueando) não derrube as outras.
  *
- * Limita 20 docs por coleção (80 total) — render fluida, e operador raramente
+ * Limita 20 docs por coleção (100 total) — render fluida, e operador raramente
  * precisa scroll passado disso. Visão completa fica pra módulo dedicado futuro.
  */
 
@@ -17,14 +17,14 @@ import { useQuery } from '@tanstack/react-query';
 import { collection, query, where, getDocs, limit as firestoreLimit } from 'firebase/firestore';
 import {
   History, Clock, MessageSquare, Calendar, ShoppingCart,
-  TrendingUp, TrendingDown,
+  TrendingUp, TrendingDown, FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { db } from '@/lib/config/firebase';
 import { formatCurrency } from '@/lib/utils/format';
 import type { Client } from '@/lib/types';
 
-type TimelineEventKind = 'conversation' | 'appointment' | 'sale' | 'transaction_in' | 'transaction_out';
+type TimelineEventKind = 'conversation' | 'appointment' | 'sale' | 'transaction_in' | 'transaction_out' | 'form';
 
 interface TimelineEvent {
   id: string;
@@ -46,6 +46,7 @@ const TL_CFG: Record<TimelineEventKind, { icon: React.ElementType; color: string
   sale:            { icon: ShoppingCart,  color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', label: 'Venda'    },
   transaction_in:  { icon: TrendingUp,    color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', label: 'Receita'  },
   transaction_out: { icon: TrendingDown,  color: 'text-red-500',     bg: 'bg-red-50 dark:bg-red-500/10',      label: 'Despesa'    },
+  form:            { icon: FileText,      color: 'text-violet-500',  bg: 'bg-violet-50 dark:bg-violet-500/10', label: 'Ficha'    },
 };
 
 const APPT_STATUS_LABEL: Record<string, string> = {
@@ -80,7 +81,7 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
     queryFn: async (): Promise<TimelineEvent[]> => {
       const all: TimelineEvent[] = [];
 
-      const [convSnap, apptSnap, salesSnap, txSnap] = await Promise.all([
+      const [convSnap, apptSnap, salesSnap, txSnap, formSnap] = await Promise.all([
         safeQuery(() => getDocs(query(
           collection(db, 'conversations'),
           where('businessId', '==', businessId),
@@ -101,6 +102,12 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
         ))),
         safeQuery(() => getDocs(query(
           collection(db, 'transactions'),
+          where('businessId', '==', businessId),
+          where('clientId', '==', client.id),
+          firestoreLimit(20),
+        ))),
+        safeQuery(() => getDocs(query(
+          collection(db, 'formResponses'),
           where('businessId', '==', businessId),
           where('clientId', '==', client.id),
           firestoreLimit(20),
@@ -154,6 +161,17 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
           amount: v.amount,
           status: v.status,
           timestamp: v.paymentDate || v.dueDate || v.createdAt || '',
+        });
+      });
+
+      formSnap?.docs?.forEach(d => {
+        const v = d.data();
+        const responses: Record<string, unknown> = v.responses || {};
+        all.push({
+          id: `form_${d.id}`, kind: 'form',
+          title: v.templateName || 'Ficha preenchida',
+          subtitle: Object.entries(responses).slice(0, 2).map(([k, val]) => `${k}: ${val}`).join(' · ') || undefined,
+          timestamp: v.submittedAt || '',
         });
       });
 

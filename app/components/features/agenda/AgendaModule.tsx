@@ -78,7 +78,7 @@ import { isActiveClient } from '@/lib/utils/clientFilters';
 import { maskMoney, unmaskMoney } from '@/lib/utils/masks';
 import { getAppointmentProfessionalIds, getAppointmentProfessionalNames, isAppointmentAssignedTo } from '@/lib/utils/appointment';
 import { notifyUsers } from '@/lib/services/notifications';
-import type { Appointment, AppointmentStatus, Service, CRMContact, User, WeeklySession } from '@/lib/types';
+import type { Appointment, AppointmentStatus, Service, CRMContact, User, WeeklySession, FormTemplate } from '@/lib/types';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { syncToGoogleCalendar } from '@/lib/services/calendarSync';
 import { checkAppointmentConflict } from '@/lib/services/appointmentConflicts';
@@ -587,6 +587,9 @@ interface ServiceFormData {
   codigoMunicipal?: string;
   nbs?: string;
   aliquotaISS?: number;
+  // M06.4a: ficha de anamnese/intake solicitada ao agendar este serviço.
+  // Ausente = serviço não pede formulário (comportamento atual, BIT-A-BIT).
+  formTemplateId?: string;
 }
 
 const WEEKDAY_SHORT: readonly string[] = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
@@ -644,6 +647,19 @@ function ServiceManagementDialog({
     return service.userId === currentUser?.uid;
   }, [isAdmin, currentUser?.uid]);
 
+  // M06.4a: templates ativos pro seletor de ficha de anamnese. Fetch local
+  // (não recebido via prop) — mesmo padrão self-contained de ScheduleBlocksDialog.
+  const [formTemplates, setFormTemplates] = useState<FormTemplate[]>([]);
+  useEffect(() => {
+    const businessId = currentUser?.businessId;
+    if (!open || !businessId) return;
+    const q = query(collection(db, 'formTemplates'), where('businessId', '==', businessId));
+    const unsub = onSnapshot(q, (snap) => {
+      setFormTemplates(snap.docs.map((d) => ({ ...d.data(), id: d.id } as FormTemplate)).filter((f) => f.isActive));
+    });
+    return () => unsub();
+  }, [open, currentUser?.businessId]);
+
   const filteredServices = useMemo(() => {
     if (filterUserId === 'all') return services;
     if (filterUserId === 'global') return services.filter((s) => !s.userId);
@@ -666,6 +682,7 @@ function ServiceManagementDialog({
       codigoMunicipal: '',
       nbs: '',
       aliquotaISS: undefined,
+      formTemplateId: undefined,
     });
     setEditingService(null);
   }, []);
@@ -687,6 +704,7 @@ function ServiceManagementDialog({
       codigoMunicipal: service.codigoMunicipal || '',
       nbs: service.nbs || '',
       aliquotaISS: service.aliquotaISS,
+      formTemplateId: service.formTemplateId,
     });
     setView('form');
   }, []);
@@ -1405,6 +1423,33 @@ function ServiceManagementDialog({
                 </div>
               </details>
 
+              {/* M06.4a: ficha de anamnese/intake — opcional. Quando definida,
+                  a Agenda oferece "Enviar ficha" nos atendimentos deste serviço. */}
+              <div>
+                <label className="block text-[10px] font-semibold text-gray-500 dark:text-gray-400 mb-1 uppercase tracking-wide">
+                  {t('agenda.serviceFormTemplate', 'Ficha de anamnese (opcional)')}
+                </label>
+                <select
+                  value={formData.formTemplateId ?? ''}
+                  onChange={(e) => setFormData((p) => ({ ...p, formTemplateId: e.target.value || undefined }))}
+                  className={cn(
+                    'w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800',
+                    'text-xs text-gray-900 dark:text-gray-100',
+                    'focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500',
+                  )}
+                >
+                  <option value="">{t('agenda.serviceFormTemplateNone', 'Nenhuma — não solicita ficha')}</option>
+                  {formTemplates.map((tpl) => (
+                    <option key={tpl.id} value={tpl.id}>{tpl.name}</option>
+                  ))}
+                </select>
+                {formTemplates.length === 0 && (
+                  <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
+                    {t('agenda.serviceFormTemplateEmpty', 'Nenhuma ficha criada ainda — use o botão "Formulários" na Agenda pra criar uma.')}
+                  </p>
+                )}
+              </div>
+
               {/* Active toggle */}
               <div className="flex items-center justify-between py-2">
                 <div>
@@ -1579,6 +1624,7 @@ function DeleteConfirmDialog({ open, onClose, onCancel, onDelete, onDeleteSeries
 import { AppointmentFormDialog } from './AppointmentFormDialog';
 import type { AppointmentFormData } from './AppointmentFormDialog';
 import ScheduleBlocksDialog from './ScheduleBlocksDialog';
+import FormTemplatesDialog from './FormTemplatesDialog';
 import EmitirNotaDialog from '@/app/components/features/fiscal/EmitirNotaDialog';
 import { buildAppointmentNfseInput } from '@/lib/services/fiscal/appointmentNfse';
 import { buildAppointmentBillingPrefill } from '@/lib/services/agenda/appointmentBilling';
@@ -1595,6 +1641,7 @@ interface ViewAppointmentDialogProps {
   onOpenConversation: () => void;
   onEmitNfse: () => void;
   onBillAppointment: () => void;
+  formTemplateId?: string;
   statusChanging: boolean;
 }
 
@@ -1608,13 +1655,52 @@ function ViewAppointmentDialog({
   onOpenConversation,
   onEmitNfse,
   onBillAppointment,
+  formTemplateId,
   statusChanging,
 }: ViewAppointmentDialogProps) {
   const { t, i18n } = useTranslation();
   const dateLocale = i18n.language === 'en-US' ? enUS : ptBR;
+
+  // M06.4a: idempotência visual do botão "Enviar ficha" — precisa rodar
+  // antes do early-return abaixo (regra dos hooks: appointment pode ser
+  // null em algum render, mas os hooks têm que ser chamados sempre).
+  const [formSubmitted, setFormSubmitted] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!open || !appointment || !formTemplateId) {
+      setFormSubmitted(null);
+      return;
+    }
+    let cancelled = false;
+    const q = query(
+      collection(db, 'formResponses'),
+      where('businessId', '==', appointment.businessId),
+      where('appointmentId', '==', appointment.id),
+    );
+    getDocs(q).then((snap) => {
+      if (!cancelled) setFormSubmitted(!snap.empty);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, appointment?.id, appointment?.businessId, formTemplateId]);
+
   if (!appointment) return null;
 
   const color = STATUS_COLORS[appointment.status];
+
+  const handleSendForm = () => {
+    if (!formTemplateId || typeof window === 'undefined') return;
+    const origin = window.location.origin;
+    const link = `${origin}/forms/${formTemplateId}?clientId=${appointment.clientId}&clientName=${encodeURIComponent(appointment.clientName)}&appointmentId=${appointment.id}`;
+    const message = `Olá ${appointment.clientName}! Por favor preencha sua ficha antes da consulta: ${link}`;
+    const digitsOnly = appointment.clientPhone?.replace(/\D/g, '');
+    if (digitsOnly) {
+      window.open(`https://wa.me/${digitsOnly}?text=${encodeURIComponent(message)}`, '_blank');
+    } else {
+      navigator.clipboard.writeText(link);
+      toast.info(t('agenda.formLinkCopied', 'Telefone não cadastrado — link da ficha copiado.'));
+    }
+  };
 
   return (
     <Dialog
@@ -1930,6 +2016,31 @@ function ViewAppointmentDialog({
                 </button>
               )
             )}
+
+            {/* Ficha de anamnese (M06.4a): preenchida → badge (idempotência
+                visual via query em formResponses no useEffect acima); senão,
+                serviço com formTemplateId e atendimento não cancelado →
+                botão. Envio é manual via wa.me (decisão do usuário) — não
+                reimplementa o cron de lembretes. */}
+            {formTemplateId && appointment.status !== 'cancelado' && (
+              formSubmitted ? (
+                <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10">
+                  <FileCheck2 className="w-3.5 h-3.5" />
+                  {t('agenda.formSubmitted', 'Ficha preenchida')}
+                </span>
+              ) : canEdit && (
+                <button
+                  onClick={handleSendForm}
+                  className={cn(
+                    'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
+                    'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
+                  )}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  {t('agenda.sendForm', 'Enviar ficha')}
+                </button>
+              )
+            )}
           </div>
         </div>
       </div>
@@ -2003,6 +2114,7 @@ export default function AgendaModule() {
   // pessoa — mesmo nível de permissão de NFSe/NFCe (manager+), não operador.
   const canManageScheduleBlocks = ROLE_HIERARCHY[user?.role || 'viewer'] >= ROLE_HIERARCHY['manager'];
   const [showScheduleBlocksDialog, setShowScheduleBlocksDialog] = useState(false);
+  const [showFormTemplatesDialog, setShowFormTemplatesDialog] = useState(false);
 
   const canEditAppointment = useCallback((appt: Appointment) => {
     if (isAdmin) return true;
@@ -2286,6 +2398,8 @@ export default function AgendaModule() {
       commissionRate: data.commissionRate ?? null,
       ...buildGroupFields(data),
       ...buildFiscalFields(data),
+      // M06.4a: ficha de anamnese solicitada ao agendar este serviço.
+      formTemplateId: data.formTemplateId || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -2306,6 +2420,7 @@ export default function AgendaModule() {
       commissionRate: data.commissionRate ?? null,
       ...buildGroupFields(data),
       ...buildFiscalFields(data),
+      formTemplateId: data.formTemplateId || null,
       updatedAt: new Date().toISOString(),
     });
     queryClient.invalidateQueries({ queryKey: ['services', business.id] });
@@ -3648,6 +3763,22 @@ export default function AgendaModule() {
             <span className="hidden sm:inline">{t('agenda.services', 'Serviços')}</span>
           </button>
 
+          {/* Formulários/anamnese (M06.4a) — segundo ponto de entrada fora do
+              Enterprise; qualquer autenticado pode gerenciar (não é ação
+              sensível a dinheiro/agenda de outra pessoa, diferente de bloqueio). */}
+          <button
+            onClick={() => setShowFormTemplatesDialog(true)}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium',
+              'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/[0.06] border border-gray-200 dark:border-gray-700',
+              'transition-all duration-200',
+            )}
+            title={t('agenda.formTemplatesTitle', 'Gerenciar fichas de anamnese/intake')}
+          >
+            <FileText className="w-4 h-4" />
+            <span className="hidden sm:inline">{t('agenda.formTemplates', 'Formulários')}</span>
+          </button>
+
           {/* Schedule blocks (M06.3a) — férias, feriado, indisponibilidade */}
           {canManageScheduleBlocks && (
             <button
@@ -3783,6 +3914,7 @@ export default function AgendaModule() {
           setNfseAppointment(selectedAppointment);
           setShowViewDialog(false);
         }}
+        formTemplateId={selectedAppointment ? services.find((s) => s.id === selectedAppointment.serviceId)?.formTemplateId : undefined}
         onBillAppointment={() => {
           if (!selectedAppointment) return;
           if (typeof window !== 'undefined') {
@@ -3818,6 +3950,18 @@ export default function AgendaModule() {
           onClose={() => setShowScheduleBlocksDialog(false)}
           businessId={business.id}
           members={members}
+        />
+      )}
+
+      {/* Formulários/anamnese (M06.4a) — segundo ponto de entrada pro
+          builder existente, fora do Enterprise. */}
+      {business && user && (
+        <FormTemplatesDialog
+          open={showFormTemplatesDialog}
+          onClose={() => setShowFormTemplatesDialog(false)}
+          businessId={business.id}
+          userId={user.uid}
+          userName={user.name}
         />
       )}
 
