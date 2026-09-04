@@ -12,8 +12,8 @@
 >
 > Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2, M03.3
 > (API v1 + follow-up de atomicidade no PDV + follow-up de idempotência opcional no contrato do
-> agente) e M03.4 concluídos em código o mesmo dia — nenhum depende da decisão V1 vs V2. Resta
-> apenas o checkpoint M03.6 (decisão V1 vs V2), explicitamente pendente do usuário.
+> agente), M03.4 e M03.6 (decisão V1 vs V2: **clássico é o principal**) concluídos em código o
+> mesmo dia. Resta M03.7 (DRE/fluxo/orçamento, condicionado à decisão de M03.6) e M03.9 (aceite).
 
 ---
 
@@ -299,9 +299,17 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
       corrigido, não é V2-exclusiva —, MRR genérico). Risco de dado concreto encontrado:
       `bankAccounts.balance` diverge semanticamente entre as duas UIs (manual no clássico, ledger
       vivo no V2).
-- [ ] **Não é decisão de engenharia.** Registrar aqui a decisão do usuário quando vier, e as
-      consequências (portar features faltantes, aposentar a árvore perdedora, ou formalizar
-      convivência permanente).
+- [x] **Decisão do usuário (04/09/2026): clássico continua sendo o Financeiro principal.**
+      Motivo direto: o cliente pagante atual (odontologia) depende de capacidades que o V2 hoje
+      não tem (editar/cancelar lançamento, parcelamento, comissão, integração "Cobrar" da
+      Agenda — já documentada como quebrada no V2). Ação concreta: banner de convite
+      (`FinancialV2EntryBanner`, "Novo Financeiro (beta) — Experimentar") removido de
+      `app/app/page.tsx` pra ninguém migrar sem saber dos gaps de escrita. **Não é remoção do
+      V2** — componente, flag `financialV2Enabled` e todo `financial-v2/` permanecem intocados;
+      qualquer tenant que já tivesse a flag ligada continua acessando normalmente, e o trabalho
+      (DRE, caixa físico, analytics de assinatura) fica disponível pra retomar/portar se um dia
+      fizer sentido. Verificado por `tsc --noEmit` limpo e suíte completa (1063/79, sem
+      regressão).
 
 ### M03.7 — DRE/fluxo de caixa/orçamento (depende de M03.6)
 
@@ -331,8 +339,8 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
 - [ ] Os 13 caminhos de escrita inventariados nesta investigação foram auditados; os que
       precisavam de correção foram migrados ou tiveram gap documentado e aceito.
 - [ ] `parseOFX`/`parseCSV`/`autoMatch` têm cobertura de teste real.
-- [ ] Decisão V1 vs V2 está tomada e registrada (não necessariamente executada por completo —
-      mas não mais em aberto).
+- [x] Decisão V1 vs V2 está tomada e registrada (não necessariamente executada por completo —
+      mas não mais em aberto). **Tomada em 04/09/2026: clássico é o principal** (ver M03.6).
 - [ ] `firestore.rules` de `transactions` não permite mais pular estado do FSM livremente (ou a
       decisão de não fechar esse gap na camada de rules está registrada com justificativa).
 
@@ -378,8 +386,9 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
 5. **M03.3** ✅ — API v1 migrada; PDV-reversão corrigido (atomicidade); contrato do agente ganhou
    idempotência opcional; clássico/V2 adiado pra decidir junto de M03.6; comissão não abordada.
 6. **M03.4** ✅ — enforcement no servidor (`firestore.rules`: `amount>0` + transição de status).
-7. **M03.6** — checkpoint com o usuário: decisão V1 vs V2 (bloqueia M03.7 até vir).
-8. **M03.7** — DRE/fluxo de caixa/orçamento, conforme a decisão de M03.6.
+7. **M03.6** ✅ — checkpoint com o usuário: decisão V1 vs V2 tomada (clássico é o principal).
+8. **M03.7** — DRE/fluxo de caixa/orçamento, conforme a decisão de M03.6 (clássico venceu —
+   avaliar se algum dia faz sentido portar DRE/caixa físico pra ele; não prioritário agora).
 9. **M03.8** — permanece dormente (fora de escopo por padrão).
 10. **M03.9** — aceite.
 
