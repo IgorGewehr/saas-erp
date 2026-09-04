@@ -27,10 +27,11 @@
 > multi-profissional e isolamento multi-tenant já cobertos; reconciliação investigada e não é
 > lacuna real; smoke manual em navegador pendente). **Checklist do M06 inteiro fechado em código
 > em 04/09/2026.** Pendências que sobrevivem ao fechamento, sinalizadas mas não bloqueantes:
-> visibilidade por profissional (decisão de produto do usuário), achado fiscal de documentos
-> pendentes sem vínculo de origem (`AGENDA_M06_6_COBRANCA_FISCAL.md`, mais próximo de M04),
-> extração de `AgendaModule.tsx`/paginação de clientes/smoke manual (todos precisam de sessão
-> com navegador).
+> visibilidade por profissional (decisão de produto do usuário) e extração de
+> `AgendaModule.tsx`/paginação de clientes/smoke manual (todos precisam de sessão com
+> navegador). **Atualização:** o achado fiscal de documentos pendentes sem vínculo de origem
+> (`AGENDA_M06_6_COBRANCA_FISCAL.md`) foi corrigido em 04/09/2026 como primeira fatia de M04 —
+> ver `docs/fiscal/FISCAL_VINCULO_PENDENTE.md`.
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -512,6 +513,11 @@ mexer na rota de emissão compartilhada por 3 tipos de documento. Vale prioridad
 desta fatia. Detalhes completos em `docs/agenda/AGENDA_M06_6_COBRANCA_FISCAL.md`. Verificado por
 suíte automatizada (976 testes, 4 novos, sem regressão) — **não testado manualmente em navegador**
 nesta rodada.
+
+**Achado corrigido em 04/09/2026** (M04, fora da sequência do M06, priorizado pelo usuário logo
+após o fechamento do checklist M06): `persistPendingAndRespond` agora vincula o documento
+pendente à origem via `linkFiscalDocToSource`, e a UI (Agenda + Pedidos) ganhou um 3º estado
+visual pra não mostrar "emitida" numa nota que nunca saiu. Ver `docs/fiscal/FISCAL_VINCULO_PENDENTE.md`.
 
 ### M06.7 — Booking público e agente no mesmo núcleo
 

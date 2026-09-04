@@ -73,6 +73,14 @@ async function persistPendingAndRespond(params: {
   ambiente?: string | null;
   error: Error;
   now: string;
+  // M04: vínculo com a origem (Sale/DeliveryOrder/Appointment) — sem isso, o
+  // documento 'pendente' nascia órfão e a origem nunca aprendia que já havia
+  // uma tentativa em andamento, deixando um operador reemitir e gerar uma
+  // SEGUNDA nota quando a SEFAZ voltasse e ambas fossem reenviadas.
+  saleId?: string;
+  orderId?: string;
+  appointmentId?: string;
+  sourceType?: 'sale' | 'order' | 'appointment' | 'manual';
 }): Promise<NextResponse> {
   const { certificado: _certCleanup, csc: _cscCleanup, ...payloadForRetry } =
     params.originalRequest as Record<string, unknown>;
@@ -92,11 +100,30 @@ async function persistPendingAndRespond(params: {
       originalRequest: payloadForRetry,
       ufEmitente: params.ufEmitente || null,
       ambiente: params.ambiente || null,
+      saleId: params.saleId,
+      orderId: params.orderId,
+      appointmentId: params.appointmentId,
+      sourceType: params.sourceType,
       issueDate: params.now,
       createdAt: params.now,
       updatedAt: params.now,
     }),
   );
+
+  // M04: grava o vínculo de volta na origem — mesmo writeback best-effort do
+  // caminho de sucesso, agora também no caminho 'pendente'.
+  await linkFiscalDocToSource({
+    businessId: params.businessId,
+    saleId: params.saleId,
+    orderId: params.orderId,
+    appointmentId: params.appointmentId,
+    fiscalDocumentId: docRef.id,
+    accessKey: null,
+    type: params.type,
+    status: 'pendente',
+    now: params.now,
+  });
+
   return NextResponse.json(
     {
       success: false,
@@ -905,6 +932,8 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
             ambiente,
             error: sefazErr,
             now,
+            appointmentId,
+            sourceType,
           });
         }
         throw sefazErr;
@@ -1122,6 +1151,9 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
             ambiente,
             error: sefazErr,
             now,
+            saleId,
+            orderId,
+            sourceType,
           });
         }
         throw sefazErr;
@@ -1309,6 +1341,9 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
           ambiente,
           error: sefazErr,
           now,
+          saleId,
+          orderId,
+          sourceType,
         });
       }
       throw sefazErr;

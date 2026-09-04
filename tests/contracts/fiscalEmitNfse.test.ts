@@ -119,7 +119,18 @@ vi.mock('@/lib/config/firebaseAdmin', () => ({
 }));
 
 // emitirNFSe já tem mock mode nativo (SEFAZ_AMBIENTE=mock) — não precisa
-// mockar o módulo, só setar a env var antes de cada request.
+// mockar o módulo, só setar a env var antes de cada request. Exceção: o
+// teste de "SEFAZ indisponível" (M04) precisa que emitirNFSe LANCE um erro
+// transiente, o que o mock mode nativo nunca faz (sempre autoriza) — por
+// isso o módulo inteiro é mockado, delegando pro mock mode real por padrão
+// e só sobrescrevendo emitirNFSe pontualmente via mockRejectedValueOnce.
+const { mockEmitirNFSe } = vi.hoisted(() => ({ mockEmitirNFSe: vi.fn() }));
+vi.mock('@/lib/services/sefaz-gateway', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/services/sefaz-gateway')>();
+  mockEmitirNFSe.mockImplementation((...args: Parameters<typeof actual.emitirNFSe>) => actual.emitirNFSe(...args));
+  return { ...actual, emitirNFSe: mockEmitirNFSe };
+});
+
 process.env.SEFAZ_AMBIENTE = 'mock';
 
 const { POST } = await import('@/app/api/fiscal/emit/route');
@@ -173,6 +184,7 @@ beforeEach(() => {
   seed();
   fakeVerifyIdToken.mockClear();
   fakeVerifyIdToken.mockResolvedValue({ uid: 'user-1' });
+  mockEmitirNFSe.mockClear(); // preserva a implementação padrão (delega pro mock mode real)
 });
 
 describe('POST /api/fiscal/emit — NFSe (mock SEFAZ)', () => {
@@ -233,6 +245,37 @@ describe('POST /api/fiscal/emit — NFSe (mock SEFAZ)', () => {
     // Replay devolve a MESMA resposta gravada (claim 'done') — não cria um
     // segundo fiscalDocument pro mesmo atendimento.
     expect(list('fiscalDocuments')).toHaveLength(1);
+  });
+
+  it('M04: SEFAZ indisponível (erro transiente) — documento pendente fica VINCULADO ao appointment de origem', async () => {
+    resetFakeDb({
+      'users/user-1': { businessId: 'biz1', role: 'admin', name: 'Dra. Teste' },
+      'businesses/biz1': {
+        id: 'biz1', cnpj: '12345678000199', razaoSocial: 'Clinica Teste LTDA', nomeFantasia: 'Clinica Teste',
+        fiscal: { inscricaoMunicipal: '123456', ibgeCodigoMunicipio: '4304606', taxRegime: 'simples_nacional' },
+      },
+      'appointments/appt-1': { businessId: 'biz1', status: 'concluido', price: 200, clientName: 'Paciente Teste' },
+    });
+    mockEmitirNFSe.mockRejectedValueOnce(new Error('Serviço indisponível — tente novamente'));
+
+    const res = await postEmit(nfseBody({ appointmentId: 'appt-1' }));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.fallback).toBe('pending');
+
+    // Achado corrigido nesta fatia: antes, o documento 'pendente' nascia
+    // órfão (sem appointmentId) — o atendimento nunca aprendia que já havia
+    // uma tentativa em andamento, e um operador podia clicar "Emitir NFSe"
+    // de novo, gerando uma SEGUNDA nota quando a SEFAZ voltasse.
+    const appt = get('appointments/appt-1');
+    expect(appt?.fiscalDocumentId).toBeTruthy();
+    expect(appt?.fiscalStatus).toBe('pendente');
+    expect(appt?.fiscalAccessKey).toBeUndefined(); // sem chave ainda — nada foi emitido de fato
+
+    const docs = list('fiscalDocuments');
+    expect(docs).toHaveLength(1);
+    expect(docs[0].data).toMatchObject({ status: 'pendente', appointmentId: 'appt-1', sourceType: 'appointment' });
   });
 
   it('rejeita quando inscricaoMunicipal não está configurada', async () => {

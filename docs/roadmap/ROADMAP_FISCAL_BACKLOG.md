@@ -33,6 +33,20 @@ Entregue pro go-live da odontologia: botão "Emitir NFSe" no atendimento conclu�
 
 ---
 
+### 2.2. ~~Vínculo de documentos fiscais PENDENTES com a origem~~ ✅ Concluído (04/09/2026)
+Achado durante M06.6 (`docs/agenda/AGENDA_M06_6_COBRANCA_FISCAL.md`), priorizado pelo usuário como
+primeira fatia de M04: `persistPendingAndRespond` (SEFAZ indisponível) nunca vinculava o documento
+`pendente` de volta à venda/pedido/atendimento de origem — risco real de nota fiscal duplicada se
+um operador reemitisse sem perceber a tentativa anterior. Corrigido: `saleId`/`orderId`/
+`appointmentId` agora fluem até `persistPendingAndRespond`, que chama `linkFiscalDocToSource` no
+caminho pendente igual ao de sucesso. UI da Agenda e de Pedidos ganhou um 3º estado visual
+("pendente", âmbar, sem botão de reemissão) pra não trocar o bug antigo por um pior (mostrar
+"emitida" pra uma nota que nunca saiu). Detalhes completos, incluindo gaps que ficaram de fora
+(paridade de status ao vivo em Pedidos, e um gap separado onde NFSe 'processando' sem chave não
+grava documento nenhum), em [docs/fiscal/FISCAL_VINCULO_PENDENTE.md](../fiscal/FISCAL_VINCULO_PENDENTE.md).
+
+---
+
 ## 🟡 Médio prazo (fazer quando aparecer caso real)
 
 ### 3. ~~Refactor mínimo: extrair regras municipais SP num módulo~~ ✅ Concluído (Opção C)

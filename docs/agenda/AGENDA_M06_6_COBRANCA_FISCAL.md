@@ -7,6 +7,10 @@
 > Contexto: 3 itens do checklist M06.6. Um achado desta investigação (§2) tem implicação fiscal
 > real e é sinalizado com destaque — não é só "achado documentado", é algo que vale a atenção
 > direta do usuário, não só um registro em arquivo.
+>
+> **Atualização 04/09/2026:** o achado do §2 foi corrigido — usuário priorizou como primeira
+> fatia de M04 (Fiscal), logo após o fechamento do M06. Ver
+> `docs/fiscal/FISCAL_VINCULO_PENDENTE.md` pra correção completa.
 
 ## 1. Entregue: status fiscal ao vivo no atendimento
 
@@ -28,7 +32,10 @@ tela pra outros status) não tinha entradas pra `cancelada`/`contingencia` — a
 cinza neutra pra `cancelada`, distinta do vermelho de `rejeitada`/`erro`, já que uma nota
 cancelada não é necessariamente um erro, pode ser um cancelamento legítimo).
 
-## 2. ACHADO IMPORTANTE, não corrigido nesta fatia: notas "pendentes" (SEFAZ fora do ar) perdem o vínculo com a origem
+## 2. ✅ CORRIGIDO EM 04/09/2026 — notas "pendentes" (SEFAZ fora do ar) perdiam o vínculo com a origem
+
+> Ver `docs/fiscal/FISCAL_VINCULO_PENDENTE.md` pra correção completa. Texto original do achado
+> preservado abaixo para contexto histórico.
 
 Ao investigar "estado fiscal reprocessável", a busca pelo mecanismo de retry (`POST
 /api/fiscal/retry`, já existe e já funciona) revelou uma lacuna mais séria: quando a emissão

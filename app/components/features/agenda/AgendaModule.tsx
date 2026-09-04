@@ -1996,11 +1996,19 @@ function ViewAppointmentDialog({
                 mostrando "emitida" pra sempre. rejeitada/erro/cancelada são
                 terminais no FSM fiscal (reemissão cria um documento NOVO via
                 /api/fiscal/emit, não um "retry" do mesmo) — por isso o botão
-                "Emitir NFSe" reaparece nesses casos, ao lado do status real. */}
+                "Emitir NFSe" reaparece nesses casos, ao lado do status real.
+                M04: pendente/contingencia (SEFAZ indisponível na emissão,
+                agora vinculada à origem — ver AGENDA_M06_6_COBRANCA_FISCAL.md)
+                é um 3º estado: NÃO é "emitida" (badge enganosa) e NÃO deve
+                reabilitar "Emitir NFSe" (reemitir criaria uma SEGUNDA nota
+                quando a SEFAZ voltasse) — reenvio é feito no módulo Fiscal
+                ("Reenviar para SEFAZ"), não aqui. */}
             {appointment.status === 'concluido' && (() => {
               const isFiscalTerminalFailure = appointment.fiscalDocumentId
                 && ['rejeitada', 'erro', 'cancelada'].includes(fiscalLiveStatus ?? '');
-              const isFiscalActive = appointment.fiscalDocumentId && !isFiscalTerminalFailure;
+              const isFiscalPending = appointment.fiscalDocumentId
+                && ['pendente', 'contingencia'].includes(fiscalLiveStatus ?? '');
+              const isFiscalActive = appointment.fiscalDocumentId && !isFiscalTerminalFailure && !isFiscalPending;
               return (
                 <>
                   {isFiscalActive && (
@@ -2009,6 +2017,15 @@ function ViewAppointmentDialog({
                       {fiscalLiveStatus && fiscalLiveStatus !== 'autorizada'
                         ? getStatusLabel(fiscalLiveStatus)
                         : t('agenda.nfseEmitted', 'NFSe emitida')}
+                    </span>
+                  )}
+                  {isFiscalPending && (
+                    <span
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10"
+                      title={t('agenda.nfsePendingHint', 'Reenvie pelo módulo Fiscal quando a SEFAZ voltar — não emita de novo aqui.')}
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      {getStatusLabel(fiscalLiveStatus ?? '')}
                     </span>
                   )}
                   {isFiscalTerminalFailure && (

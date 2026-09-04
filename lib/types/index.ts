@@ -2162,6 +2162,11 @@ export interface DeliveryOrder {
   /** Chave de acesso (44 dígitos) da NFC-e vinculada. Null quando a nota ficou
    *  pendente/contingência sem chave ainda. */
   fiscalAccessKey?: string | null;
+  /** Status do fiscalDocument no momento do writeback ('autorizada'/'pendente'/
+   *  'contingencia'/'rejeitada'/etc — mesmo vocabulário do FSM fiscal). Já era
+   *  gravado pelo writeback (linkFiscalDocToSource) mas nunca declarado aqui —
+   *  campo real no Firestore desde sempre, só a tipagem TS estava desatualizada. */
+  fiscalStatus?: string;
 
   /** FK opcional para o CRMDeal que originou este pedido (ROI por deal — P2.10). */
   dealId?: string;
