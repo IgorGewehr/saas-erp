@@ -86,7 +86,7 @@ import { createAppointmentSafe, updateAppointmentSafe, AppointmentConflictError,
 import { buildGroupSlots, resolveGroupBooking, type GroupSlot } from '@/lib/services/groupSession';
 import { isGroupService } from '@/lib/contracts/domain/service';
 import { canTransitionAppointment } from '@/lib/contracts/fsm/appointment';
-import { collection, query, where, orderBy, getDocs, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
+import { collection, query, where, orderBy, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, onSnapshot, increment, writeBatch, limit as firestoreLimit } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { softDeleteDoc } from '@/lib/services/softDelete';
@@ -1684,6 +1684,26 @@ function ViewAppointmentDialog({
     };
   }, [open, appointment?.id, appointment?.businessId, formTemplateId]);
 
+  // M06.6: status fiscal AO VIVO, não o Appointment.fiscalStatus (gravado uma
+  // única vez na emissão e nunca mais atualizado — pode ficar sempre "emitida"
+  // mesmo que a nota tenha sido rejeitada depois de reconsultada, ou
+  // cancelada). Busca pontual no fiscalDocuments quando o dialog abre, mesmo
+  // padrão de idempotência visual dos outros badges desta tela.
+  const [fiscalLiveStatus, setFiscalLiveStatus] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || !appointment?.fiscalDocumentId) {
+      setFiscalLiveStatus(null);
+      return;
+    }
+    let cancelled = false;
+    getDoc(doc(db, 'fiscalDocuments', appointment.fiscalDocumentId)).then((snap) => {
+      if (!cancelled) setFiscalLiveStatus((snap.data()?.status as string | undefined) ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, appointment?.fiscalDocumentId]);
+
   if (!appointment) return null;
 
   const color = STATUS_COLORS[appointment.status];
@@ -1969,28 +1989,49 @@ function ViewAppointmentDialog({
               </button>
             )}
 
-            {/* NFSe: emitida → badge (idempotência visual); senão, concluído →
-                botão. Emissão real vive no EmitirNotaDialog + /api/fiscal/emit
-                (não reimplementada aqui) — mesmo padrão do NFC-e em Pedidos. */}
-            {appointment.status === 'concluido' && (
-              appointment.fiscalDocumentId ? (
-                <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10">
-                  <FileCheck2 className="w-3.5 h-3.5" />
-                  {t('agenda.nfseEmitted', 'NFSe emitida')}
-                </span>
-              ) : canEdit && (
-                <button
-                  onClick={onEmitNfse}
-                  className={cn(
-                    'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
-                    'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
+            {/* NFSe (M06.6): status AO VIVO do fiscalDocuments vinculado, não
+                a presença crua de fiscalDocumentId — Appointment.fiscalStatus
+                nunca é atualizado depois da emissão inicial (campo morto pra
+                leitura), então uma nota rejeitada/cancelada DEPOIS continuava
+                mostrando "emitida" pra sempre. rejeitada/erro/cancelada são
+                terminais no FSM fiscal (reemissão cria um documento NOVO via
+                /api/fiscal/emit, não um "retry" do mesmo) — por isso o botão
+                "Emitir NFSe" reaparece nesses casos, ao lado do status real. */}
+            {appointment.status === 'concluido' && (() => {
+              const isFiscalTerminalFailure = appointment.fiscalDocumentId
+                && ['rejeitada', 'erro', 'cancelada'].includes(fiscalLiveStatus ?? '');
+              const isFiscalActive = appointment.fiscalDocumentId && !isFiscalTerminalFailure;
+              return (
+                <>
+                  {isFiscalActive && (
+                    <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10">
+                      <FileCheck2 className="w-3.5 h-3.5" />
+                      {fiscalLiveStatus && fiscalLiveStatus !== 'autorizada'
+                        ? getStatusLabel(fiscalLiveStatus)
+                        : t('agenda.nfseEmitted', 'NFSe emitida')}
+                    </span>
                   )}
-                >
-                  <Receipt className="w-3.5 h-3.5" />
-                  {t('agenda.emitNfse', 'Emitir NFSe')}
-                </button>
-              )
-            )}
+                  {isFiscalTerminalFailure && (
+                    <span className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-500/10">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      {getStatusLabel(fiscalLiveStatus ?? '')}
+                    </span>
+                  )}
+                  {(!appointment.fiscalDocumentId || isFiscalTerminalFailure) && canEdit && (
+                    <button
+                      onClick={onEmitNfse}
+                      className={cn(
+                        'flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium',
+                        'text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors',
+                      )}
+                    >
+                      <Receipt className="w-3.5 h-3.5" />
+                      {t('agenda.emitNfse', 'Emitir NFSe')}
+                    </button>
+                  )}
+                </>
+              );
+            })()}
 
             {/* Cobrança: lançada → badge (idempotência visual); senão,
                 concluído OU não-compareceu (M06.3b: taxa de no-show, mesmo

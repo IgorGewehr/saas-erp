@@ -86,6 +86,7 @@ export function getStatusColor(status: string): string {
     rascunho: '#6B7280',
     contingencia: '#A855F7', // purple — emitido off-line, aguardando transmissão
     erro: '#EF4444',
+    cancelada: '#6B7280', // fiscal — feminino, distinto de 'cancelado' (agendamento)
   };
   return colors[status] || '#6B7280';
 }
@@ -108,6 +109,8 @@ export function getStatusLabel(status: string): string {
     erro: 'Erro',
     aberta: 'Aberta',
     finalizada: 'Finalizada',
+    cancelada: 'Cancelada', // fiscal — feminino, distinto de 'cancelado' (agendamento)
+    contingencia: 'Contingência',
   };
   return labels[status] || status;
 }

@@ -17,8 +17,13 @@
 > de CRM já existente; consolidação dos dois sistemas de lembrete analisada e deliberadamente
 > adiada) concluídos em código em 04/09/2026. M06.8 parcial (janela de listener entregue;
 > visibilidade por profissional **pendente de decisão do usuário**; extração de
-> `AgendaModule.tsx` e paginação de clientes analisadas e adiadas). Próxima etapa: M06.6/M06.7
-> (cobrança/assinaturas, unificar agente no núcleo) ou M06.9 (aceite).
+> `AgendaModule.tsx` e paginação de clientes analisadas e adiadas). M06.6 parcial (status fiscal
+> ao vivo entregue; **achado importante sinalizado ao usuário**: documentos fiscais pendentes
+> por indisponibilidade da SEFAZ perdem o vínculo com a origem, risco real de nota fiscal
+> duplicada — mais próximo de M04 que de M06; memberships/assinaturas e consolidação
+> cobrança↔fiscal analisadas e adiadas). Próxima etapa: M06.7 (unificar agente/booking público
+> no núcleo — maior risco deste plano, muda comportamento de agendamento público de verdade;
+> checkpoint com o usuário antes de começar) ou M06.9 (aceite).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -470,9 +475,36 @@ consistência com a fatia anterior) e **não testado contra o cron real em produ
 
 ### M06.6 — Cobrança, fiscal, comissão e assinaturas
 
-- [ ] Consolidar a cadeia atendimento → cobrança → NFS-e (parcialmente entregue).
-- [ ] Ligar memberships/assinaturas à agenda (plano com N consultas, retorno incluso).
-- [ ] Estado fiscal consultável e reprocessável a partir do atendimento.
+- [ ] ~~Consolidar a cadeia atendimento → cobrança → NFS-e (parcialmente entregue)~~ —
+      **analisado, deliberadamente não corrigido** (04/09/2026): as duas cadeias (cobrança e
+      fiscal) são independentes hoje, mas cada uma já é manual e idempotente por si só — sem
+      risco de corrupção/duplicidade, só uma lacuna de conveniência (não há aviso cruzado tipo
+      "fiscal emitido mas nunca cobrado"). Não há evidência de problema real; fica como possível
+      item futuro na auditoria M06.0, não corrigido aqui.
+- [ ] Ligar memberships/assinaturas à agenda (plano com N consultas, retorno incluso) —
+      **analisado, deliberadamente adiado** (04/09/2026): contrato/FSM/cron de cobrança já
+      existem, e a checagem de limite de uso já existe — mas só no caminho de TURMA do agente de
+      IA, não na Agenda de recepção (o que a clínica realmente usa) nem no núcleo compartilhado.
+      Não existe NENHUMA UI de matrícula. Feature majoritariamente não construída pra atendimento
+      1:1, não confirmada como necessidade real da odontologia — escopo bem maior que uma fatia.
+- [x] Estado fiscal consultável e reprocessável a partir do atendimento.
+
+**M06.6 (parcial) concluída em código (04/09/2026):** status fiscal AO VIVO no atendimento —
+`Appointment.fiscalStatus` era gravado uma única vez na emissão e nunca mais atualizado (nota
+rejeitada/cancelada depois continuava mostrando "NFSe emitida" pra sempre). `ViewAppointmentDialog`
+agora busca `fiscalDocuments/{fiscalDocumentId}` ao vivo quando abre; `rejeitada`/`erro`/
+`cancelada` (terminais no FSM fiscal) mostram o status real E reabilitam "Emitir NFSe" (reemissão
+cria documento novo, não é retry do mesmo). **Achado importante durante a investigação, sinalizado
+com destaque, não corrigido nesta fatia**: documentos fiscais que ficam `pendente` por
+indisponibilidade TEMPORÁRIA da SEFAZ (`persistPendingAndRespond` em `/api/fiscal/emit`) são
+criados **sem nenhum vínculo** com o atendimento/venda/pedido de origem — o atendimento nunca
+aprende que existe uma nota pendente, o que pode levar um operador a reemitir e criar uma
+**segunda** nota fiscal pro mesmo atendimento. Não é específico de Appointments (afeta NFe/NFCe/
+NFSe de Sales/DeliveryOrders também) — mais próximo de M04 (Fiscal) que de M06, corrigir exige
+mexer na rota de emissão compartilhada por 3 tipos de documento. Vale prioridade própria, fora
+desta fatia. Detalhes completos em `docs/agenda/AGENDA_M06_6_COBRANCA_FISCAL.md`. Verificado por
+suíte automatizada (976 testes, 4 novos, sem regressão) — **não testado manualmente em navegador**
+nesta rodada.
 
 ### M06.7 — Booking público e agente no mesmo núcleo
 
@@ -533,7 +565,11 @@ sem regressão — **não testado manualmente em navegador** nesta rodada.
 7. **M06.8** — custo e segurança (janela de listener entregue; visibilidade por profissional
    pendente de decisão do usuário; extração de `AgendaModule.tsx` e paginação de clientes
    analisadas, execução adiada pra quando houver navegador disponível pra validar).
-8. **M06.6** e **M06.7** — cobrança/assinaturas e canais externos.
+8. **M06.6** (parcial — status fiscal ao vivo entregue; achado de vínculo fiscal pendente
+   sinalizado ao usuário, ver `docs/agenda/AGENDA_M06_6_COBRANCA_FISCAL.md`; memberships
+   adiadas) e **M06.7** — cobrança/assinaturas e canais externos. M06.7 é a maior mudança de
+   risco deste plano (comportamento de agendamento público real) — checkpoint com o usuário
+   antes de iniciar.
 9. **M06.9** — aceite.
 
 **Mínimo para a odontologia operar com segurança: M06.0 → M06.1 → M06.2**, mais o bloqueio de

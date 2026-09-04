@@ -364,6 +364,10 @@ describe('getStatusColor', () => {
     expect(getStatusColor('erro')).toBe('#EF4444');
   });
 
+  it('returns correct color for cancelada (fiscal, distinto de cancelado)', () => {
+    expect(getStatusColor('cancelada')).toBe('#6B7280');
+  });
+
   it('returns default gray for unknown status', () => {
     expect(getStatusColor('unknown_status')).toBe('#6B7280');
   });
@@ -435,6 +439,14 @@ describe('getStatusLabel', () => {
 
   it('returns correct label for finalizada', () => {
     expect(getStatusLabel('finalizada')).toBe('Finalizada');
+  });
+
+  it('returns correct label for cancelada (fiscal, distinto de cancelado)', () => {
+    expect(getStatusLabel('cancelada')).toBe('Cancelada');
+  });
+
+  it('returns correct label for contingencia', () => {
+    expect(getStatusLabel('contingencia')).toBe('Contingência');
   });
 
   it('returns the status string itself for unknown status', () => {
