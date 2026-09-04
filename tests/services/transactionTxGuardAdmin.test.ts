@@ -4,6 +4,7 @@ import {
   transitionTransactionSafeAdmin,
   TransactionNotFoundError,
   TransactionTenantMismatchError,
+  TransactionInvalidTransitionError,
 } from '@/lib/services/transactionTxGuardAdmin';
 
 // Fake Admin SDK — mesmo formato de tests/services/appointmentTxGuardAdmin.test.ts,
@@ -169,11 +170,11 @@ describe('transitionTransactionSafeAdmin', () => {
     expect(db.collections.transactions[0].data.status).toBe('pago');
   });
 
-  it('transição inválida (FSM) lança — cancelado é terminal', async () => {
+  it('transição inválida (FSM) lança TransactionInvalidTransitionError — cancelado é terminal', async () => {
     db.collections.transactions[0].data.status = 'cancelado';
     await expect(
       transitionTransactionSafeAdmin({ db: db as never, transactionId: 'tx-1', businessId, targetStatus: 'pago' }),
-    ).rejects.toThrow(/transição inválida/);
+    ).rejects.toBeInstanceOf(TransactionInvalidTransitionError);
   });
 
   it('transição pra o MESMO status é no-op permitido (não aciona o FSM)', async () => {
@@ -181,6 +182,14 @@ describe('transitionTransactionSafeAdmin', () => {
       db: db as never, transactionId: 'tx-1', businessId, targetStatus: 'pendente',
     });
     expect(result.status).toBe('pendente');
+  });
+
+  it('targetStatus ausente: não muda status, só aplica patch (evita pré-fetch só pra saber o status atual)', async () => {
+    const result = await transitionTransactionSafeAdmin({
+      db: db as never, transactionId: 'tx-1', businessId, patch: { description: 'Descrição editada' },
+    });
+    expect(result.status).toBe('pendente'); // preservado
+    expect(result.description).toBe('Descrição editada');
   });
 
   it('lança TransactionNotFoundError pra id inexistente', async () => {

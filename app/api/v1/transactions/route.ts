@@ -1,6 +1,15 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import {
+  createTransactionSafeAdmin,
+  transitionTransactionSafeAdmin,
+  TransactionNotFoundError,
+  TransactionTenantMismatchError,
+  TransactionInvalidTransitionError,
+  type AdminTransactionPayload,
+} from '@/lib/services/transactionTxGuardAdmin';
+import type { TransactionStatus } from '@/lib/types';
 
 // =============================================================================
 // GET /api/v1/transactions — List transactions for the authenticated business
@@ -159,9 +168,7 @@ export async function POST(req: NextRequest) {
       finalStatus = 'pago';
     }
 
-    const now = new Date().toISOString();
-
-    const transactionData: Record<string, any> = {
+    const transactionData: Record<string, unknown> = {
       businessId: auth.businessId,
       type,
       category: category.trim(),
@@ -169,8 +176,6 @@ export async function POST(req: NextRequest) {
       amount: Math.round(amount * 100) / 100,
       dueDate,
       status: finalStatus,
-      createdAt: now,
-      updatedAt: now,
     };
 
     // ── Optional fields ───────────────────────────────────────────────────────
@@ -189,9 +194,20 @@ export async function POST(req: NextRequest) {
     if (body.costCenter) transactionData.costCenter = body.costCenter;
     if (body.businessUnitId) transactionData.businessUnitId = body.businessUnitId;
 
-    const docRef = await adminDb.collection('transactions').add(transactionData);
+    // R3: X-Idempotency-Key explícito tem prioridade; sem ele, o núcleo ainda
+    // deriva uma chave de saleId/appointmentId/etc quando presentes (M03.2) —
+    // mesma combinação que a auditoria M03.0 usa pra medir duplicidade
+    // (DUPLICATE_SOURCE_TRANSACTION). Fecha o double-click de retry de rede
+    // já auto-documentado em docs/agenda/AGENDA_COBRANCA.md: antes, um POST
+    // repetido criava uma SEGUNDA transação; agora devolve a mesma (200 em
+    // vez de 201, nada novo foi criado).
+    const idempotencyKeyHeader = req.headers.get('x-idempotency-key')?.trim();
+    if (idempotencyKeyHeader) transactionData.idempotencyKey = idempotencyKeyHeader;
 
-    return apiSuccess({ id: docRef.id, ...transactionData }, 201);
+    const result = await createTransactionSafeAdmin(adminDb, transactionData as AdminTransactionPayload);
+    const created = await adminDb.collection('transactions').doc(result.id).get();
+
+    return apiSuccess({ id: result.id, ...created.data() }, result.created ? 201 : 200);
   } catch (err) {
     console.error('[API] POST /api/v1/transactions error:', err);
     return apiError('Failed to create transaction', 500);
@@ -220,31 +236,17 @@ export async function PUT(req: NextRequest) {
       return apiError('Field "id" is required and must be a string', 400);
     }
 
-    // Verify the document exists and belongs to this business
-    const docRef = adminDb.collection('transactions').doc(id);
-    const docSnap = await docRef.get();
-
-    if (!docSnap.exists) {
-      return apiError('Transaction not found', 404);
-    }
-
-    const existingData = docSnap.data();
-    if (existingData?.businessId !== auth.businessId) {
-      return apiError('Transaction not found', 404);
-    }
-
     const now = new Date().toISOString();
 
     // ── Handle ?action=mark-paid shortcut ─────────────────────────────────────
+    // Roteado pelo núcleo (M03.2): aplica o FSM em vez de forçar o status —
+    // uma transação já cancelada, por exemplo, não pode mais ser "paga".
     if (action === 'mark-paid') {
-      await docRef.update({
-        status: 'pago',
-        paymentDate: now.split('T')[0],
-        updatedAt: now,
+      const updated = await transitionTransactionSafeAdmin({
+        db: adminDb, transactionId: id, businessId: auth.businessId, targetStatus: 'pago',
+        patch: { paymentDate: now.split('T')[0] },
       });
-
-      const updated = await docRef.get();
-      return apiSuccess({ id: updated.id, ...updated.data() });
+      return apiSuccess(updated);
     }
 
     // ── Standard update ───────────────────────────────────────────────────────
@@ -274,18 +276,26 @@ export async function PUT(req: NextRequest) {
     }
 
     // Auto-set status to 'pago' if paymentDate is being set and status is not explicitly provided
-    if (updateFields.paymentDate && !updateFields.status) {
-      updateFields.status = 'pago';
-    }
+    // (comportamento existente preservado). `targetStatus` ausente = não muda
+    // status (o guard re-lê o atual e não aciona o FSM) — evita um pré-fetch
+    // só pra descobrir o status corrente quando o caller não está mudando ele.
+    const explicitStatus = updateFields.status as TransactionStatus | undefined;
+    delete updateFields.status;
+    const targetStatus: TransactionStatus | undefined = explicitStatus
+      ?? (updateFields.paymentDate ? 'pago' : undefined);
 
-    updateFields.updatedAt = now;
+    const updated = await transitionTransactionSafeAdmin({
+      db: adminDb, transactionId: id, businessId: auth.businessId, targetStatus, patch: updateFields,
+    });
 
-    await docRef.update(updateFields);
-
-    const updated = await docRef.get();
-
-    return apiSuccess({ id: updated.id, ...updated.data() });
+    return apiSuccess(updated);
   } catch (err) {
+    if (err instanceof TransactionNotFoundError || err instanceof TransactionTenantMismatchError) {
+      return apiError('Transaction not found', 404);
+    }
+    if (err instanceof TransactionInvalidTransitionError) {
+      return apiError(err.message, 409);
+    }
     console.error('[API] PUT /api/v1/transactions error:', err);
     return apiError('Failed to update transaction', 500);
   }

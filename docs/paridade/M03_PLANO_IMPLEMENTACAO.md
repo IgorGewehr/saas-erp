@@ -10,10 +10,11 @@
 > atendimento já existe via ligação pontual com a Agenda (`docs/agenda/AGENDA_COBRANCA.md`), mas
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
-> Estado: investigação de abertura concluída em 04/09/2026. M03.5 (testes de conciliação),
-> M03.0 (baseline/auditoria), M03.1 (contrato de domínio Zod) e M03.2 (núcleo de criação/
-> transição) concluídos em código o mesmo dia — nenhum depende da decisão V1 vs V2. Próxima
-> etapa recomendada: M03.3 (migrar os caminhos de maior risco pro núcleo).
+> Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2 e a
+> primeira rodada de M03.3 (API v1 migrada pro núcleo) concluídos em código o mesmo dia —
+> nenhum depende da decisão V1 vs V2. As demais frentes de M03.3 (agente, clássico/V2, PDV)
+> foram investigadas e adiadas com achados reais documentados (ver seção M03.3). Próxima etapa
+> recomendada: M03.4 (enforcement no servidor) ou retomar M03.3 com os follow-ups encontrados.
 
 ---
 
@@ -187,23 +188,38 @@ Nenhuma rota/UI usa este guard ainda — isso é M03.3. Detalhes em
 `docs/financeiro/FINANCEIRO_M03_2_NUCLEO.md`. Verificado por `tsc --noEmit` limpo e suíte
 completa (1062 testes/79 arquivos, sem regressão).
 
-### M03.3 — Migrar os caminhos de maior risco pro núcleo
+### M03.3 — Migrar os caminhos de maior risco pro núcleo (1ª rodada concluída, 04/09/2026)
 
 Ordem por risco × exposição, não por ordem alfabética:
 
-- [ ] `app/api/v1/transactions/route.ts` (API externa, validação ad-hoc, sem idempotência —
-      maior exposição a terceiro sem controle de retry).
-- [ ] `app/api/agent/tools/financial/route.ts` (`create_receivable`/`create_payable` — já tem
-      Zod no boundary, falta idempotência).
-- [ ] `financial/FinancialModule.tsx` (criação/edição manual, clássico) — client SDK direto vira
-      chamada ao núcleo.
-- [ ] `financial-v2/components/LancarSheet.tsx` + `BaixaDialog.tsx` (criação/baixa manual, V2).
-- [ ] `PDVModule.tsx:1173-1184` (cancelamento de venda reverte Transaction via `updateDoc` cru,
-      ignorando o FSM que a CRIAÇÃO da mesma venda já respeita via caminho hardenizado — mesma
-      classe de inconsistência "hardenizado na criação, cru na reversão" já vista em outros
-      módulos nesta sessão).
+- [x] `app/api/v1/transactions/route.ts` (API externa, validação ad-hoc, sem idempotência —
+      maior exposição a terceiro sem controle de retry). **Migrado**: `POST` usa
+      `createTransactionSafeAdmin` (aceita `X-Idempotency-Key`, R3, que a rota nunca suportou
+      antes); `PUT`/`mark-paid` usa `transitionTransactionSafeAdmin` (FSM aplicado — transição
+      inválida agora responde 409 em vez de aceitar sem checar). Detalhes em
+      `docs/financeiro/FINANCEIRO_M03_3_MIGRACAO_API_V1.md`.
+- [ ] ~~`app/api/agent/tools/financial/route.ts`~~ — **investigado, achado diferente do
+      esperado**: `markPaid`/`cancelTx` JÁ chamam `assertTransitionTransaction` (FSM já
+      aplicado, código melhor do que o plano supunha). O gap real (`createTx` sem idempotência)
+      não tem chave disponível pra dedup (`CreateParams` não carrega `saleId`/`appointmentId`/
+      `idempotencyKey`) — migrar seria trocar código sem ganho prático, e no ramo de
+      parcelamento (batch atômico) até REGREDIRIA a garantia atual. Corrigir de verdade exige
+      estender o contrato do agente com um identificador estável do tool-call — fora do escopo
+      desta fatia. Ver `docs/financeiro/FINANCEIRO_M03_3_MIGRACAO_API_V1.md` §3.
+- [ ] ~~`financial/FinancialModule.tsx` + `financial-v2/components/LancarSheet.tsx`/
+      `BaixaDialog.tsx`~~ — adiado: depende de decidir se nasce uma rota `POST /api/transactions`
+      nova (client→server) ou se essas telas continuam client SDK direto; decisão natural de
+      fazer junto com M03.6 (V1 vs V2), não isoladamente.
+- [ ] ~~`PDVModule.tsx:1173-1184`~~ — **investigado, achado menos grave do que o plano supunha**:
+      toda transição PARA `cancelado` já é válida a partir de QUALQUER estado no FSM — não existe
+      hoje nenhuma sequência de estados que esse `updateDoc` cru consiga violar. O gap é
+      arquitetural (client SDK, não usa o núcleo Admin-only) mais do que funcional. Migrar de
+      verdade exigiria construir o guard client-side deliberadamente adiado no M03.2, ou mover
+      todo `handleCancelSale` (estoque + stats + transação) pra uma rota server-side — maior que
+      "trocar uma chamada". Ver `docs/financeiro/FINANCEIRO_M03_3_MIGRACAO_API_V1.md` §3.
 - [ ] `lib/services/commission.ts` — unificar `maybeCreateCommission`/`maybeCreateCommissionAdmin`
       (hoje duplicados por cópia manual, não compartilhados) numa fonte única, migrada pro núcleo.
+      Não abordado nesta rodada.
 
 ### M03.4 — Enforcement no servidor
 
@@ -311,9 +327,9 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
 3. **M03.1** ✅ — contrato de domínio (pré-requisito SDD pra tudo que vem depois).
 4. **M03.2** ✅ — núcleo de criação/transição novo (só Admin SDK; client SDK e a rota
    `POST /api/transactions` deliberadamente adiados pra M03.3).
-5. **M03.3** — migrar os caminhos de maior risco (API v1 e agente primeiro — exposição externa;
-   depois clássico/V2/PDV-reversão/comissão). Próxima etapa.
-6. **M03.4** — enforcement no servidor.
+5. **M03.3** (1ª rodada ✅ — API v1 migrada; agente e PDV-reversão investigados e adiados com
+   achados reais; clássico/V2 adiado pra decidir junto de M03.6; comissão não abordada).
+6. **M03.4** — enforcement no servidor. Próxima etapa.
 7. **M03.6** — checkpoint com o usuário: decisão V1 vs V2 (bloqueia M03.7 até vir).
 8. **M03.7** — DRE/fluxo de caixa/orçamento, conforme a decisão de M03.6.
 9. **M03.8** — permanece dormente (fora de escopo por padrão).

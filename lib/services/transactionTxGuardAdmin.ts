@@ -47,7 +47,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Firestore } from 'firebase-admin/firestore';
-import { assertTransitionTransaction } from '@/contracts/fsm/transaction';
+import { canTransitionTransaction } from '@/contracts/fsm/transaction';
 import type { Transaction, TransactionStatus, TransactionType } from '@/lib/types';
 
 export class TransactionNotFoundError extends Error {
@@ -61,6 +61,18 @@ export class TransactionTenantMismatchError extends Error {
   constructor(message = 'Transação pertence a outro negócio.') {
     super(message);
     this.name = 'TransactionTenantMismatchError';
+  }
+}
+
+/** Erro tipado pra que o caller (rota) diferencie violação de FSM de falha
+ *  genérica — ex.: responder 409 em vez de 500. */
+export class TransactionInvalidTransitionError extends Error {
+  constructor(
+    public readonly from: TransactionStatus,
+    public readonly to: TransactionStatus,
+  ) {
+    super(`Transaction FSM: transição inválida ${from} → ${to}`);
+    this.name = 'TransactionInvalidTransitionError';
   }
 }
 
@@ -165,7 +177,12 @@ export async function transitionTransactionSafeAdmin(params: {
   db: Firestore;
   transactionId: string;
   businessId: string;
-  targetStatus: TransactionStatus;
+  /** Ausente = não muda status, só aplica `patch` (ex.: editar `description`/
+   *  `category` sem mexer no FSM) — ainda dentro da MESMA garantia atômica
+   *  de existência/tenant que a transição de status já oferece. Evita o
+   *  caller precisar de um pré-fetch só pra saber o status atual quando não
+   *  vai mudá-lo. */
+  targetStatus?: TransactionStatus;
   /** Campos adicionais a gravar junto (ex.: paymentDate ao marcar 'pago'). */
   patch?: Record<string, unknown>;
 }): Promise<Transaction> {
@@ -178,9 +195,9 @@ export async function transitionTransactionSafeAdmin(params: {
     if (current.businessId !== params.businessId) throw new TransactionTenantMismatchError();
 
     const fromStatus = current.status;
-    const toStatus = params.targetStatus;
-    if (fromStatus !== toStatus) {
-      assertTransitionTransaction(fromStatus, toStatus); // lança em transição inválida
+    const toStatus = params.targetStatus ?? fromStatus;
+    if (fromStatus !== toStatus && !canTransitionTransaction(fromStatus, toStatus)) {
+      throw new TransactionInvalidTransitionError(fromStatus, toStatus);
     }
 
     const now = new Date().toISOString();
