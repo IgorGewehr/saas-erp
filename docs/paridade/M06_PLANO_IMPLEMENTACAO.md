@@ -23,8 +23,14 @@
 > duplicada — mais próximo de M04 que de M06; memberships/assinaturas e consolidação
 > cobrança↔fiscal analisadas e adiadas). M06.7 concluída (agente/booking público convergidos
 > pro núcleo M06.1 — cast morto real corrigido no horário de trabalho, bloqueios e buffer
-> passaram a valer também no canal de IA). Falta só M06.9 (testes concorrentes, isolamento
-> multi-tenant, aceite/homologação) — último item do checklist do M06 inteiro.
+> passaram a valer também no canal de IA). M06.9 concluída (teste concorrente cross-canal novo;
+> multi-profissional e isolamento multi-tenant já cobertos; reconciliação investigada e não é
+> lacuna real; smoke manual em navegador pendente). **Checklist do M06 inteiro fechado em código
+> em 04/09/2026.** Pendências que sobrevivem ao fechamento, sinalizadas mas não bloqueantes:
+> visibilidade por profissional (decisão de produto do usuário), achado fiscal de documentos
+> pendentes sem vínculo de origem (`AGENDA_M06_6_COBRANCA_FISCAL.md`, mais próximo de M04),
+> extração de `AgendaModule.tsx`/paginação de clientes/smoke manual (todos precisam de sessão
+> com navegador).
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -566,12 +572,42 @@ sem regressão — **não testado manualmente em navegador** nesta rodada.
 
 ### M06.9 — Testes, homologação e aceite
 
-- [ ] Testes concorrentes: dois canais diferentes disputando o mesmo horário.
-- [ ] Teste de multi-profissional (profissional em 2ª posição não pode ser duplo-agendado).
-- [ ] Teste de falha após a transição, antes do efeito → reconciliação recupera.
-- [ ] Testes de isolamento entre dois `businessId` em todos os efeitos.
+- [x] Testes concorrentes: dois canais diferentes disputando o mesmo horário.
+- [x] Teste de multi-profissional (profissional em 2ª posição não pode ser duplo-agendado) —
+      já coberto por canal desde M06.1; reforçado cross-canal nesta fatia.
+- [ ] ~~Teste de falha após a transição, antes do efeito → reconciliação recupera~~ —
+      **investigado, não é lacuna real** (04/09/2026): o mecanismo de recuperação
+      (`dispatchDomainEvent('appointment.completed')` reaplicando efeito quando
+      `completionAppliedAt` está ausente) já é testado a fundo em
+      `tests/contracts/appointmentCompletionHandlers.test.ts`. O que sobra em
+      `scripts/reconcile-appointment-completions.ts` é paginação/CLI, mesma categoria
+      (deliberadamente não testada) do precedente já existente `scripts/audit-m06-agenda.ts`
+      (M06.0) — sem regra de negócio substancial pra extrair além de um predicado de uma linha.
+- [x] Testes de isolamento entre dois `businessId` em todos os efeitos — já coberto em
+      `appointmentCompletionHandlers.test.ts`/`appointmentNoShowHandler.test.ts`.
 - [ ] Smoke manual do fluxo completo da clínica: agendar → lembrar → confirmar → atender → registrar
-      → cobrar → emitir NFS-e.
+      → cobrar → emitir NFS-e. **Não executado** — sem navegador/dev server nesta sessão;
+      checklist de 6 passos deixado em `docs/agenda/AGENDA_M06_9_ACEITE.md` §4.
+
+**M06.9 concluída em código (04/09/2026):** investigação prévia evitou trabalho duplicado — 2
+dos 4 itens automatizáveis já estavam cobertos (multi-profissional por canal desde M06.1,
+isolamento multi-tenant nos handlers de efeito). Item novo: `tests/services/
+appointmentCrossChannelConcurrency.test.ts` — sem emulador do Firestore, modela o RESULTADO de
+uma corrida já resolvida (um canal commita contra um backing store compartilhado; o outro lê o
+estado fresco e detecta o conflito), provando que `createAppointmentSafe` (client, Agenda/CRM/
+PDV) e `createAppointmentSafeAdmin` (Admin, API v1/agente) protegem o MESMO slot
+simetricamente, incluindo o caso multi-profissional cross-canal (profissional em 2ª posição
+reservado por um canal bloqueia o outro). Item de reconciliação analisado e não é lacuna real
+(ver checklist acima). Smoke manual fica pendente de sessão com navegador. Verificado por
+`tsc --noEmit` limpo e suíte completa (980 testes/75 arquivos, 4 novos, sem regressão). Detalhes
+completos em `docs/agenda/AGENDA_M06_9_ACEITE.md`.
+
+**Com M06.9, o checklist inteiro do plano M06 está fechado em código.** Itens sinalizados ao
+longo do plano continuam pendentes de decisão/execução futura (não bloqueiam o fechamento):
+visibilidade por profissional (M06.8, decisão de produto), extração de `AgendaModule.tsx` e
+paginação de clientes (M06.8, adiadas por falta de navegador), memberships/assinaturas e
+consolidação cobrança↔fiscal (M06.6), e o achado fiscal de maior prioridade — documentos
+pendentes sem vínculo de origem, risco de NFSe duplicada (`AGENDA_M06_6_COBRANCA_FISCAL.md`).
 
 ## 7. Ordem de entrega recomendada
 
@@ -589,7 +625,8 @@ sem regressão — **não testado manualmente em navegador** nesta rodada.
    sinalizado ao usuário, ver `docs/agenda/AGENDA_M06_6_COBRANCA_FISCAL.md`; memberships
    adiadas) e **M06.7** (concluída — agente/booking público convergidos pro núcleo M06.1, ver
    `docs/agenda/AGENDA_M06_7_NUCLEO_AGENTE.md`).
-9. **M06.9** — aceite. Único item restante do M06.
+9. **M06.9** — aceite (concluída em código; smoke manual em navegador pendente, ver
+   `docs/agenda/AGENDA_M06_9_ACEITE.md`). **Checklist do M06 fechado.**
 
 **Mínimo para a odontologia operar com segurança: M06.0 → M06.1 → M06.2**, mais o bloqueio de
 agenda da M06.3. O resto é ganho incremental, não pré-requisito.
