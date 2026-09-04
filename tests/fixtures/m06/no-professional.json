@@ -1,0 +1,36 @@
+{
+  "scenario": "no-professional",
+  "description": "Agendamento 'com qualquer profissional disponível' (professionalId vazio). Regra intencional: sem profissional escolhido, não há contra o que conflitar no Check 2 — a verificação real fica pro fluxo operacional posterior (quando um profissional for atribuído). Bloqueio de agenda do NEGÓCIO INTEIRO (sem professionalId no bloqueio) é a ÚNICA coisa que ainda vale mesmo aqui (Check 0, M06.3a) — checado ANTES do early-return de 'sem profissional'.",
+  "members": [],
+  "existingAppointments": [
+    {
+      "id": "appt-existing-other-prof",
+      "businessId": "biz-m06",
+      "clientId": "client-1",
+      "clientName": "Paciente Existente",
+      "professionalId": "prof-1",
+      "date": "2026-09-10",
+      "startTime": "09:00",
+      "endTime": "10:00",
+      "status": "agendado"
+    }
+  ],
+  "candidateNoProfessional": {
+    "professionalId": "",
+    "date": "2026-09-10",
+    "startTime": "09:00",
+    "endTime": "10:00"
+  },
+  "businessWideBlockActive": {
+    "id": "block-holiday",
+    "businessId": "biz-m06",
+    "startDate": "2026-09-10",
+    "endDate": "2026-09-10",
+    "status": "ativo",
+    "reason": "Feriado",
+    "createdBy": "admin-1",
+    "createdByName": "Admin",
+    "createdAt": "2026-09-01T00:00:00.000Z",
+    "updatedAt": "2026-09-01T00:00:00.000Z"
+  }
+}

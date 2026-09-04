@@ -1,0 +1,27 @@
+{
+  "scenario": "multi-professional",
+  "description": "Appointment com professionalIds[] (M06.1) — conflita se QUALQUER profissional do conjunto já está ocupado, mesmo que só apareça na 2a posição do array (blind spot fechado na M06.1). Antes da correção, um appointment existente só era visível ao check se batesse no campo legado professionalId.",
+  "members": [
+    { "id": "prof-1", "uid": "prof-1", "name": "Dra. Ana", "role": "operator" },
+    { "id": "prof-2", "uid": "prof-2", "name": "Dr. Bruno", "role": "operator" }
+  ],
+  "existingAppointmentOnlyInArraySecondPosition": {
+    "id": "appt-existing-legacy-other",
+    "businessId": "biz-m06",
+    "clientId": "client-1",
+    "clientName": "Paciente Existente",
+    "professionalId": "prof-9",
+    "professionalIds": ["prof-9", "prof-1"],
+    "date": "2026-09-10",
+    "startTime": "09:00",
+    "endTime": "10:00",
+    "status": "agendado"
+  },
+  "candidateNewMultiProfessional": {
+    "professionalId": "prof-1",
+    "professionalIds": ["prof-1", "prof-2"],
+    "date": "2026-09-10",
+    "startTime": "09:30",
+    "endTime": "10:30"
+  }
+}

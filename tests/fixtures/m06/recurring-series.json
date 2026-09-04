@@ -1,0 +1,46 @@
+{
+  "scenario": "recurring-series",
+  "description": "Série recorrente (mesmo recurrenceId, N datas). LIMITAÇÃO CONHECIDA E DOCUMENTADA (não corrigida): cada ocorrência da série é um Appointment independente pro checker de conflito — não há lock/atomicidade especial pra série inteira. AgendaModule.tsx cria a série via writeBatch pré-validado em memória (comentário em appointmentTxGuard.ts: 'Bumpar lock por N dias dentro de tx degradaria performance demais'). Consequência real: duas séries recorrentes concorrentes podem, em teoria, se sobrepor sem detecção atômica — cada ocorrência SÓ é protegida individualmente, no momento em que é checada.",
+  "members": [
+    { "id": "prof-1", "uid": "prof-1", "name": "Dra. Ana", "role": "operator" }
+  ],
+  "recurrenceId": "series-abc",
+  "existingSeriesOccurrences": [
+    {
+      "id": "series-abc-occurrence-1",
+      "businessId": "biz-m06",
+      "clientId": "client-1",
+      "clientName": "Paciente Recorrente",
+      "professionalId": "prof-1",
+      "date": "2026-09-10",
+      "startTime": "09:00",
+      "endTime": "10:00",
+      "status": "agendado",
+      "recurrenceId": "series-abc"
+    },
+    {
+      "id": "series-abc-occurrence-2",
+      "businessId": "biz-m06",
+      "clientId": "client-1",
+      "clientName": "Paciente Recorrente",
+      "professionalId": "prof-1",
+      "date": "2026-09-17",
+      "startTime": "09:00",
+      "endTime": "10:00",
+      "status": "agendado",
+      "recurrenceId": "series-abc"
+    }
+  ],
+  "candidateOverlappingOneOccurrence": {
+    "professionalId": "prof-1",
+    "date": "2026-09-10",
+    "startTime": "09:30",
+    "endTime": "10:30"
+  },
+  "candidateOnUnoccupiedWeek": {
+    "professionalId": "prof-1",
+    "date": "2026-09-24",
+    "startTime": "09:00",
+    "endTime": "10:00"
+  }
+}

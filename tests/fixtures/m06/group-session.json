@@ -1,0 +1,37 @@
+{
+  "scenario": "group-session",
+  "description": "Turma (capacity>1, sessionKey compartilhado). Colegas da MESMA sessão não conflitam entre si — cada aluno é um Appointment próprio com o mesmo sessionKey. A exclusão de colegas acontece nos guards (excludeSameSession em appointmentTxGuard[Admin].ts), ANTES de checkAppointmentConflict — a função pura em si não sabe de sessionKey.",
+  "sessionKey": "svc-pilates_2026-09-10_09:00_prof-1",
+  "capacity": 3,
+  "members": [
+    { "id": "prof-1", "uid": "prof-1", "name": "Instrutor Carlos", "role": "operator" }
+  ],
+  "existingAppointmentsAfterExcludingSameSession": [],
+  "existingAppointmentsSameSessionOnly": [
+    {
+      "id": "colega-1",
+      "businessId": "biz-m06",
+      "clientId": "client-2",
+      "clientName": "Colega 1",
+      "professionalId": "prof-1",
+      "date": "2026-09-10",
+      "startTime": "09:00",
+      "endTime": "10:00",
+      "status": "agendado",
+      "sessionKey": "svc-pilates_2026-09-10_09:00_prof-1",
+      "isGroupSession": true
+    }
+  ],
+  "candidateNewStudentSameSession": {
+    "professionalId": "prof-1",
+    "date": "2026-09-10",
+    "startTime": "09:00",
+    "endTime": "10:00"
+  },
+  "candidateOtherServiceSameProfessionalOverlapping": {
+    "professionalId": "prof-1",
+    "date": "2026-09-10",
+    "startTime": "09:30",
+    "endTime": "10:30"
+  }
+}

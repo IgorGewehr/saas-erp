@@ -8,14 +8,15 @@
 >
 > Lente desta rodada: **odontologia** — cliente pagante real, módulo operacional central.
 >
-> Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável), M06.3
-> completo (M06.3a bloqueios, M06.3b no-show, M06.3c buffer), M06.4a (ficha do
-> paciente/anamnese) e M06.5 fechado (M06.5a confirmação leve via WhatsApp, M06.5b fuso
-> horário por negócio — corrigiu bug real de ~3h no lembrete/confirmação —, M06.5c
-> reengajamento — corrigiu dois bugs reais numa automação de CRM já existente; consolidação dos
-> dois sistemas de lembrete analisada e deliberadamente adiada, ver checklist abaixo)
-> concluídos em código em 04/09/2026. Próxima etapa: M06.0b (congelar comportamento por canal)
-> ou M06.8 (custo/segurança).
+> Estado: M06.0a+M06.0b (auditoria + congelamento de comportamento por canal/fixtures — falta só
+> rodar a auditoria contra tenant real, bloqueado por status de onboarding ambíguo — ver
+> checklist), M06.1+M06.2 (núcleo de conflito/transição reconciliável), M06.3 completo (M06.3a
+> bloqueios, M06.3b no-show, M06.3c buffer), M06.4a (ficha do paciente/anamnese) e M06.5 fechado
+> (M06.5a confirmação leve via WhatsApp, M06.5b fuso horário por negócio — corrigiu bug real de
+> ~3h no lembrete/confirmação —, M06.5c reengajamento — corrigiu dois bugs reais numa automação
+> de CRM já existente; consolidação dos dois sistemas de lembrete analisada e deliberadamente
+> adiada) concluídos em código em 04/09/2026. Próxima etapa: M06.8 (custo/segurança) — tem um
+> item que é decisão de produto (visibilidade por profissional), não só engenharia.
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -240,27 +241,40 @@ autoridade sobre "esse horário pode".
       (honrando `professionalIds[]`, não só o campo legado); schema legado vs. sem profissional
       algum; fora do horário de trabalho; turma acima da capacidade; referência financeira/fiscal
       quebrada (`billingTransactionId`/`billingInstallmentGroupId`/`fiscalDocumentId`).
-- [ ] Congelar em teste o comportamento **válido** de cada canal (PDV, CRM, Agenda, Conversas,
-      agente, API v1) *como existe hoje*, antes de convergir — parcialmente coberto pelos testes já
-      existentes de `appointmentConflicts`/`appointmentTxGuard`/`appointmentTxGuardAdmin`/turmas
-      (63 casos), mas nenhum deles caracteriza os dois canais sem guard (PDV, CRM) nem o algoritmo
-      próprio do agente — ainda não feito.
-- [ ] Fixtures dedicadas por cenário (exclusivo, turma, multi-profissional, série recorrente, sem
-      profissional) como arquivos versionados (`tests/fixtures/m06/*.json`, mesmo padrão do M02) —
-      hoje os cenários da auditoria vivem inline no teste do snapshot, suficiente para validar a
-      auditoria em si, mas não reutilizável pelas próximas etapas.
+- [x] Congelar em teste o comportamento **válido** de cada canal (PDV, CRM, Agenda, Conversas,
+      agente, API v1) *como existe hoje*, antes de convergir.
+- [x] Fixtures dedicadas por cenário (exclusivo, turma, multi-profissional, série recorrente, sem
+      profissional) como arquivos versionados (`tests/fixtures/m06/*.json`, mesmo padrão do M02).
 - [ ] Executar `npm run audit:m06 -- --businessId=<tenant real>` em homologação e revisar os
       números antes de iniciar a M06.1 — a auditoria existe em código, mas ainda não rodou contra
-      dado de produção.
+      dado de produção. **Bloqueado**: status de onboarding da clínica real ficou ambíguo entre
+      documentos desta sessão (alguns dizem "cliente pagante real com cron já em produção",
+      outro diz "sem tenant real em produção ainda") — vale confirmar com o usuário antes de
+      assumir uma resposta, em vez de adivinhar.
 
 **M06.0a concluída em código:** auditoria read-only (`lib/services/m06-agenda-audit.ts`,
 `scripts/audit-m06-agenda.ts`, `npm run audit:m06`) — mesmo formato before/after da M02
 (`buildM06AgendaSnapshot`/`compareM06AgendaSnapshots`), 13 testes cobrindo cada código de issue.
 Detecta especificamente as lacunas do diagnóstico §3: sobreposição real que os 3 algoritmos atuais
 não veem entre si, conclusão sem efeito, schema de profissional legado, turma sobrecarregada e
-vínculo financeiro/fiscal quebrado. Congelamento de comportamento por canal e fixtures dedicadas
-(M06.0b) ficam para a próxima etapa — a auditoria não depende deles para já poder rodar num tenant
-real.
+vínculo financeiro/fiscal quebrado.
+
+**M06.0b concluída em código (04/09/2026):** congelamento de comportamento por canal +
+fixtures dedicadas. Achado antes de executar: a descrição original ("caracterizar os 2 canais
+sem guard, PDV/CRM") ficou desatualizada — M06.1 já migrou os dois pro núcleo compartilhado;
+sobrou só o canal do Agente IA/booking público (`app/api/agent/tools/agenda/route.ts`) com
+algoritmo genuinamente próprio. Novas fixtures versionadas
+(`tests/fixtures/m06/*.json`, 5 cenários) + `tests/contracts/m06-agenda-baseline.test.ts` (5
+casos) caracterizam o núcleo compartilhado (`checkAppointmentConflict`, usado por
+Agenda/Conversas/CRM/PDV/API v1). O canal do agente foi caracterizado em PROSA, não em teste
+automatizado (mesma decisão de consistência das fatias M06.5a/b/c: nenhuma rota deste repo tem
+teste de rota hoje) — encontradas e documentadas 2 divergências reais de comportamento vs. o
+núcleo compartilhado: (1) "sem profissional" BLOQUEIA tudo no agente, o OPOSTO do núcleo (que
+não conflita); (2) cast morto (`WorkSchedule[]`) nunca respeita `workingHours` individual,
+achado já conhecido de M06.3a, reconfirmado aqui. Nenhuma das duas foi corrigida — objetivo é
+congelar antes de convergir (M06.7), não convergir agora. Detalhes em
+`docs/agenda/AGENDA_M06_0B_CARACTERIZACAO.md`. Verificado por suíte automatizada (973 testes,
+5 novos em 1 arquivo novo, sem regressão).
 
 **Saída:** evidência de quanto do problema já existe nos dados reais antes de mudar qualquer regra.
 

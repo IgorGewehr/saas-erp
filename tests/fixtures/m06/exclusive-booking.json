@@ -1,0 +1,33 @@
+{
+  "scenario": "exclusive-booking",
+  "description": "Agendamento 1:1 comum (sem turma). Overlap com outro appointment do MESMO profissional deve conflitar; com OUTRO profissional, não.",
+  "members": [
+    { "id": "prof-1", "uid": "prof-1", "name": "Dra. Ana", "role": "operator" },
+    { "id": "prof-2", "uid": "prof-2", "name": "Dr. Bruno", "role": "operator" }
+  ],
+  "existingAppointments": [
+    {
+      "id": "appt-existing-1",
+      "businessId": "biz-m06",
+      "clientId": "client-1",
+      "clientName": "Paciente Existente",
+      "professionalId": "prof-1",
+      "date": "2026-09-10",
+      "startTime": "09:00",
+      "endTime": "10:00",
+      "status": "agendado"
+    }
+  ],
+  "candidateOverlappingSameProfessional": {
+    "professionalId": "prof-1",
+    "date": "2026-09-10",
+    "startTime": "09:30",
+    "endTime": "10:30"
+  },
+  "candidateSameSlotOtherProfessional": {
+    "professionalId": "prof-2",
+    "date": "2026-09-10",
+    "startTime": "09:00",
+    "endTime": "10:00"
+  }
+}
