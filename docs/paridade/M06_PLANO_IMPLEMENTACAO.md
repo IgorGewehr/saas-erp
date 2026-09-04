@@ -10,10 +10,11 @@
 >
 > Estado: M06.0a (auditoria), M06.1+M06.2 (núcleo de conflito/transição reconciliável), M06.3
 > completo (M06.3a bloqueios, M06.3b no-show, M06.3c buffer), M06.4a (ficha do
-> paciente/anamnese), M06.5a (confirmação leve via WhatsApp) e M06.5b (fuso horário por
-> negócio — corrigiu de quebra um deslocamento real de ~3h no lembrete/confirmação por
-> WhatsApp) concluídos em código em 04/09/2026. Próxima etapa: consolidar os dois sistemas de
-> lembrete e reengajamento (resto do M06.5) ou M06.0b.
+> paciente/anamnese) e M06.5 quase completo (M06.5a confirmação leve via WhatsApp, M06.5b fuso
+> horário por negócio — corrigiu bug real de ~3h no lembrete/confirmação —, M06.5c
+> reengajamento — corrigiu dois bugs reais numa automação de CRM já existente) concluídos em
+> código em 04/09/2026. Falta só consolidar os dois sistemas de lembrete pro M06.5 fechar.
+> Próxima etapa: essa consolidação (mais arriscada, cron já em produção) ou M06.0b.
 
 ## 0. Por que este plano NÃO é uma reescrita
 
@@ -386,7 +387,7 @@ manualmente em navegador** nesta rodada.
 - [ ] Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência.
 - [x] Confirmação do paciente ("confirmo") atualizando status **sem** exigir o Agente IA completo.
 - [x] Fuso horário por negócio, substituindo o `-03:00` fixo.
-- [ ] Reengajamento de paciente sem retorno há N meses (recall), reaproveitando CRM/campanhas.
+- [x] Reengajamento de paciente sem retorno há N meses (recall), reaproveitando CRM/campanhas.
 
 **M06.5a concluída em código:** confirmação leve via WhatsApp, sem depender do Agente IA.
 Detector de palavra-chave (`lib/utils/confirmationKeywords.ts`, mesmo formato do detector de
@@ -416,6 +417,25 @@ colateral documentado, não corrigido: o fuso do negócio nunca chega no context
 Verificado por suíte automatizada (968 testes, 10 novos em 2 arquivos novos — primeira suíte de
 `appointmentReminderRunner.ts`, que não tinha nenhuma antes — sem regressão) — **não verificado
 contra o cron real em produção** nesta rodada.
+
+**M06.5c concluída em código:** reengajamento (recall). **Achado principal**: o recall já
+existia — automação de CRM `client_inactive` (`AutomacoesTab.tsx` +
+`processCRMAutomations()`), configurável em dias (até 365 ≈ 12 meses), com ação
+`send_whatsapp` e texto padrão pronto. Não precisava de feature nova — precisava de conserto:
+**dois bugs reais** encontrados. (1) Condição extra comparava `client.lastContactAt`, campo que
+não existe em `Client` (o real é `lastContactDate`) — sempre avaliava verdadeiro, inofensivo
+mas não fazia o que parecia. (2) **Sem idempotência por cliente** — só por regra/dia — então um
+paciente inativo continuaria recebendo "sentimos sua falta" TODO dia que o cron rodasse,
+indefinidamente, até voltar. Corrigido com nova coleção `automationRuleLogs` (idempotência por
+`(ruleId, clientId)`, com um "fingerprint de episódio" baseado em `lastVisit` — se o paciente
+voltou e ficou inativo de novo depois, é um novo episódio, não repetição). Também corrigido,
+mais amplamente: `send_whatsapp` (usado por qualquer trigger de automação) agora respeita
+`marketingOptOuts` antes de mandar mensagem — nenhuma automação de CRM respeitava opt-out
+antes. Achado, não corrigido: `high_churn_risk`/`lifecycle_change` têm o mesmo bug de
+idempotência ausente — fica pra uma fatia futura de hardening geral do motor de automações.
+Detalhes em `docs/agenda/AGENDA_REENGAJAMENTO.md`. Verificado por `tsc --noEmit` limpo e suíte
+completa sem regressão — **sem testes novos** (mesmo arquivo sem nenhum teste de rota, mantendo
+consistência com a fatia anterior) e **não testado contra o cron real em produção**.
 
 **Saída:** menos cadeira vazia, sem depender de configuração escondida.
 
@@ -453,7 +473,8 @@ contra o cron real em produção** nesta rodada.
 3. **M06.2** — transição/conclusão reconciliável (elimina perda silenciosa de dinheiro).
 4. **M06.4** — anamnese (maior valor clínico novo, escopo pequeno, campo já existe).
 5. **M06.3** — bloqueios, no-show e buffer entre atendimentos (completo).
-6. **M06.5** — lembretes consolidados.
+6. **M06.5** — lembretes consolidados (confirmação, fuso e recall já entregues; falta só
+   consolidar os dois sistemas de lembrete numa única definição de janela/idempotência).
 7. **M06.8** — custo e segurança.
 8. **M06.6** e **M06.7** — cobrança/assinaturas e canais externos.
 9. **M06.9** — aceite.

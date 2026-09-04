@@ -736,6 +736,57 @@ function daysSince(isoDate: string | undefined | null): number {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / (24 * 60 * 60 * 1000));
 }
 
+/**
+ * Set de telefones (dígitos) que já pediram opt-out de marketing pro negócio,
+ * pro canal whatsapp — mesmo formato de índice/filtro que
+ * app/api/broadcasts/send/route.ts já usa (fetch em lote + Set em memória,
+ * não filtro por identifier na query — evita precisar de índice composto de
+ * 3 campos). Buscado 1x por negócio, reusado por todas as regras/clientes
+ * (M06.5c — antes, nenhuma automação de CRM respeitava opt-out).
+ */
+async function fetchWhatsAppOptOutSet(businessId: string): Promise<Set<string>> {
+  const snap = await adminDb.collection('marketingOptOuts')
+    .where('businessId', '==', businessId)
+    .where('channel', 'in', ['whatsapp', 'all'])
+    .get();
+  return new Set(snap.docs.map((d) => (d.data().identifier as string || '').toLowerCase()));
+}
+
+/**
+ * Idempotência por (regra, cliente) pra triggers "de estado" (ex:
+ * client_inactive) que, sem isso, re-disparariam a mesma ação TODO dia em
+ * que a regra rodar — um paciente inativo há 90 dias continua "inativo" pra
+ * sempre até voltar, então sem essa trava o "sentimos sua falta" seria
+ * reenviado diariamente pro mesmo paciente (M06.5c, achado real). Só
+ * client_inactive usa isso por enquanto — high_churn_risk/lifecycle_change
+ * têm o mesmo problema, achado e documentado, não corrigido nesta fatia
+ * (ver docs/agenda/AGENDA_REENGAJAMENTO.md).
+ *
+ * `stateFingerprint` é o valor que, ao MUDAR, indica um novo "episódio"
+ * legítimo pra agir de novo (aqui, `client.lastVisit` — se o cliente voltou
+ * e ficou inativo de novo depois, é um novo episódio, não repetição).
+ */
+async function shouldSkipRepeatedAutomation(
+  businessId: string,
+  ruleId: string,
+  clientId: string,
+  stateFingerprint: string,
+): Promise<boolean> {
+  const logRef = adminDb.collection('automationRuleLogs').doc(`${ruleId}_${clientId}`);
+  const snap = await logRef.get();
+  if (snap.exists && snap.data()?.stateFingerprint === stateFingerprint) {
+    return true;
+  }
+  await logRef.set({
+    businessId,
+    ruleId,
+    clientId,
+    stateFingerprint,
+    lastActionedAt: new Date().toISOString(),
+  });
+  return false;
+}
+
 async function processCRMAutomations(): Promise<number> {
   const rulesSnap = await adminDb.collection('automationRules')
     .where('isActive', '==', true)
@@ -763,6 +814,7 @@ async function processCRMAutomations(): Promise<number> {
       .get();
 
     const clients = clientsSnap.docs.map(d => ({ ...d.data(), id: d.id } as Record<string, unknown> & { id: string }));
+    const optOutSet = await fetchWhatsAppOptOutSet(businessId);
 
     for (const rule of rules) {
       const r = rule.data;
@@ -780,9 +832,13 @@ async function processCRMAutomations(): Promise<number> {
       switch (trigger) {
         case 'client_inactive': {
           const inactiveDays = Number(triggerConfig.inactiveDays || 30);
+          // M06.5c: era `lastContactAt`, campo que não existe em Client (o
+          // real é `lastContactDate`) — a condição sempre avaliava
+          // daysSince(undefined)=9999, ou seja, sempre verdadeira; corrigido
+          // pro campo certo.
           matchedClients = clients.filter(c =>
             daysSince(c.lastVisit as string) >= inactiveDays &&
-            daysSince(c.lastContactAt as string) >= inactiveDays
+            daysSince(c.lastContactDate as string) >= inactiveDays
           );
           break;
         }
@@ -838,6 +894,19 @@ async function processCRMAutomations(): Promise<number> {
       matchedClients = matchedClients.filter(c =>
         conditions.every(cond => matchesCondition(c, cond))
       );
+
+      // M06.5c: idempotência por episódio pra triggers "de estado" que não
+      // expiram sozinhos — ver shouldSkipRepeatedAutomation acima. Depois
+      // do filtro de condições AND de propósito: só reivindica idempotência
+      // pra quem de fato vai ser actionado.
+      if (trigger === 'client_inactive') {
+        const filtered: typeof matchedClients = [];
+        for (const c of matchedClients) {
+          const skip = await shouldSkipRepeatedAutomation(businessId, rule.id, c.id as string, String(c.lastVisit || ''));
+          if (!skip) filtered.push(c);
+        }
+        matchedClients = filtered;
+      }
 
       if (matchedClients.length === 0) {
         // Still mark as ran to avoid re-checking
@@ -898,6 +967,10 @@ async function processCRMAutomations(): Promise<number> {
                 // recente — assume que o canal ativo é onde cliente está hoje.
                 const phone = ((client.phone as string) || '').replace(/\D/g, '');
                 if (!phone) break;
+                // M06.5c: respeita opt-out de marketing (LGPD) — antes,
+                // automações de CRM mandavam mensagem mesmo pra quem já
+                // tinha respondido "PARE"/"STOP" no WhatsApp.
+                if (optOutSet.has(phone.toLowerCase())) break;
                 const convSnap = await adminDb.collection('conversations')
                   .where('businessId', '==', businessId)
                   .where('channel', '==', 'whatsapp')
