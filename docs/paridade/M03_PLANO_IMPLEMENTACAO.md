@@ -44,9 +44,12 @@ convergência, não reescrita. **M03 não tem esse luxo.** A investigação de a
 4. **Duas integrações de conciliação real (OFX/CSV) coexistem** (uma em cada árvore de UI, mesmo
    backend `lib/services/reconciliation.ts`), funcionais mas **sem nenhum teste automatizado**
    apesar de mexer com dinheiro real de conciliação bancária.
-5. **DRE/fluxo de caixa/orçamento**: DRE e projeção de caixa são reais mas só existem no V2
-   (nenhuma linha de código equivalente no clássico); Orçamento (`Budget`) é um tipo declarado
-   com **zero** consumidores — nunca foi implementado.
+5. **DRE/fluxo de caixa/orçamento**: DRE (com regime competência/caixa) e caixa físico são reais
+   e só existem no V2. Projeção de caixa **NÃO é V2-exclusiva** — correção feita em 04/09/2026
+   após investigação de paridade (M03.6): o clássico tem sua própria projeção diária 30/60/90d +
+   13 semanas com toggle de cenário, dentro da aba Transações (`FinancialModule.tsx:4104-4483`).
+   Ver `docs/financeiro/FINANCEIRO_M03_6_PARIDADE_V1_V2.md`. Orçamento (`Budget`) é um tipo
+   declarado com **zero** consumidores — nunca foi implementado.
 6. **Integrações PIX/Boleto/OCR/Open Banking são 100% stub** — as 4 rotas retornam 501
    incondicional, com checklist de TODO no cabeçalho do arquivo. Não é um gap de qualidade, é
    trabalho nunca começado (confirmado lendo o corpo das rotas, não só o nome).
@@ -79,6 +82,23 @@ o V2 (e futuras chamadas do agente/API v1), exatamente como `checkAppointmentCon
 Agenda/CRM/PDV/API v1/agente hoje. Isso não resolve a decisão de produto (a) vs (b), só evita que
 o hardening fique refém dela — o núcleo vale independente de qual UI sobrevive. A decisão de
 QUAL UI é a fonte de verdade daqui pra frente fica **explicitamente pendente do usuário**.
+
+**Inventário de paridade real feito em 04/09/2026** (pedido explícito do usuário antes de
+decidir, em vez de decidir às cegas) — ver `docs/financeiro/FINANCEIRO_M03_6_PARIDADE_V1_V2.md`
+pro detalhe completo com arquivo/linha. Resumo do achado: **não é "V2 é superset faltando 1-2
+gaps"** (`ProjetosTab`/multi-moeda) como a formulação original sugeria — é mais nuançado e numa
+dimensão específica, invertido. V2 está à frente em inteligência financeira **somente-leitura**
+(DRE com regime contábil, caixa físico com FSM próprio, analytics de assinatura com churn,
+conciliação com drill mais rico). Mas V2 está atrás em capacidade **operacional de escrita**:
+hoje não edita nem cancela lançamento, não cria parcelamento, não configura recorrência além de
+"repete mensal", não pausa/retoma/ajusta série recorrente, não gerencia comissão, não anexa
+comprovante, e não cria/edita conta bancária (o que bloqueia a própria feature de caixa físico,
+já que ela exige uma conta tipo `caixa` que só o clássico cria hoje). Achado de risco de dado
+concreto: `bankAccounts.balance` tem semântica DIVERGENTE entre os dois — clássico trata como
+número manual, V2 incrementa automaticamente a cada baixa/conciliação — misturar uso sem lidar
+com isso primeiro arrisca saldo divergente. Achado de integração: o botão "Cobrar" da Agenda
+(cliente pagante atual, odontologia) já está documentado como quebrado quando V2 está ativo
+(`docs/agenda/AGENDA_COBRANCA.md`).
 
 ## 2. O que é fora de escopo deliberado (não incluído neste plano)
 
@@ -268,8 +288,17 @@ nenhuma garantia escrita até agora; documentado com teste próprio pra não vir
 silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`. Verificado por
 `tsc --noEmit` limpo e suíte completa (1017 testes/76 arquivos, sem regressão).
 
-### M03.6 — Decisão de produto: V1 vs V2 (ver §1)
+### M03.6 — Decisão de produto: V1 vs V2 (ver §1) — investigação de paridade concluída (04/09/2026)
 
+- [x] **Inventário de paridade real** feito a pedido do usuário (recusou decidir sem dados).
+      `docs/financeiro/FINANCEIRO_M03_6_PARIDADE_V1_V2.md`: 11 capacidades só no clássico
+      (CRUD completo de lançamento, parcelamento, gestão de série recorrente, comissões, CRUD de
+      conta bancária, projetos, multi-moeda, integração "Cobrar" da Agenda — quebrada no V2),
+      10 só no V2 (DRE, caixa físico, analytics de assinatura com churn, "Super Consultor",
+      drill de conciliação), 4 compartilhadas (conciliação, auditoria, projeção de caixa —
+      corrigido, não é V2-exclusiva —, MRR genérico). Risco de dado concreto encontrado:
+      `bankAccounts.balance` diverge semanticamente entre as duas UIs (manual no clássico, ledger
+      vivo no V2).
 - [ ] **Não é decisão de engenharia.** Registrar aqui a decisão do usuário quando vier, e as
       consequências (portar features faltantes, aposentar a árvore perdedora, ou formalizar
       convivência permanente).
