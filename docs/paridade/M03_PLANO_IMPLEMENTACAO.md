@@ -10,11 +10,10 @@
 > atendimento já existe via ligação pontual com a Agenda (`docs/agenda/AGENDA_COBRANCA.md`), mas
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
-> Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2 e a
-> primeira rodada de M03.3 (API v1 migrada pro núcleo) concluídos em código o mesmo dia —
-> nenhum depende da decisão V1 vs V2. As demais frentes de M03.3 (agente, clássico/V2, PDV)
-> foram investigadas e adiadas com achados reais documentados (ver seção M03.3). Próxima etapa
-> recomendada: M03.4 (enforcement no servidor) ou retomar M03.3 com os follow-ups encontrados.
+> Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2, a
+> primeira rodada de M03.3 e M03.4 (enforcement em `firestore.rules`) concluídos em código o
+> mesmo dia — nenhum depende da decisão V1 vs V2. Restam: os 2 follow-ups reais de M03.3
+> (contrato do agente; reversão de venda do PDV) e o checkpoint M03.6 (decisão V1 vs V2).
 
 ---
 
@@ -221,17 +220,27 @@ Ordem por risco × exposição, não por ordem alfabética:
       (hoje duplicados por cópia manual, não compartilhados) numa fonte única, migrada pro núcleo.
       Não abordado nesta rodada.
 
-### M03.4 — Enforcement no servidor
+### M03.4 — Enforcement no servidor ✅ Concluído (04/09/2026)
 
-- [ ] `firestore.rules` pra `transactions`: hoje só valida enum de `status`/`type` — adicionar
-      pelo menos `amount > 0` e considerar mover a checagem de transição de status pra
-      Cloud Function/rule custom (ou aceitar que o enforcement real vive só na API — decisão a
-      registrar, não assumir).
-- [ ] Confirmar que TODA escrita de status (inclusive as 5 já hardenizadas de outros módulos)
-      passa pelo FSM — hoje elas são corretas por construção (não pulam estado), mas nenhuma
-      chama `assertTransitionTransaction` explicitamente; vale auditar se DEVEM passar a chamar
-      pra fechar o loop, ou se a correção por construção já é suficiente (decisão técnica, não
-      assumir sem checar caso a caso).
+- [x] `firestore.rules` pra `transactions`: `amount > 0` exigido em `create` E `update`; nova
+      função `isValidTransactionTransition` (espelha `TRANSACTION_TRANSITIONS` manualmente —
+      rules não importa TS) valida transição de status em `update`. Última linha de defesa pros
+      caminhos client SDK que ainda não passam pelo núcleo (clássico/V2, hoje).
+- [ ] ~~Confirmar que TODA escrita de status... passa pelo FSM~~ — **fora de escopo desta
+      fatia**: os 5 caminhos já hardenizados (venda/compra/delivery/estorno/MP) são corretos por
+      construção (nunca pulam estado); auditar se DEVEM chamar `assertTransitionTransaction`
+      explicitamente é uma decisão de estilo/DRY, não um bug — não perseguida aqui.
+
+**Entregue:** `amount > 0` + transição de status validada em `firestore.rules`, sem allowlist de
+campos (edição de `amount` continua permitida — o que ficou proibido é só valor não-positivo).
+Decisão deliberada de começar com a regra certa (nenhum tenant real em produção pra quebrar).
+**Limitação real, não escondida**: não foi possível validar a sintaxe via emulador do Firestore
+nesta sessão (`firebase emulators:start` falhou — `Could not spawn 'java -version'`, Java
+ausente neste ambiente; não é erro de sintaxe, é a ferramenta de validação indisponível).
+Mitigação: sintaxe usada já é idêntica a construções existentes no mesmo arquivo; `firebase
+deploy --only firestore:rules` recusa o deploy inteiro se não compilar, então um erro aqui seria
+pego antes de afetar produção. Detalhes em
+`docs/financeiro/FINANCEIRO_M03_4_ENFORCEMENT_RULES.md`.
 
 ### M03.5 — Testes pra conciliação (dinheiro real, zero cobertura hoje) ✅ Concluído (04/09/2026)
 
@@ -329,7 +338,7 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
    `POST /api/transactions` deliberadamente adiados pra M03.3).
 5. **M03.3** (1ª rodada ✅ — API v1 migrada; agente e PDV-reversão investigados e adiados com
    achados reais; clássico/V2 adiado pra decidir junto de M03.6; comissão não abordada).
-6. **M03.4** — enforcement no servidor. Próxima etapa.
+6. **M03.4** ✅ — enforcement no servidor (`firestore.rules`: `amount>0` + transição de status).
 7. **M03.6** — checkpoint com o usuário: decisão V1 vs V2 (bloqueia M03.7 até vir).
 8. **M03.7** — DRE/fluxo de caixa/orçamento, conforme a decisão de M03.6.
 9. **M03.8** — permanece dormente (fora de escopo por padrão).

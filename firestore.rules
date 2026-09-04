@@ -562,6 +562,19 @@ service cloud.firestore {
     // ============================================
     // TRANSACTIONS (FINANCIAL) COLLECTION
     // ============================================
+    // M03.4: espelha lib/contracts/fsm/transaction.ts:TRANSACTION_TRANSITIONS.
+    // Rules não importa TS — manter sincronizado manualmente se o FSM mudar.
+    // Última linha de defesa pros caminhos client SDK (clássico/V2) que
+    // ainda não passam por transactionTxGuardAdmin.ts (M03.2) — esse guard só
+    // protege quem já migrou (API v1 desde M03.3); os demais escrevem direto.
+    function isValidTransactionTransition(from, to) {
+      return from == to
+        || (from == 'pendente' && to in ['pago', 'atrasado', 'cancelado'])
+        || (from == 'atrasado' && to in ['pago', 'cancelado', 'pendente'])
+        || (from == 'pago' && to == 'cancelado');
+      // 'cancelado' é terminal — nenhuma saída.
+    }
+
     match /transactions/{transactionId} {
       // Only managers and above can see financial data
       allow read: if isAuthenticated()
@@ -572,12 +585,17 @@ service cloud.firestore {
                     && incomingBelongsToBusiness()
                     && isManager()
                     && request.resource.data.type in ['receita', 'despesa']
-                    && request.resource.data.status in ['pendente', 'pago', 'atrasado', 'cancelado'];
+                    && request.resource.data.status in ['pendente', 'pago', 'atrasado', 'cancelado']
+                    && request.resource.data.amount is number
+                    && request.resource.data.amount > 0;
 
       allow update: if isAuthenticated()
                     && isOwnBusiness()
                     && isManager()
-                    && incomingBelongsToBusiness();
+                    && incomingBelongsToBusiness()
+                    && request.resource.data.amount is number
+                    && request.resource.data.amount > 0
+                    && isValidTransactionTransition(resource.data.status, request.resource.data.status);
 
       // Fase 5c: transactions e Tier 2 status-driven. "Excluir" agora e
       // transicao FSM pra status='cancelado'. Hard-delete proibido —
