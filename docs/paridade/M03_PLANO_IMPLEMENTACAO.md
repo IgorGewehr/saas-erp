@@ -10,8 +10,9 @@
 > atendimento já existe via ligação pontual com a Agenda (`docs/agenda/AGENDA_COBRANCA.md`), mas
 > o módulo Financeiro em si nunca recebeu o mesmo hardening que M01/M02/M06 já receberam.
 >
-> Estado: investigação (M03.0-pré) concluída em 04/09/2026. Nenhum código alterado ainda —
-> este documento é o plano, mirando o mesmo formato de `M06_PLANO_IMPLEMENTACAO.md`.
+> Estado: investigação (M03.0-pré) concluída em 04/09/2026. M03.5 (testes de conciliação)
+> concluído em código o mesmo dia — primeira fatia executada, sem depender da decisão V1 vs V2.
+> Próxima etapa recomendada: M03.0 (baseline/auditoria).
 
 ---
 
@@ -172,14 +173,21 @@ Ordem por risco × exposição, não por ordem alfabética:
       pra fechar o loop, ou se a correção por construção já é suficiente (decisão técnica, não
       assumir sem checar caso a caso).
 
-### M03.5 — Testes pra conciliação (dinheiro real, zero cobertura hoje)
+### M03.5 — Testes pra conciliação (dinheiro real, zero cobertura hoje) ✅ Concluído (04/09/2026)
 
-- [ ] `tests/services/reconciliation.test.ts` — `parseOFX`/`parseCSV`/`autoMatch` são lógica pura
+- [x] `tests/services/reconciliation.test.ts` — `parseOFX`/`parseCSV`/`autoMatch` são lógica pura
       já testável sem Firestore; hoje têm ZERO teste apesar de mexerem com conciliação bancária
       real. Prioridade alta independente do resto do plano.
-- [ ] Casos mínimos: parsing de formatos malformados (não deve lançar, deve reportar erro
+- [x] Casos mínimos: parsing de formatos malformados (não deve lançar, deve reportar erro
       recuperável), tolerância de valor/data do `autoMatch` nos limites (±R$0,01, ±3 dias),
       caso especial Mercado Pago (valor líquido vs. bruto).
+
+**Entregue:** 36 testes novos, zero mudança de comportamento em `reconciliation.ts`. Achado real
+durante a escrita: `parseCSV` nunca suportou decimal em ponto (sempre remove `.` como separador
+de milhar antes de trocar `,` por `.`) — comportamento intencional (formato brasileiro), mas sem
+nenhuma garantia escrita até agora; documentado com teste próprio pra não virar regressão
+silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`. Verificado por
+`tsc --noEmit` limpo e suíte completa (1017 testes/76 arquivos, sem regressão).
 
 ### M03.6 — Decisão de produto: V1 vs V2 (ver §1)
 
@@ -253,8 +261,8 @@ Ordem por risco × exposição, não por ordem alfabética:
 
 ## 8. Ordem de entrega recomendada
 
-1. **M03.5** — testes de conciliação primeiro (menor risco, maior urgência: dinheiro real e zero
-   cobertura hoje; não depende de nenhuma decisão de produto).
+1. **M03.5** ✅ — testes de conciliação primeiro (menor risco, maior urgência: dinheiro real e
+   zero cobertura hoje; não depende de nenhuma decisão de produto).
 2. **M03.0** — baseline/auditoria (mede antes de mexer, mesmo racional de M01/M06).
 3. **M03.1** — contrato de domínio (pré-requisito SDD pra tudo que vem depois).
 4. **M03.2** — núcleo de criação/transição.
