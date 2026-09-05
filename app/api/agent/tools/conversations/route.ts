@@ -19,6 +19,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { canTransitionConversation } from '@/lib/contracts/fsm/conversation';
 import type { Conversation, ConversationMessage, Snippet, ConversationChannel, ConversationStatus } from '@/lib/types';
 import { FieldValue } from 'firebase-admin/firestore';
 
@@ -167,6 +168,11 @@ async function setStatus(businessId: string, id: string, status: ConversationSta
   if (!snap.exists) throw new Error('Conversation not found');
   const c = snap.data() as Conversation;
   if (c.businessId !== businessId) throw new Error('Cross-tenant access denied');
+  // M07.4: FSM declarada mas nunca aplicada em nenhum write-path — este é
+  // um deles (o agente de IA muda status de conversa em nome do operador).
+  if (!canTransitionConversation(c.status, status)) {
+    throw new Error(`Conversation FSM: transição inválida ${c.status} → ${status}`);
+  }
 
   const now = new Date().toISOString();
   // Reabertura: resolved → open. Track via reopenedCount + lastReopenedAt

@@ -46,6 +46,7 @@ import { db, storage } from '@/lib/config/firebase';
 import { notifyUsers } from '@/lib/services/notifications';
 import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
 import { computeVisibleToUserIds } from '@/lib/services/conversationVisibility';
+import { canTransitionConversation } from '@/lib/contracts/fsm/conversation';
 import { getVisibleStages } from '@/app/components/features/crm/shared';
 import { ScheduleFromConversationDialog } from './ScheduleFromConversationDialog';
 import ExportPhonesDialog from './ExportPhonesDialog';
@@ -7716,16 +7717,33 @@ export default function ConversasModule() {
     try {
       const now = new Date().toISOString();
       const batch = writeBatch(db);
-      for (const id of batchSelectedIds) batch.update(doc(db, 'conversations', id), { status, updatedAt: now });
+      // M07.4: pula (não escreve) qualquer conversa cuja transição a FSM não
+      // permite — mesma validação de updateConversationStatus, mas usando o
+      // estado local (onSnapshot já mantém fresco) em vez de getDoc por item,
+      // que seria N reads síncronos numa ação em lote.
+      let skippedInvalid = 0;
+      const idsToUpdate: string[] = [];
+      for (const id of batchSelectedIds) {
+        const current = conversations.find(c => c.id === id);
+        if (current && !canTransitionConversation(current.status, status)) {
+          skippedInvalid++;
+          continue;
+        }
+        idsToUpdate.push(id);
+        batch.update(doc(db, 'conversations', id), { status, updatedAt: now });
+      }
       await batch.commit();
       // Send CSAT survey to each resolved conversation if enabled.
       // Disparos paralelos via Promise.all — N conversas em batch resolve não
       // devem virar N requests sequenciais.
       if (status === 'resolved' && business.settings?.csatEnabled) {
-        const toSurvey = conversations.filter(c => batchSelectedIds.has(c.id) && !c.csatSentAt);
+        const toSurvey = conversations.filter(c => idsToUpdate.includes(c.id) && !c.csatSentAt);
         await Promise.all(toSurvey.map(c => sendCsatSurvey(c)));
       }
-      toast.success(`${batchSelectedIds.size} conversa(s) atualizada(s)`);
+      if (skippedInvalid > 0) {
+        toast.warn(`${skippedInvalid} conversa(s) ignorada(s) — transição de status inválida`);
+      }
+      toast.success(`${idsToUpdate.length} conversa(s) atualizada(s)`);
       exitBatchMode();
     } catch (err) {
       console.error('[Batch] status update failed:', err);
@@ -8933,6 +8951,18 @@ export default function ConversasModule() {
   const updateConversationStatus = useCallback(async (conversationId: string, status: ConversationStatus) => {
     const now = new Date().toISOString();
     try {
+      // M07.4: valida a transição pela FSM ANTES de escrever — busca o status
+      // fresco do documento (não confia no estado local, que pode estar
+      // obsoleto) pra evitar pular estado (ex.: resolved→waiting direto, que
+      // CONVERSATION_TRANSITIONS não permite). Sem isso, a UI deixava
+      // qualquer transição passar sem checar nada.
+      const freshSnap = await getDoc(doc(db, 'conversations', conversationId));
+      const freshStatus = (freshSnap.data() as Conversation | undefined)?.status;
+      if (freshStatus && !canTransitionConversation(freshStatus, status)) {
+        toast.error(`Transição de status inválida: ${freshStatus} → ${status}`);
+        return;
+      }
+
       // Detecta reabertura (resolved → open). Lookup via lista em memória —
       // se o doc não estiver carregado, skip o tracking (não bloqueia o update).
       const prev = conversations.find(c => c.id === conversationId);

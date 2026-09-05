@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import { resolveVisibleToUserIdsAdmin } from '@/lib/services/conversationVisibilityAdmin';
+import { canTransitionConversation } from '@/lib/contracts/fsm/conversation';
 import type { Query } from 'firebase-admin/firestore';
 import type { Conversation } from '@/lib/types';
 
@@ -154,6 +155,15 @@ export async function PUT(req: NextRequest) {
     // Validate status if provided
     if (sanitized.status && !['open', 'waiting', 'resolved'].includes(sanitized.status as string)) {
       return apiError('Invalid status. Allowed: open, waiting, resolved', 400);
+    }
+    // M07.4: FSM declarada em lib/contracts/fsm/conversation.ts mas nunca
+    // aplicada em nenhum write-path — este é um deles (API pública externa,
+    // maior exposição a caller sem controle).
+    if (sanitized.status) {
+      const currentStatus = (existingData as Conversation).status;
+      if (!canTransitionConversation(currentStatus, sanitized.status as Conversation['status'])) {
+        return apiError(`Invalid status transition: ${currentStatus} → ${sanitized.status}`, 409);
+      }
     }
 
     // Validate priority if provided

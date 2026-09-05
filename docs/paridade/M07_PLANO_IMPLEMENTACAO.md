@@ -249,15 +249,24 @@ não há "quanto do dado já viola a regra" pra medir, é "a regra existe ou nã
       emulador (Java ausente); maior risco desta sessão inteira — recomendado testar em
       homologação antes de confiar 100%.
 
-### M07.4 — Aplicar o FSM de Conversation (R4)
+### M07.4 — Aplicar o FSM de Conversation (R4) ✅ Concluído (05/09/2026)
 
-- [ ] Chamar `assertTransitionConversation` no único write path que muda status manualmente
-      (`ConversasModule.tsx:3652-3657`).
-- [ ] `firestore.rules`: nova função de validação de transição pra `conversations.status`,
-      mesmo padrão de `isValidTransactionTransition` (M03.4).
-- [ ] Aplicar `ConversationSchema.parse()` na fronteira de pelo menos um write path real (a
-      decidir qual durante implementação — provavelmente `meta/route.ts` na criação/atualização
-      de conversa).
+- [x] `canTransitionConversation` chamado nos 4 write-paths reais que mudam `Conversation.status`
+      (não só 1 como o plano original supunha): `ConversasModule.tsx` (`updateConversationStatus`
+      — status fresco via `getDoc`; `handleBatchStatus` — usa estado local, pula item inválido
+      sem abortar o lote), `app/api/agent/tools/conversations/route.ts:setStatus` (agente de IA),
+      `app/api/v1/conversations/route.ts` PUT (API pública, retorna 409 em transição inválida,
+      mesma convenção do M03.3 pra `Transaction`).
+- [x] `firestore.rules`: nova `isValidConversationTransition(from,to)` (espelha
+      `CONVERSATION_TRANSITIONS` manualmente), encadeada em `allow update` — última linha de
+      defesa. Confirmado que nenhum write-path de M07.3 (sectorIds/isPrivate/assignedTo/
+      visibleToUserIds) toca `status`, então a regra nova é transparente pra eles (`from==to`).
+- [ ] ~~Aplicar `ConversationSchema.parse()` na fronteira de pelo menos um write path real~~ —
+      **analisado, deliberadamente adiado**: `ConversationSchema` tem campos com constraint mais
+      estrito que dado de produção pode ter (ex.: `contactAvatarUrl: z.string().url()` — uma URL
+      de avatar do Meta que não valide faria `.parse()` derrubar a ingestão do webhook). Sem
+      acesso a dado real pra confirmar conformidade antes, risco desproporcional ao ganho desta
+      fatia. Ver `docs/conversas/CONVERSAS_M07_4_FSM.md` §3.
 
 ### M07.5 — Código morto/legado (decisão de produto pendente, ver §3)
 

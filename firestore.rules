@@ -141,6 +141,19 @@ service cloud.firestore {
           || request.resource.data.channelOwnerId == request.auth.uid;
     }
 
+    // M07.4: FSM de Conversation.status (lib/contracts/fsm/conversation.ts)
+    // espelhada manualmente aqui (rules não importa TS) — mesmo padrão de
+    // isValidTransactionTransition (M03.4). `from == to` é sempre válido
+    // (não-mudança não é uma transição). Última linha de defesa pra
+    // qualquer write-path client SDK que não passe pela validação de
+    // ConversasModule.tsx/updateConversationStatus.
+    function isValidConversationTransition(from, to) {
+      return from == to
+          || (from == 'open' && to in ['waiting', 'resolved'])
+          || (from == 'waiting' && to in ['open', 'resolved'])
+          || (from == 'resolved' && to == 'open');
+    }
+
     // ============================================
     // USERS COLLECTION
     // ============================================
@@ -847,7 +860,8 @@ service cloud.firestore {
                     && isOwnBusiness()
                     && isOperator()
                     && incomingBelongsToBusiness()
-                    && canAccessConversationData(resource.data);
+                    && canAccessConversationData(resource.data)
+                    && isValidConversationTransition(resource.data.status, request.resource.data.status);
 
       allow delete: if isAuthenticated()
                     && isOwnBusiness()
