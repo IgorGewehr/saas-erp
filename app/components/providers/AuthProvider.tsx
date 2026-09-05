@@ -292,11 +292,19 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           updatedAt: now,
         });
 
+        // M09.2: dono de um negócio novo agora nasce 'founder' (não 'admin')
+        // — decisão do usuário após a investigação encontrar que nenhum
+        // fluxo de signup jamais criava um founder real, deixando ações
+        // exclusivas de founder (remover membro, apagar negócio, purgar
+        // auditoria) inacessíveis pro dono de verdade sem promoção manual
+        // via Console do Firebase. `firestore.rules` (users/{userId} create)
+        // já foi ajustada pra permitir isso só quando o business referenciado
+        // tem ownerUserId == o próprio criador (verificado via get()).
         await setDoc(doc(db, 'users', fbUser.uid), {
           uid: fbUser.uid,
           email,
           name,
-          role: 'admin',
+          role: 'founder',
           businessId: businessRef.id,
           isActive: true,
           isOnline: true,
@@ -338,12 +346,14 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         updatedAt: now,
       });
 
+      // M09.2: mesmo racional do fluxo email/senha acima — dono de negócio
+      // novo nasce 'founder'.
       await setDoc(doc(db, 'users', fbUser.uid), {
         uid: fbUser.uid,
         email: fbUser.email,
         name: fbUser.displayName || 'Usuário',
         photoURL: fbUser.photoURL,
-        role: 'admin',
+        role: 'founder',
         businessId: businessRef.id,
         isActive: true,
         isOnline: true,

@@ -211,26 +211,34 @@ service cloud.firestore {
                     );
 
       // User creation happens during signup (auth trigger or client-side).
-      // `role: 'founder'` nunca é gravado por nenhum fluxo real de signup
-      // (dono de negócio novo sempre vira 'admin'; invite code só oferece
-      // admin/manager/operator/viewer, `SettingsModule.tsx` INVITE_ROLES) —
-      // bloqueado aqui.
+      //
+      // M09.2: dono de um negócio novo agora nasce 'founder' (decisão do
+      // usuário, `AuthProvider.tsx` signUp/signInWithGoogle) — só permitido
+      // se o negócio referenciado JÁ existe com `ownerUserId` == o próprio
+      // criador (a criação do doc `businesses/{id}` acontece ANTES da do
+      // `users/{uid}` nos dois fluxos, então o get() abaixo sempre encontra
+      // o doc real). Único jeito legítimo de criar `role:'founder'` — invite
+      // code nunca oferece essa role (`SettingsModule.tsx` INVITE_ROLES).
       //
       // ACHADO REGISTRADO, NÃO FECHADO NESTA CORREÇÃO EMERGENCIAL (ver
       // docs/paridade/M09_PLANO_IMPLEMENTACAO.md §1): pra qualquer role
       // ≠ founder, esta regra ainda não consegue distinguir "resgatei um
       // invite de verdade pra este businessId" de "forjei um create com um
       // businessId que só conheço/adivinhei" — role:'admin' especificamente
-      // é legítimo tanto no fluxo de dono de negócio novo (ownerUserId
-      // verificável) QUANTO no de invite pra admin de negócio já existente
-      // (não verificável sem o client passar o código do invite como campo
-      // pra cross-referenciar contra `inviteCodes`). Fechar isso de verdade
-      // exige uma mudança pequena de app code (não só de regra) — deixado
-      // como follow-up explícito, não silenciado. Esta correção fecha o
-      // vetor mais grave confirmado (auto-escalação de uma conta JÁ
-      // EXISTENTE via update, acima).
+      // é legítimo tanto no fluxo de dono de negócio novo QUANTO no de
+      // invite pra admin de negócio já existente, e não dá pra diferenciar
+      // sem o client passar o código do invite como campo pra cross-
+      // referenciar contra `inviteCodes`. Fechar isso de verdade exige uma
+      // mudança pequena de app code (não só de regra) — deixado como
+      // follow-up explícito, não silenciado. Esta correção fecha o vetor
+      // mais grave confirmado (auto-escalação de uma conta JÁ EXISTENTE via
+      // update, acima) e o forjamento de `founder` (agora verificado contra
+      // ownership real em vez de bloqueado incondicionalmente).
       allow create: if isAuthenticated() && request.auth.uid == userId
-                    && request.resource.data.role != 'founder';
+                    && (
+                      request.resource.data.role != 'founder'
+                      || get(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)).data.ownerUserId == request.auth.uid
+                    );
 
       // Only founders can delete users (soft delete preferred)
       allow delete: if isAuthenticated()

@@ -187,9 +187,18 @@ Contém dado de demo hardcoded (`TeamTab.tsx`, mock com `role:'founder'`).
 - [ ] Achado residual documentado (create de role≠founder ainda sem cross-referência de invite)
       — follow-up explícito, não bloqueia o deploy da correção principal (já feito).
 
-### M09.2 — Existe founder real? (checkpoint)
+### M09.2 — Existe founder real? ✅ Decidido e implementado (05/09/2026)
 
-- [ ] Perguntar ao usuário.
+- [x] **Decisão do usuário: mudar a regra de negócio — dono do signup vira `founder`
+      automaticamente**, em vez de decidir caso a caso quem promover manualmente.
+      `AuthProvider.tsx` (`signUp` fluxo de negócio novo + `signInWithGoogle`): `role: 'admin'`
+      → `role: 'founder'` nos dois pontos de criação. `firestore.rules` (`users/{userId}`
+      `allow create`) ajustada em conjunto: `role:'founder'` só é aceito quando o negócio
+      referenciado já existe com `ownerUserId == request.auth.uid` (verificado via `get()`) —
+      único jeito legítimo de criar founder, já que convite nunca oferece essa role. Sem essa
+      mudança na regra, o próprio bloqueio de `founder` do M09.1 teria rejeitado todo signup de
+      negócio novo a partir de agora. Validado via `firebase deploy --dry-run` (compilou) antes
+      de qualquer deploy real.
 
 ### M09.3+ — demais gaps (§3), fora de escopo por padrão (§7)
 
