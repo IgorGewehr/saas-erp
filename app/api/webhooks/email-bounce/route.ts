@@ -33,6 +33,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import type { MarketingOptOut } from '@/lib/types';
+
+/** Cria document ID determinístico (mesma lógica de app/api/unsubscribe/route.ts). */
+function buildOptOutDocId(businessId: string, channel: string, identifier: string): string {
+  const safe = identifier.toLowerCase().replace(/[^a-z0-9._@+-]/g, '_').slice(0, 200);
+  return `${businessId}_${channel}_${safe}`;
+}
 
 interface BouncePayload {
   businessId: string;
@@ -141,6 +148,31 @@ export async function POST(req: NextRequest) {
       errorMessage: `Bounce (${payload.bounceType || 'hard'}): ${payload.errorReason}`,
       bouncedAt: now,
     });
+
+    // M07.7: bounceType='unsubscribe' é o provedor de e-mail sinalizando que
+    // o destinatário pediu descadastro (ex.: clicou "unsubscribe" no cliente
+    // de e-mail, fora do link próprio do app) — registra em marketingOptOuts
+    // automaticamente, mesmo efeito do opt-out por palavra-chave do WhatsApp
+    // (meta/route.ts) e do link de descadastro (app/api/unsubscribe/route.ts).
+    // 'source: bounce' já existe no tipo desde antes, nunca tinha sido usado.
+    if (payload.bounceType === 'unsubscribe') {
+      try {
+        const identifier = payload.recipientEmail.toLowerCase();
+        const docId = buildOptOutDocId(payload.businessId, 'email', identifier);
+        const optOut: MarketingOptOut = {
+          id: docId,
+          businessId: payload.businessId,
+          channel: 'email',
+          identifier,
+          source: 'bounce',
+          optedOutAt: now,
+          ...(current.broadcastId ? { broadcastId: current.broadcastId as string } : {}),
+        };
+        await adminDb.collection('marketingOptOuts').doc(docId).set(optOut);
+      } catch (optOutErr) {
+        console.error('[email-bounce] Failed to record opt-out:', optOutErr);
+      }
+    }
 
     // Atualiza stats agregadas no Broadcast pai
     if (current.broadcastId) {

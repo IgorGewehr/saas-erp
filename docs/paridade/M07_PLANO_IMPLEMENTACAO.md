@@ -268,21 +268,26 @@ não há "quanto do dado já viola a regra" pra medir, é "a regra existe ou nã
       acesso a dado real pra confirmar conformidade antes, risco desproporcional ao ganho desta
       fatia. Ver `docs/conversas/CONVERSAS_M07_4_FSM.md` §3.
 
-### M07.5 — Código morto/legado (decisão de produto pendente, ver §3)
+### M07.5 — Código morto/legado ✅ Decidido e parcialmente executado (05/09/2026)
 
-- [ ] Sinalizar ao usuário: `OmnichannelInbox.tsx` (sem importador, PII em log morto) e
-      `app/api/webhooks/facebook/route.ts` (dedup mais fraco, possivelmente substituído por
-      `meta/route.ts`) — perguntar antes de apagar, precisa de confirmação operacional (Meta App
-      Dashboard) que este usuário consegue fazer e eu não.
+- [x] `OmnichannelInbox.tsx` — **decisão do usuário: remover agora** (confirmado morto, sem
+      dependência operacional). Arquivo apagado.
+- [ ] `app/api/webhooks/facebook/route.ts` — **decisão do usuário: vai verificar no Meta App
+      Dashboard e avisa antes de mexer.** Nenhum código tocado, aguardando confirmação
+      operacional que só o usuário pode fazer.
 
-### M07.6 — Sequências de CRM (decisão de produto pendente, ver §3)
+### M07.6 — Sequências de CRM ✅ Decidido (05/09/2026)
 
-- [ ] Não construir motor de execução por padrão. Perguntar ao usuário se é necessidade real
-      antes de investir (mesma categoria "dormente até sinal real de demanda" do PIX/Boleto).
+- [x] **Decisão do usuário: não construir motor de execução agora** — dormente até sinal real de
+      demanda, mesma categoria do PIX/Boleto do M03. Nenhum código alterado.
 
-### M07.7 — Bounce de e-mail → opt-out automático (decisão de produto pequena)
+### M07.7 — Bounce de e-mail → opt-out automático ✅ Concluído (05/09/2026)
 
-- [ ] Perguntar se `bounceType==='unsubscribe'` deve gravar `marketingOptOuts` automaticamente.
+- [x] **Decisão do usuário: registrar automaticamente**, por consistência com WhatsApp
+      (palavra-chave) e link de descadastro. `app/api/webhooks/email-bounce/route.ts`:
+      `bounceType==='unsubscribe'` agora grava `MarketingOptOut` (`source:'bounce'`, valor do
+      enum que já existia sem nenhum escritor). Doc:
+      `docs/conversas/CONVERSAS_M07_5_6_7_CHECKPOINTS.md`.
 
 ### M07.8 — Testes, homologação e aceite
 
