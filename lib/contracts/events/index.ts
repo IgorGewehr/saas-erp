@@ -207,11 +207,15 @@ export const ClientCreatedSchema = EventEnvelopeBase.extend({
 /**
  * DeliveryOrder confirmada (status mudou recebido → preparando).
  *
- * AUDIT-ONLY: sem subscriber registrado no bus. O débito de estoque do pedido
- * do cardápio NÃO é async via este evento — roda INLINE na criação do pedido
- * (`/api/orders/public` debita via `stock.deductStock`/`deductStockAdmin`,
- * guard `stockDeductedAt`). Kitchen display lê o pedido direto. O evento serve
- * só para a trilha de auditoria em `domainEvents/{id}`.
+ * SÓ SCHEMA (M10 corrigiu esta doc — 05/09/2026): nenhum código dispatcha este
+ * evento hoje, confirmado por grep no repo inteiro — não existe trilha de
+ * auditoria em `domainEvents/{id}` pra ele, ao contrário do que uma versão
+ * anterior deste comentário afirmava. O débito de estoque do pedido do
+ * cardápio NÃO passa por aqui de qualquer forma — roda INLINE na criação do
+ * pedido (`/api/orders/public` debita via `stock.deductStock`/
+ * `deductStockAdmin`, guard `stockDeductedAt`). Kitchen display lê o pedido
+ * direto. Promover pra dispatch real é decisão de produto (ver
+ * docs/paridade/M10_PLANO_IMPLEMENTACAO.md §4), não perseguida aqui.
  *
  * ISENÇÃO DE COMISSÃO (decisão explícita v1):
  *   Pedidos de DELIVERY do cardápio NÃO geram comissão. Comissão (`lib/services/

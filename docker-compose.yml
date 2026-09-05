@@ -80,13 +80,22 @@ services:
 
   # Cron interno — dispara endpoints scheduled do saas-erp.
   # Self-contained (não depende de cron-job.org externo). Roda sempre.
+  # ÚNICA fonte de verdade de cron em produção — vercel.json foi removido em
+  # M10.1 (05/09/2026): não há deploy Vercel ativo, então os 3 crons de
+  # resiliência do Mercado Pago (expire-pix/reconcile/refresh-tokens) e
+  # membership-billing/run, que só existiam lá, nunca tinham rodado de
+  # verdade. Ver docs/paridade/M10_PLANO_IMPLEMENTACAO.md §1.
   #   - process-scheduled (broadcasts):           a cada 1 minuto
   #   - appointments/run-reminders (lembretes):   a cada 5 minutos (minuto % 5 == 0)
   #   - fiscal/cron/transmit-contingencia:        a cada 30 minutos (HH:00 e HH:30)
+  #   - mercadopago/cron/expire-pix:               a cada 10 minutos
+  #   - mercadopago/cron/reconcile:                a cada 10 minutos
   #   - agent/scheduled/run (agente IA):          a cada 1 hora (HH:00)
   #   - birthday-campaigns/run (aniversário):     a cada 1 hora (HH:00)
   #   - fiscal/cron/consultar-processando:        a cada 1 hora (HH:00)
   #   - data-retention/run (purge LGPD soft-deletes >30d): 1x ao dia, 03:00
+  #   - mercadopago/cron/refresh-tokens:           1x ao dia, 04:00
+  #   - membership-billing/run (cobrança de assinatura): 1x ao dia, 06:00
   # Todos autenticam com Authorization: Bearer ${CRON_SECRET}
   # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
   # pelo Cloudflare/internet (mais rápido e não consome quota tunnel).
@@ -109,7 +118,7 @@ services:
     command: |
       sh -c '
         apk add --no-cache curl > /dev/null 2>&1
-        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, fiscal-contingencia 30min, agent+birthday+fiscal-consulta 1h (HH:00), data-retention diario 03:00"
+        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, fiscal-contingencia 30min, mp-expire-pix+mp-reconcile 10min, agent+birthday+fiscal-consulta 1h (HH:00), data-retention diario 03:00, mp-refresh-tokens diario 04:00, membership-billing diario 06:00"
 
         call_endpoint() {
           # $$1=path, $$2=timeout
@@ -145,6 +154,14 @@ services:
             call_endpoint "/api/fiscal/cron/transmit-contingencia" 180
           fi
 
+          # mercadopago/cron/expire-pix + reconcile: a cada 10min (M10.1).
+          # Resiliência de PIX/webhook perdido — CAS de FSM, varredura cross-
+          # tenant indexada, teto global por execução. Idempotentes.
+          if [ "$$((10#$$MIN_NOW % 10))" = "0" ]; then
+            call_endpoint "/api/integrations/mercadopago/cron/expire-pix" 60
+            call_endpoint "/api/integrations/mercadopago/cron/reconcile" 120
+          fi
+
           # tarefas horárias: só dispara quando minuto == 00.
           # Sequencial pra evitar pico simultâneo na app.
           if [ "$$MIN_NOW" = "00" ]; then
@@ -164,6 +181,22 @@ services:
             HOUR_NOW=$$(date +%H)
             if [ "$$HOUR_NOW" = "03" ]; then
               call_endpoint "/api/data-retention/run" 300
+            fi
+
+            # mercadopago/cron/refresh-tokens: 1x ao dia, 04:00 (M10.1).
+            # Renova proativamente token MP a <15 dias de expirar — sem isto,
+            # tenant inativo cai em reconexão manual forçada. Idempotente
+            # (token fresco vira no-op).
+            if [ "$$HOUR_NOW" = "04" ]; then
+              call_endpoint "/api/integrations/mercadopago/cron/refresh-tokens" 120
+            fi
+
+            # membership-billing/run: 1x ao dia, 06:00 (M10.2) — cobra ciclos
+            # vencidos de clientMemberships. Idempotente via
+            # membershipBillingLogs/{id}_{cycle}; execuções extras no mesmo
+            # dia são no-op.
+            if [ "$$HOUR_NOW" = "06" ]; then
+              call_endpoint "/api/membership-billing/run" 180
             fi
           fi
         done

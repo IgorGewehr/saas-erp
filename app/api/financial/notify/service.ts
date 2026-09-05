@@ -137,6 +137,30 @@ async function sendEmail(
 
 // ─── Notification processor ──────────────────────────────────────────────────
 
+/**
+ * M10.5: respeita marketingOptOuts — mesmo gap de LGPD já corrigido nesta
+ * sessão em broadcasts/aniversário/automações CRM. Decisão do usuário:
+ * cobrança de atendimento via WhatsApp/e-mail deve respeitar opt-out por
+ * consistência, mesmo sendo um envio "transacional" (não campanha de
+ * marketing propriamente dita). Chave `channel:identifier` cobre 'all'
+ * (opt-out de qualquer canal) + o canal específico numa única leitura por
+ * business, reusada por todas as transações do loop.
+ */
+async function fetchOptOutSet(businessId: string): Promise<Set<string>> {
+  const snap = await adminDb.collection('marketingOptOuts')
+    .where('businessId', '==', businessId)
+    .get();
+  return new Set(snap.docs.map((d) => {
+    const data = d.data();
+    return `${data.channel}:${(data.identifier as string || '').toLowerCase()}`;
+  }));
+}
+
+function isOptedOut(optOutSet: Set<string>, channel: 'whatsapp' | 'email', identifier: string): boolean {
+  const id = identifier.toLowerCase();
+  return optOutSet.has(`all:${id}`) || optOutSet.has(`${channel}:${id}`);
+}
+
 export async function sendFinancialNotifications(
   business: Business & { id: string },
 ): Promise<number> {
@@ -145,6 +169,11 @@ export async function sendFinancialNotifications(
     ...(business.financial?.notificationSettings ?? {}),
   };
   if (!settings.enabled) return 0;
+
+  const optOutSet = await fetchOptOutSet(business.id).catch((err) => {
+    console.warn('[financial-notify] opt-out lookup failed, seguindo sem filtro:', err);
+    return new Set<string>();
+  });
 
   const now = new Date();
   const todayStr = now.toISOString().slice(0, 10);
@@ -203,7 +232,7 @@ export async function sendFinancialNotifications(
           const conv = sortedDocs[0];
           const convData = conv.data();
           const phone = (convData.contactExternalId || convData.recipientId || '').replace(/\D/g, '');
-          if (phone) {
+          if (phone && !isOptedOut(optOutSet, 'whatsapp', phone)) {
             const msg =
               `Olá ${tx.clientName?.split(' ')[0] || 'cliente'}! 😊\n` +
               `Lembramos que o pagamento de *${tx.description}* no valor de *${amount}* vence ${daysLabel}.\n` +
@@ -225,7 +254,7 @@ export async function sendFinancialNotifications(
           const clientDoc = await adminDb.collection('clients').doc(tx.clientId).get();
           clientEmail = (clientDoc.data()?.email || '') as string;
         }
-        if (clientEmail) {
+        if (clientEmail && !isOptedOut(optOutSet, 'email', clientEmail)) {
           const subject = isReceivable
             ? `Lembrete de pagamento — ${tx.description}`
             : `Conta a pagar vence ${daysLabel} — ${tx.description}`;
@@ -291,7 +320,7 @@ export async function sendFinancialNotifications(
             const conv = sortedDocs[0];
             const convData = conv.data();
             const phone = (convData.contactExternalId || convData.recipientId || '').replace(/\D/g, '');
-            if (phone) {
+            if (phone && !isOptedOut(optOutSet, 'whatsapp', phone)) {
               const msg =
                 `Olá ${tx.clientName?.split(' ')[0] || 'cliente'}! 👋\n` +
                 `Identificamos um pagamento em aberto de *${tx.description}* no valor de *${amount}*, ` +
@@ -310,7 +339,7 @@ export async function sendFinancialNotifications(
         try {
           const clientDoc = await adminDb.collection('clients').doc(tx.clientId).get();
           const clientEmail = (clientDoc.data()?.email || '') as string;
-          if (clientEmail) {
+          if (clientEmail && !isOptedOut(optOutSet, 'email', clientEmail)) {
             const html = `
               <p>Olá${tx.clientName ? ` ${tx.clientName.split(' ')[0]}` : ''}!</p>
               <p>Identificamos um pagamento em aberto de <strong>${tx.description}</strong>

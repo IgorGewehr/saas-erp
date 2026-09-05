@@ -757,14 +757,27 @@ async function fetchWhatsAppOptOutSet(businessId: string): Promise<Set<string>> 
  * client_inactive) que, sem isso, re-disparariam a mesma ação TODO dia em
  * que a regra rodar — um paciente inativo há 90 dias continua "inativo" pra
  * sempre até voltar, então sem essa trava o "sentimos sua falta" seria
- * reenviado diariamente pro mesmo paciente (M06.5c, achado real). Só
- * client_inactive usa isso por enquanto — high_churn_risk/lifecycle_change
- * têm o mesmo problema, achado e documentado, não corrigido nesta fatia
- * (ver docs/agenda/AGENDA_REENGAJAMENTO.md).
+ * reenviado diariamente pro mesmo paciente (M06.5c, achado real).
+ *
+ * M10.4: estendido de `client_inactive` (único que tinha o guard) pra
+ * `high_churn_risk`/`lifecycle_change` — mesmo bug de spam diário,
+ * documentado desde M06.5c como "fora do escopo daquela fatia" (ver
+ * docs/agenda/AGENDA_REENGAJAMENTO.md), agora corrigido nos 3.
  *
  * `stateFingerprint` é o valor que, ao MUDAR, indica um novo "episódio"
- * legítimo pra agir de novo (aqui, `client.lastVisit` — se o cliente voltou
- * e ficou inativo de novo depois, é um novo episódio, não repetição).
+ * legítimo pra agir de novo:
+ *   - client_inactive:  `client.lastVisit` (cliente voltou e ficou inativo
+ *                        de novo depois = novo episódio).
+ *   - high_churn_risk:  `scores.churnRisk` — imperfeito (o score pode
+ *                        oscilar sem um "episódio" de verdade), mas é o
+ *                        sinal disponível mais próximo sem mudar o schema;
+ *                        mesmo nível de precisão já aceito pra
+ *                        client_inactive.
+ *   - lifecycle_change: `client.updatedAt` — não existe campo dedicado de
+ *                        "quando a lifecycleStage mudou"; reusar updatedAt
+ *                        é aproximado (qualquer edição do cliente também
+ *                        muda), mas resolve o bug confirmado (disparo
+ *                        garantido todo dia) sem exigir campo novo.
  */
 async function shouldSkipRepeatedAutomation(
   businessId: string,
@@ -895,14 +908,19 @@ async function processCRMAutomations(): Promise<number> {
         conditions.every(cond => matchesCondition(c, cond))
       );
 
-      // M06.5c: idempotência por episódio pra triggers "de estado" que não
-      // expiram sozinhos — ver shouldSkipRepeatedAutomation acima. Depois
-      // do filtro de condições AND de propósito: só reivindica idempotência
-      // pra quem de fato vai ser actionado.
-      if (trigger === 'client_inactive') {
+      // M06.5c/M10.4: idempotência por episódio pra triggers "de estado" que
+      // não expiram sozinhos — ver shouldSkipRepeatedAutomation acima.
+      // Depois do filtro de condições AND de propósito: só reivindica
+      // idempotência pra quem de fato vai ser actionado.
+      if (trigger === 'client_inactive' || trigger === 'high_churn_risk' || trigger === 'lifecycle_change') {
         const filtered: typeof matchedClients = [];
         for (const c of matchedClients) {
-          const skip = await shouldSkipRepeatedAutomation(businessId, rule.id, c.id as string, String(c.lastVisit || ''));
+          const fingerprint = trigger === 'client_inactive'
+            ? String(c.lastVisit || '')
+            : trigger === 'high_churn_risk'
+              ? String((c.scores as Record<string, number> | undefined)?.churnRisk ?? '')
+              : String(c.updatedAt || '');
+          const skip = await shouldSkipRepeatedAutomation(businessId, rule.id, c.id as string, fingerprint);
           if (!skip) filtered.push(c);
         }
         matchedClients = filtered;

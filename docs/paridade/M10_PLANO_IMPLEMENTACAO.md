@@ -154,16 +154,16 @@ roadmap é hoje 100% runbook manual — proporcional ao volume atual (1-2 tenant
 
 ## 5. O que é decisão de produto, não de engenharia
 
-- **Topologia de deploy real** (GAP A) — existe algum ambiente Vercel ativo além do Docker, ou
-  `vercel.json` é resíduo morto? Determina se é "3 crons financeiros mortos em produção"
-  (crítico) ou "código morto sem consequência" (baixo).
-- **Agendar `membership-billing/run`?** (GAP B) — só relevante se a odontologia usa
-  `clientMemberships`/assinaturas.
-- **`sendFinancialNotifications` deve respeitar `marketingOptOuts`?** (GAP E).
+- ~~Topologia de deploy real (GAP A)~~ — **respondido**: só Docker (M10.1).
+- ~~Agendar `membership-billing/run`? (GAP B)~~ — **respondido**: sim (M10.2).
+- ~~`sendFinancialNotifications` deve respeitar `marketingOptOuts`?~~ — **respondido**: sim (M10.5).
 - **Promover algum dos 8 eventos "só schema"?** — maioria é vertical de varejo/delivery/cardápio,
-  não clínica; não perseguir sem sinal real.
-- **Vale um canal de alerta operacional genérico** (cron falhou → notifica dono), estendendo
-  `scheduledFallback.ts` além de aniversário? Ou é over-engineering pro volume atual?
+  não clínica; não perseguir sem sinal real. Ainda em aberto.
+- **Vale um canal de alerta operacional genérico** (cron falhou → notifica dono)? Ainda em
+  aberto, e agora mais concreto: M10.3 confirmou que `scheduledFallback.ts` não se estende
+  diretamente a `appointmentReminderRunner.ts` (varredura cross-tenant sem entidade-dona) — um
+  canal genérico exigiria um desenho novo (heartbeat global, não por-entidade), não só reuso.
+  Vale o investimento pro volume atual (1-2 tenants)?
 
 ## 6. Fora de escopo deliberado
 
@@ -181,40 +181,52 @@ roadmap é hoje 100% runbook manual — proporcional ao volume atual (1-2 tenant
 
 Feito via agente de investigação dedicado. Achados em §0-§4 acima.
 
-### M10.1 — Confirmar topologia de deploy (checkpoint, GAP A)
+### M10.1 — Confirmar topologia de deploy (checkpoint, GAP A) ✅ Concluído (05/09/2026)
 
-- [ ] Perguntar ao usuário: existe Vercel ativo além do Docker? Se sim, os 3 crons MP + demais
-      endpoints do `vercel.json` já rodam por lá (nada a fazer, só documentar); se não, decidir
-      entre (a) adicionar os 3 crons MP ao loop `docker-compose.yml` ou (b) confirmar que
-      Mercado Pago não é usado pela odontologia hoje e deixar dormente com justificativa.
+- [x] **Decisão do usuário: só Docker, Vercel não roda mais nada** — `vercel.json` era resíduo
+      morto, os 3 crons MP realmente nunca executavam. Adicionados ao loop
+      `docker-compose.yml` (`expire-pix`/`reconcile` a cada 10min, `refresh-tokens` 1x/dia
+      04:00). `vercel.json` removido (não só ignorado — deixá-lo contradizendo a topologia real
+      seria a mesma inconsistência silenciosa caçada a sessão inteira). Doc:
+      `docs/automacoes/AUTOMACOES_M10_1_2_3_4_5_6.md`.
 
-### M10.2 — `membership-billing/run` (checkpoint, GAP B)
+### M10.2 — `membership-billing/run` (checkpoint, GAP B) ✅ Concluído (05/09/2026)
 
-- [ ] Perguntar se a odontologia usa `clientMemberships`/assinaturas. Se sim, agendar (mesmo
-      padrão `docker-compose.yml`, 1x/dia). Se não, marcar dormente com justificativa.
+- [x] **Decisão do usuário: usa assinaturas — agendar.** Adicionado ao `docker-compose.yml`
+      (1x/dia, 06:00).
 
-### M10.3 — Missed-run pro lembrete de atendimento (engenharia pura, barata, alto valor)
+### M10.3 — Missed-run pro lembrete de atendimento — investigado, achado que a suposição original não se sustenta
 
-- [ ] Estender `detectAndNotifyMissedRun`/`markSuccessfulRun` (`scheduledFallback.ts`) pra
-      `appointmentReminderRunner.ts` — mesmo padrão já usado por `birthdayCampaignRunner.ts`,
-      reuso direto. É o job mais crítico pro caso de uso odontológico (lembrete de atendimento) e
-      hoje falha silenciosamente sem nenhum alerta.
+- [ ] ~~Estender `detectAndNotifyMissedRun`/`markSuccessfulRun` reuso direto~~ — **investigado,
+      achado real**: o mecanismo é modelado em torno de uma ENTIDADE por tenant (uma
+      `BirthdayCampaign` com dono pra notificar); `appointmentReminderRunner.ts` é uma varredura
+      ÚNICA cross-tenant, sem entidade equivalente. Reuso direto não se aplica sem inventar uma
+      entidade artificial ou notificar todos os negócios — mecanismo diferente, merece desenho
+      próprio. Dobrado na pergunta de produto já sinalizada no §5 ("vale um canal de alerta
+      operacional genérico?"), agora mais concreta. Não implementado nesta fatia. Ver
+      `docs/automacoes/AUTOMACOES_M10_1_2_3_4_5_6.md` §M10.3.
 
-### M10.4 — Idempotência por episódio nos triggers restantes (engenharia pura, GAP D)
+### M10.4 — Idempotência por episódio nos triggers restantes (engenharia pura, GAP D) ✅ Concluído (05/09/2026)
 
-- [ ] `high_churn_risk` e `lifecycle_change` (`agent/scheduled/run/route.ts`) ganham o mesmo guard
-      via `automationRuleLogs` que `client_inactive` já tem (M06.5c) — fecha o spam diário
-      residual, mesmo padrão já validado em produção pro trigger irmão.
+- [x] `high_churn_risk` e `lifecycle_change` (`agent/scheduled/run/route.ts`) ganharam o mesmo
+      guard via `automationRuleLogs` que `client_inactive` já tinha (M06.5c) — fecha o spam
+      diário residual. Fingerprint por trigger: `scores.churnRisk` (high_churn_risk, aproximado —
+      score pode oscilar sem episódio real, mesmo nível de precisão já aceito pro trigger irmão);
+      `client.updatedAt` (lifecycle_change, aproximado — sem campo dedicado de "quando mudou",
+      mas resolve o disparo garantido diário). Doc:
+      `docs/automacoes/AUTOMACOES_M10_1_2_3_4_5_6.md`.
 
-### M10.5 — `sendFinancialNotifications` e opt-out (checkpoint, GAP E)
+### M10.5 — `sendFinancialNotifications` e opt-out (checkpoint, GAP E) ✅ Concluído (05/09/2026)
 
-- [ ] Perguntar se cobrança via WhatsApp deve respeitar `marketingOptOuts` (transacional vs.
-      marketing sob LGPD). Implementar se confirmado.
+- [x] **Decisão do usuário: sim, aplicar o mesmo filtro.** `app/api/financial/notify/service.ts`
+      ganhou `fetchOptOutSet`/`isOptedOut` (1 leitura por negócio, chave `channel:identifier`
+      cobre `all`+canal específico), aplicado nos 4 pontos de envio (WhatsApp/e-mail ×
+      vencimento/atrasado). Doc: `docs/automacoes/AUTOMACOES_M10_1_2_3_4_5_6.md`.
 
-### M10.6 — Correção de documentação (custo zero)
+### M10.6 — Correção de documentação (custo zero) ✅ Concluído (05/09/2026)
 
-- [ ] `lib/contracts/events/index.ts:210-214` — corrigir jsdoc de `deliveryOrder.confirmed` que
-      afirma incorretamente que existe trilha de auditoria hoje.
+- [x] `lib/contracts/events/index.ts` — jsdoc de `deliveryOrder.confirmed` corrigido (não afirma
+      mais uma trilha de auditoria que não existe).
 
 ### M10.7 — Purga de TTL do `webhookSeen` (baixa prioridade)
 
@@ -249,12 +261,13 @@ Feito via agente de investigação dedicado. Achados em §0-§4 acima.
 
 ## 10. Ordem de entrega recomendada
 
-1. **M10.1** — checkpoint de topologia de deploy (bloqueia priorização real do resto).
-2. **M10.2** — checkpoint membership-billing (rápido, independente do resto).
-3. **M10.3** — missed-run pro lembrete de atendimento (barato, alto valor, sem decisão de produto).
-4. **M10.4** — idempotência por episódio nos 2 triggers restantes (barato, sem decisão de produto).
-5. **M10.5** — checkpoint `sendFinancialNotifications`/opt-out.
-6. **M10.6** — fix de doc (trivial).
-7. **M10.7** — purga TTL `webhookSeen` (baixa prioridade, pode ficar pra depois).
+1. **M10.1** ✅ — checkpoint de topologia de deploy: só Docker, crons MP agendados.
+2. **M10.2** ✅ — checkpoint membership-billing: usa assinaturas, agendado.
+3. **M10.3** — missed-run pro lembrete de atendimento: investigado, reuso direto não se aplica;
+   dobrado na pergunta em aberto do §5 (canal de alerta operacional genérico).
+4. **M10.4** ✅ — idempotência por episódio nos 2 triggers restantes.
+5. **M10.5** ✅ — checkpoint `sendFinancialNotifications`/opt-out: aplicar o filtro, feito.
+6. **M10.6** ✅ — fix de doc.
+7. **M10.7** — purga TTL `webhookSeen` (baixa prioridade, ainda não abordado).
 8. **M10.8** — permanece dormente (fora de escopo por padrão).
 9. **M10.9** — aceite.
