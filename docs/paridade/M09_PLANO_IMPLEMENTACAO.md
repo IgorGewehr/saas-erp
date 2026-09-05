@@ -73,6 +73,10 @@ sessão que uma mudança de `firestore.rules` foi validada contra o compilador d
 verdade (as mudanças anteriores — M03.4/M07.3/M07.4 — só puderam ser revisadas manualmente,
 emulador indisponível por falta de Java). `--dry-run` não deploya nada — só valida.
 
+**Deployado em produção com autorização explícita do usuário** (`firebase deploy --only
+firestore:rules`, sem `--dry-run`) — saída confirmou "released rules firestore.rules to
+cloud.firestore" / "Deploy complete!". A correção está ativa em produção a partir de 05/09/2026.
+
 ### ⚠️ Achado que fica deliberadamente aberto (não silenciado)
 
 O `allow create` corrigido bloqueia `founder`, mas **não consegue distinguir, pra qualquer outra
@@ -171,15 +175,17 @@ Contém dado de demo hardcoded (`TeamTab.tsx`, mock com `role:'founder'`).
 
 ### M09.0 — Baseline (investigação de abertura) ✅ Concluído (05/09/2026)
 
-### M09.1 — Fechar escalação de privilégio via `users/{userId}` ✅ Corrigido nesta sessão (05/09/2026)
+### M09.1 — Fechar escalação de privilégio via `users/{userId}` ✅ Corrigido E deployado (05/09/2026)
 
 - [x] `firestore.rules`: `allow update`/`allow create` de `users/{userId}` restritos (whitelist
       de campos + bloqueio de `role:'founder'`); `inviteCodes` `allow create` com teto de rank.
-      Validado via `firebase deploy --dry-run` (compilou). **PENDENTE: deploy real
-      (`firebase deploy --only firestore:rules`) — a correção só protege produção depois de
-      deployada.**
+      Validado via `firebase deploy --dry-run` (compilou). **Deployado em produção com
+      autorização explícita do usuário — `firebase deploy --only firestore:rules` rodou com
+      sucesso (`Deploy complete!`, "released rules firestore.rules to cloud.firestore") contra o
+      projeto real `service-provider-1cd0d`.** A correção está ativa em produção a partir de
+      05/09/2026.
 - [ ] Achado residual documentado (create de role≠founder ainda sem cross-referência de invite)
-      — follow-up explícito, não bloqueia o deploy da correção principal.
+      — follow-up explícito, não bloqueia o deploy da correção principal (já feito).
 
 ### M09.2 — Existe founder real? (checkpoint)
 
@@ -192,4 +198,4 @@ Contém dado de demo hardcoded (`TeamTab.tsx`, mock com `role:'founder'`).
 | Risco | Controle planejado |
 |---|---|
 | Corrigir a regra e quebrar um fluxo legítimo de signup/edição de perfil sem poder testar via emulador | Inventário exaustivo de todo call-site real de escrita em `users/{uid}` antes de escrever a regra; validado via `firebase deploy --dry-run` contra o projeto real (compilação confirmada) |
-| Deixar a correção só commitada sem deployar, achando que já protege produção | Comunicado explicitamente ao usuário: FIX SÓ VALE DEPOIS DE DEPLOY |
+| Deixar a correção só commitada sem deployar, achando que já protege produção | **Resolvido**: usuário autorizou explicitamente, deploy real rodou com sucesso (05/09/2026) |
