@@ -219,10 +219,14 @@ não há "quanto do dado já viola a regra" pra medir, é "a regra existe ou nã
       sem teste dedicado prévio). `tsc --noEmit` limpo, suíte 1063/79 sem regressão. Doc:
       `docs/conversas/CONVERSAS_M07_1_CONSENTIMENTO_ANIVERSARIO.md`.
 
-### M07.2 — Dedup atômico no Baileys (R3, maior exposição real)
+### M07.2 — Dedup atômico no Baileys (R3, maior exposição real) ✅ Concluído (04/09/2026)
 
-- [ ] `app/api/whatsapp/baileys-manager.ts:742-752`: trocar o dedup check-then-act por
-      `markWebhookSeen()` atômico, mesmo mecanismo já usado por `meta/route.ts:1511`.
+- [x] `app/api/whatsapp/baileys-manager.ts:742-752`: trocado o dedup check-then-act por
+      `markWebhookSeen()` atômico, mesmo mecanismo já usado por `meta/route.ts:1511` — sem lógica
+      nova, reuso direto. Limitação preexistente documentada, não corrigida: `messageId` cai num
+      fallback `wa_${Date.now()}` (instável entre retries) quando o Baileys não fornece
+      `key.id` — já era assim antes, não é regressão. `tsc --noEmit` limpo, suíte sem regressão.
+      Doc: `docs/conversas/CONVERSAS_M07_2_DEDUP_BAILEYS.md`.
 
 ### M07.3 — Visibilidade por setor de verdade no servidor (R1, achado mais sério)
 

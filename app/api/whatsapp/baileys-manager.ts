@@ -27,6 +27,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { incrementUnreadCounter } from '@/lib/services/unreadCounter';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { tryAutoConfirmFromWhatsAppReply } from '@/lib/services/agenda/whatsappConfirmation';
+import { markWebhookSeen } from '@/lib/contracts/_runtime/webhookIdempotency';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
 
@@ -739,16 +740,23 @@ async function handleInboundMessage(
     || (sharedContacts.length > 0 ? getSharedContactsPreview(sharedContacts) : getMediaLabel(mediaType));
   const now = new Date().toISOString();
 
-  // Deduplicate
+  // M07.2: dedup atômico via markWebhookSeen (SDD — substitui o antigo
+  // query+race-window por criação atômica de doc em `webhookSeen/`), mesmo
+  // mecanismo já usado por app/api/webhooks/meta/route.ts pro caminho Cloud.
+  // O check-then-act anterior (query em `conversationMessages` seguida de
+  // decisão) tinha janela de corrida real: duas entregas quase simultâneas
+  // do mesmo evento Baileys podiam passar pela query ANTES de qualquer uma
+  // escrever o documento, e as duas seguiam em frente.
   try {
-    const dupSnap = await adminDb.collection('conversationMessages')
-      .where('externalMessageId', '==', messageId)
-      .where('businessId', '==', businessId)
-      .limit(1)
-      .get();
-    if (!dupSnap.empty) return false;
+    const { seen } = await markWebhookSeen(adminDb, {
+      businessId,
+      externalMessageId: messageId,
+      source: 'baileys',
+    });
+    if (seen) return false;
   } catch (err) {
-    console.error('[Baileys] Erro ao verificar duplicata:', err);
+    console.error('[Baileys] markWebhookSeen falhou:', err);
+    // Segue processando — melhor arriscar duplicata do que perder mensagem.
   }
 
   const pushName = waMessage.pushName || null;
