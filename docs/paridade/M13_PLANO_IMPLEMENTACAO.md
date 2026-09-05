@@ -34,19 +34,21 @@ análogo ao `docs/roadmap/ROADMAP_FISCAL_BACKLOG.md` — vive espalhado nesses 3
 
 **`scripts/wipe-financial.ts`** — script não versionado (`git status` mostra como untracked
 durante TODA esta sessão, corretamente excluído de todo commit por disciplina de auditoria
-pré-commit) que faz hard-delete de `transactions` + `cashSessions` por `businessId`. **Sem
+pré-commit) que fazia hard-delete de `transactions` + `cashSessions` por `businessId`. **Sem
 dry-run, sem confirmação além de um aviso no console, sem soft-delete, sem entrada de
 auditoria.** Combinado com o achado abaixo (nenhuma estratégia de backup verificável no repo),
 rodar isso contra o `businessId` errado — de um cliente com dado de paciente/financeiro real em
 produção — seria **irrecuperável**. Achado novo, não estava em nenhuma das 3 auditorias
-anteriores. Ver checkpoint no §5.
+anteriores. **✅ Resolvido (M13.1): usuário decidiu apagar** — arquivo nunca esteve versionado,
+removido do disco.
 
 **Nenhuma estratégia de backup do Firestore em lugar nenhum do repo.** `firebase.json` só declara
 paths de rules/indexes, sem config de export agendado; `docker-compose.yml` sem serviço de
 backup; `scripts/` sem script de export/dump. Não dá pra verificar pelo repo se existe Point-in-
 Time Recovery ou export agendado configurado fora do código (GCP Console/gcloud) — precisa de
-checagem direta, não checagem de código. Combinado com o achado acima, é o gap mais consequente
-desta investigação inteira dado que já existe dado real de paciente em produção.
+checagem direta, não checagem de código. **Decisão do usuário (M13.2): não é urgente agora**,
+risco aceito explicitamente no volume atual (1-2 tenants) — permanece um gap real, não resolvido,
+revisitar se o volume crescer.
 
 ## 2. Auditorias pré-existentes — status re-verificado (não repetir o que já foi feito)
 
@@ -159,18 +161,22 @@ segurança, e sim como efeito colateral do núcleo comercial do M02 e do FSM do 
 
 ### M13.0 — Baseline (investigação + re-auditoria) ✅ Concluído (05/09/2026)
 
-### M13.1 — `scripts/wipe-financial.ts` (checkpoint)
+### M13.1 — `scripts/wipe-financial.ts` ✅ Decidido e executado (05/09/2026)
 
-- [ ] Perguntar ao usuário: apagar, proteger, ou manter como ferramenta de emergência?
+- [x] **Decisão do usuário: apagar.** Arquivo nunca esteve versionado (`git status` mostrava
+      untracked a sessão inteira) — removido do disco diretamente, sem necessidade de commit
+      (nunca entrou no histórico do repo).
 
-### M13.2 — Backup/PITR do Firestore (checkpoint, ação fora do repo)
+### M13.2 — Backup/PITR do Firestore ✅ Decidido (05/09/2026)
 
-- [ ] Perguntar ao usuário se quer verificar/configurar agora (ação de GCP Console/gcloud, fora
-      do escopo de mudança de código deste repo).
+- [x] **Decisão do usuário: não é urgente agora, registrar e seguir.** Risco aceito
+      explicitamente no volume atual (1-2 tenants) — gap permanece documentado no §1, não
+      resolvido nesta sessão. Revisitar se o volume de tenants/dado crescer.
 
-### M13.3 — Observabilidade (checkpoint)
+### M13.3 — Observabilidade ✅ Decidido (05/09/2026)
 
-- [ ] Perguntar se vale configurar Sentry (ou equivalente) agora pra aplicação em si.
+- [x] **Decisão do usuário: não por agora.** Monitoramento manual/reativo aceito como suficiente
+      no volume atual. Gap permanece documentado no §4.
 
 ### M13.4 — Paginação de Conversas (engenharia, escopo próprio se priorizado)
 
@@ -179,26 +185,33 @@ segurança, e sim como efeito colateral do núcleo comercial do M02 e do FSM do 
 
 ### M13.5 — Testes, homologação e aceite
 
-- [ ] Confirmar checkpoints M13.1-M13.3 resolvidos ou deliberadamente adiados com justificativa.
+- [x] Checkpoints M13.1-M13.3 resolvidos: `wipe-financial.ts` apagado; backup/PITR e
+      Sentry/APM adiados por decisão explícita do usuário (risco aceito no volume atual).
 
 ## 8. Critérios para marcar M13 como concluído
 
-- [ ] `scripts/wipe-financial.ts` tem disposição decidida (não fica órfão e sem dono).
-- [ ] Backup/PITR do Firestore confirmado configurado, ou decisão de adiar registrada.
-- [ ] Decisão sobre Sentry/APM registrada.
-- [ ] Gaps de paginação (§3) resolvidos ou deliberadamente adiados com justificativa (§6).
+- [x] `scripts/wipe-financial.ts` tem disposição decidida — apagado (M13.1).
+- [x] Backup/PITR do Firestore: decisão de adiar registrada (M13.2).
+- [x] Decisão sobre Sentry/APM registrada: adiado (M13.3).
+- [ ] Gaps de paginação (§3) resolvidos ou deliberadamente adiados com justificativa (§6) — já
+      adiados por padrão (§6), só perseguir M13.4 se priorizado depois.
 
 ## 9. Riscos e controles
 
 | Risco | Controle planejado |
 |---|---|
-| `scripts/wipe-financial.ts` rodar contra o `businessId` errado sem backup pra recuperar | Checkpoint explícito antes de decidir o destino do script; backup é pré-requisito lógico |
-| Investir em load-testing/observability pesada sem necessidade real no volume atual | Escopo restrito ao que é genuinamente urgente com dado real de paciente em produção (§5), resto adiado com justificativa (§6) |
+| `scripts/wipe-financial.ts` rodar contra o `businessId` errado sem backup pra recuperar | **Resolvido**: arquivo apagado (M13.1) |
+| Investir em load-testing/observability pesada sem necessidade real no volume atual | Escopo restrito ao que é genuinamente urgente (§5); Sentry/APM e backup adiados por decisão explícita, não esquecimento |
 
 ## 10. Ordem de entrega recomendada
 
-1. **M13.1** — checkpoint `wipe-financial.ts` (mais urgente, resolve o achado mais sério).
-2. **M13.2** — checkpoint backup/PITR (mais urgente, ação fora do repo).
-3. **M13.3** — checkpoint Sentry/APM.
-4. **M13.4** — paginação de Conversas, só se priorizada.
-5. **M13.5** — aceite.
+1. **M13.1** ✅ — `wipe-financial.ts` apagado (achado mais sério, resolvido).
+2. **M13.2** ✅ — backup/PITR: adiado por decisão do usuário.
+3. **M13.3** ✅ — Sentry/APM: adiado por decisão do usuário.
+4. **M13.4** — paginação de Conversas, só se priorizada no futuro (§6).
+5. **M13.5** ✅ — aceite.
+
+**M13 fica, ao fim deste arco, com o essencial resolvido** — o achado mais sério (script de
+hard-delete sem rede de segurança) foi eliminado, e os 2 gaps estruturais restantes (backup,
+observabilidade) têm decisão explícita e documentada de adiamento, não uma lacuna silenciosa.
+M13.4 (paginação) permanece disponível como fatia futura se o volume de tenants justificar.
