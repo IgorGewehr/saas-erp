@@ -204,11 +204,20 @@ diferente de M03 (13 caminhos de escrita divergentes precisando de medição qua
 gaps aqui são estruturais/binários (FSM sem chamador, dedup ausente, regra de acesso faltando) —
 não há "quanto do dado já viola a regra" pra medir, é "a regra existe ou não".
 
-### M07.1 — Consentimento no aniversário (LGPD, mesma classe de bug já corrigida 2x) ✅ prioridade
+### M07.1 — Consentimento no aniversário (LGPD, mesma classe de bug já corrigida 2x) ✅ Concluído (04/09/2026)
 
-- [ ] `lib/services/birthdayCampaignRunner.ts`: adicionar checagem de `marketingOptOuts` antes de
-      enviar, mesmo padrão de `agent/scheduled/run/route.ts:747-753` (M06.5c) — não é padrão
-      novo, é aplicar o mesmo já usado 2x nesta sessão a um 3º caminho de envio automatizado.
+- [x] `lib/services/birthdayCampaignRunner.ts`: adicionada checagem de `marketingOptOuts` antes
+      de enviar, mesmo padrão de `agent/scheduled/run/route.ts:747-753` (M06.5c). Lida uma vez
+      por business (mesmo racional de já ler `clients` uma vez), reusada por todas as campanhas
+      devidas do tenant no tick. Fail-closed (pula o business no tick) se faltar índice
+      composto, fail-open com warning em erro transiente — mesma política de
+      `broadcasts/send/route.ts`. Novo campo `RunResult.skippedOptOut` pra observabilidade.
+      Achado de duplicação documentado, não resolvido: é a 3ª implementação independente da
+      mesma query de opt-out no repo — não extraída pra helper compartilhado (requisitos de
+      volume diferentes entre broadcasts e este/automações). Sem teste novo (mesma convenção já
+      usada nesta sessão pra serviços cron com integração pesada de Admin SDK/Meta Graph/Baileys
+      sem teste dedicado prévio). `tsc --noEmit` limpo, suíte 1063/79 sem regressão. Doc:
+      `docs/conversas/CONVERSAS_M07_1_CONSENTIMENTO_ANIVERSARIO.md`.
 
 ### M07.2 — Dedup atômico no Baileys (R3, maior exposição real)
 

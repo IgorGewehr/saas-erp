@@ -54,6 +54,26 @@ const DEFAULT_TIMEZONE = 'America/Sao_Paulo';
  */
 const CATCHUP_WINDOW_HOURS = 6;
 
+/**
+ * M07.1: respeita opt-out de marketing (LGPD) — antes desta correção,
+ * campanha de aniversário mandava mensagem mesmo pra quem já tinha
+ * respondido "PARE"/"STOP" no WhatsApp. Mesma classe de bug já corrigida
+ * em app/api/agent/scheduled/run/route.ts (M06.5c, automações de CRM) e
+ * já coberta em app/api/broadcasts/send/route.ts — este é o 3º lugar que
+ * lê marketingOptOuts; NÃO extraído pra um helper compartilhado nesta
+ * fatia porque as versões de broadcasts (cap de 50k + fail-closed em
+ * índice ausente) e desta função têm requisitos de volume bem diferentes
+ * — mais próxima da versão simples do scheduled/run. Documentado em
+ * docs/paridade/M07_PLANO_IMPLEMENTACAO.md.
+ */
+async function fetchWhatsAppOptOutSet(businessId: string): Promise<Set<string>> {
+  const snap = await adminDb.collection('marketingOptOuts')
+    .where('businessId', '==', businessId)
+    .where('channel', 'in', ['whatsapp', 'all'])
+    .get();
+  return new Set(snap.docs.map((d) => (d.data().identifier as string || '').toLowerCase()));
+}
+
 interface RunResult {
   campaignId: string;
   campaignName: string;
@@ -61,6 +81,7 @@ interface RunResult {
   sent: number;
   failed: number;
   skippedIdempotent: number;
+  skippedOptOut: number;
   errors?: string[];
 }
 
@@ -436,6 +457,7 @@ async function executeCampaign(
   clients: Client[],
   now: Date,
   tz: string,
+  optOutSet: Set<string>,
 ): Promise<RunResult> {
   const result: RunResult = {
     campaignId: campaign.id,
@@ -444,6 +466,7 @@ async function executeCampaign(
     sent: 0,
     failed: 0,
     skippedIdempotent: 0,
+    skippedOptOut: 0,
     errors: [],
   };
 
@@ -483,6 +506,12 @@ async function executeCampaign(
     if (!phone) {
       result.failed++;
       result.errors!.push(`${client.name}: sem telefone`);
+      continue;
+    }
+    // M07.1: opt-out de marketing (LGPD) tem prioridade sobre o envio de
+    // aniversário — mesmo padrão de app/api/agent/scheduled/run/route.ts.
+    if (optOutSet.has(phone.toLowerCase())) {
+      result.skippedOptOut++;
       continue;
     }
 
@@ -702,11 +731,32 @@ export async function runBirthdayCampaigns(now: Date = new Date()): Promise<RunS
       continue;
     }
 
+    // Lê opt-outs uma única vez por business (mesmo racional de clients
+    // acima) — reusado por todas as campanhas devidas deste tenant. Mesma
+    // política de app/api/broadcasts/send/route.ts: fail-CLOSED (pula o
+    // business neste tick, tenta de novo no próximo) se o índice composto
+    // de marketingOptOuts estiver ausente — sinal de config faltando, não
+    // arriscar mandar sem filtro. Fail-open (loga e segue) em erro
+    // transiente (timeout, Firestore instável) — não travar o cron inteiro
+    // por uma falha pontual.
+    let optOutSet: Set<string>;
+    try {
+      optOutSet = await fetchWhatsAppOptOutSet(businessId);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.toLowerCase().includes('index')) {
+        console.error(`[BirthdayRunner] opt-out lookup failed for ${businessId} — índice composto ausente, pulando business neste tick:`, errMsg);
+        continue;
+      }
+      console.warn(`[BirthdayRunner] opt-out lookup failed for ${businessId} (transiente), seguindo sem filtro:`, err);
+      optOutSet = new Set();
+    }
+
     // Executa as campanhas em sequência (não paralelo) — evita estourar
     // rate-limit do Meta Graph e do Baileys quando há muitas campanhas
     // no mesmo horário.
     for (const campaign of dueCampaigns) {
-      const result = await executeCampaign(campaign, clients, now, tz);
+      const result = await executeCampaign(campaign, clients, now, tz, optOutSet);
       summary.campaignsExecuted++;
       summary.results.push(result);
       // Marca como tendo rodado hoje — futuros ticks do cron NÃO vão
