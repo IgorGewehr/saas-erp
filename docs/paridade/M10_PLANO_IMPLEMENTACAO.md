@@ -159,11 +159,8 @@ roadmap é hoje 100% runbook manual — proporcional ao volume atual (1-2 tenant
 - ~~`sendFinancialNotifications` deve respeitar `marketingOptOuts`?~~ — **respondido**: sim (M10.5).
 - **Promover algum dos 8 eventos "só schema"?** — maioria é vertical de varejo/delivery/cardápio,
   não clínica; não perseguir sem sinal real. Ainda em aberto.
-- **Vale um canal de alerta operacional genérico** (cron falhou → notifica dono)? Ainda em
-  aberto, e agora mais concreto: M10.3 confirmou que `scheduledFallback.ts` não se estende
-  diretamente a `appointmentReminderRunner.ts` (varredura cross-tenant sem entidade-dona) — um
-  canal genérico exigiria um desenho novo (heartbeat global, não por-entidade), não só reuso.
-  Vale o investimento pro volume atual (1-2 tenants)?
+- ~~Vale um canal de alerta operacional genérico?~~ — **respondido: não por agora** (M10.3),
+  dormente até sinal real de necessidade.
 
 ## 6. Fora de escopo deliberado
 
@@ -195,16 +192,18 @@ Feito via agente de investigação dedicado. Achados em §0-§4 acima.
 - [x] **Decisão do usuário: usa assinaturas — agendar.** Adicionado ao `docker-compose.yml`
       (1x/dia, 06:00).
 
-### M10.3 — Missed-run pro lembrete de atendimento — investigado, achado que a suposição original não se sustenta
+### M10.3 — Missed-run pro lembrete de atendimento — investigado, decidido não construir agora ✅ Fechado (05/09/2026)
 
-- [ ] ~~Estender `detectAndNotifyMissedRun`/`markSuccessfulRun` reuso direto~~ — **investigado,
+- [x] ~~Estender `detectAndNotifyMissedRun`/`markSuccessfulRun` reuso direto~~ — **investigado,
       achado real**: o mecanismo é modelado em torno de uma ENTIDADE por tenant (uma
       `BirthdayCampaign` com dono pra notificar); `appointmentReminderRunner.ts` é uma varredura
       ÚNICA cross-tenant, sem entidade equivalente. Reuso direto não se aplica sem inventar uma
-      entidade artificial ou notificar todos os negócios — mecanismo diferente, merece desenho
-      próprio. Dobrado na pergunta de produto já sinalizada no §5 ("vale um canal de alerta
-      operacional genérico?"), agora mais concreta. Não implementado nesta fatia. Ver
-      `docs/automacoes/AUTOMACOES_M10_1_2_3_4_5_6.md` §M10.3.
+      entidade artificial ou notificar todos os negócios. Dobrado na pergunta de produto do §5
+      ("vale um canal de alerta operacional genérico?") — **decisão do usuário: não por agora**.
+      Falha de cron continua visível só via `docker compose logs cron`, aceitável pro volume
+      atual (1-2 tenants). Fica dormente até sinal real de necessidade, mesmo tratamento de
+      outros itens adiados nesta sessão. Ver `docs/automacoes/AUTOMACOES_M10_1_2_3_4_5_6.md`
+      §M10.3.
 
 ### M10.4 — Idempotência por episódio nos triggers restantes (engenharia pura, GAP D) ✅ Concluído (05/09/2026)
 
@@ -237,19 +236,18 @@ Feito via agente de investigação dedicado. Achados em §0-§4 acima.
 
 ### M10.9 — Testes, homologação e aceite
 
-- [ ] Smoke manual: forçar um cron a perder o slot e confirmar que a notificação de missed-run
-      chega (M10.3); confirmar que `high_churn_risk`/`lifecycle_change` não redisparam no mesmo
-      episódio (M10.4).
+- [ ] Smoke manual: confirmar que os crons MP/membership-billing recém-agendados disparam nos
+      horários certos (`docker compose logs cron`); confirmar que `high_churn_risk`/
+      `lifecycle_change` não redisparam no mesmo episódio (M10.4).
 
 ## 8. Critérios para marcar M10 como concluído
 
-- [ ] Topologia de deploy real confirmada e os crons MP/membership-billing rodando onde deveriam
-      (ou dormentes com justificativa registrada).
-- [ ] Job mais crítico pro caso de uso atual (lembrete de atendimento) tem detecção de
-      missed-run, mesmo padrão já usado por aniversário.
-- [ ] Automações CRM não redisparam a mesma ação pro mesmo cliente/episódio nos 3 triggers
-      state-based (não só 1).
-- [ ] `deliveryOrder.confirmed` não afirma mais uma trilha de auditoria que não existe.
+- [x] Topologia de deploy real confirmada e os crons MP/membership-billing rodando onde deveriam
+      (M10.1/2).
+- [x] Decisão sobre canal de alerta operacional genérico registrada (M10.3: não por agora).
+- [x] Automações CRM não redisparam a mesma ação pro mesmo cliente/episódio nos 3 triggers
+      state-based (M10.4).
+- [x] `deliveryOrder.confirmed` não afirma mais uma trilha de auditoria que não existe (M10.6).
 
 ## 9. Riscos e controles
 
@@ -263,8 +261,8 @@ Feito via agente de investigação dedicado. Achados em §0-§4 acima.
 
 1. **M10.1** ✅ — checkpoint de topologia de deploy: só Docker, crons MP agendados.
 2. **M10.2** ✅ — checkpoint membership-billing: usa assinaturas, agendado.
-3. **M10.3** — missed-run pro lembrete de atendimento: investigado, reuso direto não se aplica;
-   dobrado na pergunta em aberto do §5 (canal de alerta operacional genérico).
+3. **M10.3** ✅ — missed-run pro lembrete de atendimento: investigado, reuso direto não se aplica;
+   usuário decidiu não construir canal de alerta genérico agora.
 4. **M10.4** ✅ — idempotência por episódio nos 2 triggers restantes.
 5. **M10.5** ✅ — checkpoint `sendFinancialNotifications`/opt-out: aplicar o filtro, feito.
 6. **M10.6** ✅ — fix de doc.
