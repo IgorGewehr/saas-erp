@@ -157,20 +157,80 @@ service cloud.firestore {
     // ============================================
     // USERS COLLECTION
     // ============================================
+    //
+    // M09.1 (05/09/2026) — CRÍTICO: a versão anterior de `allow update`/
+    // `allow create` deste bloco não restringia NENHUM campo. Como
+    // `userRoleValue()`/`belongsToBusiness()` (topo deste arquivo) e
+    // `lib/utils/verifyAuth.ts` (toda rota server-side) leem `role`/
+    // `businessId` DIRETO deste mesmo documento sem nenhuma outra checagem,
+    // qualquer usuário autenticado podia chamar o SDK client direto (ex.:
+    // console do navegador) e gravar `{role:'founder', businessId:'<qualquer
+    // tenant>'}` no PRÓPRIO doc — escalada de privilégio + acesso cross-
+    // tenant completo a dado de paciente/financeiro real, sem precisar de
+    // nenhum acesso prévio. Achado durante a investigação de abertura do
+    // M09, corrigido na mesma sessão. Ver docs/paridade/M09_PLANO_IMPLEMENTACAO.md §1.
+    //
+    // Campos que um usuário pode escrever no PRÓPRIO doc (inventariados
+    // lendo todo call-site real de updateUserProfile/setDoc/updateDoc sobre
+    // users/{uid} em app/ — AuthProvider.tsx, SettingsModule.tsx,
+    // Sidebar.tsx, SidebarEditorTab.tsx, TopBar.tsx). NUNCA inclui role/
+    // businessId — só admin pode mudar esses dois, e só dentro do próprio
+    // negócio.
+    function selfEditableUserFields() {
+      return ['name', 'phone', 'profileAddress', 'photoURL', 'userStatus',
+              'sidebarPrefs', 'isProfessional', 'serviceIds', 'workingHours',
+              'language', 'isOnline', 'lastSeenAt', 'lastLoginAt',
+              'commissionRate', 'updatedAt'];
+    }
+
     match /users/{userId} {
       // Users can read their own profile
       // Users can read profiles of people in the same business
       allow read: if isAuthenticated()
                   && (request.auth.uid == userId || belongsToBusiness(resource.data.businessId));
 
-      // Users can only update their own profile
-      // Admins can update users in their business (for role changes, etc.)
+      // Auto-edição: só campos de perfil (nunca role/businessId — ver nota acima).
+      // Admin/founder do MESMO negócio pode mudar role/isActive/sectorIds/
+      // commissionRate de outro membro (inclui a remoção, que zera
+      // businessId pra null — por isso o `|| == null` abaixo), mas nunca
+      // pra outro negócio. Quando `role` de fato MUDA (não só outros campos
+      // sendo tocados), nunca pode conceder rank MAIOR que o próprio — fecha
+      // a escalada "admin promove alguém a founder" — mas não bloqueia um
+      // admin editando campo não-relacionado (ex.: setor) de um colega de
+      // rank maior, caso legítimo hoje sem checagem de rank nenhuma.
       allow update: if isAuthenticated()
-                    && (request.auth.uid == userId
-                        || (isAdmin() && belongsToBusiness(resource.data.businessId)));
+                    && (
+                      (request.auth.uid == userId
+                       && request.resource.data.diff(resource.data).affectedKeys().hasOnly(selfEditableUserFields()))
+                      || (isAdmin()
+                          && belongsToBusiness(resource.data.businessId)
+                          && (request.resource.data.businessId == resource.data.businessId
+                              || request.resource.data.businessId == null)
+                          && (request.resource.data.role == resource.data.role
+                              || roleValue(request.resource.data.role) <= userRoleValue()))
+                    );
 
-      // User creation happens during signup (auth trigger or client-side)
-      allow create: if isAuthenticated() && request.auth.uid == userId;
+      // User creation happens during signup (auth trigger or client-side).
+      // `role: 'founder'` nunca é gravado por nenhum fluxo real de signup
+      // (dono de negócio novo sempre vira 'admin'; invite code só oferece
+      // admin/manager/operator/viewer, `SettingsModule.tsx` INVITE_ROLES) —
+      // bloqueado aqui.
+      //
+      // ACHADO REGISTRADO, NÃO FECHADO NESTA CORREÇÃO EMERGENCIAL (ver
+      // docs/paridade/M09_PLANO_IMPLEMENTACAO.md §1): pra qualquer role
+      // ≠ founder, esta regra ainda não consegue distinguir "resgatei um
+      // invite de verdade pra este businessId" de "forjei um create com um
+      // businessId que só conheço/adivinhei" — role:'admin' especificamente
+      // é legítimo tanto no fluxo de dono de negócio novo (ownerUserId
+      // verificável) QUANTO no de invite pra admin de negócio já existente
+      // (não verificável sem o client passar o código do invite como campo
+      // pra cross-referenciar contra `inviteCodes`). Fechar isso de verdade
+      // exige uma mudança pequena de app code (não só de regra) — deixado
+      // como follow-up explícito, não silenciado. Esta correção fecha o
+      // vetor mais grave confirmado (auto-escalação de uma conta JÁ
+      // EXISTENTE via update, acima).
+      allow create: if isAuthenticated() && request.auth.uid == userId
+                    && request.resource.data.role != 'founder';
 
       // Only founders can delete users (soft delete preferred)
       allow delete: if isAuthenticated()
@@ -212,10 +272,16 @@ service cloud.firestore {
       // Anyone authenticated can read (for code validation during signup)
       allow read: if isAuthenticated();
 
-      // Only admin/founder can create invite codes
+      // Only admin/founder can create invite codes. M09.1: role concedido no
+      // convite nunca pode exceder o rank de quem cria (mesmo criador não
+      // pode se auto-promover gerando um convite pra si — nem pra 'founder',
+      // que nunca aparece no dropdown de convite da UI, `SettingsModule.tsx`
+      // INVITE_ROLES, mas antes desta correção nada impedia forjar isso via
+      // SDK direto).
       allow create: if isAuthenticated()
                     && isAdmin()
-                    && incomingBelongsToBusiness();
+                    && incomingBelongsToBusiness()
+                    && roleValue(request.resource.data.role) <= userRoleValue();
 
       // Allow update: only the code's own business admin can revoke,
       // or any authenticated user can mark as used (but cannot change businessId or role)
