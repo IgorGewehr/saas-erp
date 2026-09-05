@@ -2480,6 +2480,15 @@ export interface BehavioralInsights {
   lastToneDate?: string;
 }
 
+/**
+ * M05 (05/09/2026): sem motor de cálculo interno — o único writer real é
+ * `POST /api/v1/crm/contacts`, que aceita o valor pronto de um caller
+ * EXTERNO (só faz clamp 0-100). Confirmado com o usuário: deliberadamente
+ * dormente até sinal real de necessidade, mesmo tratamento do PIX/Boleto/
+ * Sequências. A automação `high_churn_risk` (`agent/scheduled/run/route.ts`)
+ * nunca dispara pra um tenant sem integração externa alimentando isto. Ver
+ * docs/paridade/M05_PLANO_IMPLEMENTACAO.md §5.
+ */
 export interface ContactScores {
   loyalty: number;
   value: number;
@@ -2516,6 +2525,15 @@ export interface Client {
 
   // ── CRM / Pipeline ─────────────────────────────────
   source: LeadSource;
+  /**
+   * M05 (05/09/2026): `status` (pipeline visual do Kanban/lista do CRM) e
+   * `lifecycleStage` (abaixo — trigger de automação) descrevem jornadas
+   * PARECIDAS mas são campos INDEPENDENTES por decisão de produto, não por
+   * descuido — servem públicos diferentes (operador arrastando card vs.
+   * regra de automação avaliando estágio de vida) e nenhum write-path
+   * sincroniza um a partir do outro hoje. Não assumir que mudar um implica
+   * o outro. Ver docs/paridade/M05_PLANO_IMPLEMENTACAO.md §5.
+   */
   status: LeadStatus;
   /** Flag de visibilidade no pipeline do CRM (Kanban + lista).
    *  - `true` (ou ausente, p/ backward-compat): aparece no pipeline
@@ -2537,6 +2555,8 @@ export interface Client {
   };
   notes?: string;
   lastContactDate?: string;
+  /** Ver comentário em `status` acima — campo independente por design, não
+   *  sincronizado automaticamente com `status`. */
   lifecycleStage?: LifecycleStage;
   channelIdentities?: {
     whatsapp?: string;

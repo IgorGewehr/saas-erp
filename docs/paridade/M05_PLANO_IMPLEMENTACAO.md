@@ -176,17 +176,25 @@ em `MetricsTab` sempre renderiza vazio pra qualquer tenant que não use agente/A
       `.create()`). `app/forms/[formId]/page.tsx` (página real que o paciente usa) gera a chave
       1x por carregamento e reenvia em qualquer retry manual pós-erro.
 
-### M05.4 — Scores: motor de cálculo (checkpoint, Gap 1)
+### M05.4 — Scores: motor de cálculo ✅ Decidido (05/09/2026)
 
-- [ ] Perguntar se vale construir um motor de cálculo real, ou deixar dormente.
+- [x] **Decisão do usuário: não por agora.** Fica dormente até sinal real de necessidade, mesmo
+      tratamento do PIX/Boleto/Sequências. Documentado diretamente no tipo (`ContactScores`,
+      `lib/types/index.ts`).
 
-### M05.5 — Unificação status/lifecycleStage (checkpoint, Gap 2)
+### M05.5 — Unificação status/lifecycleStage ✅ Decidido (05/09/2026)
 
-- [ ] Perguntar se vale unificar, ou manter os dois com propósitos distintos documentados.
+- [x] **Decisão do usuário: manter os dois separados, documentar o motivo.** Sem mudança de
+      código — comentário adicionado em `Client.status`/`Client.lifecycleStage`
+      (`lib/types/index.ts`) deixando explícito que são campos independentes por design, não
+      sincronizados, servindo públicos diferentes (Kanban visual vs. trigger de automação).
 
-### M05.6 — Destino do pipeline de vendas morto (checkpoint, §5)
+### M05.6 — Destino do pipeline de vendas morto ✅ Decidido (05/09/2026)
 
-- [ ] Perguntar se remove o plumbing órfão (`DealFormDialog`/funil) ou mantém agente/API-only.
+- [x] **Decisão do usuário: manter como está (agente/API-only), documentar.** `DealFormDialog`/
+      `handleSaveDeal`/funil permanecem no código, sem remoção. Comentário adicionado em
+      `ImportLeadModal.tsx` confirmando que é decisão de produto definitiva, não código morto por
+      descuido.
 
 ### M05.7 — Testes, homologação e aceite
 
@@ -196,8 +204,8 @@ em `MetricsTab` sempre renderiza vazio pra qualquer tenant que não use agente/A
 
 ## 8. Critérios para marcar M05 como concluído
 
-- [ ] Bugs de baixo risco corrigidos (M05.1/2/3).
-- [ ] Decisões de produto (M05.4/5/6) registradas com a resposta do usuário, não deixadas em aberto.
+- [x] Bugs de baixo risco corrigidos (M05.1/2/3).
+- [x] Decisões de produto (M05.4/5/6) registradas com a resposta do usuário, não deixadas em aberto.
 
 ## 9. Riscos e controles
 
@@ -208,7 +216,9 @@ em `MetricsTab` sempre renderiza vazio pra qualquer tenant que não use agente/A
 
 ## 10. Ordem de entrega recomendada
 
-1. **M05.1/2/3** — fixes de baixo risco, sem decisão de produto, valor real pra odontologia
+1. **M05.1/2/3** ✅ — fixes de baixo risco, sem decisão de produto, valor real pra odontologia
    (ficha de anamnese usa `forms/submit`).
-2. **M05.4/5/6** — checkpoints de produto.
-3. **M05.7** — aceite.
+2. **M05.4/5/6** ✅ — checkpoints de produto, todos decididos (dormente/documentar/manter).
+3. **M05.7** — aceite (precisa de tenant real/navegador).
+
+**M05 fica, ao fim deste arco, só com M05.7 (aceite) em aberto.**

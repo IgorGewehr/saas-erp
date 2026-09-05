@@ -7,6 +7,13 @@
  * pouco usados e duplicavam o cadastro de cliente). Agora o fluxo único pra
  * trazer alguém pro pipeline é: existe em /clients → importa pro CRM.
  *
+ * M05 (05/09/2026): confirmado com o usuário que isso é decisão de produto
+ * definitiva, não um gap a preencher — `DealFormDialog`/`handleSaveDeal`
+ * (`CRMModule.tsx`) continuam no código, mas nenhum botão os abre; criar/
+ * editar um `CRMDeal` manualmente permanece só possível via agente de IA ou
+ * API v1. Decisão: manter como está (agente/API-only), não remover o
+ * dialog nem reativar a UI manual. Ver docs/paridade/M05_PLANO_IMPLEMENTACAO.md §5.
+ *
  * 2 passos:
  *   1. Busca cliente com inPipeline:false (criado via quickCreate da conversa
  *      ou cadastrado em /clients fora do funil). Match em nome/email/
