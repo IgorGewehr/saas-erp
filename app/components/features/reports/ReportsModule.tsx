@@ -864,12 +864,19 @@ function ComissoesTab({ transactions, periodRange, periodLabel }: {
   );
 
   const byProfessional = useMemo(() => {
+    // M08.1: agrupava por `createdByName` — campo que NENHUM dos 2 produtores
+    // reais de comissão (maybeCreateCommission/maybeCreateCommissionAdmin,
+    // lib/services/commission.ts) grava; eles setam `clientId`/`clientName`
+    // com o profissional. Toda comissão auto-gerada caía no fallback
+    // 'Profissional', colapsando todos os dentistas numa linha só. Agrupa
+    // por `clientId` (chave estável) exibindo `clientName`.
     const m = new Map<string, { name: string; total: number; count: number }>();
     commissions.forEach(t => {
-      const name = t.createdByName || 'Profissional';
-      const cur = m.get(name) ?? { name, total: 0, count: 0 };
+      const key = t.clientId || t.clientName || 'sem-profissional';
+      const name = t.clientName || 'Profissional';
+      const cur = m.get(key) ?? { name, total: 0, count: 0 };
       cur.total += t.amount; cur.count++;
-      m.set(name, cur);
+      m.set(key, cur);
     });
     return Array.from(m.values()).sort((a, b) => b.total - a.total);
   }, [commissions]);
@@ -978,16 +985,19 @@ export default function ReportsModule() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // M08.2: SEM janela de createdAt de propósito — "Total de clientes"/"Top CLV"
+  // (ClientesTab) precisam do roster inteiro, não só de quem foi criado no
+  // período selecionado (bug real: rotulava "Total" mas na prática zerava em
+  // períodos curtos). ClientesTab já faz seu próprio filtro de período
+  // (`newInPeriod`, via inPeriod() client-side) assumindo o roster completo —
+  // o bug estava só nesta query, não no componente consumidor.
   const { data: clients = [], isLoading: loadingClients } = useQuery({
-    queryKey: ['clients', businessId, period],
+    queryKey: ['clients', businessId],
     queryFn: async () => {
       if (!businessId) return [];
-      const { lo, hi } = createdAtBounds(periodRange);
       const q = query(
         collection(db, 'clients'),
         where('businessId', '==', businessId),
-        where('createdAt', '>=', lo),
-        where('createdAt', '<=', hi),
         orderBy('createdAt', 'desc'),
       );
       return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Client)).filter(isActiveClient);

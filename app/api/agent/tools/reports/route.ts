@@ -113,8 +113,11 @@ async function loadOrders(businessId: string, range: PeriodRange): Promise<Order
 }
 
 async function loadClients(businessId: string): Promise<Client[]> {
-  // CLV usa o gasto acumulado (não recortado por período, igual ao ReportsModule),
-  // então não filtramos clients por createdAt — só por tenant.
+  // CLV usa o gasto acumulado (não recortado por período) e "total de clientes"
+  // precisa do roster inteiro, não só de quem foi criado na janela — por isso não
+  // filtramos por createdAt aqui, só por tenant. Até M08.2 o ReportsModule.tsx
+  // filtrava (bug: "Total de clientes" zerava em períodos curtos); a query da UI
+  // foi alinhada a este comportamento, que sempre foi o correto para este agregado.
   const snap = await adminDb.collection('clients')
     .where('businessId', '==', businessId)
     .get();
