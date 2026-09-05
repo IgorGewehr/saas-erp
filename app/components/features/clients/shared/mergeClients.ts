@@ -30,7 +30,10 @@ export async function reassociateRelatedDocs(oldId: string, newId: string, busin
     { col: 'transactions',   field: 'contactId' },
     { col: 'crmDeals',       field: 'contactId' },
     { col: 'crmActivities',  field: 'contactId' },
-    { col: 'kanbanCards',    field: 'contactId' },
+    // M05.2: campo real de KanbanCard é `relatedContactId`, não `contactId`
+    // — a query antiga sempre retornava vazio (no-op silencioso), achado ao
+    // investigar M05 (mesma classe de bug de nome de campo errado do M06.5c).
+    { col: 'kanbanCards',    field: 'relatedContactId' },
     { col: 'loyaltyHistory', field: 'clientId' },
   ];
   for (const { col, field } of targets) {

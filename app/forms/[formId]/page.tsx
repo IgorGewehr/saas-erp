@@ -32,6 +32,11 @@ export default function PublicFormPage() {
   const [responses, setResponses] = useState<Record<string, unknown>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  // M05.3: gerado 1x por carregamento da página, reenviado em qualquer retry
+  // manual (usuário clica "Enviar" de novo após um erro transiente) — o
+  // botão já fica desabilitado durante o próprio isSubmitting, então o risco
+  // real que isso fecha é o retry pós-erro, não o duplo-clique instantâneo.
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
 
   // Get clientId/name from URL params (optional — pre-fill when sent via WhatsApp)
   const searchParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
@@ -66,7 +71,7 @@ export default function PublicFormPage() {
     try {
       const res = await fetch('/api/forms/submit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': idempotencyKey },
         body: JSON.stringify({
           templateId: formId,
           clientId,

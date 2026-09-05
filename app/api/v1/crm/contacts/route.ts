@@ -369,6 +369,19 @@ export async function PUT(req: NextRequest) {
       return apiError(`Invalid source. Allowed: ${VALID_SOURCES.join(', ')}`, 400);
     }
 
+    // M05.1: `docRef.update()` substitui um campo-objeto de nível superior
+    // por inteiro — um caller que reenvie `relationshipHistory` parcialmente
+    // (ex.: só `{avgTicket: 150}`) apagava silenciosamente `noShowCount` e
+    // qualquer outro subcampo já gravado (ex.: por bumpClientNoShowCountAdmin,
+    // M06.3b). Mescla com o valor atual antes de gravar — bug já
+    // auto-documentado em lib/services/clientMetricsAdmin.ts, nunca corrigido.
+    if (updateFields.relationshipHistory && typeof updateFields.relationshipHistory === 'object') {
+      updateFields.relationshipHistory = {
+        ...(existingData?.relationshipHistory as Record<string, unknown> | undefined),
+        ...updateFields.relationshipHistory,
+      };
+    }
+
     updateFields.updatedAt = new Date().toISOString();
 
     await docRef.update(updateFields);

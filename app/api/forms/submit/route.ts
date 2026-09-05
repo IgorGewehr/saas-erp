@@ -75,7 +75,31 @@ export async function POST(req: NextRequest) {
     submittedVia: body.submittedVia || 'link',
   };
 
+  // M05.3 (R3): endpoint público sem auth, só rate-limit por IP — duplo-clique
+  // do paciente preenchendo a ficha ou retry de rede legítimo criava uma
+  // SEGUNDA resposta pro mesmo formulário. X-Idempotency-Key é opcional (não
+  // quebra callers existentes que não mandam o header); quando presente,
+  // deriva um doc ID determinístico e usa `.create()` — Firestore rejeita
+  // atomicamente se já existe, mesmo padrão de markWebhookSeen/
+  // createTransactionSafeAdmin já usados nesta sessão.
+  const idempotencyKey = req.headers.get('x-idempotency-key')?.trim();
+  if (idempotencyKey) {
+    const safeKey = idempotencyKey.toLowerCase().replace(/[^a-z0-9._-]/g, '_').slice(0, 200);
+    const docId = `${template.businessId}_${safeKey}`;
+    const ref = adminDb.collection('formResponses').doc(docId);
+    try {
+      await ref.create(responseDoc);
+      return NextResponse.json({ ok: true, id: ref.id }, { status: 201 });
+    } catch (err) {
+      const code = (err as { code?: number | string })?.code;
+      const isAlreadyExists = code === 6 || code === 'already-exists';
+      if (!isAlreadyExists) throw err;
+      const existing = await ref.get();
+      return NextResponse.json({ ok: true, id: ref.id, ...existing.data() }, { status: 200 });
+    }
+  }
+
   const ref = await adminDb.collection('formResponses').add(responseDoc);
 
-  return NextResponse.json({ ok: true, id: ref.id });
+  return NextResponse.json({ ok: true, id: ref.id }, { status: 201 });
 }

@@ -31,10 +31,11 @@ export async function syncClientMetricsAdmin(params: {
  * inteiro, apagando os demais campos de RelationshipHistory. Mesmo padrão
  * de lib/services/birthdayCampaignRunner.ts (incrementCampaignStats).
  *
- * Nota: PUT /api/v1/crm/contacts grava relationshipHistory inteiro por
- * substituição rasa (sem merge por campo) — um caller externo que reenvie
- * esse objeto parcialmente pode apagar noShowCount sem querer. Bug
- * pré-existente, fora do escopo desta função corrigir.
+ * M05.1: `PUT /api/v1/crm/contacts` gravava `relationshipHistory` inteiro
+ * por substituição rasa — um caller externo que reenviasse esse objeto
+ * parcialmente apagava `noShowCount` sem querer. Corrigido lá (mescla com
+ * o valor atual antes de gravar) — não corrigido aqui, que já usa dot-path
+ * corretamente desde o início.
  */
 export async function bumpClientNoShowCountAdmin(params: {
   db: Firestore;
