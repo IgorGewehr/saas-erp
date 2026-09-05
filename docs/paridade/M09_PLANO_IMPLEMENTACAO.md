@@ -197,8 +197,10 @@ Contém dado de demo hardcoded (`TeamTab.tsx`, mock com `role:'founder'`).
       referenciado já existe com `ownerUserId == request.auth.uid` (verificado via `get()`) —
       único jeito legítimo de criar founder, já que convite nunca oferece essa role. Sem essa
       mudança na regra, o próprio bloqueio de `founder` do M09.1 teria rejeitado todo signup de
-      negócio novo a partir de agora. Validado via `firebase deploy --dry-run` (compilou) antes
-      de qualquer deploy real.
+      negócio novo a partir de agora. Validado via `firebase deploy --dry-run` (compilou) e
+      **deployado em produção com autorização explícita do usuário** (`firebase deploy --only
+      firestore:rules`, "Deploy complete!") — regra atualizada ativa antes do código do app
+      (`AuthProvider.tsx`) ir ao ar, evitando janela de dessincronia.
 
 ### M09.3+ — demais gaps (§3), fora de escopo por padrão (§7)
 
