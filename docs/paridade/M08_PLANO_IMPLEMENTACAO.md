@@ -146,18 +146,42 @@ Detalhes/evidência: `docs/relatorios/RELATORIOS_M08_1_2_FIXES.md`.
       `OperatorChatPanel.tsx` (reconfirmado zero importadores antes de apagar — só apareciam em
       docs e num comentário de texto em `TeamChatPanel.tsx`, nenhum `import` real).
 
-### M08.4 — Descope explícito de CMV/canais (checkpoint, Gap 4)
+### M08.4 — CMV/estoque (checkpoint, Gap 4) ✅ Concluído (05/09/2026)
 
-- [ ] Perguntar ao usuário.
+- [x] Perguntado ao usuário: escolheu **construir CMV/estoque** (não descopar).
+- [x] Nova aba "CMV & Estoque" em `ReportsModule.tsx` (`CmvEstoqueTab`):
+      - CMV do período = soma de `costTotal` de `stockMovements` tipo `'saida'` com
+        `sourceType` `'sale'`/`'order'` (exclui ajustes/perdas manuais) — único dado de
+        custo HISTÓRICO do sistema (`Product.costPrice` é o custo atual, não o vigente
+        em cada venda passada).
+      - Margem bruta = receita de produtos (exclui serviços, que não têm CMV) − CMV.
+      - Valor em estoque / produtos com estoque baixo: mesma fórmula de
+        `InventoryModule.tsx` (`stats.totalValue`/`isLowStock`), reimplementada
+        localmente (não importada — evita acoplar o bundle de Relatórios ao de
+        Inventory) mas mantida idêntica de propósito, para não repetir a divergência
+        de duas superfícies que o Gap 2 encontrou.
+      - Atribuição de CANAL (a outra metade do Gap 4) **não construída nesta fatia** —
+        só 1 canal de venda ativo hoje (PDV local), sem tenant com canal múltiplo;
+        adiado até haver caso de uso real, mesmo tratamento dado a outros itens
+        B2B/multi-canal pausados em M02/M03.
+      - Sem novo índice composto: reaproveita `[businessId, type, createdAt desc]`
+        (já existente em `firestore.indexes.json`) e uma query simples de
+        `products` por `businessId` (sem `orderBy`, sem necessidade de índice).
 
-### M08.5 — `minRole` em Relatórios (checkpoint, Gap 6)
+### M08.5 — `minRole` em Relatórios (checkpoint, Gap 6) ✅ Concluído (05/09/2026)
 
-- [ ] Perguntar ao usuário.
+- [x] Perguntado ao usuário: escolheu adicionar o gate.
+- [x] `Sidebar.tsx`: `minRole: 'manager'` no item "Relatórios" — alinhado à regra real
+      do Firestore (`transactions` exige `isManager()` pra leitura).
 
 ### M08.6 — Testes, homologação e aceite
 
-- [ ] Smoke manual: relatório de comissão com 2+ profissionais mostra linhas separadas (M08.1);
-      "Total de clientes" não zera ao trocar pra período curto (M08.2).
+- [x] `npm run typecheck`/`npm run test` limpos após cada fatia (M08.1–M08.5).
+- [ ] Smoke manual (não executado nesta rodada, mesma ressalva de sempre): relatório
+      de comissão com 2+ profissionais mostra linhas separadas (M08.1); "Total de
+      clientes" não zera ao trocar pra período curto (M08.2); aba "CMV & Estoque"
+      mostra CMV/margem/valor de estoque coerentes com uma venda de teste (M08.4);
+      operador (role abaixo de manager) não vê mais "Relatórios" no menu (M08.5).
 
 ## 7. Riscos e controles
 

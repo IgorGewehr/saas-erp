@@ -23,12 +23,13 @@ import {
   ShoppingBag,
   Star,
   Package,
+  Boxes,
 } from 'lucide-react';
-import type { Transaction, Appointment, Client, Review, Sale, Order } from '@/lib/types';
+import type { Transaction, Appointment, Client, Review, Sale, Order, StockMovement, Product } from '@/lib/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ReportTab = 'vendas' | 'produtos' | 'agenda' | 'financeiro' | 'clientes' | 'comissoes' | 'avaliacoes';
+type ReportTab = 'vendas' | 'produtos' | 'agenda' | 'financeiro' | 'clientes' | 'comissoes' | 'avaliacoes' | 'estoque';
 type Period = '7d' | '30d' | '90d' | 'mes' | 'mes_anterior' | 'ano';
 
 interface PeriodOption { value: Period; label: string }
@@ -931,6 +932,130 @@ function ComissoesTab({ transactions, periodRange, periodLabel }: {
   );
 }
 
+// ─── Tab: CMV & Estoque ────────────────────────────────────────────────────────
+//
+// M08.4: CMV (custo da mercadoria vendida) do período = soma de `costTotal` das
+// stockMovements tipo 'saida' com sourceType 'sale'|'order' — exclui ajustes
+// manuais/perdas ('ajuste'), que são custo de quebra, não custo de venda. É o
+// único dado de custo HISTÓRICO no sistema (Product.costPrice é o custo ATUAL,
+// não o vigente no momento de cada venda passada).
+//
+// "Valor em estoque"/"estoque baixo" espelham EXATAMENTE o cálculo já usado em
+// InventoryModule.tsx (`stats.totalValue`/`isLowStock`) — mesma fórmula, não
+// reimportada (evita acoplar o bundle de Relatórios ao de Inventory) mas
+// mantida idêntica de propósito, para não repetir a divergência de duas
+// superfícies que o Gap 2 (M08.2) encontrou.
+
+function CmvEstoqueTab({ stockMovements, products, sales, orders, periodRange, periodLabel }: {
+  stockMovements: StockMovement[];
+  products: Product[];
+  sales: Sale[];
+  orders: Order[];
+  periodRange: { start: Date; end: Date };
+  periodLabel: string;
+}) {
+  const cogsMovements = useMemo(
+    () => stockMovements.filter(m =>
+      m.type === 'saida' &&
+      (m.sourceType === 'sale' || m.sourceType === 'order') &&
+      inPeriod(m.createdAt, periodRange.start, periodRange.end)
+    ),
+    [stockMovements, periodRange],
+  );
+
+  const cmv = useMemo(() => cogsMovements.reduce((s, m) => s + (m.costTotal || 0), 0), [cogsMovements]);
+
+  // Receita de PRODUTOS (exclui serviços — serviços não têm CMV neste sistema),
+  // mesmo filtro de status de venda válida usado em ProdutosTab.
+  const receitaProdutos = useMemo(() => {
+    let total = 0;
+    for (const s of sales) {
+      if (s.status !== 'finalizada' || !inPeriod(s.createdAt, periodRange.start, periodRange.end)) continue;
+      for (const item of s.items || []) {
+        if (!item.serviceId) total += item.total;
+      }
+    }
+    for (const o of orders) {
+      const validStatus = o.status === 'confirmado' || o.status === 'faturado' || o.status === 'enviado' || o.status === 'entregue';
+      if (!validStatus || !inPeriod(o.createdAt, periodRange.start, periodRange.end)) continue;
+      for (const item of o.items || []) total += item.total;
+    }
+    return total;
+  }, [sales, orders, periodRange]);
+
+  const margemBruta = receitaProdutos - cmv;
+  const margemPct = receitaProdutos > 0 ? (margemBruta / receitaProdutos) * 100 : 0;
+
+  const activeProducts = useMemo(() => products.filter(p => p.isActive), [products]);
+
+  const valorEstoque = useMemo(() => activeProducts.reduce((sum, p) => {
+    if (p.variants?.length) {
+      return sum + p.variants.reduce((vs, v) => vs + v.costPrice * v.currentStock, 0);
+    }
+    return sum + p.costPrice * p.currentStock;
+  }, 0), [activeProducts]);
+
+  const estoqueBaixoCount = useMemo(() => activeProducts.filter(p => {
+    if (p.variants?.length) {
+      const activeVariants = p.variants.filter(v => v.isActive);
+      const current = activeVariants.reduce((s, v) => s + v.currentStock, 0);
+      const min = activeVariants.reduce((s, v) => s + v.minStock, 0);
+      return current <= min;
+    }
+    return p.currentStock <= p.minStock;
+  }).length, [activeProducts]);
+
+  const byProduct = useMemo(() => {
+    const m = new Map<string, RankRow>();
+    cogsMovements.forEach(mv => {
+      const key = mv.productId || `name:${mv.productName.trim().toLowerCase()}`;
+      const cur = m.get(key) ?? { key, name: mv.productName || '(sem nome)', qty: 0, total: 0 };
+      cur.qty += mv.quantity;
+      cur.total += mv.costTotal || 0;
+      m.set(key, cur);
+    });
+    return Array.from(m.values()).sort((a, b) => b.total - a.total).slice(0, 20);
+  }, [cogsMovements]);
+
+  const maxCusto = byProduct[0]?.total || 1;
+
+  const handleExport = () => exportPDF('CMV & Estoque', periodLabel,
+    ['Produto', 'Qtd. saída', 'Custo total (R$)'],
+    byProduct.map(r => [r.name, String(r.qty), formatCurrency(r.total)]),
+  );
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <KpiCard title="CMV do período"            value={formatCurrency(cmv)}         color="rose"  icon={Package} />
+        <KpiCard title="Margem bruta (produtos)"    value={formatCurrency(margemBruta)} sub={pct(margemPct)} color="green" icon={TrendingUp} />
+        <KpiCard title="Valor em estoque"           value={formatCurrency(valorEstoque)} sub="custo, saldo atual" color="blue" icon={Boxes} />
+        <KpiCard title="Produtos c/ estoque baixo"  value={String(estoqueBaixoCount)}    color="amber" icon={TrendingDown} />
+      </div>
+
+      <Card title="CMV por produto">
+        {byProduct.length === 0
+          ? <Empty icon={Package} msg="Nenhuma saída de estoque por venda neste período" />
+          : <div className="space-y-3">
+              {byProduct.map(r => (
+                <div key={r.key}>
+                  <div className="flex justify-between mb-1 gap-2">
+                    <span className="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">{r.name}</span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400 tabular-nums whitespace-nowrap">{r.qty}×</span>
+                    <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{formatCurrency(r.total)}</span>
+                  </div>
+                  <Bar value={r.total} max={maxCusto} color="#E11D48" />
+                </div>
+              ))}
+            </div>
+        }
+      </Card>
+
+      <ExportBtn onClick={handleExport} disabled={byProduct.length === 0} />
+    </div>
+  );
+}
+
 // ─── Main Module ──────────────────────────────────────────────────────────────
 
 export default function ReportsModule() {
@@ -1062,6 +1187,39 @@ export default function ReportsModule() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // M08.4: saídas de estoque por venda (CMV). Índice existente
+  // [businessId, type, createdAt desc] cobre esta query sem precisar de novo índice.
+  const { data: stockMovements = [] } = useQuery({
+    queryKey: ['reports-stock-movements', businessId, period],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const { lo, hi } = createdAtBounds(periodRange);
+      const q = query(
+        collection(db, 'stockMovements'),
+        where('businessId', '==', businessId),
+        where('type', '==', 'saida'),
+        where('createdAt', '>=', lo),
+        where('createdAt', '<=', hi),
+      );
+      return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as StockMovement));
+    },
+    enabled: !!businessId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // M08.4: roster completo de produtos (valor de estoque/estoque baixo são
+  // "agora", não recortados por período — mesma razão de `clients` em M08.2).
+  const { data: products = [] } = useQuery({
+    queryKey: ['reports-products', businessId],
+    queryFn: async () => {
+      if (!businessId) return [];
+      const q = query(collection(db, 'products'), where('businessId', '==', businessId));
+      return (await getDocs(q)).docs.map(d => ({ ...d.data(), id: d.id } as Product));
+    },
+    enabled: !!businessId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   const isLoading = loadingTx || loadingAppt || loadingClients;
 
   const tabs: { id: ReportTab; label: string; icon: React.ElementType }[] = [
@@ -1072,6 +1230,7 @@ export default function ReportsModule() {
     { id: 'clientes',   label: 'Clientes',       icon: Users },
     { id: 'comissoes',  label: 'Comissões',      icon: Award },
     { id: 'avaliacoes', label: 'Avaliações',     icon: Star },
+    { id: 'estoque',    label: 'CMV & Estoque',  icon: Boxes },
   ];
 
   return (
@@ -1176,6 +1335,7 @@ export default function ReportsModule() {
               {activeTab === 'clientes'   && <ClientesTab    clients={clients} appointments={appointments} periodRange={periodRange} periodLabel={periodLabel} />}
               {activeTab === 'comissoes'  && <ComissoesTab   transactions={transactions} periodRange={periodRange} periodLabel={periodLabel} />}
               {activeTab === 'avaliacoes' && <AvaliacoesTab reviews={reviews} periodRange={periodRange} businessSlug={business?.slug} />}
+              {activeTab === 'estoque'    && <CmvEstoqueTab stockMovements={stockMovements} products={products} sales={sales} orders={orders} periodRange={periodRange} periodLabel={periodLabel} />}
             </motion.div>
           </AnimatePresence>
         )
