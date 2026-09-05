@@ -32,6 +32,7 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { canUserAccessConnection } from '@/lib/services/channels/channelConnections';
+import { resolveVisibleToUserIdsAdmin } from '@/lib/services/conversationVisibilityAdmin';
 import type { ChannelConnection, Conversation, UserRole } from '@/lib/types';
 
 const DEFAULT_NOTICE = 'Olá! A partir de agora vou te atender por este número.';
@@ -136,6 +137,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         const ownerName = ownerSnap.data()?.name as string | undefined;
         if (ownerName) updates.assignedToName = ownerName;
       } catch { /* opcional */ }
+      // M07.3: recalcula visibleToUserIds — sectorIds/isPrivate não mudam
+      // aqui, mas o novo assignedTo precisa entrar na união (a conversa pode
+      // já estar restrita a um setor que não inclui o novo owner).
+      updates.visibleToUserIds = await resolveVisibleToUserIdsAdmin(adminDb, {
+        sectorIds: conv.sectorIds,
+        isPrivate: conv.isPrivate,
+        assignedTo: target.ownerId,
+      });
     }
 
     // assignmentHistory (campo já existente)

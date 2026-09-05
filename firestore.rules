@@ -101,11 +101,37 @@ service cloud.firestore {
           || get(/databases/$(database)/documents/channelConnections/$(data.channelConnectionId)).data.ownerId == request.auth.uid;
     }
 
+    // M07.3: visibilidade por setor/privacidade — camada ADICIONAL à
+    // ownership acima (não substitui). `visibleToUserIds` é denormalizado
+    // em toda escrita que muda sectorIds/isPrivate/assignedTo (ver
+    // lib/services/conversationVisibility.ts) porque uma query `list`
+    // (onSnapshot em tempo real) só é aceita pelo Firestore se der pra
+    // provar, só pelos where()s da própria query, que nenhum documento fora
+    // da regra pode voltar — cruzar sectorIds com o perfil do usuário via
+    // get() dentro da regra NÃO é provável desse jeito, e teria rejeitado a
+    // query inteira. Com o array já resolvido no documento, a regra vira o
+    // padrão comprovado do próprio Firebase: `uid in resource.data.array`.
+    // Ver docs/conversas/CONVERSAS_M07_3_VISIBILIDADE_SETOR.md.
+    //
+    // `!('visibleToUserIds' in data)` cobre conversas pré-backfill (ver
+    // scripts/backfill-conversation-visible-to.ts) — só importa pra get()
+    // de documento único (link direto), já que as queries `list` do
+    // frontend filtram por igualdade/array-contains e nunca retornariam um
+    // doc com o campo ausente de qualquer forma. Mesmo tratamento
+    // conservador-permissivo já usado acima pra isLegacyConversationData.
+    function canAccessConversationSector(data) {
+      return isAdmin()
+          || !('visibleToUserIds' in data)
+          || data.visibleToUserIds == null
+          || (data.visibleToUserIds is list && request.auth.uid in data.visibleToUserIds);
+    }
+
     function canAccessConversationData(data) {
       return isAdmin()
-          || data.channelOwnerType == 'business'
-          || data.channelOwnerId == request.auth.uid
-          || (isLegacyConversationData(data) && legacyConversationReadable(data));
+          || ((data.channelOwnerType == 'business'
+               || data.channelOwnerId == request.auth.uid
+               || (isLegacyConversationData(data) && legacyConversationReadable(data)))
+              && canAccessConversationSector(data));
     }
 
     // Variante pra create (lê de request.resource.data).

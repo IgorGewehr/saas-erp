@@ -2821,6 +2821,14 @@ export interface Conversation {
   sectorIds?: string[];
   assignedToSectorId?: string;
   isPrivate?: boolean;
+  /**
+   * M07.3: quem pode ver esta conversa, derivado de sectorIds/isPrivate/
+   * assignedTo (ver lib/services/conversationVisibility.ts). `null` = sem
+   * restrição. Mantido em sincronia a cada escrita desses 3 campos e a
+   * cada mudança de membro de setor (ver Settings→Setores). Ver
+   * docs/conversas/CONVERSAS_M07_3_VISIBILIDADE_SETOR.md.
+   */
+  visibleToUserIds?: string[] | null;
   priority?: 'low' | 'medium' | 'high' | 'urgent';
   labels?: string[];
   internalNotes?: number;

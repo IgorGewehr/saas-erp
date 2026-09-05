@@ -8,7 +8,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
-import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc, arrayRemove } from 'firebase/firestore';
+import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc, arrayRemove, writeBatch } from 'firebase/firestore';
+import { computeVisibleToUserIds } from '@/lib/services/conversationVisibility';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { auth as firebaseAuth, db, storage } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
@@ -82,7 +83,7 @@ import {
   Wrench,
   PlayCircle,
 } from 'lucide-react';
-import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase, BusinessSegment } from '@/lib/types';
+import type { Business, User as UserType, InviteCode, UserRole, UserStatus, IntegrationProvider, IntegrationConfig, IntegrationStatus, EnterpriseSettings, SaasApiKey, ApiKeyScope, Sector, Service, WorkingHours, DaySchedule, UseCase, BusinessSegment, Conversation } from '@/lib/types';
 import { BUSINESS_SEGMENTS, SEGMENT_LABELS, SEGMENT_VOCAB } from '@/lib/types';
 import { WHATSAPP_TEMPLATE_CATALOG, renderTemplatePreview } from '@/lib/constants/whatsapp-template-catalog';
 import { getAuth } from 'firebase/auth';
@@ -5205,6 +5206,48 @@ function ModoSistemaTab() {
 
 // ─── Sectors Tab ──────────────────────────────────────────────────────────────
 
+/**
+ * M07.3: quando a composição de um setor muda (membro entra/sai, ou setor
+ * é apagado), toda `Conversation` já restrita àquele setor precisa
+ * recalcular `visibleToUserIds` — senão um membro removido continua
+ * enxergando conversas do setor antigo (vazamento), ou um membro novo não
+ * vê o que já deveria (regressão de acesso). Assume UM sectorId por
+ * conversa (única forma que os write-paths atuais produzem — ver
+ * lib/services/conversationVisibility.ts); se algum dia uma conversa
+ * puder ter múltiplos setores, isso precisa buscar os OUTROS setores
+ * referenciados também, não só o que mudou aqui.
+ */
+async function cascadeConversationVisibilityForSector(
+  businessId: string,
+  sectorId: string,
+  memberIds: string[],
+): Promise<void> {
+  const snap = await getDocs(query(
+    collection(db, 'conversations'),
+    where('businessId', '==', businessId),
+    where('sectorIds', 'array-contains', sectorId),
+  ));
+  if (snap.empty) return;
+
+  const now = new Date().toISOString();
+  const docs = snap.docs;
+  const CHUNK_SIZE = 400; // margem sob o limite de 500 ops/batch do Firestore
+  for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
+    const batch = writeBatch(db);
+    for (const d of docs.slice(i, i + CHUNK_SIZE)) {
+      const conv = d.data() as Conversation;
+      const visibleToUserIds = computeVisibleToUserIds({
+        sectorIds: conv.sectorIds,
+        isPrivate: conv.isPrivate,
+        assignedTo: conv.assignedTo,
+        sectorsById: new Map([[sectorId, { memberIds }]]),
+      });
+      batch.update(d.ref, { visibleToUserIds, updatedAt: now });
+    }
+    await batch.commit();
+  }
+}
+
 function SectorsTab() {
   const { t } = useTranslation();
   const { user, business, refreshUser } = useAuth();
@@ -5285,6 +5328,10 @@ function SectorsTab() {
       if (editingSector) {
         await updateDoc(doc(db, 'sectors', editingSector.id), sectorData);
         toast.success(t('settings.sectors.updatedSuccess', 'Setor atualizado'));
+        // M07.3: composição de membros pode ter mudado — recalcula
+        // visibleToUserIds de toda conversa já restrita a este setor.
+        await cascadeConversationVisibilityForSector(business.id, editingSector.id, formMemberIds)
+          .catch((err) => console.error('[Sectors] cascade de visibilidade de conversas falhou:', err));
       } else {
         await addDoc(collection(db, 'sectors'), { ...sectorData, createdAt: now });
         toast.success(t('settings.sectors.savedSuccess', 'Setor criado'));
@@ -5330,6 +5377,11 @@ function SectorsTab() {
           }, { merge: true });
         }
       }
+      // M07.3: setor apagado — nenhum membro deveria continuar tendo acesso
+      // via este setor. memberIds=[] força visibleToUserIds a excluir todo
+      // mundo que só tinha acesso por ele (assignedTo direto continua valendo).
+      await cascadeConversationVisibilityForSector(business.id, sector.id, [])
+        .catch((err) => console.error('[Sectors] cascade de visibilidade de conversas falhou:', err));
       toast.success(t('settings.sectors.deletedSuccess', 'Setor excluído'));
       setDeleteConfirm(null);
       refreshUser();

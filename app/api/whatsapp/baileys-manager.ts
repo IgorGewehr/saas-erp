@@ -885,6 +885,12 @@ async function handleInboundMessage(
         ...(avatarUrl ? { contactAvatarUrl: avatarUrl } : {}),
         ...(initialAssignedTo ? { assignedTo: initialAssignedTo } : {}),
         ...(initialAssignedToName ? { assignedToName: initialAssignedToName } : {}),
+        // M07.3: sem sectorIds/isPrivate na criação — assignedTo sozinho não
+        // restringe (mesma semântica de computeVisibleToUserIds/
+        // getVisibleConversations). Setado explicitamente pra nunca ficar
+        // ausente (a query de "sem restrição" da tela de Conversas casa por
+        // igualdade, não por campo ausente).
+        visibleToUserIds: null,
         status: 'open',
         lastMessage: displayText,
         lastMessageAt: timestamp,
@@ -1041,6 +1047,10 @@ async function handleInboundMessage(
           ...(avatarUrl ? { contactAvatarUrl: avatarUrl } : {}),
           ...(initialAssignedTo ? { assignedTo: initialAssignedTo } : {}),
           ...(initialAssignedToName ? { assignedToName: initialAssignedToName } : {}),
+          // M07.3: mesmo racional do outro branch de criação acima —
+          // assignedTo sozinho não restringe, setado explicitamente pra
+          // nunca ficar ausente.
+          visibleToUserIds: null,
           status: 'open',
           lastMessage: displayText,
           lastMessageAt: timestamp,

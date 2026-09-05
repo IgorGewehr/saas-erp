@@ -1708,6 +1708,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
         contactExternalId: params.externalId,
         ...(formattedPhone ? { contactPhone: formattedPhone } : {}),
         ...(params.senderAvatarUrl ? { contactAvatarUrl: params.senderAvatarUrl } : {}),
+        // M07.3: sem sectorIds/isPrivate/assignedTo na criação — sem
+        // restrição. Setado explicitamente (nunca ausente) pra a query de
+        // "sem restrição" da tela de Conversas casar por igualdade.
+        visibleToUserIds: null,
         status: 'open',
         lastMessage: params.conversationPreview || params.content || '[Midia]',
         lastMessageAt: params.timestamp,

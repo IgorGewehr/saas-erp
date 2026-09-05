@@ -45,6 +45,7 @@ import { getAuth } from 'firebase/auth';
 import { db, storage } from '@/lib/config/firebase';
 import { notifyUsers } from '@/lib/services/notifications';
 import { sendConversationToPipeline } from '@/lib/services/conversationToPipeline';
+import { computeVisibleToUserIds } from '@/lib/services/conversationVisibility';
 import { getVisibleStages } from '@/app/components/features/crm/shared';
 import { ScheduleFromConversationDialog } from './ScheduleFromConversationDialog';
 import ExportPhonesDialog from './ExportPhonesDialog';
@@ -4291,6 +4292,11 @@ function NewConversationDialog({
         firstResponseAt: now,
         assignedTo: user.uid,
         assignedToName: user.name,
+        // M07.3: assignedTo sozinho não restringe (mesma semântica de
+        // getVisibleConversations) — sem sectorIds/isPrivate, visível a todo
+        // o negócio. Setado explicitamente (nunca ausente) pra a query de
+        // "sem restrição" da tela de Conversas conseguir casar por igualdade.
+        visibleToUserIds: null,
         createdAt: now,
         updatedAt: now,
       };
@@ -6378,6 +6384,32 @@ export default function ConversasModule() {
     setPendingNewConversation,
   } = useAppContext();
 
+  // M07.3: mapa setor->membros, reusado por todo write-path que muda
+  // sectorIds/isPrivate/assignedTo pra recalcular visibleToUserIds.
+  const sectorsById = useMemo(
+    () => new Map(sectors.map((s) => [s.id, { memberIds: s.memberIds }])),
+    [sectors],
+  );
+  // Junta o estado atual da conversa com os campos que este write está
+  // mudando e recalcula visibleToUserIds — nunca deixa o campo desatualizado
+  // (ex.: mudar só assignedTo sem tocar sectorIds/isPrivate não pode perder
+  // a restrição de setor já existente).
+  const resolveVisibleToUserIds = useCallback(
+    (
+      base: Pick<Conversation, 'sectorIds' | 'isPrivate' | 'assignedTo'>,
+      overrides: Partial<Pick<Conversation, 'sectorIds' | 'isPrivate' | 'assignedTo'>>,
+    ) => {
+      const merged = { ...base, ...overrides };
+      return computeVisibleToUserIds({
+        sectorIds: merged.sectorIds,
+        isPrivate: merged.isPrivate,
+        assignedTo: merged.assignedTo,
+        sectorsById,
+      });
+    },
+    [sectorsById],
+  );
+
   const isPedidosMode = business?.settings?.useCase === 'pedidos';
   const aiAgentEnabled = !!business?.settings?.aiAgent?.enabled;
 
@@ -7093,6 +7125,7 @@ export default function ConversasModule() {
           updateDoc(doc(db, 'conversations', conv.id), {
             assignedToSectorId: action.sectorId,
             sectorIds: [action.sectorId],
+            visibleToUserIds: resolveVisibleToUserIds(conv, { sectorIds: [action.sectorId] }),
             assignmentHistory: arrayUnion(historyEntry),
             updatedAt: now,
           }).catch(console.error);
@@ -7121,6 +7154,7 @@ export default function ConversasModule() {
           updateDoc(doc(db, 'conversations', conv.id), {
             assignedTo: action.userId,
             assignedToName: action.userName,
+            visibleToUserIds: resolveVisibleToUserIds(conv, { assignedTo: action.userId }),
             assignmentHistory: arrayUnion(historyEntry),
             updatedAt: now,
           }).catch(console.error);
@@ -7142,7 +7176,7 @@ export default function ConversasModule() {
         break; // First matching rule wins
       }
     }
-  }, [conversations, routingRules, business, sectors]);
+  }, [conversations, routingRules, business, sectors, resolveVisibleToUserIds]);
 
   // ── Cross-module intents (do AppContext) ───────────────────────────────────
   // ChannelsTab do detalhe do cliente seta intents pra abrir conversa específica
@@ -7254,65 +7288,133 @@ export default function ConversasModule() {
     // das branches — por isso depende do backfill (`backfill-conversation-ownership`)
     // ter rodado antes do deploy desta versão. Até lá, conversas legadas ficam
     // invisíveis pra non-admin (efeito conservador, não vaza nada).
-    const q = isAdmin
-      ? query(
-          collection(db, 'conversations'),
-          where('businessId', '==', business.id),
-          orderBy('lastMessageAt', 'desc'),
-        )
-      : query(
-          collection(db, 'conversations'),
-          // Firestore v10+: composite OR exige and() wrapper quando combinado
-          // com outros where(). Senão TS reclama (QueryCompositeFilterConstraint
-          // ≠ QueryConstraint) e runtime rejeita a query.
-          and(
-            where('businessId', '==', business.id),
-            or(
-              where('channelOwnerType', '==', 'business'),
-              where('channelOwnerId', '==', user.uid),
-            ),
-          ),
-          orderBy('lastMessageAt', 'desc'),
-        );
+    //
+    // M07.3: pra non-admin, a mesma restrição de dono agora precisa ANDar com
+    // a restrição de setor (`visibleToUserIds`). Uma query `list` só é aceita
+    // pelo Firestore se der pra provar, só pelos where()s, que nenhum
+    // documento fora da regra pode voltar — cruzar `sectorIds` com o perfil
+    // do usuário via get() não é provável desse jeito (ver
+    // docs/conversas/CONVERSAS_M07_3_VISIBILIDADE_SETOR.md). Por isso a
+    // restrição vira 2 queries client-side, mescladas aqui, cada uma provável
+    // por si (campo == null, ou array-contains o meu próprio uid):
+    //   A) visibleToUserIds == null            (sem restrição de setor)
+    //   B) visibleToUserIds array-contains uid  (eu estou na lista resolvida)
+    // Nunca se sobrepõem (o campo é OU null OU array), então não há
+    // duplicata real entre A e B — o Map abaixo é só defesa.
+    if (isAdmin) {
+      const q = query(
+        collection(db, 'conversations'),
+        where('businessId', '==', business.id),
+        orderBy('lastMessageAt', 'desc'),
+      );
 
-    let unsub: (() => void) | null = null;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let retryCount = 0;
+      let unsub: (() => void) | null = null;
+      let retryTimer: ReturnType<typeof setTimeout> | null = null;
+      let retryCount = 0;
 
-    const subscribe = () => {
-      unsub = onSnapshot(q, (snap) => {
-        clearTimeout(loadingTimeout);
-        retryCount = 0; // reset on success
-        const data = snap.docs
-          .map((d) => ({ ...d.data(), id: d.id } as Conversation))
-          .filter(isActiveRecord);
-        setConversations(data);
-        setIsLoadingConversations(false);
+      const subscribe = () => {
+        unsub = onSnapshot(q, (snap) => {
+          clearTimeout(loadingTimeout);
+          retryCount = 0;
+          const data = snap.docs
+            .map((d) => ({ ...d.data(), id: d.id } as Conversation))
+            .filter(isActiveRecord);
+          setConversations(data);
+          setIsLoadingConversations(false);
 
-        setSelectedConversation((prev) => {
-          if (!prev) return prev;
-          const updated = data.find((c) => c.id === prev.id);
-          return updated || prev;
+          setSelectedConversation((prev) => {
+            if (!prev) return prev;
+            const updated = data.find((c) => c.id === prev.id);
+            return updated || prev;
+          });
+        }, (err) => {
+          clearTimeout(loadingTimeout);
+          console.error('[Conversations] onSnapshot error:', err);
+          setIsLoadingConversations(false);
+          const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
+          retryCount++;
+          retryTimer = setTimeout(subscribe, delay);
         });
-      }, (err) => {
+      };
+
+      subscribe();
+
+      return () => {
         clearTimeout(loadingTimeout);
-        console.error('[Conversations] onSnapshot error:', err);
+        if (retryTimer) clearTimeout(retryTimer);
+        unsub?.();
+      };
+    }
+
+    const ownerFilter = or(
+      where('channelOwnerType', '==', 'business'),
+      where('channelOwnerId', '==', user.uid),
+    );
+    const queries = [
+      query(
+        collection(db, 'conversations'),
+        and(where('businessId', '==', business.id), ownerFilter, where('visibleToUserIds', '==', null)),
+        orderBy('lastMessageAt', 'desc'),
+      ),
+      query(
+        collection(db, 'conversations'),
+        and(where('businessId', '==', business.id), ownerFilter, where('visibleToUserIds', 'array-contains', user.uid)),
+        orderBy('lastMessageAt', 'desc'),
+      ),
+    ];
+
+    // Um buffer por query — mescladas em `conversations` a cada atualização
+    // de qualquer uma das duas (nunca as duas ficam com o doc mais recente
+    // ao mesmo tempo, mas o merge sempre reconstrói do zero, então não há
+    // risco de dado obsoleto de uma sobrescrever a outra).
+    const buffers: Conversation[][] = [[], []];
+    const loadedFlags = [false, false];
+    const publishMerged = () => {
+      const merged = new Map<string, Conversation>();
+      for (const buf of buffers) for (const c of buf) merged.set(c.id, c);
+      const data = Array.from(merged.values())
+        .filter(isActiveRecord)
+        .sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
+      setConversations(data);
+      if (loadedFlags[0] && loadedFlags[1]) {
+        clearTimeout(loadingTimeout);
         setIsLoadingConversations(false);
-        // Reinicia o listener automaticamente — erros transitórios (índice ainda
-        // construindo, rede instável) matam o listener; retry garante que ele
-        // volte assim que o problema resolver.
-        const delay = Math.min(3000 * Math.pow(2, retryCount), 30_000);
-        retryCount++;
-        retryTimer = setTimeout(subscribe, delay);
+      }
+      setSelectedConversation((prev) => {
+        if (!prev) return prev;
+        const updated = data.find((c) => c.id === prev.id);
+        return updated || prev;
       });
     };
 
-    subscribe();
+    const unsubs: Array<() => void> = [];
+    const retryTimers: Array<ReturnType<typeof setTimeout> | null> = [null, null];
+    const retryCounts = [0, 0];
+
+    queries.forEach((q, idx) => {
+      const subscribe = () => {
+        const unsub = onSnapshot(q, (snap) => {
+          retryCounts[idx] = 0;
+          loadedFlags[idx] = true;
+          buffers[idx] = snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation));
+          publishMerged();
+        }, (err) => {
+          console.error(`[Conversations] onSnapshot error (query ${idx}):`, err);
+          loadedFlags[idx] = true; // não trava o loading esperando pra sempre
+          publishMerged();
+          const delay = Math.min(3000 * Math.pow(2, retryCounts[idx]), 30_000);
+          retryCounts[idx]++;
+          retryTimers[idx] = setTimeout(subscribe, delay);
+        });
+        unsubs[idx] = unsub;
+      };
+      subscribe();
+    });
 
     return () => {
       clearTimeout(loadingTimeout);
-      if (retryTimer) clearTimeout(retryTimer);
-      unsub?.();
+      retryTimers.forEach((t) => t && clearTimeout(t));
+      unsubs.forEach((u) => u?.());
     };
   }, [business?.id, user?.uid, isAdmin]);
 
@@ -7656,10 +7758,16 @@ export default function ConversasModule() {
       const historyEntry = { assignedTo: userId, assignedToName: userName, changedBy: user.uid, changedByName: user.name, changedAt: now };
       const batch = writeBatch(db);
       for (const id of batchSelectedIds) {
-        batch.update(doc(db, 'conversations', id), {
+        const current = conversations.find((c) => c.id === id);
+        const update: Record<string, unknown> = {
           assignedTo: userId, assignedToName: userName, updatedAt: now,
           assignmentHistory: arrayUnion(historyEntry),
-        });
+        };
+        // Só recalcula se a conversa estiver no estado local — sem isso não
+        // dá pra saber sectorIds/isPrivate atuais, e sobrescrever com um
+        // valor adivinhado arriscaria abrir uma conversa restrita (fail-open).
+        if (current) update.visibleToUserIds = resolveVisibleToUserIds(current, { assignedTo: userId });
+        batch.update(doc(db, 'conversations', id), update);
       }
       await batch.commit();
       const count = batchSelectedIds.size;
@@ -7679,7 +7787,7 @@ export default function ConversasModule() {
       console.error('[Batch] assign failed:', err);
       toast.error('Erro ao atribuir conversas');
     }
-  }, [business?.id, business, batchSelectedIds, user, exitBatchMode]);
+  }, [business?.id, business, batchSelectedIds, user, exitBatchMode, conversations, resolveVisibleToUserIds]);
 
   const handleBatchTag = useCallback(async (tag: string) => {
     if (!business?.id || batchSelectedIds.size === 0) return;
@@ -9189,6 +9297,7 @@ export default function ConversasModule() {
     try {
       await updateDoc(doc(db, 'conversations', selectedConversation.id), {
         assignedToSectorId: sectorId, sectorIds: [sectorId], updatedAt: now,
+        visibleToUserIds: resolveVisibleToUserIds(selectedConversation, { sectorIds: [sectorId] }),
         assignmentHistory: arrayUnion(historyEntry),
       });
       const memberIds = sector?.memberIds ?? [];
@@ -9206,7 +9315,7 @@ export default function ConversasModule() {
       }
       setShowSectorAssign(false);
     } catch (err) { console.error('Error assigning sector:', err); }
-  }, [selectedConversation, business, user, sectors]);
+  }, [selectedConversation, business, user, sectors, resolveVisibleToUserIds]);
 
   const handleRenameContact = useCallback(async (name: string) => {
     if (!selectedConversation || !business?.id) return;
@@ -9219,14 +9328,16 @@ export default function ConversasModule() {
   const handleTogglePrivate = useCallback(async () => {
     if (!selectedConversation || !business?.id) return;
     try {
+      const nextIsPrivate = !selectedConversation.isPrivate;
       await updateDoc(doc(db, 'conversations', selectedConversation.id), {
-        isPrivate: !selectedConversation.isPrivate,
+        isPrivate: nextIsPrivate,
+        visibleToUserIds: resolveVisibleToUserIds(selectedConversation, { isPrivate: nextIsPrivate }),
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
       console.error('Error toggling privacy:', err);
     }
-  }, [selectedConversation, business?.id]);
+  }, [selectedConversation, business?.id, resolveVisibleToUserIds]);
 
   // ── Filtered snippets ──────────────────────────────────────────────────────
 

@@ -228,16 +228,26 @@ não há "quanto do dado já viola a regra" pra medir, é "a regra existe ou nã
       `key.id` — já era assim antes, não é regressão. `tsc --noEmit` limpo, suíte sem regressão.
       Doc: `docs/conversas/CONVERSAS_M07_2_DEDUP_BAILEYS.md`.
 
-### M07.3 — Visibilidade por setor de verdade no servidor (R1, achado mais sério)
+### M07.3 — Visibilidade por setor de verdade no servidor (R1, achado mais sério) ✅ Concluído (05/09/2026)
 
-- [ ] `firestore.rules` (`canAccessConversationData`): estender pra considerar `sectorIds`/
-      `isPrivate`/`assignedTo`, não só `businessId`+`channelOwnerType`. Decisão de design a
-      confirmar durante implementação: admins continuam vendo tudo (`ROLE_HIERARCHY >= admin`),
-      demais só o que já é hoje "visível" na UI — mas AGORA aplicado no servidor, fechando o
-      bypass client-side.
-- [ ] Confirmar que a query client-side (`ConversasModule.tsx:7257-7276`) continua funcionando
-      sob a regra mais estrita (não deve quebrar pra admin nem pra operador dentro do setor
-      certo) — testar antes de endurecer, mesmo padrão M02.5b/M06 (auditoria prévia).
+- [x] **Reconsiderado 2x com o usuário durante a investigação** (ver
+      `docs/conversas/CONVERSAS_M07_3_VISIBILIDADE_SETOR.md` §2-3): uma query `list` em tempo
+      real só é aceita pelo Firestore se a regra puder ser provada só pelos `where()` da própria
+      query — cruzar `sectorIds` com o perfil do usuário via `get()` não é provável desse jeito e
+      arriscava rejeitar (quebrar) a tela de Conversas inteira pra não-admins. Solução escolhida
+      pelo usuário: denormalizar o resultado já resolvido — novo campo
+      `Conversation.visibleToUserIds: string[] | null` (`lib/services/
+      conversationVisibility.ts`, testado isoladamente, 8 casos), mantido em sincronia em TODO
+      write-path que muda sectorIds/isPrivate/assignedTo (criação em 4 pontos, roteamento
+      automático, atribuição manual, transfer-channel, API v1, e cascata quando a composição de
+      um setor muda em Configurações→Setores). Query da tela de Conversas virou 2 listeners
+      mesclados client-side pra non-admin (admin sem mudança); `firestore.rules` ganhou
+      `canAccessConversationSector` usando o padrão canônico `uid in array` (sem `get()`
+      cruzado). 5 índices compostos novos. Backfill:
+      `scripts/backfill-conversation-visible-to.ts` (não executado contra dado real nesta
+      sessão — recomendado rodar `--dry-run` primeiro). **Limitação honesta**: não validado via
+      emulador (Java ausente); maior risco desta sessão inteira — recomendado testar em
+      homologação antes de confiar 100%.
 
 ### M07.4 — Aplicar o FSM de Conversation (R4)
 

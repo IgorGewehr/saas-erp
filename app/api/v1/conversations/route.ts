@@ -1,7 +1,9 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { resolveVisibleToUserIdsAdmin } from '@/lib/services/conversationVisibilityAdmin';
 import type { Query } from 'firebase-admin/firestore';
+import type { Conversation } from '@/lib/types';
 
 // =============================================================================
 // GET /api/v1/conversations — List conversations for the authenticated business
@@ -172,6 +174,21 @@ export async function PUT(req: NextRequest) {
     // Validate isPrivate if provided
     if (sanitized.isPrivate !== undefined && typeof sanitized.isPrivate !== 'boolean') {
       return apiError('Field "isPrivate" must be a boolean', 400);
+    }
+
+    // M07.3: assignedTo/isPrivate alimentam visibleToUserIds (restrição de
+    // setor aplicada em firestore.rules) — recalcula sempre que qualquer um
+    // dos dois muda por aqui. sectorIds não é campo permitido nesta rota
+    // (só assignedToSectorId, que não afeta visibilidade — mesma limitação
+    // pré-existente do endpoint, não introduzida por esta correção), então
+    // sempre usa o sectorIds ATUAL do documento.
+    if (sanitized.assignedTo !== undefined || sanitized.isPrivate !== undefined) {
+      const existing = existingData as Conversation;
+      sanitized.visibleToUserIds = await resolveVisibleToUserIdsAdmin(adminDb, {
+        sectorIds: existing.sectorIds,
+        isPrivate: (sanitized.isPrivate as boolean | undefined) ?? existing.isPrivate,
+        assignedTo: (sanitized.assignedTo as string | undefined) ?? existing.assignedTo,
+      });
     }
 
     sanitized.updatedAt = new Date().toISOString();

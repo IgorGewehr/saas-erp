@@ -55,6 +55,19 @@ export const ConversationSchema = z.object({
   sectorIds: z.array(z.string()).optional(),
   assignedToSectorId: z.string().optional(),
   isPrivate: z.boolean().optional(),
+  /**
+   * M07.3: denormalização de "quem pode ver esta conversa", derivada de
+   * sectorIds/isPrivate/assignedTo no momento da escrita (ver
+   * lib/services/conversationVisibility.ts). `null` = sem restrição
+   * (visível pra todo o negócio, mesmo comportamento de antes quando
+   * sectorIds está vazio e isPrivate é falso). Existe pra permitir que
+   * firestore.rules e a query ao vivo de Conversas apliquem a restrição
+   * de setor no SERVIDOR — checar sectorIds direto na rule exigiria um
+   * get() cruzado com o perfil do usuário, que o Firestore não consegue
+   * provar como seguro pra uma query `list` em tempo real (ver
+   * docs/conversas/CONVERSAS_M07_3_VISIBILIDADE_SETOR.md).
+   */
+  visibleToUserIds: z.array(z.string()).nullable().optional(),
 
   // Métricas
   lastMessage: z.string().optional(),
