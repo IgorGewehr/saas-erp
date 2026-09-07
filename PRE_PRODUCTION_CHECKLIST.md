@@ -464,13 +464,15 @@
 - [ ] NFe/NFCe/NFSe: emissao, cancelamento, consulta status
 - [ ] Erro SEFAZ: exibe mensagem descritiva ao usuario
 
-### 6.4 Integracoes Enterprise
-- [ ] Stripe: API key valida, dados retornam corretamente
-- [ ] OpenAI: custo e tokens calculam corretamente
-- [ ] GitHub: repos e PRs listam
-- [ ] Vercel: deploys e projetos listam
-- [ ] Resend: emails e dominios listam
-- [ ] Todas as rotas proxy protegem API key (nunca exposta ao frontend)
+### 6.4 Integracoes que importam pro tenant
+- [ ] Mercado Pago: OAuth connect/disconnect, crons de reconciliacao/expire-pix/refresh-tokens rodando (docker-compose)
+- [ ] Google Calendar: sync de eventos da Agenda
+- [ ] WhatsApp/Meta/Facebook/Instagram: canais conectam e enviam/recebem mensagem
+
+> Removido em 05/09/2026 (M11): checklist antigo listava Stripe/GitHub/Vercel/Resend como
+> "Integracoes Enterprise" — esse era o painel `IntegrationsModule.tsx` (cockpit de
+> custo/receita/infra do proprio SaaS, nunca ligado a nenhum menu), apagado por ser codigo morto.
+> GitHub nunca teve rota de integracao real.
 
 ---
 
@@ -564,10 +566,12 @@
 - [ ] Storage Rules configuradas (acesso por auth)
 - [ ] Auth providers habilitados (Email/Password, Google)
 
-### 9.4 Vercel / Hosting
+### 9.4 Hosting / Producao
 - [ ] Dominio configurado e SSL ativo
 - [ ] Variaveis de ambiente configuradas no painel do host
-- [ ] Cron job (`/api/agent/scheduled/run`) configurado em vercel.json
+- [ ] Crons (`/api/agent/scheduled/run`, birthday-campaigns, broadcasts, Mercado Pago
+      reconcile/expire-pix/refresh-tokens, membership-billing) rodando via `docker-compose.yml`
+      (M10 — nao usa mais `vercel.json`, removido deliberadamente)
 - [ ] Redirects e rewrites configurados se necessario
 
 ### 9.5 Monitoramento

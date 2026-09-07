@@ -3859,7 +3859,7 @@ function KnowledgeReindexPanel() {
           <em> &ldquo;vocês têm opções veganas?&rdquo;</em> ou <em>&ldquo;qual a política de cancelamento?&rdquo;</em>
         </p>
         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-          Descrição e políticas são re-indexadas automaticamente ao salvar. Produtos, serviços e snippets exigem reindex manual ou será agendado a cada 6h.
+          Descrição e políticas são re-indexadas automaticamente ao salvar. Produtos, serviços e snippets exigem reindex manual (sem agendamento automático hoje).
           Chunks inalterados são pulados (content-hash). Custo típico ~$0,02/reindex completo.
         </p>
       </div>

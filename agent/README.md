@@ -23,20 +23,34 @@ the Next.js REST layer, which enforces multi-tenant isolation.
 ## Graph topology
 
 ```
-    START
-      ↓
-   router        — GPT classifies intent (pedido / agenda / info / …)
-      ↓
-   planner ←─┐   — GPT with bound tools; emits tool_calls or draft response
-      ↓      │
-   executor ─┘   — runs tool_calls in parallel via HTTP
-      ↓
-   responder     — polishes the draft in the business's tone
-      ↓
-     END
+      START
+        │
+        ▼
+     router        — GPT classifies intent (pedido / agenda / info / …)
+        │
+        ▼
+     planner ◄───────────────────────────┐   — GPT with bound tools; emits
+        │                                │     tool_calls or draft response
+        ├──(tool calls)──▶ executor ─────┤
+        │                    │           │
+        │             (operator+writes)  │
+        │                    ▼           │
+        │                reflection ─────┘   — verifies destructive ops in
+        │                                       operator mode, then loops
+        │                                       back to planner
+        ├──(customer-mode drafted)─▶ responder ─▶ END   — polishes tone
+        │
+        └──(operator-mode drafted)─▶ skip_responder ─▶ END
 ```
 
-Iteration cap: `AGENT_MAX_ITERATIONS` (default 8).
+6 nodes (router, planner, executor, reflection, responder, skip_responder).
+`reflection` only fires for operator-mode destructive writes (verify +
+escalate); `responder` is skipped in operator mode (saves an LLM call — the
+operator prompt already enforces the desired format). See
+`agent/app/graph/graph.py` for the compiled graph.
+
+Iteration cap: `AGENT_MAX_ITERATIONS` (default 8), enforced in
+`planner_routes_to`.
 
 ## Run locally
 

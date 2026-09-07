@@ -51,7 +51,6 @@ External
 | Financeiro | `app/components/features/financial/FinancialModule.tsx` | transactions, bankAccounts | Reconciliação OFX/CSV; cards Enterprise (canal/setor/ROI/CLV); OCR/PIX/Boleto stub |
 | Fiscal | `app/components/features/fiscal/FiscalModule.tsx` | fiscalDocuments | SEFAZ gateway tensorroot.com, PKCS#12, DANFE, SPED |
 | Reports | `app/components/features/reports/ReportsModule.tsx` | sales+orders+appointments+transactions+reviews | Agrega in-memory; jsPDF |
-| Integrations Enterprise | `app/components/features/integrations/IntegrationsModule.tsx` | businesses.enterprise.integrations | Proxy server-side read-only (Stripe, AWS, CF, GCal, Resend, Sentry, Supabase, Vercel, GoDaddy) |
 | Settings | `app/components/features/settings/SettingsModule.tsx` | businesses, users, sectors, inviteCodes | 6 tabs (perfil/empresa/fiscal/usuários/setores/enterprise) |
 | Team-Chat | `app/components/features/team-chat/TeamChatPanel.tsx` | teamChats, teamChatMessages, aiChatMessages | Reações, mentions, AI integrado |
 | Senhas / Vault | `app/components/features/senhas/SenhasModule.tsx` + `/api/vault/route.ts` | passwordVaultEntries | AES-256-GCM, accessScope `admins`/`specific`, auto-hide 15s |

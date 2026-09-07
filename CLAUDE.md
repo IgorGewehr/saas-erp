@@ -135,8 +135,7 @@ app/components/features/
 ├── kanban          Boards com visibility (all|members|sectors)
 ├── financial       Transactions + reconciliação + Enterprise cards
 ├── fiscal          NF-e/NFC-e/NFSe via SEFAZ gateway
-├── reports         Agregação cross-coleção + jsPDF
-├── integrations    Enterprise dashboard (Stripe, AWS, GCal, ...)
+├── reports         Agregação cross-coleção + jsPDF (inclui CMV/estoque)
 ├── settings        Perfil/Empresa/Fiscal/Usuários/Setores/Enterprise
 ├── team-chat       Chat interno + AI assistant
 ├── senhas          Vault de senhas AES-256-GCM
@@ -154,13 +153,13 @@ app/api/
 ├── orders/public   Recebe pedido anônimo do cardápio
 ├── fiscal/*        Wrapper SEFAZ
 ├── financial/*     PIX/Boleto/OCR/OpenBanking (stubs)
-├── integrations/*  Proxies servidor pras APIs externas
+├── integrations/*  Google Calendar + Mercado Pago (OAuth, segredos protegidos no servidor)
 ├── channels/*      Meta signup + WhatsApp profile
 ├── forms/*         Templates + submissões públicas
 ├── vault           Senhas criptografadas
 └── rag/reindex     Re-indexar knowledge chunks
 
-/agent             Serviço Python (FastAPI + LangGraph 5 nodes)
+/agent             Serviço Python (FastAPI + LangGraph, 6 nodes com reflection)
 lib/
 ├── contracts/     ← SDD vive aqui (em construção)
 ├── types/         ← Migrando pra contracts/domain/
