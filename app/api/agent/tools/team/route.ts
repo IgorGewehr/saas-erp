@@ -16,6 +16,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Sector, User, UserRole } from '@/lib/types';
 
 type Action = 'list_sectors' | 'list_members' | 'get_member' | 'capacity_today';
@@ -36,24 +37,53 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha financial/agenda).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list_sectors':
-        return NextResponse.json({ ok: true, data: await listSectors(businessId) });
-      case 'list_members':
-        return NextResponse.json({ ok: true, data: await listMembers(businessId, body.params as { sectorId?: string; role?: UserRole; isProfessional?: boolean; isActive?: boolean; limit?: number }) });
-      case 'get_member':
-        return NextResponse.json({ ok: true, data: await getMember(businessId, body.params.id as string) });
-      case 'capacity_today':
-        return NextResponse.json({ ok: true, data: await capacityToday(businessId, body.params.userId as string | undefined) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('team', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
-    console.error('[agent.team] error', err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list_sectors':
+        data = await listSectors(businessId);
+        break;
+      case 'list_members':
+        data = await listMembers(businessId, params as { sectorId?: string; role?: UserRole; isProfessional?: boolean; isActive?: boolean; limit?: number });
+        break;
+      case 'get_member':
+        data = await getMember(businessId, params.id as string);
+        break;
+      case 'capacity_today':
+        data = await capacityToday(businessId, params.userId as string | undefined);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('team', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent.team] error', action, err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
 }

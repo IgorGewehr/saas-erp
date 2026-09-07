@@ -17,6 +17,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { KanbanBoard, KanbanCard, KanbanPriority, KanbanComment } from '@/lib/types';
 import { FieldValue } from 'firebase-admin/firestore';
 
@@ -57,37 +58,73 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha a route de agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list_boards':
-        return NextResponse.json({ ok: true, data: await listBoards(businessId) });
-      case 'get_board':
-        return NextResponse.json({ ok: true, data: await getBoard(businessId, body.params.id as string) });
-      case 'list_cards':
-        return NextResponse.json({ ok: true, data: await listCards(businessId, body.params as unknown as { boardId: string; columnId?: string; assigneeId?: string; limit?: number }) });
-      case 'search_cards':
-        return NextResponse.json({ ok: true, data: await searchCards(businessId, body.params as { query: string; boardId?: string; limit?: number }) });
-      case 'get_card':
-        return NextResponse.json({ ok: true, data: await getCard(businessId, body.params.id as string) });
-      case 'create_card':
-        return NextResponse.json({ ok: true, data: await createCard(businessId, body.params as unknown as CreateCardParams) });
-      case 'move_card':
-        return NextResponse.json({ ok: true, data: await moveCard(businessId, body.params.id as string, body.params.columnId as string) });
-      case 'update_card':
-        return NextResponse.json({ ok: true, data: await updateCard(businessId, body.params.id as string, body.params.patch as Partial<KanbanCard>) });
-      case 'assign':
-        return NextResponse.json({ ok: true, data: await assign(businessId, body.params.id as string, body.params.assigneeIds as string[], body.params.assigneeNames as string[] | undefined) });
-      case 'add_comment':
-        return NextResponse.json({ ok: true, data: await addComment(businessId, body.params.id as string, body.params.text as string, body.params.authorId as string | undefined, body.params.authorName as string | undefined) });
-      case 'archive_card':
-        return NextResponse.json({ ok: true, data: await archiveCard(businessId, body.params.id as string) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('kanban', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list_boards':
+        data = await listBoards(businessId);
+        break;
+      case 'get_board':
+        data = await getBoard(businessId, params.id as string);
+        break;
+      case 'list_cards':
+        data = await listCards(businessId, params as unknown as { boardId: string; columnId?: string; assigneeId?: string; limit?: number });
+        break;
+      case 'search_cards':
+        data = await searchCards(businessId, params as { query: string; boardId?: string; limit?: number });
+        break;
+      case 'get_card':
+        data = await getCard(businessId, params.id as string);
+        break;
+      case 'create_card':
+        data = await createCard(businessId, params as unknown as CreateCardParams);
+        break;
+      case 'move_card':
+        data = await moveCard(businessId, params.id as string, params.columnId as string);
+        break;
+      case 'update_card':
+        data = await updateCard(businessId, params.id as string, params.patch as Partial<KanbanCard>);
+        break;
+      case 'assign':
+        data = await assign(businessId, params.id as string, params.assigneeIds as string[], params.assigneeNames as string[] | undefined);
+        break;
+      case 'add_comment':
+        data = await addComment(businessId, params.id as string, params.text as string, params.authorId as string | undefined, params.authorName as string | undefined);
+        break;
+      case 'archive_card':
+        data = await archiveCard(businessId, params.id as string);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('kanban', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[agent.kanban] error', err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
@@ -211,18 +248,26 @@ async function createCard(businessId: string, p: CreateCardParams): Promise<Kanb
   const priority: KanbanPriority = p.priority && ALLOWED_PRIORITIES.includes(p.priority) ? p.priority : 'medium';
 
   const ref = adminDb.collection('kanbanCards').doc();
+  // Achado real (mesma classe de bug documentada em app/api/agent/tools/
+  // financial/route.ts#createTx): `description` e `dueDate` são opcionais em
+  // `CreateCardParams` — quando ausentes, `p.description?.slice(...)` e
+  // `p.dueDate` avaliam pra `undefined`, e um literal `{ description:
+  // undefined, dueDate: undefined, ... }` grava essas chaves com valor
+  // `undefined` explícito. O Admin SDK rejeita `set()`/`create()` com
+  // qualquer `undefined` explícito (adminDb não chama `.settings({
+  // ignoreUndefinedProperties: true })` neste projeto) — ou seja,
+  // `create_card` sem descrição/prazo (pedido comum) provavelmente já
+  // lançava 500. Corrigido com atribuição condicional.
   const card: KanbanCard = {
     id: ref.id,
     businessId,
     boardId: p.boardId,
     columnId,
     title: p.title.slice(0, 200),
-    description: p.description?.slice(0, 2000),
     priority,
     labels: p.labels ?? [],
     assigneeIds: p.assigneeIds ?? [],
     assigneeNames: p.assigneeNames ?? [],
-    dueDate: p.dueDate,
     commentsCount: 0,
     attachmentsCount: 0,
     order: nextOrder,
@@ -230,6 +275,8 @@ async function createCard(businessId: string, p: CreateCardParams): Promise<Kanb
     createdAt: now,
     updatedAt: now,
   };
+  if (p.description !== undefined) card.description = p.description.slice(0, 2000);
+  if (p.dueDate !== undefined) card.dueDate = p.dueDate;
   await ref.set(card);
   return card;
 }

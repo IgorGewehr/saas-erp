@@ -16,6 +16,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 
 type NoteColor = 'yellow' | 'green' | 'blue' | 'pink' | 'purple' | 'orange' | 'red' | 'neutral';
 type NoteScope = 'personal' | 'team';
@@ -60,27 +61,58 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha a route de agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list':
-        return NextResponse.json({ ok: true, data: await listNotes(businessId, body.params as { scope?: NoteScope; authorId?: string; limit?: number; onlyPinned?: boolean }) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getNote(businessId, body.params.id as string) });
-      case 'create':
-        return NextResponse.json({ ok: true, data: await createNote(businessId, body.params as unknown as CreateParams) });
-      case 'update':
-        return NextResponse.json({ ok: true, data: await updateNote(businessId, body.params.id as string, body.params.patch as Partial<Note>) });
-      case 'delete':
-        return NextResponse.json({ ok: true, data: await deleteNote(businessId, body.params.id as string) });
-      case 'search':
-        return NextResponse.json({ ok: true, data: await searchNotes(businessId, body.params as { query: string; scope?: NoteScope; authorId?: string; limit?: number }) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('notes', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list':
+        data = await listNotes(businessId, params as unknown as { scope?: NoteScope; authorId?: string; limit?: number; onlyPinned?: boolean });
+        break;
+      case 'get':
+        data = await getNote(businessId, params.id as string);
+        break;
+      case 'create':
+        data = await createNote(businessId, params as unknown as CreateParams);
+        break;
+      case 'update':
+        data = await updateNote(businessId, params.id as string, params.patch as Partial<Note>);
+        break;
+      case 'delete':
+        data = await deleteNote(businessId, params.id as string);
+        break;
+      case 'search':
+        data = await searchNotes(businessId, params as { query: string; scope?: NoteScope; authorId?: string; limit?: number });
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('notes', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[agent.notes] error', err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
@@ -175,7 +207,7 @@ async function deleteNote(businessId: string, id: string): Promise<{ id: string;
 async function searchNotes(
   businessId: string,
   p: { query: string; scope?: NoteScope; authorId?: string; limit?: number },
-): Promise<Note[]> {
+): Promise<Array<Note & { _score: number }>> {
   if (!p.query) throw new Error('query required');
   const limit = Math.min(Math.max(p.limit ?? 20, 1), 50);
 
@@ -183,7 +215,10 @@ async function searchNotes(
   // Keep the candidate set small to stay within reasonable cost.
   const candidates = await listNotes(businessId, { scope: p.scope, authorId: p.authorId, limit: 200 });
   const q = p.query.toLowerCase().trim();
-  if (!q) return candidates.slice(0, limit);
+  // Achado real (mesma classe de bug do domain `catalog`): o contrato
+  // (`NotesSearchDataSchema`) exige `_score` em cada item — o cálculo abaixo
+  // sempre anexa o campo, inclusive neste fallback sem termo de busca útil.
+  if (!q) return candidates.slice(0, limit).map((n) => ({ ...n, _score: 0 }));
 
   const scored = candidates
     .map((n) => {
@@ -197,7 +232,7 @@ async function searchNotes(
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map((x) => x.note);
+    .map((x) => ({ ...x.note, _score: x.score }));
 
   return scored;
 }

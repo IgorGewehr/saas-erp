@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Product } from '@/lib/types';
 
 type Action = 'list_menu' | 'search' | 'get' | 'list_categories';
@@ -77,32 +78,61 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list_menu':
-        return NextResponse.json({ ok: true, data: await listMenu(
-          businessId,
-          body.params.category as string | undefined,
-          body.params.dietary as string[] | undefined,
-        ) });
-      case 'search':
-        return NextResponse.json({ ok: true, data: await searchMenu(
-          businessId,
-          body.params.query as string,
-          body.params.dietary as string[] | undefined,
-        ) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getProduct(businessId, body.params.id as string) });
-      case 'list_categories':
-        return NextResponse.json({ ok: true, data: await listCategories(businessId) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('catalog', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
-    console.error('[agent/tools/catalog]', body.action, err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list_menu':
+        data = await listMenu(
+          businessId,
+          params.category as string | undefined,
+          params.dietary as string[] | undefined,
+        );
+        break;
+      case 'search':
+        data = await searchMenu(
+          businessId,
+          params.query as string,
+          params.dietary as string[] | undefined,
+        );
+        break;
+      case 'get':
+        data = await getProduct(businessId, params.id as string);
+        break;
+      case 'list_categories':
+        data = await listCategories(businessId);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('catalog', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent/tools/catalog]', action, err);
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : 'Internal error' },
       { status: 500 },
@@ -180,7 +210,10 @@ async function searchMenu(businessId: string, query: string, dietary?: string[])
     .filter((x): x is { score: number; item: MenuItem } => x !== null)
     .sort((a, b) => b.score - a.score)
     .slice(0, 20);
-  return { count: scored.length, items: scored.map(s => s.item) };
+  // CatalogSearchDataSchema exige `_score` por item (contrato SDD) — o agente
+  // usa o score pra decidir se a correspondência é boa o bastante pra
+  // confirmar sem perguntar de novo ao cliente.
+  return { count: scored.length, items: scored.map(s => ({ ...s.item, _score: s.score })) };
 }
 
 async function listCategories(businessId: string) {

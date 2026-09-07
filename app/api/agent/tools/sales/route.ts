@@ -18,6 +18,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody, resolveClientId } from '@/lib/agent/auth';
 import { createSaleWithSideEffects } from '@/lib/services/sales-server';
 import { assertTransitionSale } from '@/lib/contracts/fsm/sale';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
 type Action = 'list' | 'get' | 'list_by_client' | 'create' | 'cancel' | 'summary_today';
@@ -59,27 +60,58 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha a route de agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list':
-        return NextResponse.json({ ok: true, data: await listSales(businessId, body.params as { status?: SaleStatus; fromDate?: string; toDate?: string; limit?: number }) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getSale(businessId, body.params.id as string) });
-      case 'list_by_client':
-        return NextResponse.json({ ok: true, data: await listByClient(businessId, body.params.clientId as string, body.params.limit as number | undefined) });
-      case 'create':
-        return NextResponse.json({ ok: true, data: await createSale(businessId, body.params as unknown as CreateParams) });
-      case 'cancel':
-        return NextResponse.json({ ok: true, data: await cancelSale(businessId, body.params.id as string, body.params.reason as string | undefined) });
-      case 'summary_today':
-        return NextResponse.json({ ok: true, data: await summaryToday(businessId) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('sales', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list':
+        data = await listSales(businessId, params as { status?: SaleStatus; fromDate?: string; toDate?: string; limit?: number });
+        break;
+      case 'get':
+        data = await getSale(businessId, params.id as string);
+        break;
+      case 'list_by_client':
+        data = await listByClient(businessId, params.clientId as string, params.limit as number | undefined);
+        break;
+      case 'create':
+        data = await createSale(businessId, params as unknown as CreateParams);
+        break;
+      case 'cancel':
+        data = await cancelSale(businessId, params.id as string, params.reason as string | undefined);
+        break;
+      case 'summary_today':
+        data = await summaryToday(businessId);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('sales', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[agent.sales] error', err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }

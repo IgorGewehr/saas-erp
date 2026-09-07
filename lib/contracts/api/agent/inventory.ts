@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { DocIdSchema, MoneySchema } from './_shared';
+import { StockLotEntrySchema } from '../../domain/stockLot';
 
 const ProductShape = z.object({
   id: DocIdSchema,
@@ -60,6 +61,13 @@ const InventoryPatch = z.object({
   menuDescription: z.string().max(400).optional(),
   preparationTime: z.number().int().nonnegative().optional(),
   dietary: z.array(z.string()).optional(),
+  // Achado real ao auditar contra o handler (WRITEABLE em route.ts inclui os
+  // 3 campos abaixo) — ausentes aqui, um `.strict()` rejeitaria (400) todo
+  // `update` de patch que tocasse controle de lote/validade, mesmo sendo
+  // suportado pelo handler.
+  trackLots: z.boolean().optional(),
+  trackExpiry: z.boolean().optional(),
+  expiryWarningDays: z.number().int().min(1).max(3650).optional(),
 }).strict();
 
 export const InventoryListParamsSchema = z.object({
@@ -96,6 +104,15 @@ export const InventoryCreateParamsSchema = z.object({
   menuDescription: z.string().max(400).optional(),
   preparationTime: z.number().int().nonnegative().optional(),
   imageUrl: z.string().url().optional(),
+  // Achado real ao auditar contra o handler (createProduct em route.ts lê
+  // p.trackLots/p.trackExpiry/p.expiryWarningDays/p.initialLot diretamente) —
+  // ausentes aqui, o parse (não-passthrough) descartaria esses campos em
+  // silêncio antes do handler os ver, desligando controle de lote/validade
+  // e o lote inicial pro agente sem erro nenhum.
+  trackLots: z.boolean().optional(),
+  trackExpiry: z.boolean().optional(),
+  expiryWarningDays: z.number().int().min(1).max(3650).optional(),
+  initialLot: StockLotEntrySchema.optional(),
 });
 export const InventoryCreateDataSchema = ProductShape;
 
@@ -111,6 +128,11 @@ export const InventoryAdjustStockParamsSchema = z.object({
   reason: z.string().min(1).max(500),
   operatorId: z.string().default('agent'),
   operatorName: z.string().default('Agente IA'),
+  // Achado real: adjustStock em route.ts usa p.idempotencyKey (R3 — toda
+  // rota que grava aceita idempotency key) e p.lotId (ajuste de um lote
+  // específico) — ambos ausentes aqui seriam descartados no parse.
+  idempotencyKey: z.string().max(200).optional(),
+  lotId: DocIdSchema.optional(),
 });
 export const InventoryAdjustStockDataSchema = z.object({
   product: ProductShape,
@@ -128,7 +150,12 @@ export const InventorySetActiveParamsSchema = z.object({
 });
 export const InventorySetActiveDataSchema = ProductShape;
 
-export const InventorySetOutOfStockParamsSchema = z.object({ id: DocIdSchema });
+export const InventorySetOutOfStockParamsSchema = z.object({
+  id: DocIdSchema,
+  // Achado real: setOutOfStock em route.ts aceita idempotencyKey opcional
+  // (R3) — ausente aqui seria descartado no parse.
+  idempotencyKey: z.string().max(200).optional(),
+});
 export const InventorySetOutOfStockDataSchema = ProductShape;
 
 export const InventoryToolRequestSchema = z.discriminatedUnion('action', [

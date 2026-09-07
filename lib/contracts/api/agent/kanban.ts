@@ -13,9 +13,13 @@ const LabelSchema = z.object({
   color: z.string(),
 }).passthrough();
 
+// `lib/types/index.ts#KanbanColumn` usa `title`, não `name` — corrigido
+// aqui pra bater com o dado real gravado por app/components/features/kanban
+// e lido por list_boards/get_board (achado comparando route.ts com o
+// contrato: `name` nunca existiu no documento, só `title`).
 const ColumnSchema = z.object({
   id: DocIdSchema,
-  name: z.string(),
+  title: z.string(),
   order: z.number().int().nonnegative().optional(),
 }).passthrough();
 

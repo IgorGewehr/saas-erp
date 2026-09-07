@@ -2,29 +2,14 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import { sessions } from '@/app/api/whatsapp/baileys-manager';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
+import type { SendInteractiveParamsSchema } from '@/contracts/api/agent/send-interactive';
+import type { z } from 'zod';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface InteractiveRow {
-  id: string;
-  title: string;
-  description?: string;
-}
-
-interface InteractiveSection {
-  title: string;
-  rows: InteractiveRow[];
-}
-
-interface SendInteractiveParams {
-  conversation_id: string;
-  title: string;
-  body: string;
-  footer?: string;
-  button_text: string;
-  sections: InteractiveSection[];
-}
+type SendInteractiveParams = z.infer<typeof SendInteractiveParamsSchema>;
 
 export async function POST(req: NextRequest) {
   let ctx;
@@ -36,12 +21,20 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: string; params: SendInteractiveParams }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: string; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
-  const p = body.params;
 
-  if (!p.conversation_id || !p.title || !p.body || !p.button_text || !p.sections?.length) {
-    return NextResponse.json({ ok: false, error: 'conversation_id, title, body, button_text, sections required' }, { status: 400 });
+  let action: 'send_interactive';
+  let p: SendInteractiveParams;
+  try {
+    const parsed = parseToolRequest('send-interactive', rawBody);
+    action = parsed.action as 'send_interactive';
+    p = parsed.params as SendInteractiveParams;
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
   }
 
   try {
@@ -171,8 +164,12 @@ export async function POST(req: NextRequest) {
       tx.update(convRef, update);
     });
 
-    return NextResponse.json({ ok: true, data: { externalMessageId } });
+    const validated = validateToolResponse('send-interactive', action, { externalMessageId });
+    return NextResponse.json({ ok: true, data: validated });
   } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[send-interactive]', err);
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : 'Internal error' },

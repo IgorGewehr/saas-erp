@@ -19,6 +19,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Client, CRMDeal, CRMActivity, CRMActivityType, LeadStatus, LifecycleStage, Segment, SegmentFilter, SegmentFilterOperator } from '@/lib/types';
 
 type Action =
@@ -47,43 +48,80 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
+    const parsed = parseToolRequest('crm', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
       case 'list_contacts':
-        return NextResponse.json({ ok: true, data: await listContacts(businessId, body.params as { status?: LeadStatus; lifecycleStage?: LifecycleStage; tag?: string; assignedTo?: string; limit?: number }) });
+        data = await listContacts(businessId, params as { status?: LeadStatus; lifecycleStage?: LifecycleStage; tag?: string; assignedTo?: string; limit?: number });
+        break;
       case 'search_contacts':
-        return NextResponse.json({ ok: true, data: await searchContacts(businessId, body.params as { query: string; limit?: number }) });
+        data = await searchContacts(businessId, params as { query: string; limit?: number });
+        break;
       case 'list_deals':
-        return NextResponse.json({ ok: true, data: await listDeals(businessId, body.params as { stage?: string; assignedTo?: string; contactId?: string; limit?: number }) });
+        data = await listDeals(businessId, params as { stage?: string; assignedTo?: string; contactId?: string; limit?: number });
+        break;
       case 'search_deals':
-        return NextResponse.json({ ok: true, data: await searchDeals(businessId, body.params as { query: string; limit?: number }) });
+        data = await searchDeals(businessId, params as { query: string; limit?: number });
+        break;
       case 'get_deal':
-        return NextResponse.json({ ok: true, data: await getDeal(businessId, body.params.id as string) });
+        data = await getDeal(businessId, params.id as string);
+        break;
       case 'create_deal':
-        return NextResponse.json({ ok: true, data: await createDeal(businessId, body.params as unknown as Partial<CRMDeal>) });
+        data = await createDeal(businessId, params as unknown as Partial<CRMDeal>);
+        break;
       case 'update_deal_stage':
-        return NextResponse.json({ ok: true, data: await updateDealStage(businessId, body.params.id as string, body.params.stage as string, body.params.probability as number | undefined) });
+        data = await updateDealStage(businessId, params.id as string, params.stage as string, params.probability as number | undefined);
+        break;
       case 'close_deal':
-        return NextResponse.json({ ok: true, data: await closeDeal(businessId, body.params as {
+        data = await closeDeal(businessId, params as {
           id: string; won: boolean; reason?: string;
           saleId?: string; appointmentId?: string; deliveryOrderId?: string;
-        }) });
+        });
+        break;
       case 'list_activities':
-        return NextResponse.json({ ok: true, data: await listActivities(businessId, body.params as { contactId?: string; dealId?: string; type?: CRMActivityType; limit?: number }) });
+        data = await listActivities(businessId, params as { contactId?: string; dealId?: string; type?: CRMActivityType; limit?: number });
+        break;
       case 'log_activity':
-        return NextResponse.json({ ok: true, data: await logActivity(businessId, body.params as unknown as Partial<CRMActivity>) });
+        data = await logActivity(businessId, params as unknown as Partial<CRMActivity>);
+        break;
       case 'segment_query':
-        return NextResponse.json({ ok: true, data: await segmentQuery(businessId, body.params.segmentId as string, body.params.limit as number | undefined) });
+        data = await segmentQuery(businessId, params.segmentId as string, params.limit as number | undefined);
+        break;
       case 'list_segments':
-        return NextResponse.json({ ok: true, data: await listSegments(businessId) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
+        data = await listSegments(businessId);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
     }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('crm', action, data);
+    return NextResponse.json({ ok: true, data: validated });
   } catch (err) {
-    console.error('[agent.crm] error', err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent.crm] error', action, err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
 }
@@ -225,14 +263,19 @@ async function createDeal(businessId: string, p: Partial<CRMDeal>): Promise<CRMD
     value: round(p.value),
     stage: p.stage,
     probability: typeof p.probability === 'number' ? p.probability : 50,
-    expectedCloseDate: p.expectedCloseDate,
-    assignedTo: p.assignedTo,
-    assignedToName: p.assignedToName,
-    notes: p.notes?.slice(0, 2000),
-    tags: p.tags,
     createdAt: now,
     updatedAt: now,
   };
+  // Achado real (mesma classe de bug já documentada em financial/route.ts):
+  // os opcionais eram atribuídos incondicionalmente acima — quando o agente
+  // não manda expectedCloseDate/assignedTo/notes/tags (chamada bem comum),
+  // a chave ficava no objeto com valor `undefined` explícito, e o Admin SDK
+  // rejeita `set()` com qualquer campo `undefined`. Atribuição condicional.
+  if (p.expectedCloseDate !== undefined) deal.expectedCloseDate = p.expectedCloseDate;
+  if (p.assignedTo !== undefined) deal.assignedTo = p.assignedTo;
+  if (p.assignedToName !== undefined) deal.assignedToName = p.assignedToName;
+  if (p.notes !== undefined) deal.notes = p.notes.slice(0, 2000);
+  if (p.tags !== undefined) deal.tags = p.tags;
   await ref.set(deal);
   return deal;
 }
@@ -311,22 +354,28 @@ async function logActivity(businessId: string, p: Partial<CRMActivity>): Promise
   const activity: CRMActivity = {
     id: ref.id,
     businessId,
-    contactId: p.contactId,
-    contactName: p.contactName,
-    dealId: p.dealId,
-    dealTitle: p.dealTitle,
     type: p.type,
     title: p.title.slice(0, 200),
-    description: p.description?.slice(0, 2000),
-    scheduledAt: p.scheduledAt,
-    completedAt: p.isCompleted ? (p.completedAt || now) : undefined,
     isCompleted: !!p.isCompleted,
-    assignedTo: p.assignedTo,
-    assignedToName: p.assignedToName,
-    duration: p.duration,
     createdAt: now,
     updatedAt: now,
   };
+  // Achado real (mesma classe de bug já documentada em financial/route.ts):
+  // os opcionais eram atribuídos incondicionalmente acima — logActivity só
+  // exige contactId OU dealId (nunca ambos), e description/scheduledAt/
+  // assignedTo/duration são tipicamente ausentes numa nota rápida. Cada um
+  // ficava `undefined` explícito no objeto, e o Admin SDK rejeita `set()`
+  // com qualquer campo `undefined`. Atribuição condicional.
+  if (p.contactId !== undefined) activity.contactId = p.contactId;
+  if (p.contactName !== undefined) activity.contactName = p.contactName;
+  if (p.dealId !== undefined) activity.dealId = p.dealId;
+  if (p.dealTitle !== undefined) activity.dealTitle = p.dealTitle;
+  if (p.description !== undefined) activity.description = p.description.slice(0, 2000);
+  if (p.scheduledAt !== undefined) activity.scheduledAt = p.scheduledAt;
+  if (p.isCompleted) activity.completedAt = p.completedAt || now;
+  if (p.assignedTo !== undefined) activity.assignedTo = p.assignedTo;
+  if (p.assignedToName !== undefined) activity.assignedToName = p.assignedToName;
+  if (p.duration !== undefined) activity.duration = p.duration;
   await ref.set(activity);
   return activity;
 }

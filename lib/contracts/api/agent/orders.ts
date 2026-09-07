@@ -27,7 +27,13 @@ const AddressSchema = z.object({
   municipio: z.string().optional(),
   uf: z.string().length(2).optional(),
   cep: z.string().optional(),
-  pontoReferencia: z.string().optional(),
+  // Mesmo nome de campo do domínio (DeliveryOrderAddressSchema em
+  // lib/contracts/domain/deliveryOrder.ts) — usava `pontoReferencia` antes,
+  // que não existe em lugar nenhum do resto do código (grep confirma zero
+  // outros usos); o valor era aceito aqui mas descartado silenciosamente ao
+  // chegar em createDeliveryOrderWithSideEffects (schema de domínio só
+  // reconhece `reference`). Renomeado pra fechar essa perda silenciosa de dado.
+  reference: z.string().optional(),
 }).passthrough();
 
 const DeliveryOrderShapeSchema = z.object({

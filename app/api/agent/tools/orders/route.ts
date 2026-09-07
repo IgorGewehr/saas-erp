@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { withIdempotency } from '@/lib/contracts/_runtime/idempotency';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type {
   DeliveryOrder, DeliveryOrderItem, DeliveryOrderStatus,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
@@ -57,34 +58,66 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'create':
-        return NextResponse.json({ ok: true, data: await createOrder(businessId, body.params as unknown as CreateParams) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getOrder(businessId, body.params.id as string) });
-      case 'list_by_client':
-        return NextResponse.json({ ok: true, data: await listByClient(businessId, (body.params.clientId || body.params.phone) as string, (body.params.limit as number) || 10) });
-      case 'update_status':
-        return NextResponse.json({ ok: true, data: await updateStatus(businessId, body.params.id as string, body.params.status as DeliveryOrderStatus) });
-      case 'update_items':
-        return NextResponse.json({ ok: true, data: await updateItems(
-          businessId,
-          body.params.id as string,
-          body.params.items as Array<{ productId: string; quantity: number; notes?: string }>,
-        ) });
-      case 'cancel':
-        return NextResponse.json({ ok: true, data: await cancelOrder(businessId, body.params.id as string, body.params.reason as string | undefined) });
-      case 'list_recent':
-        return NextResponse.json({ ok: true, data: await listRecent(businessId, (body.params.limit as number) || 20) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('orders', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
-    console.error('[agent/tools/orders]', body.action, err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'create':
+        data = await createOrder(businessId, params as unknown as CreateParams);
+        break;
+      case 'get':
+        data = await getOrder(businessId, params.id as string);
+        break;
+      case 'list_by_client':
+        data = await listByClient(businessId, (params.clientId || params.phone) as string, (params.limit as number) || 10);
+        break;
+      case 'update_status':
+        data = await updateStatus(businessId, params.id as string, params.status as DeliveryOrderStatus);
+        break;
+      case 'update_items':
+        data = await updateItems(
+          businessId,
+          params.id as string,
+          params.items as Array<{ productId: string; quantity: number; notes?: string }>,
+        );
+        break;
+      case 'cancel':
+        data = await cancelOrder(businessId, params.id as string, params.reason as string | undefined);
+        break;
+      case 'list_recent':
+        data = await listRecent(businessId, (params.limit as number) || 20);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('orders', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent/tools/orders]', action, err);
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : 'Internal error' },
       { status: 500 },

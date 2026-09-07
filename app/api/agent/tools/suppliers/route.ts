@@ -3,6 +3,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { SupplierCatalogData, SupplierCatalogPatch } from '@/lib/contracts/api/supplier-catalog';
 import {
   createSupplierAdmin,
@@ -57,56 +58,76 @@ export async function POST(req: NextRequest) {
     throw cause;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const actor = { uid: 'agent', name: 'Agente AEVO' };
+
+  // R6/SDD: valida request com Zod no boundary (espelha a route de agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
+    const parsed = parseToolRequest('suppliers', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
       case 'list': {
         const page = await listSuppliersAdmin({
           db: adminDb,
           businessId: ctx.businessId,
-          includeInactive: Boolean(body.params.includeInactive),
-          limit: Number(body.params.limit) || 100,
+          includeInactive: Boolean(params.includeInactive),
+          limit: Number(params.limit) || 100,
         });
-        return NextResponse.json({ ok: true, data: page.suppliers });
+        data = page.suppliers;
+        break;
       }
       case 'get':
-        return NextResponse.json({ ok: true, data: await getSupplierAdmin(adminDb, ctx.businessId, String(body.params.id ?? '')) });
+        data = await getSupplierAdmin(adminDb, ctx.businessId, String(params.id ?? ''));
+        break;
       case 'create':
-        return NextResponse.json({
-          ok: true,
-          data: await createSupplierAdmin({ db: adminDb, businessId: ctx.businessId, data: supplierData(body.params), actor }),
-        });
+        data = await createSupplierAdmin({ db: adminDb, businessId: ctx.businessId, data: supplierData(params), actor });
+        break;
       case 'update':
-        return NextResponse.json({
-          ok: true,
-          data: await updateSupplierAdmin({
-            db: adminDb,
-            businessId: ctx.businessId,
-            supplierId: String(body.params.id ?? ''),
-            patch: supplierPatch(body.params.patch as Record<string, unknown>),
-            actor,
-          }),
+        data = await updateSupplierAdmin({
+          db: adminDb,
+          businessId: ctx.businessId,
+          supplierId: String(params.id ?? ''),
+          patch: supplierPatch(params.patch as Record<string, unknown>),
+          actor,
         });
+        break;
       case 'find_by_cnpj':
-        return NextResponse.json({
-          ok: true,
-          data: await findSupplierByDocumentAdmin(adminDb, ctx.businessId, String(body.params.cnpj ?? body.params.document ?? '')),
-        });
+        data = await findSupplierByDocumentAdmin(adminDb, ctx.businessId, String(params.cnpj ?? params.document ?? ''));
+        break;
       case 'search':
-        return NextResponse.json({
-          ok: true,
-          data: await searchSuppliersAdmin({
-            db: adminDb,
-            businessId: ctx.businessId,
-            query: String(body.params.query ?? ''),
-            limit: Number(body.params.limit) || 10,
-          }),
+        data = await searchSuppliersAdmin({
+          db: adminDb,
+          businessId: ctx.businessId,
+          query: String(params.query ?? ''),
+          limit: Number(params.limit) || 10,
         });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
     }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('suppliers', action, data);
+    return NextResponse.json({ ok: true, data: validated });
   } catch (cause) {
+    if (isContractError(cause)) {
+      return NextResponse.json(cause.toEnvelope(), { status: cause.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[agent.suppliers] error', cause);
     return NextResponse.json(
       { ok: false, error: (cause as Error).message },

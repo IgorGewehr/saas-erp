@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Client } from '@/lib/types';
 import { buildPhoneMatchCandidates } from '@/lib/services/clients/resolveIdentity';
 
@@ -18,28 +19,59 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'lookup_by_phone':
-        return NextResponse.json({ ok: true, data: await lookupByPhone(businessId, body.params.phone as string) });
-      case 'create':
-        return NextResponse.json({ ok: true, data: await createClient(businessId, body.params) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getClient(businessId, body.params.id as string) });
-      case 'update_address':
-        return NextResponse.json({ ok: true, data: await updateAddress(businessId, body.params.id as string, body.params.address) });
-      case 'update':
-        return NextResponse.json({ ok: true, data: await updateClient(businessId, body.params.id as string, body.params.patch as Record<string, unknown>) });
-      case 'get_full_history':
-        return NextResponse.json({ ok: true, data: await getFullHistory(businessId, body.params.id as string) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('clients', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
-    console.error('[agent/tools/clients]', body.action, err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'lookup_by_phone':
+        data = await lookupByPhone(businessId, params.phone as string);
+        break;
+      case 'create':
+        data = await createClient(businessId, params);
+        break;
+      case 'get':
+        data = await getClient(businessId, params.id as string);
+        break;
+      case 'update_address':
+        data = await updateAddress(businessId, params.id as string, params.address);
+        break;
+      case 'update':
+        data = await updateClient(businessId, params.id as string, params.patch as Record<string, unknown>);
+        break;
+      case 'get_full_history':
+        data = await getFullHistory(businessId, params.id as string);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('clients', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent/tools/clients]', action, err);
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : 'Internal error' },
       { status: 500 },
@@ -147,7 +179,12 @@ async function updateClient(businessId: string, id: string, patch: Record<string
   if (cleanPatch.whatsapp) cleanPatch.whatsapp = digits(String(cleanPatch.whatsapp));
 
   await ref.update(cleanPatch);
-  return { id, ...cleanPatch };
+  // Achado real (comparação contrato x código): ClientsUpdateDataSchema exige o
+  // client inteiro (businessId/name obrigatórios) — devolver só `{id,
+  // ...cleanPatch}` quebra a validação sempre que o patch não inclui `name`
+  // (e nunca inclui `businessId`, que não está na whitelist de campos
+  // editáveis). Mescla com o doc original pra devolver o shape completo.
+  return { ...data, ...cleanPatch, id };
 }
 
 async function getFullHistory(businessId: string, id: string) {
@@ -188,7 +225,10 @@ async function getFullHistory(businessId: string, id: string) {
       totalAppointments: apptsSnap.size,
       totalSpent: client.totalSpent || 0,
       visitCount: client.visitCount || 0,
-      lastVisit: client.lastVisit,
+      // ClientsGetFullHistoryDataSchema exige `lastVisit: string | null` (não
+      // `undefined`) — `client.lastVisit` é opcional no doc (nunca visitou),
+      // então sem o `?? null` o campo chegava `undefined` e falhava a validação.
+      lastVisit: client.lastVisit ?? null,
     },
   };
 }

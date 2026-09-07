@@ -19,6 +19,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { ZodError } from 'zod';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { PurchaseNote, PurchaseNoteItem, PurchaseNoteStatus, Product } from '@/lib/types';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 import {
@@ -52,33 +53,55 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha a route de agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
+    const parsed = parseToolRequest('purchase-notes', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
       case 'list':
-        return NextResponse.json({ ok: true, data: await listNotesForAgent(businessId, body.params) });
+        data = await listNotesForAgent(businessId, params);
+        break;
       case 'get':
-        return NextResponse.json({ ok: true, data: await getPurchaseNoteAdmin({ db: adminDb, businessId, noteId: body.params.id as string }) });
+        data = await getPurchaseNoteAdmin({ db: adminDb, businessId, noteId: params.id as string });
+        break;
       case 'match_products':
-        return NextResponse.json({ ok: true, data: await matchProducts(businessId, body.params.id as string) });
+        data = await matchProducts(businessId, params.id as string);
+        break;
       case 'apply_to_stock':
-        return NextResponse.json({ ok: true, data: await applyToStock(businessId, body.params.id as string, body.params.operatorId as string | undefined, body.params.operatorName as string | undefined) });
+        data = await applyToStock(businessId, params.id as string, params.operatorId as string | undefined, params.operatorName as string | undefined);
+        break;
       case 'list_unmatched':
-        return NextResponse.json({ ok: true, data: await listUnmatched(businessId, body.params.limit as number | undefined) });
+        data = await listUnmatched(businessId, params.limit as number | undefined);
+        break;
       case 'reverse_stock':
-        return NextResponse.json({ ok: true, data: await reverseStock(
+        data = await reverseStock(
           businessId,
-          body.params.id as string,
-          body.params.reason as string,
-          body.params.operatorId as string | undefined,
-          body.params.operatorName as string | undefined,
-        ) });
+          params.id as string,
+          params.reason as string,
+          params.operatorId as string | undefined,
+          params.operatorName as string | undefined,
+        );
+        break;
       case 'link_financial':
-        return NextResponse.json({ ok: true, data: await linkFinancial(
+        data = await linkFinancial(
           businessId,
-          body.params as {
+          params as {
             id?: string;
             mode?: unknown;
             dueDate?: unknown;
@@ -88,11 +111,21 @@ export async function POST(req: NextRequest) {
             operatorId?: string;
             operatorName?: string;
           },
-        ) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
+        );
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
     }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('purchase-notes', action, data);
+    return NextResponse.json({ ok: true, data: validated });
   } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[agent.purchase-notes] error', err);
     if (err instanceof ZodError) {
       return NextResponse.json({ ok: false, error: 'Invalid purchase note parameters', details: err.flatten() }, { status: 400 });
@@ -260,12 +293,26 @@ async function applyToStock(
   }
 
   // Update note: idempotency stamp + unmatched items snapshot
+  //
+  // Achado real (mesma classe de bug documentada em app/api/agent/tools/
+  // financial/route.ts#createTx): `cProd` é opcional em `PurchaseNoteItem` —
+  // quando ausente, o literal anterior `{ ..., cProd: u.cProd }` gravava a
+  // chave com valor `undefined` explícito dentro de um array, e o Admin SDK
+  // rejeita `batch.update()` com qualquer `undefined` explícito (mesmo
+  // aninhado em array). Corrigido com atribuição condicional.
   batch.update(noteRef, {
     status: 'importada' as PurchaseNoteStatus,
     stockImportedAt: now,
     stockMovementIds: movementIds,
     importedAt: note.importedAt || now,
-    unmatchedItems: unmatched.map((u) => ({ productName: u.productName, quantity: u.quantity, cProd: u.cProd })),
+    unmatchedItems: unmatched.map((u) => {
+      const summary: { productName: string; quantity: number; cProd?: string } = {
+        productName: u.productName,
+        quantity: u.quantity,
+      };
+      if (u.cProd !== undefined) summary.cProd = u.cProd;
+      return summary;
+    }),
     updatedAt: now,
   });
 

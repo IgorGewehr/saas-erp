@@ -11,6 +11,7 @@
  *   - create             new service
  *   - update             patch whitelisted fields
  *   - set_active         toggle isActive
+ *   - import_grade       upsert services from a weekly-schedule text (turmas)
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -18,6 +19,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import { WeeklySessionSchema, ServiceCapacitySchema, type WeeklySession } from '@/lib/contracts/domain/service';
 import { parseGradeText } from '@/lib/services/gradeParser';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import { z } from 'zod';
 import type { Service } from '@/lib/types';
 
@@ -84,30 +86,62 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha financial/agenda).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list':
-        return NextResponse.json({ ok: true, data: await listServices(businessId, body.params as { includeInactive?: boolean; category?: string; limit?: number }) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getService(businessId, body.params.id as string) });
-      case 'search':
-        return NextResponse.json({ ok: true, data: await searchServices(businessId, body.params as { query: string; includeInactive?: boolean; limit?: number }) });
-      case 'create':
-        return NextResponse.json({ ok: true, data: await createService(businessId, body.params as unknown as CreateParams) });
-      case 'update':
-        return NextResponse.json({ ok: true, data: await updateService(businessId, body.params.id as string, body.params.patch as Partial<Service>) });
-      case 'set_active':
-        return NextResponse.json({ ok: true, data: await updateService(businessId, body.params.id as string, { isActive: body.params.isActive as boolean }) });
-      case 'import_grade':
-        return NextResponse.json({ ok: true, data: await importGrade(businessId, body.params as unknown as ImportGradeParams) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('services', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
-    console.error('[agent.services] error', err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list':
+        data = await listServices(businessId, params as unknown as { includeInactive?: boolean; category?: string; limit?: number });
+        break;
+      case 'get':
+        data = await getService(businessId, params.id as string);
+        break;
+      case 'search':
+        data = await searchServices(businessId, params as unknown as { query: string; includeInactive?: boolean; limit?: number });
+        break;
+      case 'create':
+        data = await createService(businessId, params as unknown as CreateParams);
+        break;
+      case 'update':
+        data = await updateService(businessId, params.id as string, params.patch as Partial<Service>);
+        break;
+      case 'set_active':
+        data = await updateService(businessId, params.id as string, { isActive: params.isActive as boolean });
+        break;
+      case 'import_grade':
+        data = await importGrade(businessId, params as unknown as ImportGradeParams);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('services', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent.services] error', action, err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
 }

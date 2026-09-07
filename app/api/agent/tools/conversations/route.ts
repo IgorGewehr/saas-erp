@@ -20,6 +20,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import { canTransitionConversation } from '@/lib/contracts/fsm/conversation';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Conversation, ConversationMessage, Snippet, ConversationChannel, ConversationStatus } from '@/lib/types';
 import { FieldValue } from 'firebase-admin/firestore';
 
@@ -47,32 +48,65 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha financial/agenda).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list':
-        return NextResponse.json({ ok: true, data: await listConversations(businessId, body.params as { channel?: ConversationChannel; status?: ConversationStatus; priority?: string; limit?: number }) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getConversation(businessId, body.params.id as string) });
-      case 'list_messages':
-        return NextResponse.json({ ok: true, data: await listMessages(businessId, body.params.conversationId as string, body.params.limit as number | undefined) });
-      case 'set_label':
-        return NextResponse.json({ ok: true, data: await setLabel(businessId, body.params.id as string, body.params.label as string, body.params.remove as boolean | undefined) });
-      case 'set_priority':
-        return NextResponse.json({ ok: true, data: await setPriority(businessId, body.params.id as string, body.params.priority as string) });
-      case 'set_status':
-        return NextResponse.json({ ok: true, data: await setStatus(businessId, body.params.id as string, body.params.status as ConversationStatus) });
-      case 'list_snippets':
-        return NextResponse.json({ ok: true, data: await listSnippets(businessId, body.params as { category?: string; sectorId?: string; limit?: number }) });
-      case 'search_snippets':
-        return NextResponse.json({ ok: true, data: await searchSnippets(businessId, body.params.query as string, body.params.limit as number | undefined) });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('conversations', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
-    console.error('[agent.conversations] error', err);
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list':
+        data = await listConversations(businessId, params as { channel?: ConversationChannel; status?: ConversationStatus; priority?: string; limit?: number });
+        break;
+      case 'get':
+        data = await getConversation(businessId, params.id as string);
+        break;
+      case 'list_messages':
+        data = await listMessages(businessId, params.conversationId as string, params.limit as number | undefined);
+        break;
+      case 'set_label':
+        data = await setLabel(businessId, params.id as string, params.label as string, params.remove as boolean | undefined);
+        break;
+      case 'set_priority':
+        data = await setPriority(businessId, params.id as string, params.priority as string);
+        break;
+      case 'set_status':
+        data = await setStatus(businessId, params.id as string, params.status as ConversationStatus);
+        break;
+      case 'list_snippets':
+        data = await listSnippets(businessId, params as { category?: string; sectorId?: string; limit?: number });
+        break;
+      case 'search_snippets':
+        data = await searchSnippets(businessId, params.query as string, params.limit as number | undefined);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('conversations', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
+    console.error('[agent.conversations] error', action, err);
     return NextResponse.json({ ok: false, error: (err as Error).message }, { status: 500 });
   }
 }

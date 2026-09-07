@@ -24,6 +24,7 @@ import type { Product, StockMovement } from '@/lib/types';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 import type { ProductCatalogData, ProductCatalogPatch } from '@/lib/contracts/api/product-catalog';
 import type { StockLotEntry } from '@/lib/contracts/domain/stockLot';
+import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import {
   archiveProductCatalogAdmin,
   createProductCatalogAdmin,
@@ -91,40 +92,67 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
+  const rawBody = parseAgentBody<{ action: Action; params: Record<string, unknown> }>(ctx.rawBody);
   const { businessId } = ctx;
 
+  // R6/SDD: valida request com Zod no boundary (espelha a route de agenda/financial).
+  // Shape inválido -> ContractError -> 400 com error envelope estruturado.
+  let action: Action;
+  let params: Record<string, unknown>;
   try {
-    switch (body.action) {
-      case 'list':
-        return NextResponse.json({ ok: true, data: await listAll(businessId, body.params as { category?: string; isActive?: boolean; onlyDeliverable?: boolean; limit?: number }) });
-      case 'get':
-        return NextResponse.json({ ok: true, data: await getProduct(businessId, body.params.id as string) });
-      case 'search':
-        return NextResponse.json({ ok: true, data: await searchProducts(businessId, body.params as { query: string; includeInactive?: boolean; limit?: number }) });
-      case 'create':
-        return NextResponse.json({ ok: true, data: await createProduct(businessId, body.params as unknown as CreateParams) });
-      case 'update':
-        return NextResponse.json({ ok: true, data: await updateProduct(businessId, body.params.id as string, body.params.patch as Partial<Product>) });
-      case 'adjust_stock':
-        return NextResponse.json({ ok: true, data: await adjustStock(businessId, body.params as unknown as AdjustStockParams) });
-      case 'list_low_stock':
-        return NextResponse.json({ ok: true, data: await listLowStock(businessId, body.params.limit as number | undefined) });
-      case 'set_active':
-        return NextResponse.json({ ok: true, data: await updateProduct(businessId, body.params.id as string, { isActive: body.params.isActive as boolean }) });
-      case 'set_out_of_stock':
-        return NextResponse.json({
-          ok: true,
-          data: await setOutOfStock(
-            businessId,
-            body.params.id as string,
-            body.params.idempotencyKey as string | undefined,
-          ),
-        });
-      default:
-        return NextResponse.json({ ok: false, error: `Unknown action: ${body.action}` }, { status: 400 });
-    }
+    const parsed = parseToolRequest('inventory', rawBody);
+    action = parsed.action as Action;
+    params = parsed.params as Record<string, unknown>;
   } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: 400 });
+    }
+    throw err;
+  }
+
+  try {
+    let data: unknown;
+    switch (action) {
+      case 'list':
+        data = await listAll(businessId, params as { category?: string; isActive?: boolean; onlyDeliverable?: boolean; limit?: number });
+        break;
+      case 'get':
+        data = await getProduct(businessId, params.id as string);
+        break;
+      case 'search':
+        data = await searchProducts(businessId, params as { query: string; includeInactive?: boolean; limit?: number });
+        break;
+      case 'create':
+        data = await createProduct(businessId, params as unknown as CreateParams);
+        break;
+      case 'update':
+        data = await updateProduct(businessId, params.id as string, params.patch as Partial<Product>);
+        break;
+      case 'adjust_stock':
+        data = await adjustStock(businessId, params as unknown as AdjustStockParams);
+        break;
+      case 'list_low_stock':
+        data = await listLowStock(businessId, params.limit as number | undefined);
+        break;
+      case 'set_active':
+        data = await updateProduct(businessId, params.id as string, { isActive: params.isActive as boolean });
+        break;
+      case 'set_out_of_stock':
+        data = await setOutOfStock(businessId, params.id as string, params.idempotencyKey as string | undefined);
+        break;
+      default: {
+        const exhaustiveCheck: never = action;
+        return NextResponse.json({ ok: false, error: `Unknown action: ${exhaustiveCheck}` }, { status: 400 });
+      }
+    }
+
+    // SDD: valida shape do response em dev (lança); em prod loga e segue.
+    const validated = validateToolResponse('inventory', action, data);
+    return NextResponse.json({ ok: true, data: validated });
+  } catch (err) {
+    if (isContractError(err)) {
+      return NextResponse.json(err.toEnvelope(), { status: err.code === 'INTERNAL' ? 500 : 400 });
+    }
     console.error('[agent.inventory] error', err);
     return NextResponse.json(
       { ok: false, error: (err as Error).message },
