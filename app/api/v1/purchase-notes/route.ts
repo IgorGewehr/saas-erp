@@ -5,6 +5,7 @@ import {
   PurchaseNoteExternalListQuerySchema,
 } from '@/lib/contracts/api/purchase-note-external';
 import { apiError, apiSuccess, isApiKeyError, verifyApiKey } from '@/lib/middleware/apiKeyAuth';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 import {
   confirmPurchaseNoteAdmin,
   PurchaseNoteClaimConflictError,
@@ -84,6 +85,14 @@ export async function POST(request: NextRequest) {
       : ['write:purchases', 'write:products'];
   const auth = await verifyApiKey(request, requiredScopes);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-purchase-notes-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   const actor = { uid: `api:${auth.keyId}`, name: 'API v1', type: 'api' as const };
 
   try {

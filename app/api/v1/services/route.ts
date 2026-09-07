@@ -5,6 +5,7 @@ import type { Query } from 'firebase-admin/firestore';
 import { CreateServiceBodySchema, UpdateServiceBodySchema } from '@/contracts/api/v1/services';
 import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/services — List services for the authenticated business
@@ -80,6 +81,13 @@ export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:services']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-services-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   const raw = await req.json().catch(() => null);
   if (!raw || typeof raw !== 'object') {
     return apiError('Invalid request body — expected JSON object', 400);
@@ -131,6 +139,13 @@ export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:services']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-services-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   const raw = await req.json().catch(() => null);
   if (!raw || typeof raw !== 'object') {
     return apiError('Invalid request body — expected JSON object', 400);
@@ -173,6 +188,13 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:services']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-services-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const id = req.nextUrl.searchParams.get('id');

@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 
 const VALID_STATUSES = ['novo', 'contatado', 'qualificado', 'proposta', 'negociacao', 'ganho', 'perdido'];
 const VALID_SOURCES = ['site', 'indicacao', 'whatsapp', 'instagram', 'facebook', 'google_ads', 'linkedin', 'evento', 'email', 'telefone', 'outro'];
@@ -178,6 +179,13 @@ export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:crm']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-crm-contacts-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -328,6 +336,13 @@ export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:crm']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-crm-contacts-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -404,6 +419,13 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:crm']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-crm-contacts-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const { searchParams } = new URL(req.url);

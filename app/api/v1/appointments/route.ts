@@ -1,11 +1,13 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 import {
   createAppointmentSafeAdmin,
   updateAppointmentSafeAdmin,
   AppointmentConflictError,
 } from '@/lib/services/appointmentTxGuardAdmin';
+import { withIdempotency, IdempotencyConflictError } from '@/contracts/_runtime/idempotency';
 
 // Valid appointment statuses
 const VALID_STATUSES = new Set([
@@ -133,6 +135,13 @@ export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:appointments']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-appointments-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   try {
     const body = await req.json();
 
@@ -202,24 +211,40 @@ export async function POST(req: NextRequest) {
     if (body.notes) appointmentData.notes = body.notes;
     if (body.color) appointmentData.color = body.color;
 
-    // Tx atomica: re-checa conflito de overlap dentro da transacao Admin
-    // SDK (que suporta query reads, ao contrario do client). Sem isso, 2
-    // integracoes externas podiam criar appointments concorrentes pro
-    // mesmo prof+slot e ambos persistiam.
-    const newId = await createAppointmentSafeAdmin(adminDb, {
-      businessId: auth.businessId,
-      professionalId: appointmentData.professionalId as string | undefined,
-      date: body.date,
-      startTime: body.startTime,
-      endTime,
-      ...appointmentData,
-    });
+    // M11.3: idempotência via X-Idempotency-Key (mesmo padrão de sales/products) —
+    // sem isso, um retry de rede na integração externa criava um 2º agendamento
+    // duplicado (a tx atômica abaixo só previne overlap de slot, não duplicidade
+    // de retry do MESMO request).
+    const idempotencyKey = req.headers.get('x-idempotency-key');
+
+    const { result, replayed } = await withIdempotency(
+      adminDb,
+      { businessId: auth.businessId, key: idempotencyKey, endpoint: 'POST /api/v1/appointments' },
+      async () => {
+        // Tx atomica: re-checa conflito de overlap dentro da transacao Admin
+        // SDK (que suporta query reads, ao contrario do client). Sem isso, 2
+        // integracoes externas podiam criar appointments concorrentes pro
+        // mesmo prof+slot e ambos persistiam.
+        const newId = await createAppointmentSafeAdmin(adminDb, {
+          businessId: auth.businessId,
+          professionalId: appointmentData.professionalId as string | undefined,
+          date: body.date,
+          startTime: body.startTime,
+          endTime,
+          ...appointmentData,
+        });
+        return { id: newId, ...appointmentData };
+      },
+    );
 
     return apiSuccess(
-      { id: newId, ...appointmentData },
+      { ...result, ...(replayed ? { _idempotent: true } : {}) },
       201,
     );
   } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      return apiError('Idempotency key in progress — retry in a moment', 409);
+    }
     if (error instanceof AppointmentConflictError) {
       return apiError(`Conflict: ${error.message}`, 409);
     }
@@ -234,6 +259,13 @@ export async function POST(req: NextRequest) {
 export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:appointments']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-appointments-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const body = await req.json();
@@ -348,6 +380,13 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:appointments']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-appointments-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const id = req.nextUrl.searchParams.get('id');

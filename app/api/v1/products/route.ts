@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 import {
   CreateProductBodySchema,
   UpdateProductBodySchema,
@@ -129,6 +130,13 @@ export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:products']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-products-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   const raw = await req.json().catch(() => null);
   if (!raw || typeof raw !== 'object') {
     return apiError('Invalid request body — expected JSON object', 400);
@@ -194,6 +202,13 @@ export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:products']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-products-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   const raw = await req.json().catch(() => null);
   if (!raw || typeof raw !== 'object') {
     return apiError('Invalid request body — expected JSON object', 400);
@@ -255,6 +270,13 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:products']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 600 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-products-write', auth.businessId, 600, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const { searchParams } = req.nextUrl;

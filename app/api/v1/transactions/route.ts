@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 import {
   createTransactionSafeAdmin,
   transitionTransactionSafeAdmin,
@@ -115,6 +116,13 @@ export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:financial']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-transactions-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -221,6 +229,13 @@ export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:financial']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-transactions-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   try {
     const { searchParams } = req.nextUrl;
     const action = searchParams.get('action');
@@ -307,6 +322,13 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:financial']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-transactions-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const { searchParams } = req.nextUrl;

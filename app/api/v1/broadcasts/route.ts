@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
+import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 
 const VALID_STATUSES = new Set(['draft', 'scheduled', 'sending', 'sent', 'paused', 'failed']);
 const VALID_CHANNELS = new Set(['whatsapp', 'facebook', 'instagram', 'email']);
@@ -71,6 +72,13 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:broadcasts']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-broadcasts-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const body = await req.json().catch(() => null);
@@ -156,6 +164,13 @@ export async function PUT(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:broadcasts']);
   if (isApiKeyError(auth)) return auth;
 
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-broadcasts-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
+
   try {
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
@@ -221,6 +236,13 @@ export async function PUT(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   const auth = await verifyApiKey(req, ['write:broadcasts']);
   if (isApiKeyError(auth)) return auth;
+
+  // Rate limit por business (M11.2): 300 escritas/hora — previne abuso de
+  // chave de API vazada/maliciosa (spam de criação, sem custar Firestore antes do check).
+  const bizLimit = checkBusinessRateLimit('v1-broadcasts-write', auth.businessId, 300, 3_600_000);
+  if (!bizLimit.allowed) {
+    return apiError('Rate limit exceeded for this business. Slow down.', 429);
+  }
 
   try {
     const { searchParams } = req.nextUrl;
