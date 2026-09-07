@@ -37,7 +37,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import type { UseCase, UserRole } from '@/lib/types';
-import { ROLE_HIERARCHY } from '@/lib/types';
+import { ROLE_HIERARCHY, DEFAULT_USE_CASE } from '@/lib/types';
 
 export type MenuPage =
   | 'Dashboard'
@@ -324,7 +324,7 @@ function SidebarContent({
   const menuSections = useMenuSections();
   const collapsed = isCollapsed && !isMobile;
   const isEnterprise = !!business?.enterprise?.isEnabled;
-  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || DEFAULT_USE_CASE;
   const userRoleValue = ROLE_HIERARCHY[user?.role ?? 'viewer'];
 
   // Urgent recurring transactions count for Financial badge — onSnapshot.

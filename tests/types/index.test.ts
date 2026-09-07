@@ -122,9 +122,11 @@ describe('USER_STATUS_LABELS', () => {
 // INTEGRATION_PROVIDERS
 // ==========================================
 describe('INTEGRATION_PROVIDERS', () => {
-  const expectedProviders: IntegrationProvider[] = [
-    'stripe', 'vercel', 'resend', 'sentry', 'cloudflare', 'aws', 'supabase', 'godaddy',
-  ];
+  // M12.4: eram 8 providers — os outros 7 (stripe/vercel/sentry/cloudflare/aws/supabase/
+  // godaddy) nunca tinham consumidor real (2ª cópia do cockpit órfão apagado em M11, viva
+  // dentro de Settings→Enterprise) — removidos por decisão do usuário. Só `resend`
+  // permanece (usado de verdade por app/api/financial/notify/service.ts).
+  const expectedProviders: IntegrationProvider[] = ['resend'];
 
   it('has all expected providers', () => {
     for (const provider of expectedProviders) {
@@ -132,8 +134,8 @@ describe('INTEGRATION_PROVIDERS', () => {
     }
   });
 
-  it('has exactly 8 providers', () => {
-    expect(Object.keys(INTEGRATION_PROVIDERS)).toHaveLength(8);
+  it('has exactly 1 provider', () => {
+    expect(Object.keys(INTEGRATION_PROVIDERS)).toHaveLength(1);
   });
 
   it('each provider has the required structure', () => {
@@ -167,16 +169,8 @@ describe('INTEGRATION_PROVIDERS', () => {
     }
   });
 
-  it('stripe has the correct name', () => {
-    expect(INTEGRATION_PROVIDERS.stripe.name).toBe('Stripe');
-  });
-
-  it('vercel has the correct name', () => {
-    expect(INTEGRATION_PROVIDERS.vercel.name).toBe('Vercel');
-  });
-
-  it('aws has two fields (access key and secret)', () => {
-    expect(INTEGRATION_PROVIDERS.aws.fields).toHaveLength(2);
+  it('resend has the correct name', () => {
+    expect(INTEGRATION_PROVIDERS.resend.name).toBe('Resend');
   });
 });
 

@@ -57,13 +57,10 @@ import {
   CheckCircle2,
   AlertCircle,
   CreditCard,
-  Triangle,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
-  Bug,
   Cloud,
-  Database,
   Globe,
   MessageCircle,
   Plug2,
@@ -103,7 +100,7 @@ import {
   type DeliveryZone,
   type UpsellRule,
 } from './AgentPolicyEditors';
-import { ROLE_LABELS, ROLE_HIERARCHY, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS } from '@/lib/types';
+import { ROLE_LABELS, ROLE_HIERARCHY, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS, DEFAULT_USE_CASE } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
 import { VaultTab } from '@/app/components/features/senhas/SenhasModule';
 // encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
@@ -679,7 +676,7 @@ function ProfileTab() {
       </SectionCard>
 
       {/* ─── Minha Agenda — oculto no modo pedidos ───────────────────────── */}
-      {(business?.settings?.useCase ?? 'servicos') !== 'pedidos' && <>
+      {(business?.settings?.useCase ?? DEFAULT_USE_CASE) !== 'pedidos' && <>
 
       {/* isProfessional toggle */}
       <SectionCard title={t('settings.profile.professionalTitle', 'Prestador de Serviço')} icon={Briefcase}>
@@ -3663,8 +3660,11 @@ function UsersTab() {
 // ENTERPRISE TAB
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// M12.4: eram 8 providers (INTEGRATION_PROVIDERS em lib/types/index.ts) — só `resend`
+// (Mail) sobrevive, os outros 7 nunca tinham consumidor real (2ª cópia do cockpit órfão
+// apagado em M11, viva dentro de Settings→Enterprise). Mapa reduzido de acordo.
 const ICON_MAP: Record<string, React.ElementType> = {
-  CreditCard, Triangle, Mail, Bug, Shield, Cloud, Database, Globe,
+  Mail,
 };
 
 function IntegrationRow({
@@ -3995,7 +3995,7 @@ const SEGMENT_SUGGESTED_USECASE: Record<BusinessSegment, UseCase | null> = {
 function AgenteTab() {
   const { business, refreshUser } = useAuth();
   const current = business?.settings?.aiAgent;
-  const useCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const useCase: UseCase = (business?.settings?.useCase as UseCase) || DEFAULT_USE_CASE;
 
   // Checagem simplificada (só pra aviso visual, não é a fonte de verdade da
   // aba Canais) — sem isto, os lembretes automáticos pareciam ativos no
@@ -5045,7 +5045,7 @@ function AgenteTab() {
 function ModoSistemaTab() {
   const { user, business, refreshUser } = useAuth();
   const [saving, setSaving] = useState<UseCase | null>(null);
-  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || 'servicos';
+  const currentUseCase: UseCase = (business?.settings?.useCase as UseCase) || DEFAULT_USE_CASE;
   const canEdit = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
 
   const handleSelect = async (useCase: UseCase) => {

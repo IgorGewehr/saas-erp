@@ -349,6 +349,11 @@ export const COMPANY_TYPE_LABELS: Record<string, string> = {
 
 export type UseCase = 'pedidos' | 'servicos' | 'simples';
 
+/** M12.4: `business.settings.useCase` nunca é setado no signup (AuthProvider.tsx) — antes
+ *  desta constante, 4 call sites (Sidebar.tsx, SettingsModule.tsx x3) faziam fallback
+ *  independente pra `'servicos'`, concordando por coincidência. Centraliza o default. */
+export const DEFAULT_USE_CASE: UseCase = 'servicos';
+
 export const USE_CASE_LABELS: Record<UseCase, string> = {
   pedidos: 'Pedidos & Entregas',
   servicos: 'Prestador de Serviços',
@@ -3116,15 +3121,12 @@ export interface SortConfig {
 // Enterprise Mode & Integrations
 // ============================================
 
-export type IntegrationProvider =
-  | 'stripe'
-  | 'vercel'
-  | 'resend'
-  | 'sentry'
-  | 'cloudflare'
-  | 'aws'
-  | 'supabase'
-  | 'godaddy';
+// M12.4: eram 8 providers (stripe/vercel/resend/sentry/cloudflare/aws/supabase/godaddy) —
+// os outros 7 além de `resend` não tinham NENHUM consumidor real (mesmo achado do cockpit
+// órfão apagado em M11, mas esta era uma 2ª cópia viva dentro de Settings→Enterprise) —
+// um admin "conectava" e recebia estado "ativo" sem efeito nenhum. Removidos por decisão do
+// usuário; só `resend` (usado de verdade por app/api/financial/notify/service.ts) permanece.
+export type IntegrationProvider = 'resend';
 
 export interface IntegrationConfig {
   provider: IntegrationProvider;
@@ -3258,28 +3260,6 @@ export const INTEGRATION_PROVIDERS: Record<IntegrationProvider, {
   darkBgColor: string;
   fields: { key: string; label: string; placeholder: string; help?: string }[];
 }> = {
-  stripe: {
-    name: 'Stripe',
-    description: 'Pagamentos, assinaturas e receita',
-    icon: 'CreditCard',
-    color: '#635BFF',
-    bgColor: 'bg-[#635BFF]/10',
-    darkBgColor: 'dark:bg-[#635BFF]/20',
-    fields: [
-      { key: 'apiKey', label: 'Secret Key', placeholder: 'sk_live_...', help: 'Encontre em Stripe Dashboard → Developers → API Keys' },
-    ],
-  },
-  vercel: {
-    name: 'Vercel',
-    description: 'Deploys, domínios e performance',
-    icon: 'Triangle',
-    color: '#000000',
-    bgColor: 'bg-black/10',
-    darkBgColor: 'dark:bg-white/10',
-    fields: [
-      { key: 'apiKey', label: 'Access Token', placeholder: 'Bearer token...', help: 'Gere em Vercel Dashboard → Settings → Tokens' },
-    ],
-  },
   resend: {
     name: 'Resend',
     description: 'E-mails transacionais e delivery',
@@ -3289,64 +3269,6 @@ export const INTEGRATION_PROVIDERS: Record<IntegrationProvider, {
     darkBgColor: 'dark:bg-white/10',
     fields: [
       { key: 'apiKey', label: 'API Key', placeholder: 're_...', help: 'Encontre em Resend Dashboard → API Keys' },
-    ],
-  },
-  sentry: {
-    name: 'Sentry',
-    description: 'Monitoramento de erros e release health',
-    icon: 'Bug',
-    color: '#362D59',
-    bgColor: 'bg-[#362D59]/10',
-    darkBgColor: 'dark:bg-[#362D59]/20',
-    fields: [
-      { key: 'apiKey', label: 'Auth Token', placeholder: 'sntrys_...', help: 'Gere em Sentry → Settings → Auth Tokens (escopo: project:read, org:read)' },
-      { key: 'org', label: 'Organization Slug', placeholder: 'minha-org', help: 'Slug da organização visível na URL do Sentry' },
-    ],
-  },
-  cloudflare: {
-    name: 'Cloudflare',
-    description: 'CDN, DNS, tráfego e segurança',
-    icon: 'Shield',
-    color: '#F6821F',
-    bgColor: 'bg-[#F6821F]/10',
-    darkBgColor: 'dark:bg-[#F6821F]/20',
-    fields: [
-      { key: 'apiKey', label: 'API Token', placeholder: 'Bearer token...', help: 'Crie em Cloudflare → My Profile → API Tokens (permissão: Zone Analytics)' },
-    ],
-  },
-  aws: {
-    name: 'AWS',
-    description: 'Custos cloud, forecast e anomalias',
-    icon: 'Cloud',
-    color: '#FF9900',
-    bgColor: 'bg-[#FF9900]/10',
-    darkBgColor: 'dark:bg-[#FF9900]/20',
-    fields: [
-      { key: 'apiKey', label: 'Access Key ID', placeholder: 'AKIA...', help: 'Crie em AWS IAM → Users → Security Credentials (permissão: ce:*)' },
-      { key: 'secretKey', label: 'Secret Access Key', placeholder: 'wJalrXUtnFEMI/...', help: 'Gerado junto com o Access Key ID' },
-    ],
-  },
-  supabase: {
-    name: 'Supabase',
-    description: 'Banco de dados, auth e API health',
-    icon: 'Database',
-    color: '#3ECF8E',
-    bgColor: 'bg-[#3ECF8E]/10',
-    darkBgColor: 'dark:bg-[#3ECF8E]/20',
-    fields: [
-      { key: 'apiKey', label: 'Access Token', placeholder: 'sbp_...', help: 'Gere em Supabase → Account → Access Tokens' },
-    ],
-  },
-  godaddy: {
-    name: 'GoDaddy',
-    description: 'Domínios, DNS e renovações',
-    icon: 'Globe',
-    color: '#1BDBDB',
-    bgColor: 'bg-[#1BDBDB]/10',
-    darkBgColor: 'dark:bg-[#1BDBDB]/20',
-    fields: [
-      { key: 'apiKey', label: 'API Key', placeholder: 'API key...', help: 'Gere em GoDaddy Developer Portal → API Keys' },
-      { key: 'apiSecret', label: 'API Secret', placeholder: 'Secret...', help: 'Gerado junto com a API Key' },
     ],
   },
 };

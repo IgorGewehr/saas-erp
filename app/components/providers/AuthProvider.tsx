@@ -15,6 +15,7 @@ import {
 import { doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, collection, query, where, getDocs } from 'firebase/firestore';
 import { auth, db } from '@/lib/config/firebase';
 import type { User, Business, Sector } from '@/lib/types';
+import { DEFAULT_USE_CASE } from '@/lib/types';
 import i18n from '@/lib/i18n/i18n';
 
 function generateSlug(name: string): string {
@@ -288,6 +289,11 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           phone: '',
           email,
           isActive: true,
+          // M12.4: antes, `settings.useCase` nunca era setado no signup — 4 call sites
+          // (Sidebar/SettingsModule) faziam fallback independente pro mesmo default.
+          // Setar aqui explicitamente centraliza o default, sem mudar comportamento
+          // observável (era isso que os fallbacks já produziam).
+          settings: { useCase: DEFAULT_USE_CASE },
           createdAt: now,
           updatedAt: now,
         });
@@ -342,6 +348,8 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
         phone: '',
         email: fbUser.email || '',
         isActive: true,
+        // M12.4: mesmo racional do fluxo email/senha acima.
+        settings: { useCase: DEFAULT_USE_CASE },
         createdAt: now,
         updatedAt: now,
       });

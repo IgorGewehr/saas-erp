@@ -70,7 +70,7 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
 5. **M05** — CRM/histórico do paciente, depois do operacional estar sólido.
 6. **M13** — auditoria de segurança/produção antes de qualquer expansão de escala real de clientes.
 
-**Deliberadamente sem esforço adicional agora**: M02.5e+ (restaurante), M01 aceite em homologação, M08, M09, M11, M12 — não são urgência da odontologia; retomam quando houver demanda real ou tempo sobrando.
+**Deliberadamente sem esforço adicional agora**: M02.5e+ (restaurante), M01 aceite em homologação — não são urgência da odontologia; retomam quando houver demanda real ou tempo sobrando. (M08/M09/M11/M12 já foram percorridos e fechados em 05-07/09/2026, apesar de listados como baixa prioridade — usuário pediu pra continuar por eles enquanto não podia fazer ações manuais nos módulos de prioridade alta.)
 
 ---
 
@@ -165,11 +165,12 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
 
 ### Fase 4 — Produto SaaS e estabilização
 
-- [ ] **M12 — Configurações, Onboarding, Planos e Billing**
-  - Status: `Planejado`
+- [x] **M12 — Configurações, Onboarding, Planos e Billing**
+  - Status: `Concluído em 07/09/2026 — M12.0/M12.1/M12.4/M12.5 + Gap 4`. Investigação confirmou que "Configurações" tem 12 abas reais (não os ~7 conceitos do bullet) e que "modo de uso" (useCase) já é configurável pós-signup (`ModoSistemaTab`) — mas nunca era setado NO signup (3-4 lugares faziam fallback independente). "Onboarding por segmento" não existe como fluxo (nem wizard, nem pergunta no cadastro) — as peças (troca de modo, filtro de sidebar) existem isoladas, nunca conectadas ao cadastro. **Achado maior**: "Planos, limites, cobrança do SaaS" está genuinamente AUSENTE do código — primeira vez nesta iniciativa inteira que "Planejado" é literalmente verdade pra um bullet inteiro (sem campo de plano em `Business`, sem processador de pagamento cobrando o dono do negócio, sem alavanca técnica pra suspender tenant inadimplente). Achado colateral: uma 2ª cópia (dentro de Settings→Enterprise) dos mesmos 8 slots de integração que o M11 já tinha apagado em outro lugar — só Resend tinha uso real, os outros 7 deixavam um admin "conectar" sem efeito nenhum. Decisões do usuário: (1) adiar billing do SaaS (só 1-2 clientes reais hoje, cobrança manual serve); (2) apagar os 7 slots de integração mortos, manter Resend e o toggle Enterprise como está; (3) adiar wizard de onboarding (configuração manual no kickoff resolve na escala atual). **Corrigido independente de checkpoint**: default de `useCase` centralizado (`DEFAULT_USE_CASE`) e setado explicitamente nos 2 fluxos de signup.
+  - **Plano detalhado: `docs/paridade/M12_PLANO_IMPLEMENTACAO.md`.**
   - Perfil, empresa, modo de uso, fiscal, canais, usuários, setores e preferências.
-  - Onboarding por segmento e ativação apenas dos módulos relevantes ao negócio.
-  - Planos, limites, cobrança do SaaS e experiência de upgrade/downgrade.
+  - Onboarding por segmento e ativação apenas dos módulos relevantes ao negócio — deliberadamente adiado.
+  - Planos, limites, cobrança do SaaS e experiência de upgrade/downgrade — deliberadamente adiado, documentado como gap real.
 
 - [ ] **M13 — Segurança, Desempenho e Preparação para Produção** 🟠 Gate antes de escalar
   - Status: `Em análise — plano detalhado escrito em 05/09/2026`. Investigação de abertura (mesmo rigor de M06/M03/M07/M10) encontrou 3 auditorias datadas pré-existentes no repo, não só 1: `docs/audit/PRODUCTION_CHECKUP_2026-05-29.md`, `docs/audit/PLANO_LOTE_B_custo_firebase.md`, e um terceiro documento maior nunca citado no roadmap (`docs/auditoria-producao-2026-06-01.md`, 51 achados) + um plano de refatoração nunca executado (`docs/refatoracao-monolitos.md`). Re-verificação linha a linha: a maioria esmagadora dos achados P0/P1 já está corrigida — não por sprint de segurança dedicado, mas como efeito colateral do trabalho de feature de M01/M02/M03/M06/M07 (núcleo comercial, FSM de Transaction/Appointment/Sale, centralização de estoque). **Achado mais sério, novo, não vinha de nenhuma auditoria anterior**: `scripts/wipe-financial.ts` (arquivo não versionado, presente na árvore de trabalho a sessão inteira) é um hard-delete de `transactions`/`cashSessions` por tenant sem dry-run/confirmação/soft-delete/auditoria — combinado com nenhuma estratégia de backup do Firestore verificável no repo, uma execução contra o `businessId` errado seria irrecuperável, com dado real de paciente em produção. Gaps reais restantes (custo, não segurança): lista principal de Conversas ainda sem paginação, `financialAuditLog` do Financeiro clássico (a UI principal confirmada em M03.6) baixa a coleção inteira, `conversationMessages` paga `get()` por mensagem. Zero SDK de observabilidade/APM pra aplicação em si (só um proxy read-only do Sentry do tenant). Zero runbook de deploy/incidente/rollback.
