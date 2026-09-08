@@ -78,8 +78,20 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
 
 ### Fase 0 — Base e governança da evolução
 
-- [ ] **M00 — Baseline técnico, contratos e estratégia de migração**
-  - Status: `Planejado`
+- [x] **M00 — Baseline técnico, contratos e estratégia de migração**
+  - Status: `Concluído em 08/09/2026`. Diferente dos demais módulos, é governança/meta sem UI
+    nem coleção própria. Achado: os 4 artefatos que o bullet pede já existiam organicamente
+    (efeito colateral da prática SDD desta iniciativa inteira) — `lib/contracts/README.md`,
+    `docs/sdd-roadmap.md`, `docs/architecture-map.md`, `PRE_PRODUCTION_CHECKLIST.md` — mas
+    nunca tinham sido formalmente reconciliados como "M00 concluído", e 2 deles
+    (`sdd-roadmap.md`/`architecture-map.md`) estavam significativamente desatualizados em
+    relação ao código real (mesmo padrão de todo módulo desta iniciativa): Fase 1 do
+    sdd-roadmap dizia "PILOTO: agenda" quando M11 já tinha estendido pra 21/21 rotas; Fase 3/4
+    listavam como "Próximo" itens já entregues (dedup Meta, `ensureDomainEventHandlers()` no
+    bootstrap, migração de `AgendaModule.tsx` pra eventos); Fase 5 listava Financeiro e
+    Agenda+Services como não-iniciados quando M03/M06 já entregaram `domain/`+`fsm/`
+    completos. Reconciliado por leitura direta de código, não por memória da sessão.
+  - **Plano detalhado: `docs/paridade/M00_PLANO_IMPLEMENTACAO.md`.**
   - Registrar contratos atuais e dados legados antes das mudanças.
   - Definir padrão de versionamento de schema e scripts de migração.
   - Padronizar critérios de aceite, testes e checklist de segurança multi-tenant.

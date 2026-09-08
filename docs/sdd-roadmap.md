@@ -2,6 +2,11 @@
 
 > Ordem de adoção de contratos. Marque o estado conforme avançar.
 > Cada fase tem critério de pronto explícito — sem isso, IA fica adivinhando o que falta.
+>
+> **Reconciliado em 08/09/2026 (M00)**: este documento estava significativamente desatualizado
+> — vários itens marcados "Próximo" (não feito) já tinham sido entregues em fatias anteriores da
+> iniciativa de paridade (M06, M07, M09, M11), sem o doc ser atualizado no momento. Reconciliado
+> por leitura de código, não por memória — ver cada item abaixo.
 
 ## Fase 0 — Infra (prereq) ✅ COMPLETO
 
@@ -12,21 +17,37 @@
 - [x] `lib/contracts/api/_envelope.ts` — ErrorEnvelope + IdempotencyHeaderSchema compartilhados
 - [ ] Script `pnpm contracts:openapi` que gera `docs/openapi.json` (não bloqueante)
 
-## Fase 1 — AI Agent tools (output schemas) ✅ COMPLETO
+## Fase 1 — AI Agent tools (output schemas) ✅ COMPLETO no lado TS · 🟡 PARCIAL no lado Python
 
-**Por que primeiro:** hoje o executor Python recebe `dict` cru. LLM trabalha em cima de output não validado. Adicionar schema de output fecha o gap G6 e dá segurança imediata. ~80 actions distribuídas em 17 domains + 1 send-interactive + 6 endpoints infra.
+**Por que primeiro:** hoje o executor Python recebe `dict` cru nos domínios ainda não portados.
+LLM trabalha em cima de output não validado nesses casos. Adicionar schema de output fecha o gap
+G6 e dá segurança imediata. ~80 actions distribuídas em 20 domains + 1 send-interactive + 6
+endpoints infra.
 
 **Tasks:**
 - [x] `lib/contracts/api/agent/_shared.ts` — enums compartilhados + headers HMAC + helpers de envelope
-- [x] `lib/contracts/api/agent/{17 domains}.ts` — ParamsSchema + ResponseDataSchema por action
-- [x] `lib/contracts/api/agent/send-interactive.ts` (formato especial sem `action`)
+- [x] `lib/contracts/api/agent/{20 domains}.ts` — ParamsSchema + ResponseDataSchema por action
+- [x] `lib/contracts/api/agent/send-interactive.ts` (M11, 08/09/2026: registrado em
+      `AGENT_TOOL_DOMAINS` e wireado na rota — antes tinha o arquivo de contrato mas não estava
+      ligado a nada; literal de action corrigido de `'send'` pra `'send_interactive'`, verificado
+      contra `agent/app/tools/client.py`)
 - [x] `lib/contracts/api/agent/_routes.ts` — endpoints não-tool (runs, budget, circuit, operator/chat, scheduled/run, memory/admin)
 - [x] `lib/contracts/api/agent/index.ts` — barrel + AGENT_TOOLS_REGISTRY com lookup por (domain, action)
 - [x] `lib/contracts/_runtime/agentToolValidation.ts` — `parseToolRequest` + `validateToolResponse`
-- [x] **PILOTO**: `app/api/agent/tools/agenda/route.ts` valida request + response
-- [x] **PYTHON**: `agent/app/tools/contracts/{__init__,agenda}.py` — Pydantic models + validação no executor (`client.py:call_tool`)
+- [x] **TODAS as 21 rotas de tool** (`app/api/agent/tools/*/route.ts`) validam request + response
+      — M11 (07/09/2026) estendeu de 4/21 (`agenda`/`financial`/`fiscal`/`reports`) pra 21/21,
+      encontrando e corrigindo ~10 divergências reais entre contrato e handler no caminho (ver
+      `docs/agente/AGENTE_M11_FIXES.md`). O "PILOTO" original (`agenda`) foi só o primeiro de 21,
+      não o único.
+- [ ] **PYTHON** (`agent/app/tools/contracts/`): só 4 de 20 domínios têm Pydantic
+      (`agenda`/`orders`/`clients`/`sales`) — os outros 16 caem em passthrough sem validação de
+      response no lado Python (`get_response_model` retorna `None` pra eles). Rastreado como
+      **M11.1b**, deliberadamente não feito ainda — escopo maior, codebase diferente
+      (Python/Pydantic vs TS/Zod), risco de erro maior sem ver payloads reais de produção pra
+      cada domínio. Ver `docs/paridade/M11_PLANO_IMPLEMENTACAO.md`.
 
-**Estado:** typecheck limpo. Próximas tools que ganharem Pydantic entram em `agent/app/tools/contracts/{domain}.py` + registry. Codegen Zod→Pydantic é trabalho futuro.
+**Estado:** typecheck limpo. Lado TS 100% completo (20 domínios + send-interactive). Lado Python
+20% completo (4/20) — M11.1b é o próximo passo real desta fase, não trabalho novo.
 
 ## Fase 2 — Vendas / Pedidos / Estoque ✅ SCHEMAS COMPLETOS
 
@@ -62,35 +83,84 @@
 - [x] `fsm/conversation.ts` — open ↔ waiting ↔ resolved; reabertura por inbound.
 - [x] `api/webhooks/meta.ts` — discriminated union do `object` (whatsapp_business_account | page | instagram); shapes de message/status/contact + header `X-Hub-Signature-256`.
 - [x] `_runtime/phone-br.ts` — `canonicalizeBr`, `alternativeBrPhone` (com/sem 9), `brPhoneCandidates` (3 variações), `brPhonesMatch`. Resolve duplicação client/server.
-- [x] `_runtime/webhookIdempotency.ts` — `markWebhookSeen()` atômico via `.create()` em `webhookSeen/{businessId}_{externalMessageId}` TTL 24h.
-- [ ] **Próximo**: aplicar contratos nas routes `app/api/webhooks/meta/route.ts` e `app/api/webhooks/facebook/route.ts` (substituir fuzzy phone duplicado + adicionar dedup via `markWebhookSeen`).
-- [ ] **Próximo**: testes unitários em `__tests__/contracts/phone-br.spec.ts` cobrindo casos surreais BR.
+- [x] `_runtime/webhookIdempotency.ts` — `markWebhookSeen()` atômico via `.create()` em `webhookSeen/{businessId}_{externalMessageId}` TTL 24h. **M10.7 (08/09/2026)**: ganhou purga real —
+      `app/api/webhooks/cron/purge-seen/route.ts`, cron diário, os docs vencidos nunca eram
+      apagados antes disso.
+- [x] `app/api/webhooks/meta/route.ts` usa `markWebhookSeen` (dedup real por `wamid`/`mid`) —
+      confirmado por leitura de código (08/09/2026), este item estava marcado "Próximo" mas já
+      tinha sido feito numa fatia anterior (provavelmente M07).
+- [ ] `app/api/webhooks/facebook/route.ts` **ainda não confirmado** se usa `markWebhookSeen` —
+      este arquivo é candidato a código morto (M07 achou zero evidência de uso real, aguardando
+      o usuário confirmar no Meta App Dashboard antes de tocar nele — ver
+      `docs/paridade/M07_PLANO_IMPLEMENTACAO.md`). Não mexer até essa confirmação.
+- [ ] **Ainda não feito**: testes unitários dedicados em `tests/**/phone-br*.test.ts` — a lógica
+      (`brPhonesMatch`) é usada e implicitamente exercitada por outras suítes (ex: M06.5a,
+      confirmação por WhatsApp), mas não tem um arquivo de teste próprio cobrindo casos surreais
+      BR (DDD sem 9, formatos internacionais, etc.) isoladamente.
 
-**Critério de pronto (parcial):** schemas + canonicalização BR + helper de dedup prontos; substituição nas routes é incremental.
+**Critério de pronto:** ✅ `markWebhookSeen` aplicado nos 2 canais WhatsApp reais — Cloud API
+(`app/api/webhooks/meta/route.ts`) e Baileys (`app/api/whatsapp/baileys-manager.ts`, M07.2,
+substituiu um check-then-act com race condition). Só falta Facebook/Instagram, condicionado à
+confirmação de que a rota é realmente usada (ver acima).
 
-## Fase 4 — Eventos cross-módulo (fecha G5) ✅ FRAMEWORK COMPLETO
+## Fase 4 — Eventos cross-módulo (fecha G5) ✅ COMPLETO (reconciliado 08/09/2026)
 
 **Por que:** Gaps documentados — Booking IA → CRM, FormResponse → Client, Appointment.completed → commission, Broadcast.replied → Lead status. Hoje são side-effects implícitos em vários lugares ou simplesmente esquecidos.
 
 **Tasks:**
 - [x] `events/index.ts` — **10 eventos** declarados via discriminated union: `appointment.completed`, `appointment.canceled`, `booking.created`, `form.submitted`, `broadcast.replied`, `sale.finalized`, `client.created`, `deliveryOrder.confirmed`, `purchase.imported`, `conversation.reopened`. Cada evento documenta no jsdoc quem reage.
 - [x] `_runtime/dispatch.ts` — `dispatchDomainEvent()` síncrono. Valida via Zod (fail-fast), persiste em `domainEvents/{id}` com `status: dispatched → processed`, chama handlers em série, agrega resultados por handler. Falha de handler não derruba o caller.
-- [x] `_runtime/handlers/index.ts` — `ensureDomainEventHandlers()` idempotente. Chame uma vez no bootstrap (ex: `instrumentation.ts`).
-- [x] `_runtime/handlers/appointmentCompleted.ts` — PILOTO. Atualiza métricas do cliente (visitCount, totalSpent, lastVisit). Demais subscribers (commission, loyalty, GCal sync) seguem em `lib/services/*` até migração completa de AgendaModule.
-- [ ] **Próximo**: migrar `AgendaModule.tsx:handleSaveAppointment` para emitir `appointment.completed` via dispatch em vez de chamar inline `maybeCreateCommission`, `addLoyaltyPoints`, `syncToGoogleCalendar`. Mover essas chamadas para novos handlers.
-- [ ] **Próximo**: chamar `ensureDomainEventHandlers()` em `instrumentation.ts`.
-- [ ] **Próximo**: documentar no `architecture-map.md` quem emite e quem reage a cada evento.
+- [x] `_runtime/handlers/index.ts` — `ensureDomainEventHandlers()` idempotente. **Confirmado chamado** em `instrumentation.ts` (e também, defensivamente, em `app/api/appointments/[id]/transition/route.ts` e `app/api/events/dispatch/route.ts`) — este item estava marcado "Próximo" mas já tinha sido feito.
+- [x] `_runtime/handlers/appointmentCompleted.ts` — não é mais só o piloto de métricas: hoje
+      também cria comissão (`maybeCreateCommissionAdmin`) e credita fidelidade
+      (`addLoyaltyPointsAdmin`), migrados de `AgendaModule.tsx` na fatia M06.2 desta sessão
+      (`docs/agenda/AGENDA_HARDENING_EFEITOS_SERVIDOR.md`). **GCal sync deliberadamente ficou
+      client-side** — não é side-effect de completar um atendimento, é sync de CRUD do
+      agendamento em si (create/update/delete, `AgendaModule.tsx` chama `syncToGoogleCalendar`
+      diretamente nesses 3 pontos), lifecycle diferente do evento `appointment.completed`. Não é
+      lacuna, é modelagem correta — o doc antigo agrupava os 3 incorretamente como se fossem o
+      mesmo tipo de efeito.
+- [x] `_runtime/handlers/appointmentCanceled.ts` / `appointmentNoShow.ts` — também entregues em
+      M06 (reversão de comissão/métricas ao cancelar um `concluido`; incremento de
+      `Client.relationshipHistory.noShowCount` ao marcar falta).
+- [ ] **Ainda não feito**: documentar no `architecture-map.md` quem emite e quem reage a cada
+      evento — os 10 eventos e handlers existem e funcionam, mas não há uma tabela central
+      resumindo emissor→evento→handler(s) fora do jsdoc de `events/index.ts`. Cosmético/
+      navegabilidade, não um gap funcional.
 
-**Critério de pronto (parcial):** ✅ framework + piloto prontos. Adoção nos callers é incremental.
+**Critério de pronto:** ✅ framework completo, 4 handlers reais em produção (client metrics,
+comissão, fidelidade, no-show), `ensureDomainEventHandlers()` chamado no bootstrap. Só falta a
+tabela-resumo de documentação.
 
 ## Fase 5 — Demais módulos (em ordem decrescente de risco)
 
-1. **Fiscal** — SEFAZ é o lugar onde estado errado vira problema legal. FSM + idempotency.
-2. **CRM (Clients/Deals/Segments)** — agora consome `client.created`/`booking.created` da fase 4.
-3. **Broadcasts + Birthday Campaigns** — schema de SendThrottle, LGPD `consentBasis` obrigatório.
-4. **Financeiro** — Transaction + reconciliação + (quando habilitar) PIX/Boleto/Open Banking.
-5. **Agenda + Services** — appointments, recorrência, conflict detection.
-6. **Kanban, Notas, Forms, Reviews, Spreadsheets, Vault** — schemas de domínio + API v1.
+**Reconciliado em 08/09/2026** — a maior parte desta fase avançou como efeito colateral do
+trabalho de hardening da iniciativa de paridade (M03/M06/M07), não como um esforço SDD dedicado
+— confirmado lendo `lib/contracts/domain/`/`fsm/` diretamente, não assumindo pelo nome do módulo.
+
+1. **Fiscal** — 🟡 parcial: `fsm/fiscalDocument.ts` existe e está em uso real (emissão/
+   cancelamento com FSM). Sem `domain/fiscalDocument.ts` Zod formal ainda (schema de request/
+   response vive em `lib/contracts/api/agent/fiscal.ts` e nas rotas, não centralizado como
+   domínio próprio).
+2. **CRM (Clients/Deals/Segments)** — 🔴 ainda não iniciado no nível de contrato formal (sem
+   `domain/client.ts`/`deal.ts`/`segment.ts`). As features funcionam (M05 confirmou cadastro
+   unificado, dedup, segmentos dinâmicos, tudo real), só não tem Zod schema de domínio ainda.
+   `client.created`/`booking.created` (Fase 4) são consumidos via `lib/services/`, não via um
+   contrato de domínio de Client.
+3. **Broadcasts + Birthday Campaigns** — 🟡 parcial: LGPD `consentBasis`/opt-out são **de fato
+   obrigatórios e enforced** (confirmado por M07 e M10.4/M10.5 — CAS transacional, fail-closed,
+   automações CRM e `sendFinancialNotifications` também passaram a checar opt-out nesta sessão),
+   mas sem um `domain/broadcast.ts` Zod formal centralizando isso — a garantia vive espalhada em
+   `lib/services/`, não num contrato único.
+4. **Financeiro** — ✅ feito: `domain/transaction.ts` (M03.1, invariantes de parcelamento) +
+   `fsm/transaction.ts` (M03.2/M03.4, aplicado até em `firestore.rules`). PIX/Boleto/Open
+   Banking continuam 100% stub, deliberadamente fora de escopo até sinal de demanda real.
+5. **Agenda + Services** — ✅ feito: `domain/appointment.ts` + `domain/service.ts` +
+   `domain/scheduleBlock.ts` + `fsm/appointment.ts`, todos em uso real desde M06 (núcleo
+   transacional, conflict detection com bloqueios/buffer, FSM aplicado no servidor).
+6. **Kanban, Notas, Forms, Reviews, Spreadsheets, Vault** — 🔴 ainda não iniciado — sem
+   `domain/*` nem `fsm/*` pra nenhum desses. Features funcionam (confirmado em M09), só sem
+   contrato formal.
 
 ## Anti-padrões a evitar enquanto adota
 

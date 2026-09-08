@@ -21,12 +21,17 @@ Firebase
   └─ Rules ~1500 linhas, indexes ~47KB
 
 Python Agent (/agent)
-  └─ FastAPI + LangGraph 5 nodes (router→planner→executor↔reflection↔planner→responder)
+  └─ FastAPI + LangGraph 6 nodes (router→planner⇄executor⇄reflection→responder|skip_responder)
      OpenAI only. Tools via HTTP HMAC pra Next.js. Memory + circuit breaker em Firestore.
 
 External
-  Meta Graph │ Baileys │ Stripe │ SEFAZ │ GCal │ Resend │ AWS │ CF │ Sentry │ Vercel │ Supabase │ GoDaddy
+  Meta Graph │ Baileys │ SEFAZ │ GCal │ Mercado Pago │ Resend
 ```
+
+> M11/M12 (07-08/09/2026): Stripe/AWS/Cloudflare/Sentry/Vercel/Supabase/GoDaddy removidos desta
+> lista — eram 2 cópias de um "cockpit de operações do próprio Aevo" (custo/receita/infra),
+> nunca ligadas a nenhum menu do tenant, ambas apagadas por decisão do usuário. Só Resend
+> (e-mail transacional real) sobrevive das 8 integrações "Enterprise" originais.
 
 ## Inventário de módulos
 
@@ -77,15 +82,17 @@ Cron horário birthday ──► targetMmDdInTz + idempotência (campaign, clien
 `dispatchDomainEvent(db, event)` faz duas coisas: (1) valida o evento com Zod e
 **persiste em `domainEvents/{id}`** (trilha de auditoria, status `dispatched` →
 `processed`); (2) roda os handlers **registrados** para aquele tipo. Hoje os
-handlers pluggados são `appointment.completed` e `appointment.canceled` (ver
-`_runtime/handlers/index.ts`) — hardening da Agenda pra go-live da odontologia
-(01/09/2026): métricas do cliente, comissão e fidelidade saíram das 6+
-chamadas inline duplicadas em `AgendaModule.tsx` (criar/editar/mudar status/
-excluir/cancelar, individual e em série) e viraram efeito único desses dois
-handlers, que releem o Appointment real por `ctx.db` antes de agir — não
-confiam no payload do evento. Todo o resto — em especial os eventos de
-**cardápio/pedido** (`payment.approved`, `payment.refunded`,
-`deliveryOrder.confirmed`) — **não tem subscriber**: o evento é só auditoria.
+handlers pluggados são `appointment.completed`, `appointment.canceled` e
+`appointment.noShow` (ver `_runtime/handlers/index.ts`, 3 arquivos — não 2)
+— hardening da Agenda pra go-live da odontologia (01-04/09/2026): métricas do
+cliente, comissão e fidelidade saíram das 6+ chamadas inline duplicadas em
+`AgendaModule.tsx` (criar/editar/mudar status/excluir/cancelar, individual e
+em série) e viraram efeito único desses handlers, que releem o Appointment
+real por `ctx.db` antes de agir — não confiam no payload do evento. `noShow`
+incrementa `Client.relationshipHistory.noShowCount` (M06.3b). Todo o resto —
+em especial os eventos de **cardápio/pedido** (`payment.approved`,
+`payment.refunded`, `deliveryOrder.confirmed`) — **não tem subscriber**: o
+evento é só auditoria.
 
 Regra mental: **os efeitos de dinheiro/estoque rodam INLINE no caller, com
 guards de idempotência (CAS)** — não dependa do bus para dispará-los.
