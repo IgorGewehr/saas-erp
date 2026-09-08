@@ -14,8 +14,9 @@
 > bloqueios, M06.3b no-show, M06.3c buffer), M06.4a (ficha do paciente/anamnese) e M06.5 fechado
 > (M06.5a confirmação leve via WhatsApp, M06.5b fuso horário por negócio — corrigiu bug real de
 > ~3h no lembrete/confirmação —, M06.5c reengajamento — corrigiu dois bugs reais numa automação
-> de CRM já existente; consolidação dos dois sistemas de lembrete analisada e deliberadamente
-> adiada) concluídos em código em 04/09/2026. M06.8 parcial (janela de listener entregue;
+> de CRM já existente; M06.5d — 08/09/2026 — consolidação da janela/idempotência dos dois
+> sistemas de lembrete em `lib/services/agenda/reminderWindow.ts`, corrigindo um bug real de
+> reagendamento não liberar novo lembrete ao paciente) concluídos em código. M06.8 parcial (janela de listener entregue;
 > visibilidade por profissional **pendente de decisão do usuário**; extração de
 > `AgendaModule.tsx` e paginação de clientes analisadas e adiadas). M06.6 parcial (status fiscal
 > ao vivo entregue; **achado importante sinalizado ao usuário**: documentos fiscais pendentes
@@ -414,19 +415,50 @@ manualmente em navegador** nesta rodada.
 
 ### M06.5 — Lembretes, confirmação e reengajamento
 
-- [ ] ~~Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência~~
-      — **analisado e deliberadamente adiado** (04/09/2026): os dois sistemas
-      (`appointmentReminderRunner.ts` notifica ATENDENTE in-app; `scheduled/run/route.ts`
-      notifica PACIENTE por WhatsApp) são features de audiência diferente, não a mesma lógica
-      duplicada — idempotência por status-flag no appointment (1 paciente) vs. log por
-      (appointment, minutosAntes) (N atendentes) são formatos DIFERENTES por razão real, não
-      por acidente, e forçar um formato único seria pior design, não melhor. A parte
-      genuinamente unificável (a aritmética de "janela": cada um dos 4 checks entre os dois
-      arquivos usa uma forma ligeiramente diferente — tolerância simétrica, banda semi-aberta,
-      intervalo fechado) é baixo valor / risco moderado de mexer de novo no mesmo cron que já
-      recebeu 2 correções reais nesta mesma sessão (M06.5b fuso, M06.5c idempotência de
-      automação) — risco desproporcional ao ganho de "mesmo esqueleto de código" sem mudança de
-      comportamento. Fica documentado aqui como analisado e não uma lacuna esquecida.
+- [x] Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência.
+
+**M06.5d concluída em código (08/09/2026):** revisitada a análise de 04/09/2026 (abaixo, mantida
+por transparência) — a conclusão de que os dois SISTEMAS (`appointmentReminderRunner.ts` pro
+atendente in-app; `scheduled/run/route.ts` pro paciente via WhatsApp) devem continuar separados
+segue válida (audiência/canal/cadência genuinamente diferentes) e por isso **não foram fundidos
+num cron único**. Mas a análise anterior não tinha examinado se o formato de idempotência do
+paciente (campo boolean `reminderSentAt`/`confirmationRequestedAt`/`followUpSentAt` direto no
+Appointment) era só "esqueleto diferente" ou escondia um bug: era um bug real — o campo boolean,
+uma vez true, fica true pra sempre; se o agendamento fosse reagendado DEPOIS do lembrete já ter
+disparado pro horário antigo, o paciente NUNCA recebia lembrete/confirmação/follow-up pro
+horário novo (mesma classe de falha silenciosa já corrigida váras vezes nesta sessão). O sistema
+do atendente já resolvia isso com uma chave de log por slot (`appointmentId_minutosAntes_data_hora`)
+desde antes desta fatia. **Extraído `lib/services/agenda/reminderWindow.ts`** com a definição
+única de janela (`isWithinReminderWindow`, mesma fórmula simétrica pros dois — cada caller
+continua escolhendo seu próprio alvo/tolerância, que refletem cadência real, não bug) e de chave
+de idempotência por slot (`reminderLogId`/`claimReminderSlotInTx` transacional pro atendente,
+que só grava Firestore; `hasReminderSlotBeenClaimed`/`markReminderSlotClaimed` não-transacional
+pro paciente, que faz uma chamada HTTP externa entre checar e confirmar — não pode compor com
+`runTransaction`). Os 3 campos boolean no Appointment continuam sendo gravados (a UI da Agenda
+lê `reminderSentAt`/`confirmationRequestedAt`/`followUpSentAt` pra exibir badge — ver
+`AgendaModule.tsx`), agora como espelho pra UI, não mais como fonte de verdade da idempotência.
+Testes novos: `tests/services/reminderWindow.test.ts` (14 casos, incl. reagendamento liberando o
+slot de novo). Suite completa sem regressão (1121 testes/84 arquivos). Não testado contra
+WhatsApp real nesta sessão (mesma ressalva de sempre, sem navegador/tenant real disponível).
+
+<details>
+<summary>Análise original de 04/09/2026 (mantida por transparência — parcialmente superada acima)</summary>
+
+~~Consolidar os dois sistemas de lembrete numa única definição de janela e idempotência~~
+— **analisado e deliberadamente adiado** (04/09/2026): os dois sistemas
+(`appointmentReminderRunner.ts` notifica ATENDENTE in-app; `scheduled/run/route.ts`
+notifica PACIENTE por WhatsApp) são features de audiência diferente, não a mesma lógica
+duplicada — idempotência por status-flag no appointment (1 paciente) vs. log por
+(appointment, minutosAntes) (N atendentes) são formatos DIFERENTES por razão real, não
+por acidente, e forçar um formato único seria pior design, não melhor. A parte
+genuinamente unificável (a aritmética de "janela": cada um dos 4 checks entre os dois
+arquivos usa uma forma ligeiramente diferente — tolerância simétrica, banda semi-aberta,
+intervalo fechado) é baixo valor / risco moderado de mexer de novo no mesmo cron que já
+recebeu 2 correções reais nesta mesma sessão (M06.5b fuso, M06.5c idempotência de
+automação) — risco desproporcional ao ganho de "mesmo esqueleto de código" sem mudança de
+comportamento. Fica documentado aqui como analisado e não uma lacuna esquecida.
+
+</details>
 - [x] Confirmação do paciente ("confirmo") atualizando status **sem** exigir o Agente IA completo.
 - [x] Fuso horário por negócio, substituindo o `-03:00` fixo.
 - [x] Reengajamento de paciente sem retorno há N meses (recall), reaproveitando CRM/campanhas.
@@ -622,8 +654,8 @@ pendentes sem vínculo de origem, risco de NFSe duplicada (`AGENDA_M06_6_COBRANC
 3. **M06.2** — transição/conclusão reconciliável (elimina perda silenciosa de dinheiro).
 4. **M06.4** — anamnese (maior valor clínico novo, escopo pequeno, campo já existe).
 5. **M06.3** — bloqueios, no-show e buffer entre atendimentos (completo).
-6. **M06.5** — lembretes consolidados (confirmação, fuso e recall já entregues; falta só
-   consolidar os dois sistemas de lembrete numa única definição de janela/idempotência).
+6. **M06.5** — lembretes consolidados (confirmação, fuso, recall e consolidação de janela/
+   idempotência entre os dois sistemas — M06.5a/b/c/d — todos entregues).
 7. **M06.8** — custo e segurança (janela de listener entregue; visibilidade por profissional
    pendente de decisão do usuário; extração de `AgendaModule.tsx` e paginação de clientes
    analisadas, execução adiada pra quando houver navegador disponível pra validar).

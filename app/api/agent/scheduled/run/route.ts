@@ -30,6 +30,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import type { Appointment, Business, Conversation } from '@/lib/types';
 import { isRelevantForScheduling, resolveAgendaSchedulingConfig } from '@/lib/services/agenda/schedulingEligibility';
 import { zonedDateTimeToUtc, DEFAULT_BUSINESS_TIMEZONE } from '@/lib/utils/timezone';
+import { hasReminderSlotBeenClaimed, markReminderSlotClaimed } from '@/lib/services/agenda/reminderWindow';
 
 type ReminderKind = 'reminder' | 'confirmation' | 'followup';
 
@@ -430,50 +431,67 @@ async function processBusiness(business: Business & { id: string }, stats: RunSt
     const diffHours = diffMs / (60 * 60 * 1000);
 
     // ── Reminder ──
-    if (agenda.sendReminder && !appt.reminderSentAt && diffHours > 0) {
+    // M06.5 (consolidação): idempotência por slot (date+startTime), não mais
+    // por campo boolean no Appointment — reagendar libera o lembrete de novo
+    // pro horário novo. Ver lib/services/agenda/reminderWindow.ts.
+    if (agenda.sendReminder && diffHours > 0) {
       const target = agenda.reminderHoursBefore || 24;
       if (diffHours <= target && diffHours > target - 1) {
-        try {
-          const msg = `Olá ${firstName(appt.clientName)}! Lembrete: você tem ${appt.serviceName} marcado ${diffHours < 2 ? 'em breve' : 'amanhã'} às ${appt.startTime}. Até lá! 📅`;
-          const result = await sendToContact(business, appt, msg, 'reminder');
-          if (result.sent) {
-            await doc.ref.update({ reminderSentAt: new Date().toISOString() });
-            stats.remindersSent++;
+        const alreadySent = await hasReminderSlotBeenClaimed(adminDb, appt.id, 'reminder', appt.date, appt.startTime);
+        if (!alreadySent) {
+          try {
+            const msg = `Olá ${firstName(appt.clientName)}! Lembrete: você tem ${appt.serviceName} marcado ${diffHours < 2 ? 'em breve' : 'amanhã'} às ${appt.startTime}. Até lá! 📅`;
+            const result = await sendToContact(business, appt, msg, 'reminder');
+            if (result.sent) {
+              await markReminderSlotClaimed(adminDb, appt.id, business.id, 'reminder', appt.date, appt.startTime);
+              await doc.ref.update({ reminderSentAt: new Date().toISOString() });
+              stats.remindersSent++;
+            }
+            // skip silencioso ja foi loggado em pipelineFailures
+          } catch (err) {
+            stats.errors.push({ appointmentId: appt.id, phase: 'reminder', error: String(err) });
           }
-          // skip silencioso ja foi loggado em pipelineFailures
-        } catch (err) {
-          stats.errors.push({ appointmentId: appt.id, phase: 'reminder', error: String(err) });
         }
       }
     }
 
     // ── Confirmation request (24–26h before) ──
-    if (agenda.confirmationBeforeAppointment && !appt.confirmationRequestedAt && diffHours > 0) {
+    if (agenda.confirmationBeforeAppointment && diffHours > 0) {
       if (diffHours <= 26 && diffHours >= 24 && appt.status !== 'confirmado') {
-        try {
-          const msg = `Oi ${firstName(appt.clientName)}, posso confirmar seu horário de ${appt.serviceName} amanhã às ${appt.startTime}? Responda "confirmo" para reservar ou "cancelar" caso precise desmarcar.`;
-          const result = await sendToContact(business, appt, msg, 'confirmation');
-          if (result.sent) {
-            await doc.ref.update({ confirmationRequestedAt: new Date().toISOString() });
-            stats.confirmationsAsked++;
+        const alreadyAsked = await hasReminderSlotBeenClaimed(adminDb, appt.id, 'confirmation', appt.date, appt.startTime);
+        if (!alreadyAsked) {
+          try {
+            const msg = `Oi ${firstName(appt.clientName)}, posso confirmar seu horário de ${appt.serviceName} amanhã às ${appt.startTime}? Responda "confirmo" para reservar ou "cancelar" caso precise desmarcar.`;
+            const result = await sendToContact(business, appt, msg, 'confirmation');
+            if (result.sent) {
+              await markReminderSlotClaimed(adminDb, appt.id, business.id, 'confirmation', appt.date, appt.startTime);
+              await doc.ref.update({ confirmationRequestedAt: new Date().toISOString() });
+              stats.confirmationsAsked++;
+            }
+          } catch (err) {
+            stats.errors.push({ appointmentId: appt.id, phase: 'confirmation', error: String(err) });
           }
-        } catch (err) {
-          stats.errors.push({ appointmentId: appt.id, phase: 'confirmation', error: String(err) });
         }
       }
     }
 
     // ── Follow-up (12–24h after appointment ended, only if completed) ──
-    if (agenda.followUpAfter && !appt.followUpSentAt && appt.status === 'concluido') {
+    // Slot da chave usa endTime (o "quando" deste aviso é ancorado no fim do
+    // atendimento, não no início) — reagendar o fim gera novo follow-up.
+    if (agenda.followUpAfter && appt.status === 'concluido') {
       try {
         const apptEndAt = zonedDateTimeToUtc(appt.date, appt.endTime, timezone);
         const hoursAfter = (nowMs - apptEndAt.getTime()) / (60 * 60 * 1000);
         if (hoursAfter >= 12 && hoursAfter <= 36) {
-          const msg = `Oi ${firstName(appt.clientName)}! Como foi seu ${appt.serviceName}? Ficamos à disposição para qualquer coisa. 🙏`;
-          const result = await sendToContact(business, appt, msg, 'followup');
-          if (result.sent) {
-            await doc.ref.update({ followUpSentAt: new Date().toISOString() });
-            stats.followUpsSent++;
+          const alreadyFollowedUp = await hasReminderSlotBeenClaimed(adminDb, appt.id, 'followup', appt.date, appt.endTime);
+          if (!alreadyFollowedUp) {
+            const msg = `Oi ${firstName(appt.clientName)}! Como foi seu ${appt.serviceName}? Ficamos à disposição para qualquer coisa. 🙏`;
+            const result = await sendToContact(business, appt, msg, 'followup');
+            if (result.sent) {
+              await markReminderSlotClaimed(adminDb, appt.id, business.id, 'followup', appt.date, appt.endTime);
+              await doc.ref.update({ followUpSentAt: new Date().toISOString() });
+              stats.followUpsSent++;
+            }
           }
         }
       } catch (err) {

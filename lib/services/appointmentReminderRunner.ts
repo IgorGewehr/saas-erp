@@ -7,8 +7,11 @@
  * nas janelas de 60min e 30min antes, e cria 1 notificação por profissional
  * no sino (TopBar).
  *
- * Idempotência: log composto em `appointmentReminderLogs/{appointmentId}_{minutesBefore}`.
- * Cron rodando múltiplas vezes no mesmo intervalo NÃO duplica notificações.
+ * Idempotência: log composto em `appointmentReminderLogs/{appointmentId}_{kind}_{slot}`
+ * (definição compartilhada com o lembrete de paciente via WhatsApp — ver
+ * `lib/services/agenda/reminderWindow.ts`). Cron rodando múltiplas vezes no
+ * mesmo intervalo NÃO duplica notificações; reagendar o appointment libera
+ * um lembrete novo pro slot novo.
  *
  * Timezone (M06.5): fuso por negócio via `business.settings.timezone`
  * (default `America/Sao_Paulo` quando ausente — mesmo comportamento de
@@ -23,8 +26,9 @@
 
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import type { Appointment } from '@/lib/types';
-import { getAppointmentProfessionalIds, getAppointmentProfessionalNames } from '@/lib/utils/appointment';
-import { zonedDateTimeToUtc, DEFAULT_BUSINESS_TIMEZONE } from '@/lib/utils/timezone';
+import { getAppointmentProfessionalIds } from '@/lib/utils/appointment';
+import { DEFAULT_BUSINESS_TIMEZONE } from '@/lib/utils/timezone';
+import { minutesUntilSlot, isWithinReminderWindow, claimReminderSlotInTx } from '@/lib/services/agenda/reminderWindow';
 
 // Janelas de lembrete: ANTES de cada slot, em minutos. Cron roda a cada 5min,
 // então cada appt vai cair numa janela ±5min em torno do alvo.
@@ -96,7 +100,6 @@ function addDay(yyyymmdd: string): string {
 export async function runAppointmentReminders(now: Date = new Date()): Promise<ReminderSummary> {
   const today = todayBR(now);
   const tomorrow = addDay(today);
-  const nowMs = now.getTime();
 
   // Query global cross-tenant: appointments tem businessId, mas o lembrete é
   // por appt individual (não precisa scan por business primeiro). 1 query
@@ -118,21 +121,18 @@ export async function runAppointmentReminders(now: Date = new Date()): Promise<R
     if (SKIP_STATUSES.has(apt.status)) continue;
 
     const timezone = timezoneByBusiness.get(apt.businessId) || DEFAULT_BUSINESS_TIMEZONE;
-    let aptEpoch: number;
+    let minutesUntilAppt: number;
     try {
-      aptEpoch = zonedDateTimeToUtc(apt.date, apt.startTime, timezone).getTime();
+      minutesUntilAppt = minutesUntilSlot(apt.date, apt.startTime, timezone, now);
     } catch (err) {
       console.warn(`[appointmentReminder] data/fuso inválido pro appointment ${apt.id}:`, err);
       continue;
     }
 
-    const minutesUntilAppt = (aptEpoch - nowMs) / 60_000;
-
     // Acha qual janela (60min ou 30min) o appt está. Pode estar em ambas se o
     // cron pegou 2 ciclos do mesmo appt — idempotência do log resolve.
     for (const minutesBefore of REMINDER_WINDOWS) {
-      const diff = Math.abs(minutesUntilAppt - minutesBefore);
-      if (diff > WINDOW_TOLERANCE_MIN) continue;
+      if (!isWithinReminderWindow(minutesUntilAppt, minutesBefore, WINDOW_TOLERANCE_MIN)) continue;
 
       firedCount++;
       const result = await tryNotifyAppointment(apt, minutesBefore);
@@ -151,12 +151,10 @@ export async function runAppointmentReminders(now: Date = new Date()): Promise<R
 }
 
 /**
- * Idempotência via log composto: `appointmentReminderLogs/{aptId}_{minutesBefore}_{date}_{startTime}`.
- * Transaction garante que cron runs paralelos não duplicam notif. O slot
- * (date+startTime) faz parte da chave de propósito: se o appt for reagendado
- * (ex: 14:00 → 18:00), o NOVO horário gera log novo e dispara lembrete pro
- * horário novo. Caso contrário, log antigo bloquearia o lembrete do horário
- * reagendado.
+ * Idempotência via a definição compartilhada de `reminderWindow.ts` — chave
+ * por (appointmentId, kind, slot=date+startTime). Reagendar gera slot novo e
+ * libera o lembrete pro horário novo; a claim roda na MESMA transação que
+ * cria as notificações (só Firestore, sem I/O externo, seguro pra tx).
  */
 async function tryNotifyAppointment(
   apt: Appointment,
@@ -173,15 +171,12 @@ async function tryNotifyAppointment(
     };
   }
 
-  // Chave inclui date+startTime sanitizados pra que reagendamento gere log novo.
-  const slotKey = `${apt.date}_${apt.startTime}`.replace(/[^a-zA-Z0-9_-]/g, '');
-  const logRef = adminDb.collection('appointmentReminderLogs').doc(`${apt.id}_${minutesBefore}_${slotKey}`);
-  const profNames = getAppointmentProfessionalNames(apt);
+  const kind = `staff_${minutesBefore}`;
 
   try {
     const created = await adminDb.runTransaction(async (tx) => {
-      const logSnap = await tx.get(logRef);
-      if (logSnap.exists) return 0; // já notificou
+      const claimed = await claimReminderSlotInTx(tx, adminDb, apt.id, apt.businessId, kind, apt.date, apt.startTime);
+      if (!claimed) return 0; // já notificou pra este slot
 
       // Cria 1 notification doc por profissional. Em batch via tx (limitado a
       // 500 writes — appts não passam disso).
@@ -205,15 +200,6 @@ async function tryNotifyAppointment(
           createdAt: now,
         });
       }
-
-      tx.set(logRef, {
-        appointmentId: apt.id,
-        businessId: apt.businessId,
-        minutesBefore,
-        sentAt: now,
-        recipientIds: profIds,
-        recipientNames: profNames,
-      });
 
       return profIds.length;
     });
