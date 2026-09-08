@@ -14,19 +14,13 @@ import { useTeamChat, useTeamChatMessages } from '@/lib/hooks/useTeamChat';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import { RenderMarkdown } from '@/app/components/features/dashboard/markdown';
 import { getInitials } from '@/lib/utils/format';
+import { getMemberDisplayStatus, isMemberOnline } from '@/lib/utils/presence';
 import type { User as UserType, TeamChat, TeamChatMessage, TeamChatAttachment } from '@/lib/types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function getMemberDisplayStatus(member: UserType): 'online' | 'busy' | 'offline' {
-  if (member.userStatus === 'invisible') return 'offline';
-  if (!member.isOnline || !member.lastSeenAt) return 'offline';
-  if (Date.now() - new Date(member.lastSeenAt).getTime() >= 3 * 60 * 1000) return 'offline';
-  return member.userStatus === 'busy' ? 'busy' : 'online';
-}
-
 function isOnline(member: UserType): boolean {
-  return getMemberDisplayStatus(member) !== 'offline';
+  return isMemberOnline(member);
 }
 
 type RelTime = (key: string, opts?: Record<string, unknown>) => string;

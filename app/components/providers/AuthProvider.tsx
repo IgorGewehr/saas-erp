@@ -225,6 +225,31 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
             await deleteUser(fbUser);
             throw { code: 'invite/code-expired' };
           }
+
+          // M09 Gap 2: reivindica o código ATOMICAMENTE aqui, ANTES de conceder
+          // qualquer acesso ao negócio — antes desta correção, a marcação
+          // `isActive:false` vinha por ÚLTIMO (depois de criar o perfil e
+          // adicionar aos memberIds), então dois signups concorrentes com o
+          // MESMO código podiam ambos passar pela leitura acima (ambos veem
+          // isActive:true) e ambos completarem o fluxo inteiro antes de
+          // qualquer um marcar o código usado. A regra do Firestore
+          // (`inviteCodes` allow update) já faz compare-and-swap real —
+          // `resource.data.isActive == true` é avaliado contra o COMMIT mais
+          // recente no momento da escrita, não contra a leitura stale acima —
+          // então mover a marcação pra cá faz o segundo signup receber
+          // permission-denied ANTES de ganhar qualquer acesso real, em vez de
+          // depois.
+          try {
+            await updateDoc(doc(db, 'inviteCodes', code), {
+              isActive: false,
+              usedBy: fbUser.uid,
+              usedByName: name,
+              usedAt: now,
+            });
+          } catch {
+            await deleteUser(fbUser);
+            throw { code: 'invite/invalid-code' };
+          }
         } catch (err) {
           // Re-throw validation errors; other errors also abort
           throw err;
@@ -239,6 +264,13 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           role: codeData.role,
           businessId: codeData.businessId,
           invitedBy: codeData.createdBy,
+          // M09 (achado residual fechado): prova pra firestore.rules de que
+          // este create de role≠founder veio de um convite de verdade — a
+          // regra faz get() neste código e confere businessId/role/usedBy
+          // antes de aceitar o create. Sem isso, qualquer role≠founder era
+          // aceita se o `businessId` fosse conhecido/adivinhado, sem convite
+          // real (achado documentado desde M09.1, deixado aberto até agora).
+          redeemedInviteCode: code,
           ...(sectorId ? { sectorIds: [sectorId] } : {}),
           isActive: true,
           isOnline: true,
@@ -261,13 +293,8 @@ export default function AuthProvider({ children }: { children: ReactNode }) {
           }).catch(() => { /* sector may have been deleted — non-fatal */ });
         }
 
-        // ── Mark code as used (one-time) ─────────────────────────────────────
-        await updateDoc(doc(db, 'inviteCodes', code), {
-          isActive: false,
-          usedBy: fbUser.uid,
-          usedByName: name,
-          usedAt: now,
-        });
+        // Código já foi marcado como usado atomicamente acima, antes de
+        // qualquer acesso ser concedido — ver comentário no bloco de validação.
 
         // onSnapshot listener reacts to the writes above automatically
 

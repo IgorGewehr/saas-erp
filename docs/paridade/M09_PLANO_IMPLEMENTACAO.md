@@ -165,11 +165,21 @@ Contém dado de demo hardcoded (`TeamTab.tsx`, mock com `role:'founder'`).
 ## 7. Fora de escopo deliberado
 
 - Sector-enforcement server-side em Kanban/Spreadsheets (Gap 5) — equipe pequena não tem múltiplos
-  setores concorrendo por confidencialidade ainda.
-- Consolidar `getMemberDisplayStatus` num util compartilhado (Gap 6) — cosmético.
-- Apagar `IntegrationsModule` morto (§5) — barato mas não urgente.
-- Corrigir bug de heartbeat no Perfil (Gap 7) — real mas UX-only.
-- Race condition de invite code (Gap 2) — baixo risco prático pra equipe de 2-3 pessoas.
+  setores concorrendo por confidencialidade ainda. **Ainda em aberto** (maior escopo que os
+  outros — mesmo padrão de risco do M07.3, "a fatia de maior risco da sessão"; não retomado
+  nesta rodada de fixes por conta própria, ver nota abaixo).
+- ~~Consolidar `getMemberDisplayStatus` num util compartilhado (Gap 6) — cosmético.~~ ✅
+  Corrigido em 08/09/2026 (`lib/utils/presence.ts`, ver M09.3).
+- Apagar `IntegrationsModule` morto (§5) — ✅ apagado em M11 (`ae72a69`).
+- ~~Corrigir bug de heartbeat no Perfil (Gap 7) — real mas UX-only.~~ ✅ Corrigido em 08/09/2026
+  (`lib/services/settings/profileSync.ts`, mesmo padrão do `SIDEBAR_PREFS_HEARTBEAT_BUG.md`).
+- ~~Race condition de invite code (Gap 2) — baixo risco prático pra equipe de 2-3 pessoas.~~ ✅
+  Corrigido em 08/09/2026 — reordenado pra reivindicar o código atomicamente ANTES de conceder
+  acesso, aproveitando compare-and-swap real já existente na regra `inviteCodes` allow update.
+- ~~Achado residual do `create` (role≠founder sem cross-referência de invite).~~ ✅ Fechado em
+  08/09/2026 — confirmado por leitura de código que só existe 1 caminho de create com
+  role≠founder em todo o app (resgate de invite); `redeemedInviteCode` gravado no create,
+  cross-referenciado na regra.
 
 ## 8. Fases
 
@@ -184,8 +194,35 @@ Contém dado de demo hardcoded (`TeamTab.tsx`, mock com `role:'founder'`).
       sucesso (`Deploy complete!`, "released rules firestore.rules to cloud.firestore") contra o
       projeto real `service-provider-1cd0d`.** A correção está ativa em produção a partir de
       05/09/2026.
-- [ ] Achado residual documentado (create de role≠founder ainda sem cross-referência de invite)
-      — follow-up explícito, não bloqueia o deploy da correção principal (já feito).
+- [x] Achado residual documentado (create de role≠founder ainda sem cross-referência de invite)
+      — follow-up explícito, não bloqueia o deploy da correção principal (já feito). **Fechado em
+      M09.3 (08/09/2026).**
+
+### M09.3 — Fixes de baixo risco por conta própria (08/09/2026)
+
+- [x] Gap 2 (race condition de invite code): `AuthProvider.tsx` reordenado — reivindica o código
+      (`isActive:false`) atomicamente ANTES de criar perfil/memberIds, aproveitando o
+      compare-and-swap real já existente na regra `inviteCodes` `allow update`
+      (`resource.data.isActive == true` avaliado contra o commit mais recente, não a leitura
+      stale). Segundo signup concorrente agora recebe permission-denied ANTES de ganhar acesso.
+- [x] Achado residual do `create` (role≠founder sem cross-referência de invite): fechado no mesmo
+      commit — `redeemedInviteCode` gravado no create (mesmo write que já reivindica o código
+      acima), `firestore.rules` cross-referencia `inviteCodes/{code}.usedBy/businessId/role`.
+      Confirmado por leitura de código (não só documentação) que o único caminho de create com
+      role≠founder em todo o app é o resgate de invite — `signInWithGoogle` só cria founder.
+- [x] Gap 6 (`getMemberDisplayStatus` triplicada): consolidado em `lib/utils/presence.ts`
+      (`getMemberDisplayStatus`/`isMemberOnline`), `SettingsModule.tsx`/`TeamChatPanel.tsx`
+      importam em vez de redefinir. Testes novos em `tests/utils/presence.test.ts`.
+- [x] Gap 7 (heartbeat sobrescrevendo Perfil): `lib/services/settings/profileSync.ts`
+      (`computeProfileSyncKey`), mesmo padrão de `sidebarPrefsSync.ts` — sync guardado por
+      conteúdo via `useRef`, não por referência. Testes novos em
+      `tests/services/profileSync.test.ts`.
+- [ ] Validado via `firebase deploy --only firestore:rules --dry-run` (compilou) — **NÃO
+      deployado ainda**, aguardando autorização explícita do usuário (mesmo protocolo de
+      M09.1/M09.2).
+- Gap 5 (sector-enforcement em Kanban/Spreadsheets) permanece deliberadamente fora desta rodada
+  — escopo comparável ao M07.3 ("fatia de maior risco da sessão"), não cabe numa fatia de
+  "fixes de baixo risco por conta própria".
 
 ### M09.2 — Existe founder real? ✅ Decidido e implementado (05/09/2026)
 

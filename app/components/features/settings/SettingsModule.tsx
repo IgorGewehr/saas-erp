@@ -102,6 +102,8 @@ import {
 } from './AgentPolicyEditors';
 import { ROLE_LABELS, ROLE_HIERARCHY, INTEGRATION_PROVIDERS, API_KEY_SCOPES, API_KEY_SCOPE_GROUPS, SECTOR_COLORS, DEFAULT_WORKING_HOURS, USE_CASE_LABELS, USE_CASE_DESCRIPTIONS, DEFAULT_USE_CASE } from '@/lib/types';
 import { formatDate, formatCurrency } from '@/lib/utils/format';
+import { computeProfileSyncKey } from '@/lib/services/settings/profileSync';
+import { getMemberDisplayStatus } from '@/lib/utils/presence';
 import { VaultTab } from '@/app/components/features/senhas/SenhasModule';
 // encryptToken/decryptToken no longer needed — channel credentials handled by Embedded Signup
 import {
@@ -333,7 +335,18 @@ function ProfileTab() {
     t('settings.profile.days.saturday',  'Sábado'),
   ];
 
+  // M09 Gap 7: sync com servidor guardado por CONTEÚDO (computeProfileSyncKey),
+  // não só referência — o heartbeat de presença (60s + troca de aba) recria a
+  // referência de `user` a cada onSnapshot mesmo sem o perfil mudar; um
+  // `useEffect(() => {...}, [user])` normal disparava a cada heartbeat e
+  // sobrescrevia edição em andamento no formulário (mesma causa raiz do
+  // SIDEBAR_PREFS_HEARTBEAT_BUG.md, nunca corrigida aqui). Ver doc do helper.
+  const lastProfileSyncKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    const key = computeProfileSyncKey(user);
+    if (key === lastProfileSyncKeyRef.current) return;
+    lastProfileSyncKeyRef.current = key;
+
     if (user) {
       setName(user.name || '');
       setPhone(user.phone ? formatPhoneInput(user.phone) : '');
@@ -2931,13 +2944,6 @@ const INVITE_ROLES: UserRole[] = ['admin', 'manager', 'operator', 'viewer'];
 function generateCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-}
-
-function getMemberDisplayStatus(member: UserType): 'online' | 'busy' | 'offline' {
-  if (member.userStatus === 'invisible') return 'offline';
-  if (!member.isOnline || !member.lastSeenAt) return 'offline';
-  if (Date.now() - new Date(member.lastSeenAt).getTime() >= 3 * 60 * 1000) return 'offline';
-  return member.userStatus === 'busy' ? 'busy' : 'online';
 }
 
 function relativeTime(dateStr?: string): string {

@@ -71,6 +71,11 @@ export interface User {
   lastLoginAt?: string;
   lastSeenAt?: string;
   invitedBy?: string;
+  /** M09: código do inviteCode resgatado neste create — usado só por firestore.rules
+   *  pra provar que um create com role≠founder veio de um convite de verdade (cross-
+   *  referenciado contra inviteCodes/{code}.usedBy no momento da criação). Nunca
+   *  atualizado depois; não faz parte de selfEditableUserFields(). */
+  redeemedInviteCode?: string;
   profileAddress?: {
     logradouro?: string;
     numero?: string;

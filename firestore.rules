@@ -220,24 +220,28 @@ service cloud.firestore {
       // o doc real). Único jeito legítimo de criar `role:'founder'` — invite
       // code nunca oferece essa role (`SettingsModule.tsx` INVITE_ROLES).
       //
-      // ACHADO REGISTRADO, NÃO FECHADO NESTA CORREÇÃO EMERGENCIAL (ver
-      // docs/paridade/M09_PLANO_IMPLEMENTACAO.md §1): pra qualquer role
-      // ≠ founder, esta regra ainda não consegue distinguir "resgatei um
-      // invite de verdade pra este businessId" de "forjei um create com um
-      // businessId que só conheço/adivinhei" — role:'admin' especificamente
-      // é legítimo tanto no fluxo de dono de negócio novo QUANTO no de
-      // invite pra admin de negócio já existente, e não dá pra diferenciar
-      // sem o client passar o código do invite como campo pra cross-
-      // referenciar contra `inviteCodes`. Fechar isso de verdade exige uma
-      // mudança pequena de app code (não só de regra) — deixado como
-      // follow-up explícito, não silenciado. Esta correção fecha o vetor
-      // mais grave confirmado (auto-escalação de uma conta JÁ EXISTENTE via
-      // update, acima) e o forjamento de `founder` (agora verificado contra
-      // ownership real em vez de bloqueado incondicionalmente).
+      // ACHADO RESIDUAL FECHADO (era deixado aberto desde M09.1/M09.2, ver
+      // docs/paridade/M09_PLANO_IMPLEMENTACAO.md §1): confirmado por leitura
+      // de código que o ÚNICO create de role≠founder em todo o app vem do
+      // fluxo de resgate de invite (`AuthProvider.tsx signUp`, com
+      // `inviteCode`) — `signInWithGoogle` só cria conta nova como founder,
+      // nunca oferece resgate de invite. Esse fluxo agora grava
+      // `redeemedInviteCode` no próprio create (mesmo write, mesma
+      // transação lógica) — a regra confere aqui que o código referenciado
+      // (a) já foi marcado `usedBy` este MESMO uid (grava-se atomicamente
+      // ANTES deste create, ver AuthProvider.tsx) e (b) o businessId/role do
+      // convite batem exatamente com os do documento sendo criado. Fecha o
+      // vetor "businessId conhecido/adivinhado sem convite real" pra
+      // qualquer role — antes, só `founder` era bloqueado.
       allow create: if isAuthenticated() && request.auth.uid == userId
                     && (
-                      request.resource.data.role != 'founder'
-                      || get(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)).data.ownerUserId == request.auth.uid
+                      (request.resource.data.role == 'founder'
+                       && get(/databases/$(database)/documents/businesses/$(request.resource.data.businessId)).data.ownerUserId == request.auth.uid)
+                      || (request.resource.data.role != 'founder'
+                          && request.resource.data.redeemedInviteCode is string
+                          && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.redeemedInviteCode)).data.usedBy == request.auth.uid
+                          && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.redeemedInviteCode)).data.businessId == request.resource.data.businessId
+                          && get(/databases/$(database)/documents/inviteCodes/$(request.resource.data.redeemedInviteCode)).data.role == request.resource.data.role)
                     );
 
       // Only founders can delete users (soft delete preferred)
