@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useImperativeHandle, forwardRef, memo, useDeferredValue } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useImperativeHandle, forwardRef, memo, useDeferredValue, Fragment } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -10731,7 +10731,7 @@ export default function ConversasModule() {
 
       {/* Settings Dialog */}
       <AnimatePresence>
-        {showSettings && <IntegrationSettingsDialog onClose={() => setShowSettings(false)} />}
+        {showSettings && <IntegrationSettingsDialog key="settings" onClose={() => setShowSettings(false)} />}
         {showSaveViewModal && (
           // key garante remount limpo quando alterna entre create/edit
           // (defensivo: useState do modal só captura initialName/Emoji no
@@ -10747,7 +10747,7 @@ export default function ConversasModule() {
           />
         )}
         {showBatchAssign && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          <motion.div key="batch-assign" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
             onClick={e => { if (e.target === e.currentTarget) setShowBatchAssign(false); }}>
             <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
@@ -10771,7 +10771,7 @@ export default function ConversasModule() {
           </motion.div>
         )}
         {showBatchTag && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          <motion.div key="batch-tag" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
             onClick={e => { if (e.target === e.currentTarget) setShowBatchTag(false); }}>
             <motion.div initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
@@ -10785,10 +10785,11 @@ export default function ConversasModule() {
           </motion.div>
         )}
         {showCSATDashboard && business?.id && (
-          <CSATDashboard businessId={business.id} onClose={() => setShowCSATDashboard(false)} />
+          <CSATDashboard key="csat-dashboard" businessId={business.id} onClose={() => setShowCSATDashboard(false)} />
         )}
         {showMergeDialog && selectedConversation && (
           <MergeConversationsDialog
+            key="merge-dialog"
             source={selectedConversation}
             conversations={conversations}
             onClose={() => setShowMergeDialog(false)}
@@ -10797,6 +10798,7 @@ export default function ConversasModule() {
         )}
         {showTransferChannelDialog && selectedConversation && (
           <TransferChannelDialog
+            key="transfer-channel"
             conversation={selectedConversation}
             connections={channelConnections}
             myConnectionIds={myConnectionIds}
@@ -10805,6 +10807,7 @@ export default function ConversasModule() {
           />
         )}
         <NewConversationDialog
+          key="new-conversation"
           open={showNewConversation}
           onClose={() => { setShowNewConversation(false); setNewConvPrefill(null); }}
           onCreated={(conv) => {
@@ -10821,6 +10824,7 @@ export default function ConversasModule() {
         />
         {showRoutingRules && isAdmin && business?.id && (
           <RoutingRulesDialog
+            key="routing-rules"
             rules={routingRules}
             businessId={business.id}
             members={members}
@@ -10830,7 +10834,7 @@ export default function ConversasModule() {
           />
         )}
         {showAnalytics && (
-          <>
+          <Fragment key="analytics">
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/20 z-30" onClick={() => setShowAnalytics(false)} />
             <ConversationAnalyticsPanel
@@ -10838,10 +10842,11 @@ export default function ConversasModule() {
               members={members}
               onClose={() => setShowAnalytics(false)}
             />
-          </>
+          </Fragment>
         )}
         {showSLASettings && isAdmin && business?.id && (
           <SLASettingsDialog
+            key="sla-settings"
             current={slaConfig}
             businessId={business.id}
             onClose={() => setShowSLASettings(false)}
