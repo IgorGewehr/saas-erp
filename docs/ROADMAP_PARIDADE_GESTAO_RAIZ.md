@@ -57,7 +57,7 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
 | **M08 — Dashboard, Relatórios e Indicadores** | 🟡 Média | Útil pra gestão da clínica, não bloqueia operação do dia a dia. |
 | **M11 — Agente de IA, API pública e Integrações** | 🟢 Baixa-média | Agente já cobre agendamento básico via booking público; evoluir mais não é urgente agora. |
 | **M01 — Catálogo, Estoque, Fornecedores, Compras** | 🟢 Baixa | Clínica não tem estoque relevante além de materiais de consumo pontuais. Já 100% em código; falta só aceite operacional em homologação, que pode esperar. |
-| **M02 — restante (M02.5e+)** | ⚪ Pausado (restaurante) | `variantId` no carrinho, B2B condicional, Mercado Pago tokenizado, cardápio — é vitrine de produto/varejo, não é o que uma clínica cobra. O núcleo já entregue (M02.0–M02.5d) já é suficiente pro PDV eventual da clínica. |
+| **M02 — restante (M02.5e+)** | 🟢 Retomado 08/09/2026 (restaurante) | `variantId` no carrinho, B2B condicional, Mercado Pago tokenizado — vitrine de produto/varejo, não é o que uma clínica cobra, mas o usuário pediu pra retomar em paralelo à odontologia. O núcleo já entregue (M02.0–M02.5d) já é suficiente pro PDV eventual da clínica; o restante evolui a experiência do restaurante. |
 | **M12 — Onboarding, Planos e Billing SaaS** | ⚪ Baixa agora | É billing nosso (do AEVO), não da clínica — não afeta se a odontologia consegue operar. |
 | **M00 — Baseline técnico** | ⚫ Transversal | Nunca foi formalizado como módulo à parte; cada módulo (M01, M02) criou seu próprio baseline na prática. Não bloqueia nada específico da odontologia. |
 
@@ -70,7 +70,7 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
 5. **M05** — CRM/histórico do paciente, depois do operacional estar sólido.
 6. **M13** — auditoria de segurança/produção antes de qualquer expansão de escala real de clientes.
 
-**Deliberadamente sem esforço adicional agora**: M02.5e+ (restaurante), M01 aceite em homologação — não são urgência da odontologia; retomam quando houver demanda real ou tempo sobrando. (M08/M09/M11/M12 já foram percorridos e fechados em 05-07/09/2026, apesar de listados como baixa prioridade — usuário pediu pra continuar por eles enquanto não podia fazer ações manuais nos módulos de prioridade alta.)
+**Deliberadamente sem esforço adicional agora**: M01 aceite em homologação — não é urgência da odontologia, precisa de tenant real. (M08/M09/M11/M12 já foram percorridos e fechados em 05-07/09/2026, apesar de listados como baixa prioridade — usuário pediu pra continuar por eles enquanto não podia fazer ações manuais nos módulos de prioridade alta. M02.5e+ retomado em 08/09/2026 a pedido explícito do usuário, em paralelo à odontologia.)
 
 ---
 
@@ -104,8 +104,8 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
   - Produtos, categorias, imagens, variações, estoque, movimentações, fornecedores e NF-e de entrada.
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
-- [ ] **M02 — Vendas, PDV, Pedidos e Cardápio** ⚪ Restante pausado (foco odontologia)
-  - Status: `Em implementação — M02.0 a M02.4 e M02.5a-d concluídas em código (público, manual, agente, FSM central, bloqueio de edição pós-efeito). M02.5e em diante PAUSADO em 03/09/2026 — variantId/B2B/Mercado Pago tokenizado servem restaurante/varejo, não a odontologia`
+- [ ] **M02 — Vendas, PDV, Pedidos e Cardápio** 🟢 Restante retomado 08/09/2026 (restaurante)
+  - Status: `Em implementação — M02.0 a M02.4 e M02.5a-d concluídas em código (público, manual, agente, FSM central, bloqueio de edição pós-efeito). M02.5e em diante PAUSADO em 03/09/2026, RETOMADO em 08/09/2026 a pedido do usuário — variantId/B2B/Mercado Pago tokenizado servem restaurante/varejo, trabalhado em paralelo à odontologia`
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.

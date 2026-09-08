@@ -8,7 +8,10 @@
 >
 > Estado desta rodada: M02.0 a M02.4 concluídas em código; M02.5a-d (cardápio público, pedido manual, agente, FSM central + bloqueio de edição pós-efeito) concluídas.
 >
-> **Pausado em 03/09/2026** a partir de M02.5e — foco ativo virou os dois clientes pagantes (odontologia = prioridade; restaurante = mínimo funcional). O restante da M02 (`variantId`, B2B, Mercado Pago tokenizado) é vitrine de produto/varejo, não serve a odontologia. Ver "Prioridade atual" em `docs/ROADMAP_PARIDADE_GESTAO_RAIZ.md`.
+> **Pausado em 03/09/2026** a partir de M02.5e, **retomado em 08/09/2026** a pedido do usuário —
+> odontologia continua prioridade, mas o restante da M02 (`variantId`, B2B, Mercado Pago
+> tokenizado, cancelamento/devolução, UX/desempenho, migração, testes) volta a ser trabalhado em
+> paralelo. Ver "Prioridade atual" em `docs/ROADMAP_PARIDADE_GESTAO_RAIZ.md`.
 
 ## 1. Resultado esperado
 
@@ -252,11 +255,11 @@ Cada etapa deve ser idempotente e retomável. Falha depois de um efeito reservad
 
 - [x] Fazer pedido público, manual e do agente usarem a mesma criação server-side.
 - [x] Preservar horário, zona, entrega/retirada, modificadores, tracking e numeração nos três canais de criação.
-- [ ] Adicionar variação ao carrinho, contrato, estoque, impressão, fiscal e repetição de pedido.
+- [ ] Adicionar variação ao carrinho, contrato, estoque, impressão, fiscal e repetição de pedido. **(M02.5e — retomada 08/09/2026)**
 - [x] Mover transições críticas de status para endpoint/serviço autenticado com FSM server-side.
 - [x] Definir quando o estoque é reservado/deduzido em cada forma de pagamento e canal (dedução na criação pelos três canais; dedução legada em `preparando` só para pedidos anteriores à migração).
 - [x] Bloquear edição insegura após efeitos; quando permitida, calcular e aplicar delta compensatório. Ver `docs/paridade/M02_EDICAO_PEDIDO_POS_EFEITO.md` — de quebra corrigiu um bug real de dedução dupla de estoque (não relacionado a edição).
-- [ ] Integrar Mercado Pago ao mesmo `operationId` e aos mesmos efeitos reconciliáveis.
+- [ ] Integrar Mercado Pago ao mesmo `operationId` e aos mesmos efeitos reconciliáveis. **(M02.5f — retomada 08/09/2026)**
 - [ ] Manter jobs de expiração/reconciliação, eliminando caminhos paralelos de estorno.
 
 **M02.5a concluída em código:** `/api/orders/public` migrado para o núcleo comercial (cotação, coordenador, ledgers de benefício) via `lib/services/delivery-order-server.ts`. Corrigidos dois bugs latentes do núcleo M02.4 que só apareciam com frete (cupom de entrega e teto de desconto do gift card). Duas mudanças de comportamento deliberadas (estoque de insumo/modificador agora bloqueia; gift card em corrida aborta o pedido) documentadas em `docs/paridade/M02_DELIVERY_CARDAPIO.md`.
