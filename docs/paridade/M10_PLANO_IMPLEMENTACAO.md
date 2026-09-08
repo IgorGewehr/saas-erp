@@ -227,10 +227,14 @@ Feito via agente de investigação dedicado. Achados em §0-§4 acima.
 - [x] `lib/contracts/events/index.ts` — jsdoc de `deliveryOrder.confirmed` corrigido (não afirma
       mais uma trilha de auditoria que não existe).
 
-### M10.7 — Purga de TTL do `webhookSeen` (baixa prioridade)
+### M10.7 — Purga de TTL do `webhookSeen` ✅ Concluído (08/09/2026)
 
-- [ ] Confirmar se existe TTL policy configurada no Firestore Console (fora do repo). Se não,
-      decidir se vale um job de purga ou se o crescimento da coleção é aceitável no volume atual.
+- [x] TTL nativo do Firestore (via `gcloud firestore fields ttls update`) não configurado —
+      `gcloud` CLI não disponível neste ambiente (só `firebase` CLI). Optado por cron de purga
+      em código, mesmo padrão dos outros crons de resiliência já em `docker-compose.yml`.
+- [x] `app/api/webhooks/cron/purge-seen/route.ts` — apaga em batch (até 500/lote, teto de 2000
+      docs/execução) documentos onde `expiresAt <= now`. Auth `Bearer CRON_SECRET`, mesmo padrão
+      de todos os outros crons. Agendado 1x/dia às 05:00 em `docker-compose.yml`.
 
 ### M10.8 — Dead-letter/retry genérico — fora de escopo deliberado (ver §6)
 
@@ -266,6 +270,6 @@ Feito via agente de investigação dedicado. Achados em §0-§4 acima.
 4. **M10.4** ✅ — idempotência por episódio nos 2 triggers restantes.
 5. **M10.5** ✅ — checkpoint `sendFinancialNotifications`/opt-out: aplicar o filtro, feito.
 6. **M10.6** ✅ — fix de doc.
-7. **M10.7** — purga TTL `webhookSeen` (baixa prioridade, ainda não abordado).
+7. **M10.7** ✅ — purga TTL `webhookSeen`: cron novo (08/09/2026).
 8. **M10.8** — permanece dormente (fora de escopo por padrão).
 9. **M10.9** — aceite.

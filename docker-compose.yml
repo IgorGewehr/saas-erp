@@ -95,6 +95,7 @@ services:
   #   - fiscal/cron/consultar-processando:        a cada 1 hora (HH:00)
   #   - data-retention/run (purge LGPD soft-deletes >30d): 1x ao dia, 03:00
   #   - mercadopago/cron/refresh-tokens:           1x ao dia, 04:00
+  #   - webhooks/cron/purge-seen (TTL de dedup):   1x ao dia, 05:00
   #   - membership-billing/run (cobrança de assinatura): 1x ao dia, 06:00
   # Todos autenticam com Authorization: Bearer ${CRON_SECRET}
   # Usa o nome do serviço Docker (`app:3000`) na rede interna — não vai
@@ -118,7 +119,7 @@ services:
     command: |
       sh -c '
         apk add --no-cache curl > /dev/null 2>&1
-        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, fiscal-contingencia 30min, mp-expire-pix+mp-reconcile 10min, agent+birthday+fiscal-consulta 1h (HH:00), data-retention diario 03:00, mp-refresh-tokens diario 04:00, membership-billing diario 06:00"
+        echo "[cron] iniciado — process-scheduled 1min, appointments-reminders 5min, fiscal-contingencia 30min, mp-expire-pix+mp-reconcile 10min, agent+birthday+fiscal-consulta 1h (HH:00), data-retention diario 03:00, mp-refresh-tokens diario 04:00, purge-webhook-seen diario 05:00, membership-billing diario 06:00"
 
         call_endpoint() {
           # $$1=path, $$2=timeout
@@ -197,6 +198,14 @@ services:
             # dia são no-op.
             if [ "$$HOUR_NOW" = "06" ]; then
               call_endpoint "/api/membership-billing/run" 180
+            fi
+
+            # webhooks/cron/purge-seen: 1x ao dia, 05:00 (M10.7) — apaga docs
+            # de webhookSeen vencidos (dedup Meta/Baileys, TTL 24h já gravado
+            # em expiresAt, mas nada apagava — coleção crescia pra sempre).
+            # Idempotente por natureza (delete de doc vencido).
+            if [ "$$HOUR_NOW" = "05" ]; then
+              call_endpoint "/api/webhooks/cron/purge-seen" 60
             fi
           fi
         done
