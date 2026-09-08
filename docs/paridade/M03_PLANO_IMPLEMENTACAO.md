@@ -13,7 +13,8 @@
 > Estado: investigação de abertura concluída em 04/09/2026. M03.5, M03.0, M03.1, M03.2, M03.3
 > (API v1 + follow-up de atomicidade no PDV + follow-up de idempotência opcional no contrato do
 > agente), M03.4 e M03.6 (decisão V1 vs V2: **clássico é o principal**) concluídos em código o
-> mesmo dia. Resta M03.7 (DRE/fluxo/orçamento, condicionado à decisão de M03.6) e M03.9 (aceite).
+> mesmo dia. M03.7 (DRE/fluxo/orçamento) concluída em 08/09/2026 — checkpoint com o usuário:
+> DRE+projeção portados pro clássico, Orçamento construído agora. Resta só M03.9 (aceite).
 
 ---
 
@@ -313,11 +314,43 @@ silenciosa. Detalhes em `docs/financeiro/FINANCEIRO_M03_5_TESTES_CONCILIACAO.md`
 
 ### M03.7 — DRE/fluxo de caixa/orçamento (depende de M03.6)
 
-- [ ] Se V2 vencer: nada a fazer, já existe. Se clássico vencer ou convivência: decidir se DRE/
+- [x] Se V2 vencer: nada a fazer, já existe. Se clássico vencer ou convivência: decidir se DRE/
       projeção de caixa precisam de paridade no clássico, ou se o usuário aceita usar só o V2
       pra essas telas específicas mesmo mantendo o clássico pro resto.
-- [ ] Orçamento (`Budget`): confirmar com o usuário se é necessidade real antes de construir
+- [x] Orçamento (`Budget`): confirmar com o usuário se é necessidade real antes de construir
       qualquer coisa — hoje é 100% especulativo (tipo declarado, zero uso).
+
+**M03.7 concluída em código (08/09/2026).** Checkpoint com o usuário: **portar DRE + projeção
+de caixa pro clássico** (não usar o V2 só pra essas telas) e **construir Orçamento agora** (não
+ficar dormente). Implementado:
+
+- **Novas abas no Financeiro clássico**: "DRE" (`DreTab.tsx`) e "Orçamento" (`OrcamentoTab.tsx`),
+  ao lado de Conciliação/Auditoria.
+- **DRE + projeção de caixa reusam os read-models PUROS do financial-v2** (`computeDreMensal`/
+  `computeProjecaoCaixa` de `financial-v2/read-models/`) — mesma matemática dos dois regimes
+  (competência/caixa) e da janela de 30 dias, **sem duplicar lógica**. Só a UI é nova: o SVG do
+  V2 depende de variáveis CSS `--fin-*` escopadas ao módulo V2, então a visualização de caixa no
+  clássico é um gráfico de barras em Tailwind puro (mesma informação — saldo projetado dia a dia,
+  aviso quando cruza zero —, visual mais simples). Export PDF/CSV do DRE reusa
+  `lib/utils/financial-export.ts`, já compartilhado com o resto do clássico.
+- **`Budget` promovido a contrato SDD** (`lib/contracts/domain/budget.ts`, R2) — o tipo já existia
+  em `lib/types/index.ts` mas nunca tinha schema Zod nem uso real. `category`/`type` reusam as
+  MESMAS constantes `INCOME_CATEGORIES`/`EXPENSE_CATEGORIES` que os lançamentos já usam — sem
+  taxonomia paralela. Doc ID determinístico (`budgetDocId(businessId,year,month,category,type)`)
+  faz "criar meta" e "editar meta" serem o MESMO `setDoc` — sem query de unicidade, duplicata
+  impossível por construção da chave. Realizado calculado com a MESMA regra de competência do DRE
+  (dueDate, não-cancelada) — `realizedByCategory()` em `OrcamentoTab.tsx`.
+- **`firestore.rules`**: novo match `/budgets/{budgetId}` — `isManager()` pra read/create/update/
+  delete, mesmo padrão de `transactions`/`bankAccounts`. Validado via
+  `firebase deploy --only firestore:rules --dry-run` (compilou).
+- **Achado colateral corrigido**: o item "Financeiro" do Sidebar não tinha `minRole:'manager'`
+  (mesma classe de bug já corrigida em M08.5 pra "Relatórios") — não-manager via o menu mas toda
+  query dentro do módulo falhava por regra (`transactions` exige `isManager()`), UI quebrada em
+  vez de escondida. Corrigido — mesmo padrão do Sidebar aplicado.
+- Testes novos: `tests/contracts/budget.test.ts` (13 casos — schema + `budgetDocId` determinístico/
+  sem colisão) e `tests/services/orcamentoRealized.test.ts` (5 casos — agregação por categoria).
+  Suite completa sem regressão (1139 testes/86 arquivos). Não testado contra navegador nesta
+  sessão (mesma ressalva de sempre).
 
 ### M03.8 — Integrações externas (PIX/Boleto/OCR/Open Banking)
 

@@ -78,6 +78,7 @@ import {
   LayoutList,
   Briefcase,
   Tag,
+  Wallet,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TableVirtuoso } from 'react-virtuoso';
@@ -148,6 +149,8 @@ import type {
   FinancialNotificationSettings,
 } from '@/lib/types';
 import ProjetosTab from './ProjetosTab';
+import DreTab from './DreTab';
+import OrcamentoTab from './OrcamentoTab';
 
 // ==========================================
 // CONSTANTS
@@ -163,7 +166,7 @@ const PRESET_COLORS = [
   '#820AD1', '#FF7A00', '#1A1A2E', '#14532D', '#7C2D12',
 ];
 
-type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'projetos' | 'comissoes' | 'conciliacao' | 'auditoria';
+type FinancialTab = 'visao-geral' | 'lancamentos' | 'recorrentes' | 'contas' | 'projetos' | 'comissoes' | 'conciliacao' | 'dre' | 'orcamento' | 'auditoria';
 
 const inputSx = { '& .MuiOutlinedInput-root': { borderRadius: '12px' } };
 
@@ -281,6 +284,8 @@ function FinancialModuleBody() {
     ...(projectsEnabled ? [{ key: 'projetos' as FinancialTab, label: 'Projetos', icon: <Briefcase size={16} /> }] : []),
     { key: 'comissoes',  label: 'Comissões', icon: <Users size={16} /> },
     { key: 'conciliacao', label: t('financial.tabs.reconciliation', 'Conciliação'), icon: <Scale size={16} /> },
+    { key: 'dre',        label: t('financial.tabs.dre', 'DRE'), icon: <FileText size={16} /> },
+    { key: 'orcamento',  label: t('financial.tabs.budget', 'Orçamento'), icon: <Wallet size={16} /> },
     { key: 'auditoria',  label: t('financial.tabs.audit',     'Auditoria'), icon: <History size={16} /> },
   ];
 
@@ -1785,6 +1790,24 @@ function FinancialModuleBody() {
                 businessId={business?.id || ''}
                 transactions={transactions}
                 bankAccounts={bankAccounts}
+              />
+            )}
+
+            {activeTab === 'dre' && (
+              <DreTab
+                businessId={business?.id || ''}
+                businessName={business?.razaoSocial ?? ''}
+                transactions={transactions}
+                bankAccounts={bankAccounts}
+              />
+            )}
+
+            {activeTab === 'orcamento' && (
+              <OrcamentoTab
+                businessId={business?.id || ''}
+                transactions={transactions}
+                incomeCategories={INCOME_CATEGORIES}
+                expenseCategories={EXPENSE_CATEGORIES}
               />
             )}
           </motion.div>

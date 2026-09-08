@@ -1984,6 +1984,26 @@ service cloud.firestore {
     }
 
     // ============================================
+    // BUDGETS — orçamento mensal por categoria (M03.7)
+    // ============================================
+    match /budgets/{budgetId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isManager();
+      allow create: if isAuthenticated()
+                    && incomingBelongsToBusiness()
+                    && isManager()
+                    && request.resource.data.type in ['receita', 'despesa']
+                    && request.resource.data.amount is number
+                    && request.resource.data.amount >= 0;
+      allow update: if isAuthenticated()
+                    && isOwnBusiness()
+                    && isManager()
+                    && incomingBelongsToBusiness()
+                    && request.resource.data.amount is number
+                    && request.resource.data.amount >= 0;
+      allow delete: if isAuthenticated() && isOwnBusiness() && isManager();
+    }
+
+    // ============================================
     // CATCH-ALL: Deny everything else
     // ============================================
     match /{document=**} {

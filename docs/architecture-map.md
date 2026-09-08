@@ -53,7 +53,7 @@ External
 | Forms públicos | dentro do CRMModule | formTemplates, formResponses | Submissões anônimas NÃO criam Client (gap G5) |
 | Reviews | embutido em ClientDetailPanel | reviews | Sem UI próprio |
 | Kanban | `app/components/features/kanban/KanbanModule.tsx` | kanbanBoards, kanbanCards | Visibility all/sectors/members. Sem link com Deals (gap) |
-| Financeiro | `app/components/features/financial/FinancialModule.tsx` | transactions, bankAccounts | Reconciliação OFX/CSV; cards Enterprise (canal/setor/ROI/CLV); OCR/PIX/Boleto stub |
+| Financeiro | `app/components/features/financial/FinancialModule.tsx` | transactions, bankAccounts, budgets | Reconciliação OFX/CSV; cards Enterprise (canal/setor/ROI/CLV); OCR/PIX/Boleto stub; abas DRE (`DreTab.tsx`) e Orçamento (`OrcamentoTab.tsx`, M03.7) reusam os read-models puros de `financial-v2/read-models/` |
 | Fiscal | `app/components/features/fiscal/FiscalModule.tsx` | fiscalDocuments | SEFAZ gateway tensorroot.com, PKCS#12, DANFE, SPED |
 | Reports | `app/components/features/reports/ReportsModule.tsx` | sales+orders+appointments+transactions+reviews | Agrega in-memory; jsPDF |
 | Settings | `app/components/features/settings/SettingsModule.tsx` | businesses, users, sectors, inviteCodes | 6 tabs (perfil/empresa/fiscal/usuários/setores/enterprise) |
