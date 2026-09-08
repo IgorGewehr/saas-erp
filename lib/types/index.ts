@@ -2026,6 +2026,9 @@ export interface DeliveryOrderItem {
   /** Modificadores selecionados (pizza c/ sabores, borda, extras). */
   selectedModifiers?: SelectedModifier[];
   basePrice?: number;           // preço base do produto antes dos modificadores
+  /** M02.5e — variação escolhida, para produtos `kind:'variant'`. */
+  variantId?: string;
+  variantName?: string;
 }
 
 export interface DeliveryOrderAddress {

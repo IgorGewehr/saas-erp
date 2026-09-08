@@ -29,8 +29,12 @@ ORDERS_TOOLS: list[dict[str, Any]] = [
                 "Create a new delivery order for the customer. Use after confirming client name, "
                 "items, delivery or pickup, address if delivery, and payment method. Returns the "
                 "order id + sequential number + estimated delivery time.\n"
+                "If a catalog item has a `variants` list (from catalog_search/list_menu), you MUST "
+                "pick one and pass its id as `variantId` — items with variants cannot be ordered "
+                "without one.\n"
                 'Example: {"clientName":"Ana","clientPhone":"5547999998888",'
-                '"items":[{"productId":"prd_123","quantity":2}],'
+                '"items":[{"productId":"prd_123","quantity":2},'
+                '{"productId":"prd_456","variantId":"var_p","quantity":1}],'
                 '"deliveryType":"entrega",'
                 '"deliveryAddress":{"cep":"01310-100","logradouro":"Av Paulista",'
                 '"numero":"1000","bairro":"Bela Vista","municipio":"São Paulo","uf":"SP"},'
@@ -48,6 +52,7 @@ ORDERS_TOOLS: list[dict[str, Any]] = [
                             "type": "object",
                             "properties": {
                                 "productId": {"type": "string"},
+                                "variantId": {"type": "string", "description": "Required when the catalog item has a variants[] list."},
                                 "quantity": {"type": "integer", "minimum": 1},
                                 "notes": {"type": "string"},
                             },

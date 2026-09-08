@@ -17,6 +17,8 @@ const OrderItemInputSchema = z.object({
   productId: DocIdSchema,
   quantity: z.number().int().positive(),
   notes: z.string().max(500).optional(),
+  /** M02.5e — obrigatório na cotação quando o produto tem variants[]. */
+  variantId: DocIdSchema.optional(),
 });
 
 const AddressSchema = z.object({

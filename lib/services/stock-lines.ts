@@ -43,7 +43,11 @@ export function buildOrderStockLines(
 ): StockDeductionLine[] {
   const lines: StockDeductionLine[] = [];
   for (const item of order.items ?? []) {
-    lines.push({ productId: item.productId, quantity: item.quantity });
+    lines.push({
+      productId: item.productId,
+      quantity: item.quantity,
+      ...(item.variantId ? { variantId: item.variantId } : {}),
+    });
     const product = productIndex.get(item.productId);
     if (!product?.modifierGroups?.length) continue;
     for (const sm of item.selectedModifiers ?? []) {

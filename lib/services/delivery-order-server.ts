@@ -6,8 +6,11 @@
  * cotação M02.1. A execução usa o coordenador recuperável M02.2 e os ledgers
  * de benefícios M02.4 — o mesmo núcleo já usado pelo PDV (M02.3/M02.4).
  *
- * Variação de catálogo (variantId) e pedido do agente ficam para fatias
- * seguintes (M02.5c+).
+ * Variação de catálogo (variantId, M02.5e): a cotação comercial (M02.1) já
+ * exige/resolve `variantId` — este arquivo só precisa repassar o campo do
+ * item de entrada pra linha da cotação, e copiar o snapshot de volta pro
+ * documento persistido (ver `buildNewOperationRequest`/mapeamento de
+ * `document.items` abaixo).
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -219,6 +222,7 @@ async function buildNewOperationRequest(params: {
         lineId: `delivery-line-${index + 1}`,
         productId: item.productId,
         quantity: item.quantity,
+        ...(item.variantId ? { variantId: item.variantId } : {}),
         ...(item.selectedModifiers?.length ? { selectedModifiers: normalizeModifiers(item.selectedModifiers) } : {}),
         ...(item.notes ? { notes: item.notes } : {}),
       })),
@@ -382,13 +386,16 @@ async function buildNewOperationRequest(params: {
 
   const items = effectiveQuote.lines.map((line) => ({
     productId: line.productId!,
-    productName: line.nameSnapshot,
+    // Combina "Produto — Variante" quando há variação — mesma convenção que
+    // stockRequirement() já usa internamente na cotação (commercial-quote.ts).
+    productName: line.variantNameSnapshot ? `${line.nameSnapshot} — ${line.variantNameSnapshot}` : line.nameSnapshot,
     quantity: line.quantity,
     unitPrice: centsToReais(line.unitAmountCents),
     total: centsToReais(line.subtotalCents),
     ...(line.notes ? { notes: line.notes } : {}),
     ...(line.modifierUnitAmountCents > 0 ? { basePrice: centsToReais(line.baseUnitAmountCents) } : {}),
     ...(line.selectedModifiers?.length ? { selectedModifiers: quotedModifiersToLegacy(line.selectedModifiers) } : {}),
+    ...(line.variantId ? { variantId: line.variantId, variantName: line.variantNameSnapshot } : {}),
   }));
 
   const document = {

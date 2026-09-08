@@ -24,6 +24,9 @@ export const PublicOrderItemSchema = z.object({
   notes: z.string().max(500).optional(),
   imageUrl: z.string().url().optional(),
   selectedModifiers: z.array(SelectedModifierSchema).max(20).optional(),
+  /** M02.5e — produto com variação (kind:'variant'). Obrigatório na cotação
+   *  comercial quando o produto tem `variants[]` (ver commercial-quote.ts). */
+  variantId: z.string().min(1).optional(),
 });
 
 export const CreatePublicOrderBodySchema = z.object({

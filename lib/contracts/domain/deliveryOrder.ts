@@ -54,6 +54,12 @@ export const DeliveryOrderItemSchema = z.object({
   imageUrl: z.string().url().optional(),
   selectedModifiers: z.array(SelectedModifierSchema).optional(),
   basePrice: z.number().nonnegative().optional(),
+  /** M02.5e — variação escolhida (kind:'variant'). `productName` já vem
+   *  combinado ("Produto — Variante") de commercial-quote.ts; `variantName`
+   *  é guardado separado pra quem quiser exibir/reagir à variação isolada
+   *  (ex: repetir pedido resolvendo de novo pelo variantId). */
+  variantId: z.string().min(1).optional(),
+  variantName: z.string().min(1).optional(),
 }).superRefine((it, ctx) => {
   const expected = round2(it.quantity * it.unitPrice);
   if (Math.abs(it.total - expected) > PRICE_TOLERANCE) {

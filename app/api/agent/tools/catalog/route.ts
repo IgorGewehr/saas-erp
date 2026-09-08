@@ -141,6 +141,13 @@ export async function POST(req: NextRequest) {
 }
 
 // Shape returned to the agent — strip internal/fiscal fields, keep what helps the user.
+interface MenuItemVariant {
+  id: string;
+  name: string;
+  price: number;
+  outOfStock: boolean;
+}
+
 interface MenuItem {
   id: string;
   name: string;
@@ -152,10 +159,24 @@ interface MenuItem {
   outOfStock: boolean;
   isKit: boolean;
   dietary?: string[];
+  /** M02.5e — só presente pra produtos com variação (kind:'variant'). */
+  variants?: MenuItemVariant[];
 }
 
 function toMenuItem(p: Product, id: string): MenuItem {
   const isKit = !!(p.components && p.components.length > 0);
+  const hasVariants = !!(p.variants && p.variants.length > 0);
+  // Produto com variação (kind:'variant') não usa currentStock na raiz — o
+  // saldo vive em cada variants[].currentStock. Sem este branch, TODO produto
+  // com variação aparecia como esgotado pro agente (achado real desta fatia).
+  const variants = hasVariants
+    ? p.variants!.filter((v) => v.isActive).map((v) => ({
+        id: v.id,
+        name: v.name,
+        price: v.salePrice,
+        outOfStock: v.trackStock !== false && v.currentStock <= 0,
+      }))
+    : undefined;
   return {
     id,
     name: p.name,
@@ -164,9 +185,10 @@ function toMenuItem(p: Product, id: string): MenuItem {
     price: p.salePrice,
     preparationTime: p.preparationTime,
     imageUrl: p.imageUrl,
-    outOfStock: !isKit && p.currentStock <= 0,
+    outOfStock: !isKit && !hasVariants && p.currentStock <= 0,
     isKit,
     dietary: p.dietary,
+    ...(variants ? { variants } : {}),
   };
 }
 

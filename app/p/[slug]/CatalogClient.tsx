@@ -22,13 +22,16 @@ import CardPaymentBrick from './CardPaymentBrick';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface CartItem {
-  id: string;                          // unique per configuration (product + modifiers hash)
+  id: string;                          // unique per configuration (product + variant + modifiers hash)
   product: Product;
   quantity: number;
   notes: string;
   selectedModifiers?: SelectedModifier[];
   unitPrice: number;                   // base + calculated modifier price
-  basePrice: number;                   // product.salePrice (reference)
+  basePrice: number;                   // product/variant salePrice (reference)
+  /** M02.5e — variação escolhida, para produtos `kind:'variant'`. */
+  variantId?: string;
+  variantName?: string;
 }
 
 type CheckoutStep = 'cart' | 'delivery' | 'contact' | 'pix' | 'card' | 'success';
@@ -207,6 +210,8 @@ interface SavedOrderItem {
   productName: string;
   quantity: number;
   selectedModifiers?: SelectedModifier[];
+  /** M02.5e — variação escolhida; repetir pedido resolve de novo por este id. */
+  variantId?: string;
 }
 interface SavedOrder {
   at: string;                 // ISO — quando o pedido foi concluído
@@ -232,12 +237,12 @@ function unitPriceFromModifiers(basePrice: number, mods?: SelectedModifier[]): n
 }
 
 // Assinatura estável para dedup no carrinho — espelha ProductDetailSheet.
-function cartItemIdFromModifiers(productId: string, mods?: SelectedModifier[]): string {
-  if (!mods || mods.length === 0) return `${productId}:plain`;
+function cartItemIdFromModifiers(productId: string, mods?: SelectedModifier[], variantId?: string): string {
+  if (!mods || mods.length === 0) return variantId ? `${productId}:${variantId}:plain` : `${productId}:plain`;
   const signature = mods
     .map(m => `${m.groupId}:${m.selectedOptions.map(o => `${o.optionId}x${o.quantity}`).sort().join('|')}`)
     .sort().join('||');
-  return `${productId}:${signature || 'plain'}:`;
+  return `${productId}:${variantId ?? ''}:${signature || 'plain'}:`;
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -632,7 +637,11 @@ export default function CatalogClient({ business, products, categories, tableNum
   }, []);
 
   const handleProductClick = useCallback((product: Product) => {
-    if (product.hasModifiers && product.modifierGroups?.length) {
+    // Variação (M02.5e) exige escolha explícita — mesmo sem modificadores,
+    // abre a sheet (senão o item entraria no carrinho sem variantId e o
+    // checkout rejeitaria com VARIANT_REQUIRED).
+    const hasVariants = (product.variants?.filter(v => v.isActive).length ?? 0) > 0;
+    if ((product.hasModifiers && product.modifierGroups?.length) || hasVariants) {
       setDetailProduct(product);
       setEditingCartItem(null);
     } else {
@@ -656,15 +665,26 @@ export default function CatalogClient({ business, products, categories, tableNum
     for (const it of lastOrder.items) {
       const product = byId.get(it.productId);
       if (!product || isOutOfStock(product)) { skipped++; continue; }
+      // M02.5e: produto com variação — resolve de novo pelo variantId salvo.
+      // Variação removida/inativa/esgotada → pula o item (mesmo tratamento de
+      // produto indisponível), nunca adivinha outra variação no lugar.
+      const activeVariants = product.variants?.filter(v => v.isActive) ?? [];
+      let variant: typeof activeVariants[number] | undefined;
+      if (activeVariants.length > 0) {
+        variant = activeVariants.find(v => v.id === it.variantId);
+        if (!variant || (variant.trackStock !== false && variant.currentStock <= 0)) { skipped++; continue; }
+      }
       const mods = it.selectedModifiers && it.selectedModifiers.length > 0 ? it.selectedModifiers : undefined;
+      const basePrice = variant ? variant.salePrice : product.salePrice;
       rebuilt.push({
-        id: cartItemIdFromModifiers(product.id, mods),
+        id: cartItemIdFromModifiers(product.id, mods, variant?.id),
         product,
         quantity: it.quantity > 0 ? it.quantity : 1,
         notes: '',
         selectedModifiers: mods,
-        unitPrice: unitPriceFromModifiers(product.salePrice, mods),
-        basePrice: product.salePrice,
+        unitPrice: unitPriceFromModifiers(basePrice, mods),
+        basePrice,
+        ...(variant ? { variantId: variant.id, variantName: variant.name } : {}),
       });
     }
     if (rebuilt.length === 0) {
@@ -800,6 +820,7 @@ export default function CatalogClient({ business, products, categories, tableNum
       notes: i.notes || undefined,
       imageUrl: i.product.imageUrl || undefined,
       selectedModifiers: i.selectedModifiers,
+      variantId: i.variantId,
     }));
 
     if (!idempotencyKey.current) {
@@ -865,6 +886,7 @@ export default function CatalogClient({ business, products, categories, tableNum
           productName: i.product.name,
           quantity: i.quantity,
           selectedModifiers: i.selectedModifiers,
+          variantId: i.variantId,
         })),
       };
       const key = lastOrdersStorageKey(business.id);

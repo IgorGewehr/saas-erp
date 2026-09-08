@@ -43,9 +43,9 @@ describe('M02.0 — fixtures dos cinco canais comerciais', () => {
     expect(CreatePublicOrderBodySchema.safeParse(publicFixture.request).success).toBe(true);
   });
 
-  it('caracteriza pedido manual e registra que variantId ainda é descartado pelo contrato', () => {
+  it('caracteriza pedido manual e confirma que variantId é preservado pelo contrato (M02.5e)', () => {
     const parsed = DeliveryOrderSchema.parse(manualFixture.document);
-    expect('variantId' in parsed.items[0]).toBe(false);
+    expect(parsed.items[0].variantId).toBe('variant-blue-m');
   });
 
   it('caracteriza criação pelo agente e o documento resultante', () => {

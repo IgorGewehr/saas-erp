@@ -6,6 +6,13 @@
 import { z } from 'zod';
 import { DocIdSchema, MoneySchema } from './_shared';
 
+const MenuItemVariantSchema = z.object({
+  id: DocIdSchema,
+  name: z.string(),
+  price: MoneySchema,
+  outOfStock: z.boolean(),
+});
+
 const MenuItemSchema = z.object({
   id: DocIdSchema,
   name: z.string(),
@@ -17,6 +24,9 @@ const MenuItemSchema = z.object({
   outOfStock: z.boolean().optional(),
   isKit: z.boolean().optional(),
   dietary: z.array(z.string()).optional(),
+  /** M02.5e — presente só quando o produto tem variação (kind:'variant').
+   *  Pedir este item exige escolher um `variantId` na criação do pedido. */
+  variants: z.array(MenuItemVariantSchema).optional(),
 }).passthrough();
 
 export const CatalogListMenuParamsSchema = z.object({

@@ -35,6 +35,8 @@ export {
 export interface StockDeductionLine {
   productId: string;
   quantity: number;
+  /** M02.5e — produto com variação; ausente = produto simples/composto. */
+  variantId?: string;
 }
 
 export interface StockDeductionContextAdmin {

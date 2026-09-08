@@ -25,6 +25,13 @@ class _Base(BaseModel):
 # ─── Sub-schemas ────────────────────────────────────────────────────────────
 
 
+class MenuItemVariantShape(_Base):
+    id: str
+    name: str
+    price: float
+    outOfStock: bool
+
+
 class MenuItemShape(_Base):
     id: str
     name: str
@@ -36,6 +43,8 @@ class MenuItemShape(_Base):
     outOfStock: Optional[bool] = None
     isKit: Optional[bool] = None
     dietary: Optional[list[str]] = None
+    # M02.5e — só presente pra produtos com variação; pedir exige variantId.
+    variants: Optional[list[MenuItemVariantShape]] = None
 
 
 class CatalogCategoryCount(_Base):

@@ -25,7 +25,7 @@ import { notifyLowStock } from '@/lib/services/notifications';
 import type {
   DeliveryOrder, DeliveryOrderStatus, DeliveryOrderItem, DeliveryOrderChannel,
   DeliveryOrderPaymentMethod, DeliveryOrderPaymentStatus, DeliveryType,
-  Product, Client, DeliveryOrderAddress, StockAlert, PaymentFsmStatus,
+  Product, ProductVariant, Client, DeliveryOrderAddress, StockAlert, PaymentFsmStatus,
 } from '@/lib/types';
 import { DELIVERY_ORDER_STATUS_FLOW, DELIVERY_ORDER_STATUS_LABELS } from '@/lib/types';
 import { assertTransitionDeliveryOrder } from '@/lib/contracts/fsm/deliveryOrder';
@@ -448,10 +448,7 @@ function OrderFormDialog({
   }, [open, initial]);
 
   const deliverableProducts = useMemo(
-    // Produtos com variação exigem variantId na cotação comercial (M02.1), que o
-    // formulário manual ainda não coleta (fica para a M02.5e) — sem esse filtro,
-    // adicionar um desses produtos resultaria em VARIANT_REQUIRED sem UI para resolver.
-    () => products.filter(p => p.isDeliverable && p.isActive && !(p as { variants?: unknown[] }).variants?.length),
+    () => products.filter(p => p.isDeliverable && p.isActive),
     [products],
   );
 
@@ -479,26 +476,32 @@ function OrderFormDialog({
   const subtotal = form.items.reduce((s, i) => s + i.total, 0);
   const total = Math.max(0, subtotal + (form.deliveryFee || 0) - (form.discount || 0));
 
-  const addItem = (p: Product) => {
-    const existing = form.items.find(i => i.productId === p.id);
+  // Produto com variantId=null é pareado só com outras linhas variantId=null
+  // (== estrito, não ??) — sem isso, `undefined === undefined` ainda bateria
+  // certo, mas deixar explícito evita ambiguidade se algum dia variantId vier
+  // como string vazia por engano.
+  const addItem = (p: Product, variant?: ProductVariant) => {
+    const existing = form.items.find(i => i.productId === p.id && (i.variantId ?? null) === (variant?.id ?? null));
     if (existing) {
       setForm(f => ({
         ...f,
         items: f.items.map(i =>
-          i.productId === p.id
+          i === existing
             ? { ...i, quantity: i.quantity + 1, total: (i.quantity + 1) * i.unitPrice }
             : i),
       }));
     } else {
+      const unitPrice = variant?.salePrice ?? p.salePrice;
       setForm(f => ({
         ...f,
         items: [...f.items, {
           productId: p.id,
-          productName: p.name,
+          productName: variant ? `${p.name} — ${variant.name}` : p.name,
           quantity: 1,
-          unitPrice: p.salePrice,
-          total: p.salePrice,
+          unitPrice,
+          total: unitPrice,
           ...(p.imageUrl ? { imageUrl: p.imageUrl } : {}),
+          ...(variant ? { variantId: variant.id, variantName: variant.name } : {}),
         }],
       }));
     }
@@ -506,15 +509,16 @@ function OrderFormDialog({
     setShowProductDropdown(false);
   };
 
-  const updateQty = (productId: string, qty: number) => {
+  const updateQty = (productId: string, variantId: string | undefined, qty: number) => {
+    const matches = (i: DeliveryOrderItem) => i.productId === productId && (i.variantId ?? null) === (variantId ?? null);
     if (qty <= 0) {
-      setForm(f => ({ ...f, items: f.items.filter(i => i.productId !== productId) }));
+      setForm(f => ({ ...f, items: f.items.filter(i => !matches(i)) }));
       return;
     }
     setForm(f => ({
       ...f,
       items: f.items.map(i =>
-        i.productId === productId
+        matches(i)
           ? { ...i, quantity: qty, total: qty * i.unitPrice }
           : i),
     }));
@@ -726,37 +730,63 @@ function OrderFormDialog({
                       exit={{ opacity: 0, y: -4 }}
                       className="absolute z-10 left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl max-h-56 overflow-y-auto"
                     >
-                      {filteredProducts.map(p => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => addItem(p)}
-                          className="w-full px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-700/50 flex items-center gap-2"
-                        >
-                          <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 overflow-hidden flex-shrink-0">
-                            {p.imageUrl
-                              ? <img src={p.imageUrl} alt="" className="w-full h-full object-cover" />
-                              : <Package className="w-4 h-4 m-2.5 text-gray-400" />
-                            }
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{p.name}</p>
-                            <div className="flex items-center gap-1.5 mt-0.5">
-                              <span className="text-[11px] text-gray-500">{p.menuCategory || p.category}</span>
-                              {p.dietary && p.dietary.length > 0 && (
-                                <span className="text-[11px]">
-                                  {p.dietary.slice(0, 4).map(d => ({
-                                    vegan: '🌱', vegetarian: '🥦', glutenfree: '🌾',
-                                    lactosefree: '🥛', organic: '♻️', picante: '🌶️',
-                                    alcool: '🍺', kids: '👶',
-                                  } as Record<string, string>)[d] || '').filter(Boolean).join('')}
-                                </span>
+                      {filteredProducts.map(p => {
+                        const activeVariants = p.variants?.filter(v => v.isActive) ?? [];
+                        const hasVariants = activeVariants.length > 0;
+                        return (
+                          <div key={p.id} className={cn('px-3 py-2', hasVariants && 'border-b border-gray-50 dark:border-gray-800/50 last:border-0')}>
+                            <button
+                              type="button"
+                              onClick={() => { if (!hasVariants) addItem(p); }}
+                              disabled={hasVariants}
+                              className={cn(
+                                'w-full text-left flex items-center gap-2',
+                                !hasVariants && 'hover:bg-gray-50 dark:hover:bg-gray-700/50 -mx-3 px-3 py-0 rounded-lg',
                               )}
-                            </div>
+                            >
+                              <div className="w-9 h-9 rounded-lg bg-gray-100 dark:bg-gray-700 overflow-hidden flex-shrink-0">
+                                {p.imageUrl
+                                  ? <img src={p.imageUrl} alt="" className="w-full h-full object-cover" />
+                                  : <Package className="w-4 h-4 m-2.5 text-gray-400" />
+                                }
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{p.name}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[11px] text-gray-500">{p.menuCategory || p.category}</span>
+                                  {p.dietary && p.dietary.length > 0 && (
+                                    <span className="text-[11px]">
+                                      {p.dietary.slice(0, 4).map(d => ({
+                                        vegan: '🌱', vegetarian: '🥦', glutenfree: '🌾',
+                                        lactosefree: '🥛', organic: '♻️', picante: '🌶️',
+                                        alcool: '🍺', kids: '👶',
+                                      } as Record<string, string>)[d] || '').filter(Boolean).join('')}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              {!hasVariants && (
+                                <p className="text-sm font-bold text-red-600 dark:text-red-400">{formatCurrency(p.salePrice)}</p>
+                              )}
+                            </button>
+                            {hasVariants && (
+                              <div className="flex flex-wrap gap-1.5 mt-1.5 pl-11">
+                                {activeVariants.map(v => (
+                                  <button
+                                    key={v.id}
+                                    type="button"
+                                    onClick={() => addItem(p, v)}
+                                    disabled={v.trackStock !== false && v.currentStock <= 0}
+                                    className="px-2 py-1 rounded-md text-[11px] font-semibold border border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-red-400 hover:text-red-600 disabled:opacity-40 disabled:hover:border-gray-200"
+                                  >
+                                    {v.name} · {formatCurrency(v.salePrice)}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
-                          <p className="text-sm font-bold text-red-600 dark:text-red-400">{formatCurrency(p.salePrice)}</p>
-                        </button>
-                      ))}
+                        );
+                      })}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -765,19 +795,19 @@ function OrderFormDialog({
               {form.items.length > 0 && (
                 <div className="mt-2 space-y-1.5">
                   {form.items.map(item => (
-                    <div key={item.productId} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-800">
+                    <div key={`${item.productId}:${item.variantId ?? ''}`} className="flex items-center gap-2 p-2 rounded-lg bg-gray-50 dark:bg-gray-800/50 border border-gray-100 dark:border-gray-800">
                       <span className="flex-1 text-sm text-gray-900 dark:text-gray-100 truncate">{item.productName}</span>
                       <div className="flex items-center gap-1 bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-700">
-                        <button type="button" onClick={() => updateQty(item.productId, item.quantity - 1)}
+                        <button type="button" onClick={() => updateQty(item.productId, item.variantId, item.quantity - 1)}
                           className="px-2 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 rounded-l-md">−</button>
                         <span className="px-2 text-xs font-bold min-w-[24px] text-center">{item.quantity}</span>
-                        <button type="button" onClick={() => updateQty(item.productId, item.quantity + 1)}
+                        <button type="button" onClick={() => updateQty(item.productId, item.variantId, item.quantity + 1)}
                           className="px-2 py-0.5 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 rounded-r-md">+</button>
                       </div>
                       <span className="w-20 text-right text-sm font-semibold text-gray-900 dark:text-gray-100">
                         {formatCurrency(item.total)}
                       </span>
-                      <button type="button" onClick={() => updateQty(item.productId, 0)}
+                      <button type="button" onClick={() => updateQty(item.productId, item.variantId, 0)}
                         className="p-1 rounded text-gray-400 hover:text-red-500">
                         <X className="w-3.5 h-3.5" />
                       </button>

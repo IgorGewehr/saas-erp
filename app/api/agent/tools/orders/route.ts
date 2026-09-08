@@ -30,7 +30,7 @@ interface CreateParams {
   clientName: string;
   clientPhone?: string;
   clientId?: string;
-  items: Array<{ productId: string; quantity: number; notes?: string }>;
+  items: Array<{ productId: string; quantity: number; notes?: string; variantId?: string }>;
   deliveryType: DeliveryType;
   deliveryAddress?: DeliveryOrderAddress;
   // deliveryFee/discount removidos (M02.5c): frete sempre por zona, sem
@@ -194,6 +194,7 @@ async function createOrderInner(businessId: string, params: CreateParams, idempo
       unitPrice: 0,
       total: 0,
       ...(item.notes ? { notes: item.notes } : {}),
+      ...(item.variantId ? { variantId: item.variantId } : {}),
     })),
     deliveryType: params.deliveryType,
     deliveryAddress: params.deliveryType === 'entrega' ? params.deliveryAddress : undefined,

@@ -80,6 +80,10 @@ function countSelections(picked: Record<string, number>): number {
   return Object.values(picked).reduce((s, n) => s + n, 0);
 }
 
+function variantAvailable(v: { trackStock: boolean; currentStock: number }): boolean {
+  return v.trackStock === false || v.currentStock > 0;
+}
+
 export default function ProductDetailSheet({ product, initialCartItem, onClose, onAdd }: Props) {
   const [selection, setSelection] = useState<SelectionState>(() => buildInitialSelection(product, initialCartItem));
   const [quantity, setQuantity] = useState(initialCartItem?.quantity || 1);
@@ -90,6 +94,19 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
   const groups = useMemo(() =>
     (product.modifierGroups || []).slice().sort((a, b) => a.sortOrder - b.sortOrder),
   [product.modifierGroups]);
+
+  // ── M02.5e: variação (kind:'variant') ───────────────────────────────────────
+  const variants = useMemo(() => (product.variants ?? []).filter(v => v.isActive), [product.variants]);
+  const hasVariants = variants.length > 0;
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(() => {
+    if (!hasVariants) return null;
+    const preselected = initialCartItem?.variantId && variants.find(v => v.id === initialCartItem.variantId);
+    if (preselected) return preselected.id;
+    return variants.find(variantAvailable)?.id ?? variants[0]?.id ?? null;
+  });
+  const selectedVariant = hasVariants ? variants.find(v => v.id === selectedVariantId) ?? null : null;
+  const variantValid = !hasVariants || (!!selectedVariant && variantAvailable(selectedVariant));
+  const basePriceForCalc = selectedVariant ? selectedVariant.salePrice : product.salePrice;
 
   // ── Auto-scroll to next incomplete group ──────────────────────────────────
   const scrollToNextIncomplete = useCallback((afterGroupId: string, currentSelection: SelectionState) => {
@@ -139,8 +156,8 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
   }, [groups, selection]);
 
   const allValid = useMemo(
-    () => Object.values(groupValidation).every(v => v.valid),
-    [groupValidation],
+    () => variantValid && Object.values(groupValidation).every(v => v.valid),
+    [variantValid, groupValidation],
   );
 
   const firstInvalidGroup = useMemo(
@@ -150,12 +167,12 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
 
   // Calculate unit price
   const unitPrice = useMemo(() => {
-    let total = product.salePrice;
+    let total = basePriceForCalc;
     for (const group of groups) {
       total += calculateGroupPrice(group, selection[group.id] || {});
     }
     return total;
-  }, [groups, selection, product.salePrice]);
+  }, [groups, selection, basePriceForCalc]);
 
   // ── Selection handlers ──────────────────────────────────────────────────────
   const toggleSingle = useCallback((groupId: string, optionId: string) => {
@@ -245,11 +262,13 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
       });
     }
 
-    // Build a stable signature for cart deduplication
+    // Build a stable signature for cart deduplication — variantId entra na
+    // assinatura pra que a MESMA variação com modificadores diferentes (ou
+    // variações diferentes do mesmo produto) nunca colidam no carrinho.
     const signature = selectedModifiers
       .map(m => `${m.groupId}:${m.selectedOptions.map(o => `${o.optionId}x${o.quantity}`).sort().join('|')}`)
       .sort().join('||');
-    const id = `${product.id}:${signature || 'plain'}:${notes || ''}` || shortId();
+    const id = `${product.id}:${selectedVariant?.id ?? ''}:${signature || 'plain'}:${notes || ''}` || shortId();
 
     onAdd({
       id,
@@ -258,9 +277,10 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
       notes,
       selectedModifiers: selectedModifiers.length > 0 ? selectedModifiers : undefined,
       unitPrice,
-      basePrice: product.salePrice,
+      basePrice: basePriceForCalc,
+      ...(selectedVariant ? { variantId: selectedVariant.id, variantName: selectedVariant.name } : {}),
     });
-  }, [allValid, firstInvalidGroup, groups, selection, product, quantity, notes, unitPrice, onAdd]);
+  }, [allValid, firstInvalidGroup, groups, selection, product, quantity, notes, unitPrice, basePriceForCalc, selectedVariant, onAdd]);
 
   return (
     <>
@@ -322,7 +342,7 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
             <div className="flex items-start justify-between gap-3 mb-1">
               <h1 className="text-xl font-black text-gray-900 dark:text-white tracking-tight">{product.name}</h1>
               <span className="text-lg font-black text-gray-900 dark:text-white whitespace-nowrap">
-                {formatBRL(product.salePrice)}
+                {formatBRL(basePriceForCalc)}
               </span>
             </div>
             {(product.menuDescription || product.description) && (
@@ -331,6 +351,44 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
               </p>
             )}
           </div>
+
+          {/* Variant picker */}
+          {hasVariants && (
+            <div className="mx-4 mb-2 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
+              <div className="p-4 pb-3">
+                <h3 className="font-bold text-gray-900 dark:text-white text-sm">Escolha uma opção</h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">Obrigatório</p>
+              </div>
+              <div className="px-2 pb-2 space-y-1">
+                {variants.map(v => {
+                  const available = variantAvailable(v);
+                  const selected = v.id === selectedVariantId;
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => available && setSelectedVariantId(v.id)}
+                      disabled={!available}
+                      className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all text-left ${
+                        selected ? 'bg-red-50 dark:bg-red-500/10' : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                      } ${!available ? 'opacity-50' : ''}`}
+                    >
+                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                        selected ? 'border-red-500 bg-red-500' : 'border-gray-300 dark:border-gray-600'
+                      }`}>
+                        {selected && <div className="w-2 h-2 rounded-full bg-white" />}
+                      </div>
+                      <span className={`flex-1 text-sm font-semibold ${selected ? 'text-red-700 dark:text-red-300' : 'text-gray-900 dark:text-white'}`}>
+                        {v.name}{!available ? ' (esgotado)' : ''}
+                      </span>
+                      <span className={`text-xs font-bold ${selected ? 'text-red-600 dark:text-red-400' : 'text-gray-500'}`}>
+                        {formatBRL(v.salePrice)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Modifier groups */}
           <div className="space-y-2 pb-6">
@@ -391,7 +449,7 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
                   : 'bg-gray-200 dark:bg-gray-700 text-gray-500 dark:text-gray-400'
               }`}
             >
-              <span>{allValid ? 'Adicionar' : (firstInvalidGroup ? firstInvalidGroup.name + ' obrigatório' : 'Complete as opções')}</span>
+              <span>{allValid ? 'Adicionar' : (!variantValid ? 'Escolha uma opção' : firstInvalidGroup ? firstInvalidGroup.name + ' obrigatório' : 'Complete as opções')}</span>
               <span className="font-black">{formatBRL(unitPrice * quantity)}</span>
             </button>
           </div>

@@ -23,6 +23,11 @@ import type { Product } from '@/lib/types';
  *     independentemente do estoque (tem prioridade sobre todo o resto).
  *  6. `trackStock === false` ("não controlar estoque") → NUNCA esgota por
  *     estoque; só o toggle manual (regra 5) pode marcá-lo indisponível.
+ *  7. Produto com variação (`variants[]`, M02.5e) → NÃO usa `currentStock` da
+ *     raiz (o saldo vive em cada `variants[].currentStock`). Esgotado só
+ *     quando TODAS as variações ativas estão sem saldo (ou não há nenhuma
+ *     variação ativa) — diferente de modificadores (regra 1), aqui dá pra
+ *     saber o saldo real por opção, então o badge reflete isso.
  */
 
 /** Resolve o estoque atual de um insumo pelo id; `undefined` quando desconhecido. */
@@ -34,6 +39,10 @@ function hasModifiers(product: Product): boolean {
 
 function hasComponents(product: Product): boolean {
   return Boolean(product.components && product.components.length > 0);
+}
+
+function hasVariants(product: Product): boolean {
+  return Boolean(product.variants && product.variants.length > 0);
 }
 
 /**
@@ -65,6 +74,12 @@ export function isOutOfStock(product: Product, resolve?: StockResolver): boolean
   if (product.trackStock === false) return false;
 
   if (hasModifiers(product)) return false;
+
+  if (hasVariants(product)) {
+    const active = (product.variants ?? []).filter((v) => v.isActive);
+    if (active.length === 0) return true;
+    return active.every((v) => v.trackStock !== false && v.currentStock <= 0);
+  }
 
   if (hasComponents(product)) {
     const qty = composedAvailableQty(product, resolve);
