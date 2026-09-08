@@ -23,6 +23,11 @@ function round2(n: number): number { return Math.round(n * 100) / 100; }
 
 export const OrderItemSchema = z.object({
   productId: z.string().optional(),
+  /** M02.6 — item de serviço (mutuamente exclusivo com productId na prática,
+   *  não reforçado aqui pra não travar itens legados/manuais sem nenhum FK). */
+  serviceId: z.string().optional(),
+  /** M02.6 — variação escolhida quando productId aponta pra kind:'variant'. */
+  variantId: z.string().optional(),
   productName: z.string().min(1),
   sku: z.string().optional(),
   quantity: z.number().positive(),
@@ -72,6 +77,9 @@ export const OrderSchema = z.object({
   payments: z.array(PaymentSchema).optional(),
   paymentTerms: z.string().optional(),
   paymentMethod: PaymentMethodSchema.optional(),
+  /** M02.6 — 1 = à vista; >1 gera N Transactions receita (installmentGroupId/
+   *  installmentNumber) na transição confirmado→faturado. */
+  installments: z.number().int().min(1).max(48).optional(),
   deliveryDate: z.string().optional(),
   deliveryAddress: AddressSchema.optional(),
   fiscalDocId: z.string().optional(),
@@ -84,6 +92,13 @@ export const OrderSchema = z.object({
   operatorId: z.string().min(1),
   operatorName: z.string().min(1),
   sectorId: z.string().optional(),
+  // ── Efeitos de transição (M02.6) ──────────────────────────────────────────
+  invoicedAt: z.string().optional(),
+  stockDeductedAt: z.string().optional(),
+  transactionIds: z.array(z.string()).optional(),
+  cancelledAt: z.string().optional(),
+  cancelledBy: z.string().optional(),
+  cancelledByName: z.string().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
 }).superRefine((o, ctx) => {

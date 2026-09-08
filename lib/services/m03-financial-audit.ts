@@ -49,6 +49,8 @@ export interface M03FinancialAuditInput {
   purchaseNotes: M03AuditDocument[];
   appointments: M03AuditDocument[];
   deliveryOrders: M03AuditDocument[];
+  /** M02.6 — pedidos B2B/condicional. */
+  orders: M03AuditDocument[];
 }
 
 export type M03AuditIssueCode =
@@ -72,6 +74,7 @@ export interface M03FinancialSourceRefs {
   purchaseNoteId?: string;
   appointmentId?: string;
   deliveryOrderId?: string;
+  orderId?: string;
 }
 
 export interface M03FinancialSnapshotEntry {
@@ -190,11 +193,13 @@ export function buildM03FinancialSnapshot(input: M03FinancialAuditInput): M03Fin
   const purchaseNotes = readOwnedDocuments('purchaseNotes', input.purchaseNotes, businessId, issues);
   const appointments = readOwnedDocuments('appointments', input.appointments, businessId, issues);
   const deliveryOrders = readOwnedDocuments('deliveryOrders', input.deliveryOrders, businessId, issues);
+  const orders = readOwnedDocuments('orders', input.orders, businessId, issues);
 
   const saleIds = new Set(sales.map((d) => d.id));
   const purchaseNoteIds = new Set(purchaseNotes.map((d) => d.id));
   const appointmentIds = new Set(appointments.map((d) => d.id));
   const deliveryOrderIds = new Set(deliveryOrders.map((d) => d.id));
+  const orderIds = new Set(orders.map((d) => d.id));
   const transactionIds = new Set(transactions.map((d) => d.id));
 
   const entries: M03FinancialSnapshotEntry[] = [];
@@ -251,6 +256,7 @@ export function buildM03FinancialSnapshot(input: M03FinancialAuditInput): M03Fin
       purchaseNoteId: stringValue(data.purchaseNoteId),
       appointmentId: stringValue(data.appointmentId),
       deliveryOrderId: stringValue(data.deliveryOrderId),
+      orderId: stringValue(data.orderId),
     };
 
     for (const [field, id, existsIn] of [
@@ -258,6 +264,7 @@ export function buildM03FinancialSnapshot(input: M03FinancialAuditInput): M03Fin
       ['purchaseNoteId', sourceRefs.purchaseNoteId, purchaseNoteIds],
       ['appointmentId', sourceRefs.appointmentId, appointmentIds],
       ['deliveryOrderId', sourceRefs.deliveryOrderId, deliveryOrderIds],
+      ['orderId', sourceRefs.orderId, orderIds],
     ] as const) {
       if (!id) continue;
       if (!existsIn.has(id)) {

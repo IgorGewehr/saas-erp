@@ -22,6 +22,7 @@ function cleanInput(): M03FinancialAuditInput {
     purchaseNotes: [],
     appointments: [],
     deliveryOrders: [],
+    orders: [],
     transactions: [
       document('tx-good', {
         businessId: BUSINESS_ID,

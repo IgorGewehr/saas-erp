@@ -171,6 +171,85 @@ ORDERS_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+# ─── B2B / condicional orders (M02.6) ───────────────────────────────────────
+# Domínio SEPARADO de `orders` (que é delivery/cardápio). Deliberadamente SEM
+# ação de faturar/cancelar — essas transições movem estoque e dinheiro real;
+# mesma decisão de segurança do M02.5c (sem desconto manual pelo agente).
+
+B2B_ORDERS_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "b2b-orders_create",
+            "description": (
+                "Create a new B2B (wholesale) or condicional (trial/consignment) order. "
+                "Price is always resolved server-side from the catalog — never send a price. "
+                "Use after confirming client, items and payment terms with the operator."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["b2b", "condicional"]},
+                    "clientId": {"type": "string"},
+                    "clientName": {"type": "string"},
+                    "clientCpfCnpj": {"type": "string"},
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "productId": {"type": "string"},
+                                "serviceId": {"type": "string"},
+                                "variantId": {"type": "string", "description": "Required when the catalog item has a variants[] list."},
+                                "quantity": {"type": "number", "minimum": 0.01},
+                                "notes": {"type": "string"},
+                            },
+                            "required": ["quantity"],
+                        },
+                    },
+                    "paymentTerms": {"type": "string", "description": "Free text, e.g. '30/60/90 dias'."},
+                    "installments": {"type": "integer", "minimum": 1, "maximum": 48, "default": 1},
+                    "conditionalExpiresAt": {
+                        "type": "string",
+                        "description": "ISO date — required when type='condicional' (deadline for the client to confirm/return).",
+                    },
+                    "notes": {"type": "string"},
+                    "conversationId": {"type": "string"},
+                },
+                "required": ["type", "items"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "b2b-orders_get",
+            "description": "Fetch full details of a single B2B/condicional order by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "b2b-orders_list_by_client",
+            "description": "List a client's most recent B2B/condicional orders.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clientId": {"type": "string"},
+                    "limit": {"type": "integer", "default": 10},
+                },
+                "required": ["clientId"],
+            },
+        },
+    },
+]
+
+
 # ─── Agenda (servicos) ───────────────────────────────────────────────────────
 
 AGENDA_TOOLS: list[dict[str, Any]] = [
@@ -1290,7 +1369,7 @@ _DASHBOARD_GROUPS: dict[str, list[dict[str, Any]]] = {
     "sales": SALES_TOOLS,
     "agenda": AGENDA_TOOLS,
     "services": SERVICES_MGMT_TOOLS,
-    "orders": CATALOG_TOOLS + ORDERS_TOOLS,
+    "orders": CATALOG_TOOLS + ORDERS_TOOLS + B2B_ORDERS_TOOLS,
     "kanban": KANBAN_TOOLS,
     "notes": NOTES_TOOLS,
     "crm": CRM_TOOLS,
@@ -1309,7 +1388,7 @@ _GROUP_KEYWORDS: dict[str, tuple[str, ...]] = {
     "sales": ("venda", "pdv", "ticket", "vendido", "vendeu", "caixa do dia"),
     "agenda": ("agenda", "agendamento", "horario", "marcar", "consulta", "appointment", "remarcar", "no-show", "no show", "compareceu"),
     "services": ("servico", "serviços", "catalogo de servico", "comissao"),
-    "orders": ("pedido", "delivery", "entrega", "cardapio", "menu", "retirada"),
+    "orders": ("pedido", "delivery", "entrega", "cardapio", "menu", "retirada", "b2b", "atacado", "condicional", "orcamento empresarial"),
     "kanban": ("kanban", "board", "cartao", "card", "tarefa", "coluna", "quadro"),
     "notes": ("nota pessoal", "nota da equipe", "anota", "lembrete", "post-it", "postit"),
     "crm": ("crm", "lead", "deal", "contato", "pipeline", "negociac", "segmento", "oportunidade", "cliente novo"),
@@ -1367,6 +1446,8 @@ def dashboard_tools_for_groups(groups: list[str], *, read_only: bool = False) ->
 _MUTATING_TOOLS: frozenset[str] = frozenset({
     # orders
     "orders_create", "orders_cancel", "orders_update_items",
+    # b2b-orders
+    "b2b-orders_create",
     # agenda
     "agenda_book", "agenda_update", "agenda_cancel",
     # clients
@@ -1432,7 +1513,7 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
         # Dashboard chat — full CRUD over all modules.
         return (
             base
-            + CATALOG_TOOLS + ORDERS_TOOLS
+            + CATALOG_TOOLS + ORDERS_TOOLS + B2B_ORDERS_TOOLS
             + AGENDA_TOOLS + CONVERSATION_TOOLS
             + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
             + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
@@ -1445,7 +1526,7 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
         # Guardrails layer also role-gates destructive tools, but the analyst
         # prompt shouldn't even see the write tools.
         all_operator = (
-            CATALOG_TOOLS + ORDERS_TOOLS
+            CATALOG_TOOLS + ORDERS_TOOLS + B2B_ORDERS_TOOLS
             + AGENDA_TOOLS + CONVERSATION_TOOLS
             + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS
             + NOTES_TOOLS + CRM_TOOLS + CONVERSATIONS_ADMIN_TOOLS
@@ -1461,7 +1542,7 @@ def tools_for_use_case(use_case: UseCase) -> list[dict[str, Any]]:
 
 # Backwards-compatible exports
 ALL_TOOLS: list[dict[str, Any]] = (
-    ORDERS_TOOLS + AGENDA_TOOLS + CATALOG_TOOLS + CLIENT_TOOLS + CONVERSATION_TOOLS
+    ORDERS_TOOLS + B2B_ORDERS_TOOLS + AGENDA_TOOLS + CATALOG_TOOLS + CLIENT_TOOLS + CONVERSATION_TOOLS
     + FINANCIAL_TOOLS + INVENTORY_TOOLS + KANBAN_TOOLS + NOTES_TOOLS + CRM_TOOLS
     + CONVERSATIONS_ADMIN_TOOLS + TEAM_TOOLS + SERVICES_MGMT_TOOLS + SALES_TOOLS
     + SUPPLIERS_TOOLS + PURCHASE_NOTES_TOOLS + FISCAL_TOOLS

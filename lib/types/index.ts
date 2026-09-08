@@ -1331,6 +1331,7 @@ export interface Transaction {
   projectName?: string;
   appointmentId?: string; // Link back to the originating appointment (for commission transactions)
   deliveryOrderId?: string; // Link back to the originating delivery order (receita de delivery)
+  orderId?: string; // Link back to the originating B2B/condicional order (M02.6, receita/estorno)
   purchaseNoteId?: string; // Link back to the originating purchase note (despesa de compra)
   supplierId?: string;
   supplierName?: string;
@@ -3201,6 +3202,8 @@ export type ApiKeyScope =
   | 'write:sectors'
   | 'read:users'
   | 'write:users'
+  | 'read:orders'
+  | 'write:orders'
   | 'admin:all';
 
 export const API_KEY_SCOPE_LABELS: Record<ApiKeyScope, string> = {
@@ -3236,6 +3239,8 @@ export const API_KEY_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   'write:sectors': 'Criar/editar setores',
   'read:users': 'Ler membros da equipe',
   'write:users': 'Editar membros da equipe',
+  'read:orders': 'Ler pedidos B2B/condicional',
+  'write:orders': 'Criar/faturar/cancelar pedidos B2B/condicional',
   'admin:all': 'Acesso total a todos os recursos',
 };
 
@@ -3256,6 +3261,7 @@ export const API_KEY_SCOPE_GROUPS: { label: string; scopes: ApiKeyScope[] }[] = 
   { label: 'Respostas Rápidas', scopes: ['read:snippets', 'write:snippets'] },
   { label: 'Setores', scopes: ['read:sectors', 'write:sectors'] },
   { label: 'Usuários', scopes: ['read:users', 'write:users'] },
+  { label: 'Pedidos B2B', scopes: ['read:orders', 'write:orders'] },
   { label: 'Admin Total', scopes: ['admin:all'] },
 ];
 
@@ -3314,6 +3320,8 @@ export const API_KEY_SCOPES: Record<ApiKeyScope, { label: string; description: s
   'write:sectors': { label: 'Escrever Setores', description: 'Criar e editar setores' },
   'read:users': { label: 'Ler Usuários', description: 'Acessar membros da equipe' },
   'write:users': { label: 'Escrever Usuários', description: 'Editar membros da equipe' },
+  'read:orders': { label: 'Ler Pedidos B2B', description: 'Acessar pedidos B2B/condicional' },
+  'write:orders': { label: 'Escrever Pedidos B2B', description: 'Criar, faturar e cancelar pedidos B2B/condicional' },
   'admin:all': { label: 'Admin Total', description: 'Acesso total a todos os recursos' },
 };
 
@@ -4036,6 +4044,8 @@ export const ORDER_STATUS_COLORS: Record<OrderStatus, string> = {
 
 export interface OrderItem {
   productId?: string;
+  serviceId?: string;
+  variantId?: string;
   productName: string;
   sku?: string;
   quantity: number;
@@ -4073,6 +4083,7 @@ export interface Order {
   payments?: Payment[];
   paymentTerms?: string;        // ex: "30/60/90 dias"
   paymentMethod?: PaymentMethod;
+  installments?: number;        // M02.6 — 1 = à vista; >1 gera N Transactions receita
   // Delivery
   deliveryDate?: string;
   deliveryAddress?: Address;
@@ -4090,6 +4101,13 @@ export interface Order {
   operatorId: string;
   operatorName: string;
   sectorId?: string;
+  // Efeitos de transição (M02.6)
+  invoicedAt?: string;
+  stockDeductedAt?: string;
+  transactionIds?: string[];
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelledByName?: string;
   createdAt: string;
   updatedAt: string;
 }

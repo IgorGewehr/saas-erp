@@ -9,6 +9,7 @@ import { z } from 'zod';
 
 import * as Agenda from './agenda';
 import * as Orders from './orders';
+import * as B2bOrders from './b2b-orders';
 import * as Catalog from './catalog';
 import * as Clients from './clients';
 import * as Financial from './financial';
@@ -30,7 +31,7 @@ import * as Reports from './reports';
 import * as SendInteractive from './send-interactive';
 
 export const AGENT_TOOL_DOMAINS = [
-  'agenda', 'orders', 'catalog', 'clients', 'financial', 'crm',
+  'agenda', 'orders', 'b2b-orders', 'catalog', 'clients', 'financial', 'crm',
   'inventory', 'sales', 'memory', 'business', 'services', 'team',
   'knowledge', 'conversations', 'notes', 'purchase-notes', 'suppliers',
   'kanban', 'fiscal', 'reports', 'send-interactive',
@@ -41,6 +42,7 @@ export type AgentToolDomain = (typeof AGENT_TOOL_DOMAINS)[number];
 export const AGENT_TOOLS_REGISTRY = {
   agenda:           { request: Agenda.AgendaToolRequestSchema,            data: Agenda.AGENDA_DATA_SCHEMAS },
   orders:           { request: Orders.OrdersToolRequestSchema,             data: Orders.ORDERS_DATA_SCHEMAS },
+  'b2b-orders':     { request: B2bOrders.B2bOrdersToolRequestSchema,       data: B2bOrders.B2B_ORDERS_DATA_SCHEMAS },
   catalog:          { request: Catalog.CatalogToolRequestSchema,           data: Catalog.CATALOG_DATA_SCHEMAS },
   clients:          { request: Clients.ClientsToolRequestSchema,           data: Clients.CLIENTS_DATA_SCHEMAS },
   financial:        { request: Financial.FinancialToolRequestSchema,       data: Financial.FINANCIAL_DATA_SCHEMAS },
@@ -72,6 +74,7 @@ export function getAgentToolDataSchema(domain: AgentToolDomain, action: string):
 export * from './_shared';
 export * as agenda from './agenda';
 export * as orders from './orders';
+export * as b2bOrders from './b2b-orders';
 export * as catalog from './catalog';
 export * as clients from './clients';
 export * as financial from './financial';

@@ -34,6 +34,7 @@ const COLLECTIONS: Record<AuditedCollection, string> = {
   purchaseNotes: 'purchaseNotes',
   appointments: 'appointments',
   deliveryOrders: 'deliveryOrders',
+  orders: 'orders',
 };
 
 function valueOf(args: string[], name: string): string | undefined {

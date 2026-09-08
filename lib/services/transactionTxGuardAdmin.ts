@@ -90,6 +90,7 @@ export interface AdminTransactionPayload {
   purchaseNoteId?: string;
   appointmentId?: string;
   deliveryOrderId?: string;
+  orderId?: string;
   installmentNumber?: number;
   /** Chave explícita (R3, ex.: X-Idempotency-Key do caller) — tem prioridade
    *  sobre a chave derivada de saleId/appointmentId/etc quando presente. */
@@ -113,7 +114,8 @@ function deriveSourceIdempotencyKey(payload: AdminTransactionPayload): string | 
     : payload.purchaseNoteId ? (['purchaseNote', payload.purchaseNoteId] as const)
       : payload.appointmentId ? (['appointment', payload.appointmentId] as const)
         : payload.deliveryOrderId ? (['deliveryOrder', payload.deliveryOrderId] as const)
-          : undefined;
+          : payload.orderId ? (['order', payload.orderId] as const)
+            : undefined;
   if (!source) return undefined;
   const [field, id] = source;
   const installmentSuffix = payload.installmentNumber !== undefined ? `:${payload.installmentNumber}` : '';

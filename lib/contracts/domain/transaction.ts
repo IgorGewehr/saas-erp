@@ -140,6 +140,7 @@ export const TransactionSchema = z.object({
   // ── Vínculos de origem — mesmos 4 campos auditados em m03-financial-audit.ts ──
   appointmentId: z.string().optional(),
   deliveryOrderId: z.string().optional(),
+  orderId: z.string().optional(),
   purchaseNoteId: z.string().optional(),
   supplierId: z.string().optional(),
   supplierName: z.string().optional(),

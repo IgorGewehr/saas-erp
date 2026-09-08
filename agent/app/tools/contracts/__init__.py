@@ -40,6 +40,7 @@ from pydantic import BaseModel
 
 from . import agenda as _agenda
 from . import orders as _orders
+from . import b2b_orders as _b2b_orders
 from . import clients as _clients
 from . import sales as _sales
 from . import financial as _financial
@@ -92,6 +93,12 @@ _ORDERS_MODELS: dict[str, type[BaseModel] | None] = {
     "update_items":   _orders.OrdersUpdateItemsData,
     "cancel":         _orders.OrdersCancelData,
     "list_recent":    _orders.OrdersListRecentResponse,
+}
+
+_B2B_ORDERS_MODELS: dict[str, type[BaseModel] | None] = {
+    "create":         _b2b_orders.B2bOrdersCreateData,
+    "get":            None,
+    "list_by_client": _b2b_orders.B2bOrdersListByClientResponse,
 }
 
 _CLIENTS_MODELS: dict[str, type[BaseModel] | None] = {
@@ -269,6 +276,7 @@ _SEND_INTERACTIVE_MODELS: dict[str, type[BaseModel] | None] = {
 _REGISTRY: dict[str, dict[str, type[BaseModel] | None]] = {
     "agenda": _AGENDA_MODELS,
     "orders": _ORDERS_MODELS,
+    "b2b-orders": _B2B_ORDERS_MODELS,
     "clients": _CLIENTS_MODELS,
     "sales": _SALES_MODELS,
     "financial": _FINANCIAL_MODELS,

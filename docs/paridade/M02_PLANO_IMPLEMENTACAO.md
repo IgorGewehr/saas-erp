@@ -292,15 +292,82 @@ Conclusão: o texto do checklist ficou desatualizado (herdado de antes da M02.5a
 
 ### M02.6 — Venda B2B e condicional
 
-- [ ] Criar pedidos B2B/condicionais pelo núcleo server-side, preservando `orders`.
-- [ ] Aplicar preço, desconto, variação, estoque e tenant no servidor.
-- [ ] Formalizar FSM de orçamento, confirmação, faturamento, envio, entrega e cancelamento.
-- [ ] Definir reserva/baixa/devolução de estoque para condicional.
-- [ ] Integrar pagamentos diferidos, parcelas e contas a receber.
-- [ ] Integrar emissão NF-e e histórico auditável.
-- [ ] Paginar lista e produtos sem listeners ilimitados.
+- [x] Criar pedidos B2B/condicionais pelo núcleo server-side, preservando `orders`.
+- [x] Aplicar preço, desconto, variação, estoque e tenant no servidor.
+- [x] Formalizar FSM de orçamento, confirmação, faturamento, envio, entrega e cancelamento.
+- [x] Definir reserva/baixa/devolução de estoque para condicional. **(reserva deliberadamente NÃO implementada — ver nota abaixo)**
+- [x] Integrar pagamentos diferidos, parcelas e contas a receber.
+- [ ] Integrar emissão NF-e e histórico auditável. **(deliberadamente adiado — ver nota abaixo)**
+- [x] Paginar lista e produtos sem listeners ilimitados. **(paginação limit/offset da API v1, mesmo padrão de `/api/v1/sales`)**
 
 **Saída:** B2B e condicional deixam de depender de regras críticas na interface.
+
+**M02.6 concluída — núcleo (08/09/2026); tela deliberadamente adiada.** Checkpoint com o
+usuário: item avaliado como maior que os demais do M02 (o contrato de domínio `Order`/FSM já
+existia de uma fase anterior, mas ZERO serviço/rota/UI foi construído em cima dele — diferente
+de M02.5e/f, que eram convergência de canais já existentes). Usuário escolheu **núcleo agora,
+tela depois**.
+
+**Achado-chave que mudou a abordagem**: o motor de cotação comercial (`commercial-quote.ts`,
+M02.1) e o coordenador de operação (`commercial-operation-admin.ts`, M02.2) já eram
+`channel:'b2b'`/`sourceType:'order'`-aware desde que foram construídos — só nunca tinham sido
+chamados com esses valores. A criação de Order, porém, **não usa o coordenador de checkpoint**:
+diferente de Sale/DeliveryOrder (cotação+efeitos na mesma operação), o próprio FSM
+(`ORDER_TRANSITION_EFFECTS`) documenta que os efeitos de Order (estoque, receita, fiscal) só
+acontecem depois, na transição `confirmado→faturado` — não na criação (`pendente`). Por isso:
+
+- **`lib/services/order-server.ts`** (criação) — só cotação (`quoteCommercialCartAdmin`,
+  reusada, não duplicada) + persistência idempotente (ID determinístico do carrinho + `tx.create()`,
+  mesmo padrão do núcleo M03.2 de Transaction). Sem efeitos, sem coordenador.
+- **`lib/services/order-transition-admin.ts`** (transições) — aqui vivem os efeitos reais:
+  - `confirmado→faturado`: dedução de estoque (`applyStockOperationAdmin`, reusa o núcleo M01
+    inteiro — BOM, bloqueio de negativo) + lançamento de receita
+    (`createTransactionSafeAdmin`, núcleo M03.2 — idempotente por
+    businessId+orderId+type+installmentNumber, **reusado, não reimplementado**). Parcelas: `n>1`
+    gera N Transactions com `installmentGroupId=orderId`, vencimento em ciclos de 30 dias.
+  - `*→cancelado` (a partir de faturado): restaura estoque + cancela cada Transaction vinculada
+    via `transitionTransactionSafeAdmin` (a FSM de Transaction já aceita pendente/pago→cancelado
+    — não precisou de nenhum contra-lançamento manual como o de DeliveryOrder).
+- **Reserva de estoque em `confirmado`**: deliberadamente NÃO implementada. O próprio
+  `ORDER_TRANSITION_EFFECTS` já marca isso como **"opcional"** — não é um corte de escopo
+  silencioso, é a leitura literal do que o FSM já documentava. Bloqueio de saldo insuficiente
+  acontece no ponto real de compromisso (`faturado`, via `negativeStockPolicy:'prevent'`), não
+  antes.
+- **NF-e (emissão/cancelamento) deliberadamente adiada** — decisão de risco, não de esforço:
+  emitir um documento fiscal real sem poder validar contra um SEFAZ de homologação neste
+  ambiente é um risco maior (legal/compliance) que o valor desta fatia. `fiscalDocId` fica vazio;
+  o pedido fatura/cancela normalmente sem fiscal. Mesmo tratamento dado ao backlog fiscal
+  dormente (`ROADMAP_FISCAL_BACKLOG.md`).
+- **Contratos estendidos** (achados no caminho, todos aditivos): `Transaction.orderId` (novo,
+  espelha `deliveryOrderId`) — propagado em `transactionTxGuardAdmin.ts` (derivação de chave de
+  idempotência) e `m03-financial-audit.ts` (5º campo de origem auditado, antes só
+  sale/purchaseNote/appointment/deliveryOrder — Order nunca entrava na varredura de
+  duplicidade/referência quebrada). `OrderSchema`/`OrderItemSchema` ganharam `installments`,
+  `invoicedAt`/`stockDeductedAt`/`transactionIds`/`cancelledAt`/`cancelledBy`/`cancelledByName`,
+  e `serviceId`/`variantId` no item (mesma convenção "Produto — Variante" combinada em
+  `productName` do M02.5e).
+- **API v1**: `POST/GET /api/v1/orders` + `PATCH /api/v1/orders/{id}/transition`. Novos scopes
+  `read:orders`/`write:orders` (`ApiKeyScope`, `API_KEY_SCOPE_LABELS`, `API_KEY_SCOPE_GROUPS`,
+  `API_KEY_SCOPES` — 4 registros paralelos pré-existentes, todos atualizados). Índices compostos
+  novos em `firestore.indexes.json` (businessId+createdAt, +status, +type, +clientId) — validados
+  via `--dry-run`, **deploy pendente de autorização** (ver pendências da sessão).
+- **Tool do agente** (`b2b-orders`, domínio novo — `orders` já é DeliveryOrder): só
+  `create`/`get`/`list_by_client`. **Deliberadamente SEM `update_status`/`cancel`** — mesma
+  decisão de segurança do M02.5c (agente não aplica desconto manual): dar ao LLM o poder de
+  faturar/cancelar um pedido B2B via conversa move estoque e dinheiro real, superfície real de
+  manipulação por prompt injection. TS+Python+JSON schema do tool (`registry.py`) todos
+  atualizados; `_MUTATING_TOOLS`/gating read-only do modo analyst verificados (`create` some do
+  analyst, `get`/`list_by_client` continuam visíveis).
+- **`firestore.rules`**: NENHUMA regra nova pra `orders` nesta fatia — todos os caminhos de
+  escrita são Admin SDK (API v1 + agente), e o catch-all já nega acesso client SDK por padrão.
+  Regra de leitura fica pra quando a UI (próxima fatia) precisar de `onSnapshot`/`getDocs` direto
+  do navegador.
+- Testes novos: `tests/contracts/order.test.ts` (12 casos — schema + FSM), `tests/contracts/
+  orderServer.test.ts` (8 casos), `tests/services/orderTransitionAdmin.test.ts` (4 casos —
+  `splitInstallments`). Suite completa sem regressão (1170 testes/90 arquivos). Verificado
+  também no lado Python (venv local): `get_response_model('b2b-orders_create'/'_get'/
+  '_list_by_client')` resolve corretamente; `ruff check --select F,E9` limpo; gating
+  operator/analyst confirmado programaticamente (`create` ausente do conjunto analyst).
 
 ### M02.7 — Cancelamento, devolução e reembolso
 
