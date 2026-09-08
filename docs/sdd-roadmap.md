@@ -93,10 +93,11 @@ endpoints infra.
       este arquivo é candidato a código morto (M07 achou zero evidência de uso real, aguardando
       o usuário confirmar no Meta App Dashboard antes de tocar nele — ver
       `docs/paridade/M07_PLANO_IMPLEMENTACAO.md`). Não mexer até essa confirmação.
-- [ ] **Ainda não feito**: testes unitários dedicados em `tests/**/phone-br*.test.ts` — a lógica
-      (`brPhonesMatch`) é usada e implicitamente exercitada por outras suítes (ex: M06.5a,
-      confirmação por WhatsApp), mas não tem um arquivo de teste próprio cobrindo casos surreais
-      BR (DDD sem 9, formatos internacionais, etc.) isoladamente.
+- [x] **Feito em 08/09/2026**: `tests/contracts/phone-br.test.ts` (23 testes) — cobre
+      `digitsOnly`/`canonicalizeBr`/`alternativeBrPhone`/`brPhoneCandidates`/`brPhonesMatch`
+      isoladamente, incluindo o comportamento conhecido do fallback de últimos-8-dígitos (2
+      números com DDD diferente mas mesmo número local dão MATCH — documentado no teste, não é
+      bug).
 
 **Critério de pronto:** ✅ `markWebhookSeen` aplicado nos 2 canais WhatsApp reais — Cloud API
 (`app/api/webhooks/meta/route.ts`) e Baileys (`app/api/whatsapp/baileys-manager.ts`, M07.2,
