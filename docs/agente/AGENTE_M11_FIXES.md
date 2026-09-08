@@ -1,6 +1,6 @@
 # M11 — Agente de IA, API pública e Integrações: fixes e hardening
 
-> Concluído em: 07/09/2026
+> Concluído em: 07/09/2026 (M11.0–M11.5) · M11.1b (porte Python) fechado em 08/09/2026
 >
 > Plano de origem: `docs/paridade/M11_PLANO_IMPLEMENTACAO.md`
 
@@ -108,11 +108,53 @@ fecham gaps que só se manifestavam quando um campo opcional estava ausente
 (caso comum) ou quando o LLM mandava um payload malformado (antes: 500 cru;
 agora: 400 estruturado).
 
-**Fora de escopo desta fatia (M11.1b)**: portar os 16 domínios restantes do
-lado Python (`agent/app/tools/contracts/`) pra Pydantic — hoje só
-`agenda`/`orders`/`clients`/`sales` têm modelo de resposta ali. Escopo maior
-e codebase diferente; risco de erro sem ver payloads reais de produção.
-Deliberadamente adiado.
+**Adiado em 07/09/2026, fechado em 08/09/2026 (M11.1b)**: portar os 16 domínios restantes do
+lado Python (`agent/app/tools/contracts/`) pra Pydantic — até então só
+`agenda`/`orders`/`clients`/`sales` tinham modelo de resposta ali.
+
+## M11.1b — Porte Python (Pydantic) dos 16 domínios restantes + send-interactive
+
+`agent/app/tools/contracts/__init__.py` valida o `data` de cada resposta de tool ANTES de
+entregar pro planner LLM — mas só 4 domínios tinham modelo Pydantic (`get_response_model()`
+retornava `None`, sem validação, pros outros 16). Cada arquivo novo é uma tradução fiel do
+contrato TS já auditado em M11.1 (não uma re-derivação independente) — o TS é a fonte de
+verdade, o Python só espelha.
+
+**Método**: 4 agentes em paralelo (4 domínios cada) + 1 fatia própria (`send-interactive`,
+único ação, feito direto). Cada agente verificou seus próprios arquivos com um venv local
+(`agent/.venv`, criado nesta fatia — não existia antes) rodando o mesmo Pydantic travado em
+produção (`uv.lock`, 2.13.3) — import limpo + round-trip de payload de amostra, não só "parece
+certo".
+
+**Achado real na integração central**: 2 domínios (`kanban.search_cards`, `suppliers.search`)
+retornam item com `_score` (relevância de busca) — nome com underscore inicial, que o Pydantic
+v2 trata como atributo privado, não campo normal. 3 dos 4 grupos de agentes chegaram
+independentemente à mesma solução (não declarar o campo, deixar fluir via `extra="allow"` da
+classe base — mesmo padrão de `catalog.py`, que já tinha esse problema desde M11.1); o 4º grupo
+usou uma solução diferente (`Field(alias="_score")` + `serialize_by_alias=True`, um recurso do
+Pydantic ≥2.11) — funciona (confirmado, produção roda 2.13.3), mas é inconsistente com o resto
+do código. Normalizado pro padrão mais simples antes de integrar (`kanban.py`/`suppliers.py`
+reescritos).
+
+**Verificação**: 108 modelos Pydantic ao todo (21 domínios × ~5 actions em média), cada um com
+`model_json_schema()` resolvido sem erro (pega referência quebrada que um import simples não
+pegaria). `ruff check --select F,E9` (erros reais, não só estilo) limpo — só 1 import não-usado
+encontrado e corrigido (`catalog.py`). `get_response_model()` refatorado de uma cadeia if/elif
+de 21 ramos pra um dict-of-dicts central (`_REGISTRY`), mais fácil de manter que adicionar mais
+um `elif` a cada domínio novo.
+
+**2 quirks de nome de tool confirmados por leitura de `agent/app/tools/client.py` (não
+assumidos)**: `purchase-notes_*` usa HÍFEN de verdade no nome da tool (não underscore) — o
+módulo Python é `purchase_notes.py` (underscore, único válido em Python), mas a CHAVE do
+registry é `"purchase-notes"` (hífen) pra bater com o namespace real extraído do nome da tool.
+`conversation_send_interactive` tem namespace `"conversation"` (singular, não
+`"conversations"` nem `"send-interactive"`) — único tool nesse namespace, dispatch
+especial documentado no `__init__.py`.
+
+Lado Python fecha 100% (21/21 domínios/rotas de tool). Ainda fora de escopo: codegen
+automático Zod→Pydantic (`pnpm contracts:py`, mencionado como trabalho futuro em
+`lib/contracts/README.md`) — os 21 arquivos Python continuam mantidos à mão, sincronizados
+manualmente com o TS quando um contrato mudar.
 
 ## M11.2 — Rate limiting na API v1
 

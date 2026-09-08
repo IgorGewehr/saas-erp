@@ -156,8 +156,18 @@ pagamento/calendário/canais, já sólidos via Mercado Pago/Google Calendar/What
       contra `agent/app/tools/client.py`). Todos os 21 domínios/rotas de tool agora validam.
       Vários bugs reais de divergência contrato↔handler encontrados e corrigidos ao longo do
       caminho (ver `docs/agente/AGENTE_M11_FIXES.md`).
-- [ ] Porte Python (16 domínios Pydantic restantes) tratado como fase separada (M11.1b) —
-      escopo maior, codebase diferente, risco de erro maior sem ver payloads reais em produção.
+- [x] **M11.1b concluído (08/09/2026)**: porte Python (16 domínios Pydantic restantes +
+      `send_interactive`) — `agent/app/tools/contracts/{domain}.py`, traduzido fielmente de
+      cada contrato TS já auditado acima (não re-derivado independente). 4 agentes em paralelo
+      + 1 fatia própria (send-interactive), cada domínio tradutido, verificado por import +
+      `model_json_schema()` contra um venv local com pydantic (mesma versão travada no
+      `uv.lock` de produção, 2.13.3). Achado real durante a integração central: 2 dos 4 grupos
+      resolveram o campo `_score` (busca fuzzy) de formas diferentes — 3 grupos deixaram sem
+      modelar (flui via `extra="allow"`), 1 grupo usou `Field(alias=...)` +
+      `serialize_by_alias=True` (funciona, mas só a partir do Pydantic 2.11+); normalizado pro
+      padrão mais simples/robusto nos 2 arquivos divergentes (`kanban.py`/`suppliers.py`) antes
+      de integrar. 108 modelos ao todo, zero erro de schema. `get_response_model()` refatorado
+      pra um dict-of-dicts central. Lado Python fecha 100% (21/21).
 
 ### M11.2 — Rate limiting real na API v1 (Gap 2, engenharia pura) ✅ Concluído (07/09/2026)
 - [x] Aplicado `checkBusinessRateLimit` às 19 rotas restantes com método mutante (as 2 rotas
@@ -192,9 +202,10 @@ pagamento/calendário/canais, já sólidos via Mercado Pago/Google Calendar/What
 - [ ] Smoke manual (não executado — precisa de ambiente com o agente Python rodando de
       verdade, mesma ressalva recorrente desta sessão).
 
-**M11 fecha aqui (07/09/2026)**: M11.0–M11.3 e M11.5 concluídos; M11.4 parcial (texto da UI
-corrigido, decisão de automação de reindex deliberadamente adiada); M11.1b (Python) e o
-smoke manual ficam como pendências conhecidas, não lacunas silenciosas.
+**M11 fecha por completo em 08/09/2026**: M11.0–M11.3, M11.5 e M11.1b concluídos; M11.4 parcial
+(texto da UI corrigido, decisão de automação de reindex deliberadamente adiada). Só o smoke
+manual (precisa de ambiente com o agente Python rodando de verdade) fica como pendência
+conhecida, não lacuna silenciosa.
 
 ## 6. Riscos e controles
 

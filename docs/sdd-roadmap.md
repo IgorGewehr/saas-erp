@@ -17,7 +17,7 @@
 - [x] `lib/contracts/api/_envelope.ts` — ErrorEnvelope + IdempotencyHeaderSchema compartilhados
 - [ ] Script `pnpm contracts:openapi` que gera `docs/openapi.json` (não bloqueante)
 
-## Fase 1 — AI Agent tools (output schemas) ✅ COMPLETO no lado TS · 🟡 PARCIAL no lado Python
+## Fase 1 — AI Agent tools (output schemas) ✅ COMPLETO (TS e Python)
 
 **Por que primeiro:** hoje o executor Python recebe `dict` cru nos domínios ainda não portados.
 LLM trabalha em cima de output não validado nesses casos. Adicionar schema de output fecha o gap
@@ -39,15 +39,18 @@ endpoints infra.
       encontrando e corrigindo ~10 divergências reais entre contrato e handler no caminho (ver
       `docs/agente/AGENTE_M11_FIXES.md`). O "PILOTO" original (`agenda`) foi só o primeiro de 21,
       não o único.
-- [ ] **PYTHON** (`agent/app/tools/contracts/`): só 4 de 20 domínios têm Pydantic
-      (`agenda`/`orders`/`clients`/`sales`) — os outros 16 caem em passthrough sem validação de
-      response no lado Python (`get_response_model` retorna `None` pra eles). Rastreado como
-      **M11.1b**, deliberadamente não feito ainda — escopo maior, codebase diferente
-      (Python/Pydantic vs TS/Zod), risco de erro maior sem ver payloads reais de produção pra
-      cada domínio. Ver `docs/paridade/M11_PLANO_IMPLEMENTACAO.md`.
+- [x] **PYTHON** (`agent/app/tools/contracts/`): **M11.1b concluído em 08/09/2026** — todos os
+      20 domínios + `send-interactive` (21 no total) agora têm Pydantic. Os 16 restantes além
+      dos 4 originais (`agenda`/`orders`/`clients`/`sales`) foram portados nesta sessão, cada um
+      traduzido fielmente do contrato TS já auditado em M11 (não re-derivado independente).
+      108 modelos ao todo, todos verificados (`model_json_schema()` resolve sem erro pra cada
+      um; round-trip de payload de amostra testado nos casos especiais — `_score` em campos de
+      busca, o tool `conversation_send_interactive` de namespace irregular, `purchase-notes`
+      com hífen no nome da tool). `get_response_model()` refatorado de uma cadeia if/elif de 21
+      ramos pra um dict-of-dicts (`_REGISTRY`), mais fácil de manter.
 
-**Estado:** typecheck limpo. Lado TS 100% completo (20 domínios + send-interactive). Lado Python
-20% completo (4/20) — M11.1b é o próximo passo real desta fase, não trabalho novo.
+**Estado:** typecheck TS limpo. Lado TS 100% completo (20 domínios + send-interactive). Lado
+Python 100% completo (21/21) — Fase 1 fecha por completo.
 
 ## Fase 2 — Vendas / Pedidos / Estoque ✅ SCHEMAS COMPLETOS
 
