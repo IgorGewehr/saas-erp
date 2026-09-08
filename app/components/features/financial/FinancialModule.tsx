@@ -3812,13 +3812,18 @@ function AuditLogView({ businessId }: { businessId?: string }) {
 
   useEffect(() => {
     if (!businessId) return;
+    // M13.4: query baixava a coleção INTEIRA (sem limit) só pra fatiar as
+    // últimas 100 no cliente — em qualquer tenant com histórico real de
+    // transações, isso cresce sem limite. `limit(100)` no próprio Firestore
+    // já traz só o necessário, sem mudar o que a UI mostra.
     const q = query(
       collection(db, 'financialAuditLog'),
       where('businessId', '==', businessId),
       orderBy('createdAt', 'desc'),
+      limit(100),
     );
     getDocs(q).then(snap => {
-      setLogs(snap.docs.slice(0, 100).map(d => ({ ...(d.data() as import('@/lib/types').FinancialAuditLog), id: d.id })));
+      setLogs(snap.docs.map(d => ({ ...(d.data() as import('@/lib/types').FinancialAuditLog), id: d.id })));
       setLoading(false);
     }).catch(err => {
       console.error('[audit] fetch failed:', err);

@@ -208,10 +208,26 @@ segurança, e sim como efeito colateral do núcleo comercial do M02 e do FSM do 
 1. **M13.1** ✅ — `wipe-financial.ts` apagado (achado mais sério, resolvido).
 2. **M13.2** ✅ — backup/PITR: adiado por decisão do usuário.
 3. **M13.3** ✅ — Sentry/APM: adiado por decisão do usuário.
-4. **M13.4** — paginação de Conversas, só se priorizada no futuro (§6).
+4. **M13.4** — paginação de custo, revisitado em 08/09/2026 na rodada de "fixes que dá pra fazer
+   sem depender do usuário":
+   - [x] **`financialAuditLog` (FinancialModule.tsx clássico)**: corrigido — query baixava a
+     coleção INTEIRA sem `limit()` server-side, fatiando só as últimas 100 no cliente. Adicionado
+     `limit(100)` direto na query Firestore (mesmo padrão já usado no V2,
+     `useFinancialData.ts`/`AUDIT_LOG_FETCH_LIMIT`). Fix isolado, baixo risco, sem mudança de
+     comportamento visível — não precisou de checkpoint.
+   - [ ] **`ConversasModule.tsx` lista principal**: **NÃO tentado nesta rodada, deliberadamente**.
+     Investigação confirmou a complexidade já sinalizada no achado original: são 2 listeners
+     `onSnapshot` tempo-real MESCLADOS pro caso non-admin (split de visibilidade por setor do
+     M07.3 — `visibleToUserIds==null` OU `array-contains uid`, cada um com seu próprio
+     retry/backoff exponencial), mais 1 listener separado pro caso admin — reescrever isso pra
+     cursor-based real, preservando tempo-real + merge + retry + o filtro de não-lidas (que já
+     quebrou uma vez com uma tentativa de `limit()` ingênuo, commit `6fb79c2`), não é validável
+     sem navegador. Mesma categoria de risco de `AgendaModule.tsx` (M06) — ambos ficam pra quando
+     houver sessão com navegador disponível pra testar antes/depois.
 5. **M13.5** ✅ — aceite.
 
 **M13 fica, ao fim deste arco, com o essencial resolvido** — o achado mais sério (script de
 hard-delete sem rede de segurança) foi eliminado, e os 2 gaps estruturais restantes (backup,
 observabilidade) têm decisão explícita e documentada de adiamento, não uma lacuna silenciosa.
-M13.4 (paginação) permanece disponível como fatia futura se o volume de tenants justificar.
+M13.4: metade de baixo risco (`financialAuditLog`) fechada em 08/09/2026; a metade de alto risco
+(paginação real de `ConversasModule.tsx`) permanece adiada até haver navegador pra validar.
