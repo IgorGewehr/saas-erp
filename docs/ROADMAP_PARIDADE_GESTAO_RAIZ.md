@@ -105,7 +105,7 @@ Classificação de relevância de cada módulo do roadmap **para uma clínica od
   - Base para PDV, pedidos, financeiro, fiscal, cardápio e relatórios.
 
 - [ ] **M02 — Vendas, PDV, Pedidos e Cardápio** 🟢 Restante retomado 08/09/2026 (restaurante)
-  - Status: `Em implementação — M02.0 a M02.4 e M02.5a-d concluídas em código (público, manual, agente, FSM central, bloqueio de edição pós-efeito). M02.5e em diante PAUSADO em 03/09/2026, RETOMADO em 08/09/2026 a pedido do usuário — variantId/B2B/Mercado Pago tokenizado servem restaurante/varejo, trabalhado em paralelo à odontologia`
+  - Status: `Em implementação — M02.0 a M02.5e concluídas em código (público, manual, agente, FSM central, bloqueio de edição pós-efeito, variantId no carrinho). M02.5f em diante PAUSADO em 03/09/2026, RETOMADO em 08/09/2026 a pedido do usuário`. M02.5e (08/09/2026): motor de cotação/estoque já eram variant-aware desde M01.3b/M02.1 — gap estava só no contrato de item + 3 UIs de checkout, incluindo o canal do agente (catalog tool nunca expunha `variants[]` pro LLM). Achados reais corrigidos no caminho: pipeline de estoque de EDIÇÃO de pedido não lia variantId (corromperia estoque do produto base); produto só-com-variação caía direto no carrinho sem pedir a variação; `isOutOfStock` não considerava `variants[]`.
   - Unificar regras de preço, desconto, pagamento, baixa/restauração de estoque e cancelamento.
   - Preservar cardápio, delivery, modificadores, fidelidade e gift cards do AEVO.
   - Adaptar do Gestão Raiz as garantias de consistência, auditoria e emissão fiscal.
