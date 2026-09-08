@@ -217,9 +217,10 @@ Contém dado de demo hardcoded (`TeamTab.tsx`, mock com `role:'founder'`).
       (`computeProfileSyncKey`), mesmo padrão de `sidebarPrefsSync.ts` — sync guardado por
       conteúdo via `useRef`, não por referência. Testes novos em
       `tests/services/profileSync.test.ts`.
-- [ ] Validado via `firebase deploy --only firestore:rules --dry-run` (compilou) — **NÃO
-      deployado ainda**, aguardando autorização explícita do usuário (mesmo protocolo de
-      M09.1/M09.2).
+- [x] Validado via `firebase deploy --only firestore:rules --dry-run` (compilou) e
+      **DEPLOYADO EM PRODUÇÃO com autorização explícita do usuário** em 08/09/2026
+      (`firebase deploy --only firestore:rules`, "Deploy complete!" / "released rules
+      firestore.rules to cloud.firestore" contra `service-provider-1cd0d`). Correção ativa.
 - Gap 5 (sector-enforcement em Kanban/Spreadsheets) permanece deliberadamente fora desta rodada
   — escopo comparável ao M07.3 ("fatia de maior risco da sessão"), não cabe numa fatia de
   "fixes de baixo risco por conta própria".
