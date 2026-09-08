@@ -544,7 +544,7 @@ O inventário, o diagnóstico e o plano completo estão em `docs/paridade/M02_PL
 - [x] **M02.2 — Coordenador de operação comercial** — checkpoints, replay, efeitos determinísticos, estoque M01 e compensação concluídos.
 - [x] **M02.3 — PDV e venda de serviços** — preço autoritativo, pagamentos por alocação, estoque, cliente, comissão e estados operacionais concluídos.
 - [x] **M02.4 — Cupons, gift cards e fidelidade** — ledgers determinísticos de cupom, gift card e fidelidade integrados ao coordenador comercial concluídos.
-- [ ] **M02.5 — Delivery, cardápio e agente** — M02.5a (cardápio público), M02.5b (pedido manual), M02.5c (agente) e M02.5d (FSM central de transições/efeitos, incluindo bloqueio de edição pós-efeito) concluídas; M02.5e (`variantId`) e M02.5f (Mercado Pago com `operationId`) ⚪ **pausadas — restaurante, não é foco odontologia agora**.
+- [x] **M02.5 — Delivery, cardápio e agente** — M02.5a-d concluídas; M02.5e (`variantId` no carrinho, 08/09/2026) concluída em código; M02.5f (Mercado Pago com `operationId`) analisada e fechada sem mudança de código — já converge pelos mesmos helpers compartilhados via mecanismo de idempotência próprio (CAS de FSM), o texto do checklist estava desatualizado.
 - [ ] **M02.6 — Venda B2B e condicional** ⚪ pausado — restaurante/varejo, não é foco odontologia agora.
 - [ ] **M02.7 — Cancelamento, devolução e reembolso** ⚪ pausado — idem.
 - [ ] **M02.8 — Experiência e desempenho comercial** ⚪ pausado — idem.
