@@ -38,6 +38,7 @@ const COLLECTIONS: Record<AuditedCollection, string> = {
   giftCardRedemptions: 'giftCardRedemptions',
   loyaltyTransactions: 'loyaltyTransactions',
   fiscalDocuments: 'fiscalDocuments',
+  commercialOperations: 'commercialOperations',
 };
 
 function valueOf(args: string[], name: string): string | undefined {

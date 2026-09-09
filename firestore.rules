@@ -1362,56 +1362,18 @@ service cloud.firestore {
     match /deliveryOrders/{orderId} {
       allow read: if isAuthenticated() && isOwnBusiness();
 
-      allow create: if isAuthenticated()
-                    && incomingBelongsToBusiness()
-                    && isOperator();
-
-      // Campos de PAGAMENTO online (Mercado Pago) são escritos SÓ pelo Admin SDK
-      // (webhook MP / rota de cartão), nunca pelo client. Permitir staff gravá-los
-      // pelo SDK web deixaria marcar pedido 'pago' sem confirmação do provedor.
-      // Trava só estes campos via diff(); o staff continua livre pra avançar o
-      // status de FABRICAÇÃO (recebido→entregue) e demais campos do pedido.
-      //
-      // ATENÇÃO: 'paymentStatus' NÃO entra aqui. Ele é tambem o flag de pagamento
-      // MANUAL/offline (dinheiro/voucher) que o staff confirma pelo SDK web
-      // (OrdersModule). Travá-lo sempre regrediu a confirmação manual de pedidos
-      // em dinheiro. Ver paymentStatusLocked() abaixo — só trava em pedidos MP.
-      function paymentFieldsLocked() {
-        return request.resource.data.diff(resource.data).affectedKeys()
-                 .hasAny([
-                   'paymentFsmStatus', 'externalPaymentId', 'paidAt',
-                   // defesa em profundidade: client nunca edita estes
-                   'paymentAmount', 'pixMintAt', 'pixMintBy',
-                   // M8: 'paymentProvider' precisa ser imutavel pelo client. Sem isso
-                   // o operador removia/alterava paymentProvider num 1o update (saindo
-                   // de 'mercadopago'), desarmava paymentStatusLocked() — que depende
-                   // de resource.data.paymentProvider — e num 2o update marcava o
-                   // pedido MP como 'pago' sem confirmacao do provedor. Travar via
-                   // diff() NAO afeta pedido manual (dinheiro/voucher): o staff so
-                   // muda paymentStatus, nunca toca paymentProvider/refundedAt.
-                   'paymentProvider', 'paymentMethodKind', 'refundedAt',
-                   // stockDeductedAt NÃO entra: o staff grava esse campo no fluxo
-                   // de fabricação manual (preparando/cancelar/excluir via SDK web).
-                   // Só stockRestoredAt é server-only (cron expire-pix + webhook).
-                   'stockRestoredAt'
-                 ]);
-      }
-
-      // paymentStatus só é travado pro client quando o pedido é online (MP).
-      // Pedidos manuais (sem paymentProvider == 'mercadopago') seguem podendo
-      // ter paymentStatus alterado pelo staff (ex.: dinheiro → 'pago').
-      function paymentStatusLocked() {
-        return resource.data.paymentProvider == 'mercadopago'
-               && request.resource.data.diff(resource.data).affectedKeys()
-                    .hasAny(['paymentStatus']);
-      }
-
-      allow update: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isOperator()
-                    && incomingBelongsToBusiness()
-                    && !paymentFieldsLocked()
-                    && !paymentStatusLocked();
+      // M02.9: criação e transição de deliveryOrders já passam 100% pelo
+      // núcleo comercial server-side desde M02.5d (order-server.ts pro manual,
+      // delivery-order-transition-admin.ts pra status/pagamento/cancelamento)
+      // — confirmado sem NENHUM consumidor client SDK vivo (OrdersModule.tsx
+      // usa fetch pra /api/orders/manual e /api/orders/[id]/transition; o
+      // import de updateDoc no arquivo não é usado nesta coleção). Fechado
+      // pro mesmo padrão de commercialOperations: só Admin SDK grava. Isso
+      // também aposenta o antigo lock por campo (paymentFieldsLocked/
+      // paymentStatusLocked) — não faz mais sentido travar campo a campo
+      // quando o documento inteiro já é Admin-SDK-only.
+      allow create: if false;
+      allow update: if false;
 
       // Fase 5e: deliveryOrders e Tier 2 status-driven. "Excluir" agora e
       // transicao FSM pra status='cancelado'. Hard-delete proibido —

@@ -27,6 +27,10 @@ export interface M02CommercialAuditInput {
   giftCardRedemptions: M02AuditDocument[];
   loyaltyTransactions: M02AuditDocument[];
   fiscalDocuments: M02AuditDocument[];
+  /** M02.9 — opcional (aditivo, ver R#1): documentos de `commercialOperations`
+   *  (coordenador M02.2). Ausente = auditoria não varre operações travadas
+   *  (mesmo comportamento de antes desta fatia). */
+  commercialOperations?: M02AuditDocument[];
 }
 
 export interface M02EffectReferences {
@@ -55,7 +59,8 @@ export type M02AuditIssueCode =
   | 'MISSING_FINANCIAL_REFERENCE'
   | 'MISSING_STOCK_REFERENCE'
   | 'MISSING_FISCAL_REFERENCE'
-  | 'ORPHAN_EFFECT';
+  | 'ORPHAN_EFFECT'
+  | 'STUCK_OPERATION';
 
 export interface M02CommercialAuditIssue {
   code: M02AuditIssueCode;
@@ -73,6 +78,7 @@ export interface M02CommercialSnapshot {
     sales: number;
     deliveryOrders: number;
     orders: number;
+    commercialOperations: number;
     grossTotal: number;
     effects: Record<keyof M02EffectReferences, number>;
     issues: number;
@@ -156,6 +162,34 @@ function pushEffect(
   const effects = buckets.get(key) ?? emptyEffects();
   effects[collection].push(id);
   buckets.set(key, effects);
+}
+
+// Espelha o critério de "posso retomar?" já usado pelo coordenador
+// (commercial-operation-admin.ts: `operation.lease && Date.parse(lease.expiresAt) > now`)
+// — uma operação sem lease ativo e fora de estado terminal está travada:
+// ninguém está processando-a agora, e nenhuma requisição nova vai retomá-la
+// sozinha (só um replay explícito do mesmo idempotencyKey faz isso).
+const TERMINAL_OPERATION_STATUSES = new Set(['completed', 'compensated']);
+
+function detectStuckOperations(
+  operations: M02AuditDocument[],
+  referenceIso: string,
+  issues: M02CommercialAuditIssue[],
+): void {
+  const referenceTime = Date.parse(referenceIso);
+  for (const document of operations) {
+    const status = String(document.data.status ?? '');
+    if (TERMINAL_OPERATION_STATUSES.has(status)) continue;
+    const lease = document.data.lease as { expiresAt?: unknown } | null | undefined;
+    const leaseExpiresAt = typeof lease?.expiresAt === 'string' ? Date.parse(lease.expiresAt) : NaN;
+    const leaseActive = Number.isFinite(leaseExpiresAt) && leaseExpiresAt > referenceTime;
+    if (leaseActive) continue;
+    issues.push({
+      code: 'STUCK_OPERATION',
+      entityKey: `commercialOperation:${document.id}`,
+      message: `Operação comercial em status "${status || '(vazio)'}" sem lease ativo — candidata a retomada/investigação manual.`,
+    });
+  }
 }
 
 function readOwnedDocuments(
@@ -271,6 +305,10 @@ export function buildM02CommercialSnapshot(input: M02CommercialAuditInput): M02C
   const sales = readOwnedDocuments('sales', input.sales, businessId, issues);
   const deliveryOrders = readOwnedDocuments('deliveryOrders', input.deliveryOrders, businessId, issues);
   const orders = readOwnedDocuments('orders', input.orders, businessId, issues);
+  const commercialOperations = readOwnedDocuments(
+    'commercialOperations', input.commercialOperations ?? [], businessId, issues,
+  );
+  detectStuckOperations(commercialOperations, capturedAt, issues);
   const sources = [
     ...sales.map((document) => ({ type: 'sale' as const, document })),
     ...deliveryOrders.map((document) => ({ type: 'deliveryOrder' as const, document })),
@@ -424,6 +462,7 @@ export function buildM02CommercialSnapshot(input: M02CommercialAuditInput): M02C
       sales: sales.length,
       deliveryOrders: deliveryOrders.length,
       orders: orders.length,
+      commercialOperations: commercialOperations.length,
       grossTotal: round2(entries.reduce((sum, entry) => sum + entry.total, 0)),
       effects,
       issues: issues.length,

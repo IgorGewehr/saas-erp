@@ -499,16 +499,92 @@ das fatias anteriores:
 
 ### M02.9 — Migração, regras e observabilidade
 
-- [ ] Introduzir campos V2 de forma aditiva e manter leitores dos documentos legados.
-- [ ] Enriquecer documentos antigos sob demanda ou por migrador idempotente por tenant.
-- [ ] Não duplicar vendas entre coleções durante a migração.
-- [ ] Migrar canal por canal atrás de flag controlada e com rollback.
-- [ ] Restringir writes críticos diretos após cada canal usar o servidor.
-- [ ] Adicionar índices para operações, paginação, estados de pagamento e pendências fiscais.
-- [ ] Criar painéis/consultas de operações incompletas, compensações e divergências.
-- [ ] Documentar runbook de retomada, rollback e reconciliação.
+- [x] Introduzir campos V2 de forma aditiva e manter leitores dos documentos legados. **(já satisfeito — confirmado, sem mudança)**
+- [ ] Enriquecer documentos antigos sob demanda ou por migrador idempotente por tenant. **(especulativo — sem script, nenhum campo novo é exigido de doc antigo)**
+- [ ] Não duplicar vendas entre coleções durante a migração. **(não se aplica — decisão de 28/08/2026 já eliminou o risco)**
+- [ ] Migrar canal por canal atrás de flag controlada e com rollback. **(especulativo — migração já ocorreu sem flag, não há canal legado concorrente)**
+- [x] Restringir writes críticos diretos após cada canal usar o servidor. **(parcial, por decisão de risco — ver nota)**
+- [x] Adicionar índices para operações, paginação, estados de pagamento e pendências fiscais. **(gap estreito fechado: 5 índices compostos pra combinação de filtros da API v1)**
+- [x] Criar painéis/consultas de operações incompletas, compensações e divergências. **(auditoria M02.0 já cobria Sale/Order/DeliveryOrder×efeitos; estendida pra `commercialOperations` travadas)**
+- [x] Documentar runbook de retomada, rollback e reconciliação. **(`M02_RUNBOOK_OPERACOES.md`, escopo mínimo — depende do item anterior)**
 
 **Saída:** implantação gradual, reversível e observável por tenant.
+
+**M02.9 concluída (09/09/2026) — escopo reduzido, vários itens do checklist original
+(herdado do Gestão Raiz) não se aplicam à arquitetura real do AEVO.** Investigação
+dedicada (Explore agent) + verificação PESSOAL adicional antes de mexer em
+`firestore.rules` (rules afeta produção dos 2 tenants pagantes; não bastou confiar
+no relatório do agente):
+
+- **Campos V2 aditivos**: confirmado — todo campo introduzido desde M02.1 é
+  `.optional()`, e todo serviço lê Sale/DeliveryOrder/Order por CAST (`{ id,
+  ...snapshot.data() } as Sale`), nunca `.parse()` estrito. Um documento de
+  meses atrás sem `commercialOperationId`/`variantId`/`cancelledAt` é lido sem
+  erro — os ramos que dependem desses campos simplesmente não disparam. O
+  único `.parse()` estrito sobre essas entidades (`commercial-adapters.ts`) é
+  código morto, sem caller em produção.
+- **Enriquecer/backfill, flag por canal, não-duplicar entre coleções**: os
+  três não têm equivalente real no AEVO — a decisão de 28/08/2026 (preservar
+  `sales`/`deliveryOrders`/`orders` como canais distintos com núcleo
+  compartilhado, sem migração V1→V2 de dado) já elimina a premissa desses 3
+  itens do checklist original. Cada canal teve UM escritor novo que substituiu
+  o antigo de uma vez (PDV em M02.3, delivery/cardápio em M02.5, B2B nasceu
+  direto no núcleo em M02.6) — nunca dois caminhos concorrentes que
+  justificassem flag/rollback.
+- **Restringir writes diretos — achado que corrigiu o próprio relatório da
+  investigação**: o agente concluiu "zero consumidores client SDK" pra
+  `sales` e `deliveryOrders`. Verificação pessoal (grep por `'sales'`/
+  `'deliveryOrders'` em TODO `app/` e `lib/`, não só nos módulos óbvios) achou
+  que `sales` TEM um escritor client SDK vivo e real:
+  `app/components/features/clients/shared/mergeClients.ts`'s
+  `reassociateRelatedDocs` grava `clientId` direto via `writeBatch` em
+  `sales`/`transactions` sempre que dois clientes são fundidos no CRM — uma
+  feature viva, não código morto. Fechar `sales` pra Admin-SDK-only teria
+  QUEBRADO o merge de clientes em produção. Por isso `sales` e `orders` (B2B,
+  que TEM escritor vivo confirmado em `VendasModule.tsx:671,693` — a tela
+  nunca migrou, decisão já registrada em M02.6) **não foram restringidos**.
+  `deliveryOrders` foi verificado de verdade (inclusive contradição encontrada
+  no comentário da própria regra antiga, que dizia haver escrita client SDK de
+  status — rastreado até `OrdersModule.tsx`'s `transitionOrder()`, que é
+  `fetch` pra `/api/orders/[id]/transition`, não `updateDoc`; o comentário
+  estava desatualizado desde a centralização de 01/09/2026) e fechado pro
+  padrão Admin-SDK-only (`allow create/update: if false`, mesmo de
+  `commercialOperations`) — removido também o lock por campo
+  (`paymentFieldsLocked`/`paymentStatusLocked`), que virou código morto.
+- **Índices**: a maioria das queries reais já tinha índice. Gap real e
+  estreito: `GET /api/v1/sales` e `GET /api/v1/orders` aceitam múltiplos
+  filtros opcionais simultâneos (`status`+`clientId` em sales;
+  `status`+`type`+`clientId` em orders) que, combinados, pedem um índice
+  composto que só cobria os filtros isolados. Fechado com 5 índices novos
+  (`firestore.indexes.json`). Sem consumidor confirmado combinando filtros
+  hoje — é rede de segurança pra API pública documentada, mesmo raciocínio do
+  `limit(2000)` da M02.8.
+- **Painéis de operações travadas**: `scripts/audit-m02-commercial.ts` +
+  `lib/services/m02-commercial-audit.ts` (entregues na M02.0) já cobriam
+  Sale/DeliveryOrder/Order × efeitos (transação, estoque, benefício, fiscal),
+  mas nunca liam `commercialOperations` — não havia como encontrar uma
+  operação travada em estado intermediário, só o documento final já
+  divergente. Estendido: `commercialOperations` agora entra na auditoria,
+  novo código `STUCK_OPERATION` (operação fora de estado terminal SEM lease
+  ativo — mesmo critério de "posso retomar?" que o próprio coordenador usa
+  internamente). Campo novo `commercialOperations?` no input é opcional
+  (aditivo) — comparações contra baseline antigo continuam funcionando.
+- **Runbook**: não existia nenhum documento de retomada/reconciliação pro
+  núcleo comercial em lugar nenhum do repo (confirmado — `docs/paridade/
+  M13_PLANO_IMPLEMENTACAO.md` já registrava explicitamente "nenhum runbook no
+  sistema"). Criado `M02_RUNBOOK_OPERACOES.md`, escopo mínimo: como rodar a
+  auditoria, como interpretar `STUCK_OPERATION`, como retomar (replay do
+  mesmo idempotencyKey) ou compensar manualmente
+  (`compensateCommercialBenefitsAdmin`/`transitionTransactionSafeAdmin`, já
+  existentes desde M02.4/M03.2). Sem sweep automático nem painel de UI —
+  ambos especulativos sem incidente real documentado.
+- Testes novos: 2 casos em `tests/services/m02CommercialAudit.test.ts`
+  (`STUCK_OPERATION` detectado sem lease/lease expirado; não detectado em
+  status terminal ou lease ainda válido). Suite completa sem regressão (1193
+  testes/93 arquivos, subindo de 1191/93 no fim da M02.8).
+- **Deploy de `firestore.rules`/`firestore.indexes.json` pendente de
+  autorização explícita do usuário** (mesmo padrão já usado pros índices da
+  M02.6) — editado e commitado, mas não aplicado em produção nesta fatia.
 
 ### M02.10 — Testes, homologação e aceite
 

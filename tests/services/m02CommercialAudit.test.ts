@@ -77,6 +77,7 @@ describe('M02.0 — auditoria comercial read-only', () => {
       sales: 1,
       deliveryOrders: 1,
       orders: 1,
+      commercialOperations: 0,
       grossTotal: 300,
       effects: {
         transactions: 2,
@@ -161,6 +162,37 @@ describe('M02.0 — auditoria comercial read-only', () => {
       expect.objectContaining({ key: 'deliveryOrder:delivery-public-1', status: 'changed' }),
     ]);
     expect(comparison.newIssues.some((issue) => issue.code === 'MISSING_FINANCIAL_REFERENCE')).toBe(true);
+  });
+
+  it('M02.9: denuncia commercialOperation não-terminal sem lease ativo', () => {
+    const input = validInput();
+    input.commercialOperations = [
+      document('op-stuck', { businessId: 'biz-m02', status: 'running', lease: null }),
+      document('op-expired-lease', {
+        businessId: 'biz-m02', status: 'compensation_pending',
+        lease: { token: 't1', expiresAt: '2026-08-28T19:00:00.000Z' }, // antes de capturedAt
+      }),
+    ];
+    const snapshot = buildM02CommercialSnapshot(input);
+    const stuck = snapshot.issues.filter((issue) => issue.code === 'STUCK_OPERATION');
+    expect(stuck.map((issue) => issue.entityKey)).toEqual([
+      'commercialOperation:op-expired-lease',
+      'commercialOperation:op-stuck',
+    ]);
+    expect(snapshot.summary.commercialOperations).toBe(2);
+  });
+
+  it('M02.9: não denuncia commercialOperation terminal nem com lease ainda válido', () => {
+    const input = validInput();
+    input.commercialOperations = [
+      document('op-done', { businessId: 'biz-m02', status: 'completed', lease: null }),
+      document('op-in-flight', {
+        businessId: 'biz-m02', status: 'running',
+        lease: { token: 't1', expiresAt: '2026-08-28T20:05:00.000Z' }, // depois de capturedAt
+      }),
+    ];
+    const snapshot = buildM02CommercialSnapshot(input);
+    expect(snapshot.issues.filter((issue) => issue.code === 'STUCK_OPERATION')).toEqual([]);
   });
 
   it('recusa comparação entre tenants diferentes', () => {
