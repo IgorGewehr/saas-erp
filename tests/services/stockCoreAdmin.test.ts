@@ -361,6 +361,43 @@ describe('applyStockOperationAdmin', () => {
     expect(fake.list('stockMovements')).toHaveLength(1);
   });
 
+  // M02.10 — mesma disputa acima, mas por LOTE (não pelo saldo agregado do
+  // produto). Achado da investigação M02.10: só havia teste de concorrência
+  // pelo saldo simples (acima); a distribuição FEFO nunca tinha sido exercida
+  // sob corrida. Reaproveita o mesmo fake DB (transactionTail serializa as
+  // transações, provando isolamento sem precisar de emulador real).
+  it('bloqueia a última unidade concorrente de um lote específico (FEFO sob corrida)', async () => {
+    const lot = {
+      id: 'lot-last', schemaVersion: 1, businessId: 'biz1', productId: 'p1', productName: 'Produto p1', unit: 'UN',
+      code: 'ULTIMO', codeNormalized: 'ULTIMO', status: 'active', expiresAt: '2027-01-01', initialQuantity: 1,
+      currentQuantity: 1, expiryWarningDays: 30, createdBy: 'user-1', createdByName: 'Operador',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const fake = makeFakeDb(
+      [product('p1', 1, { trackLots: true })],
+      { 'stockLots/lot-last': lot },
+    );
+    const attempts = await Promise.allSettled([
+      applyStockOperationAdmin(fake.db, baseInput({
+        lines: [{ productId: 'p1', quantity: 1 }],
+        sourceId: 'sale-a',
+        idempotencyKey: 'sale:sale-a:stock',
+      })),
+      applyStockOperationAdmin(fake.db, baseInput({
+        lines: [{ productId: 'p1', quantity: 1 }],
+        sourceId: 'sale-b',
+        idempotencyKey: 'sale:sale-b:stock',
+      })),
+    ]);
+
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    const rejected = attempts.find((attempt) => attempt.status === 'rejected');
+    expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(InsufficientStockError);
+    expect(fake.get('products/p1')?.currentStock).toBe(0);
+    expect(fake.get('stockLots/lot-last')).toMatchObject({ currentQuantity: 0, status: 'depleted' });
+    expect(fake.list('stockMovements')).toHaveLength(1);
+  });
+
   it('aplica ajuste assinado sem expandir BOM e centraliza o alerta de mínimo', async () => {
     const fake = makeFakeDb([product('p1', 6, { minStock: 5 })]);
 

@@ -308,6 +308,56 @@ describe('M02.2 — coordenador comercial recuperável', () => {
     expect(fake.list('stockMovements')).toHaveLength(1);
   });
 
+  // M02.10 — achado da investigação: dos 6 checkpoints do coordenador,
+  // `benefits_reserved` é o único com efeito real (resgate de cupom/gift
+  // card/pontos) sem teste dedicado de queda+retomada — os outros 4 com
+  // efeito já tinham (stock_applied acima, document_persisted, event_enqueued,
+  // downstream_reconciled abaixo). Mesmo padrão exato dos demais.
+  it('retoma queda após reservar benefício sem resgatar o cupom duas vezes', async () => {
+    const item = product();
+    const fake = makeFakeDb({
+      ...seedProduct(item),
+      'coupons/cp-1': {
+        id: 'cp-1', businessId: 'biz1', code: 'DESC5', discountType: 'fixed', discountValue: 5,
+        appliesTo: 'all', status: 'active', usedCount: 0, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+      },
+    });
+    const request = operationRequest(item, {
+      benefits: [{
+        intentId: 'coupon-1', type: 'coupon', action: 'redeem',
+        referenceId: 'cp-1', code: 'DESC5', amountCents: 500,
+      }],
+    });
+    let crash = true;
+
+    await expect(runCommercialOperationAdmin({
+      db: fake.db,
+      request,
+      now: () => NOW,
+      faults: {
+        afterCheckpointEffect(checkpoint) {
+          if (checkpoint === 'benefits_reserved' && crash) {
+            crash = false;
+            throw new Error('queda após benefício');
+          }
+        },
+      },
+    })).rejects.toThrow(/queda após benefício/);
+
+    expect(fake.get('coupons/cp-1')?.usedCount).toBe(1);
+    expect(fake.list('couponRedemptions')).toHaveLength(1);
+    expect(storedOperation(fake, request)).toMatchObject({
+      status: 'failed',
+      checkpoints: { benefits_reserved: { status: 'failed' } },
+    });
+
+    await runCommercialOperationAdmin({ db: fake.db, request, now: () => NOW });
+    const operation = storedOperation(fake, request);
+    expect(operation.status).toBe('completed');
+    expect(fake.get('coupons/cp-1')?.usedCount).toBe(1);
+    expect(fake.list('couponRedemptions')).toHaveLength(1);
+  });
+
   it('retoma queda após persistir o documento sem criar uma segunda venda', async () => {
     const item = product({ trackStock: false });
     const fake = makeFakeDb(seedProduct(item));

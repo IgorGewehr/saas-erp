@@ -588,18 +588,113 @@ no relatório do agente):
 
 ### M02.10 — Testes, homologação e aceite
 
-- [ ] Testar preço, arredondamento, variação, modificadores, zona, cupom e descontos.
-- [ ] Testar pagamentos imediatos, diferidos, divididos, pontos, gift card e Mercado Pago.
-- [ ] Testar duas vendas disputando o último saldo e o último lote válido.
-- [ ] Testar concorrência pelo último uso de cupom, saldo de gift card e pontos.
-- [ ] Testar replay do checkout e falha após cada checkpoint.
-- [ ] Testar cancelamento total/parcial, cancelamento repetido e reembolso assíncrono.
-- [ ] Testar isolamento entre dois `businessId` em todos os efeitos.
-- [ ] Testar compatibilidade de documentos legados e rollback das flags.
-- [ ] Executar smoke manual dos cinco canais e da emissão/cancelamento fiscal.
-- [ ] Comparar antes/depois com auditoria de estoque, lotes, financeiro e benefícios.
+- [x] Testar preço, arredondamento, variação, modificadores, zona, cupom e descontos. **(já bem coberto — confirmado, sem gap)**
+- [x] Testar pagamentos imediatos, diferidos, divididos, pontos, gift card e Mercado Pago. **(gap real e o maior dos 10 — Mercado Pago tinha ZERO testes; fechado)**
+- [x] Testar duas vendas disputando o último saldo e o último lote válido. **(saldo já coberto; lote era gap — fechado)**
+- [x] Testar concorrência pelo último uso de cupom, saldo de gift card e pontos. **(gap real — mock nem serializava transação; fechado)**
+- [x] Testar replay do checkout e falha após cada checkpoint. **(5 de 6 já cobertos; `benefits_reserved` era o único sem teste dedicado — fechado)**
+- [x] Testar cancelamento total/parcial, cancelamento repetido e reembolso assíncrono. **(total/repetido já cobertos M02.7; parcial confirmado fora de escopo; reembolso assíncrono = mesmo gap do Mercado Pago, fechado junto)**
+- [x] Testar isolamento entre dois `businessId` em todos os efeitos. **(bem coberto; 1 gap pontual em order-server.ts — fechado)**
+- [x] Testar compatibilidade de documentos legados e rollback das flags. **(já coberto no caminho real; "rollback de flags" não se aplica — confirmado)**
+- [ ] Executar smoke manual dos cinco canais e da emissão/cancelamento fiscal. **(fora do alcance deste ambiente — sem browser, sem SEFAZ de homologação; mesma ressalva de sempre)**
+- [ ] Comparar antes/depois com auditoria de estoque, lotes, financeiro e benefícios. **(só capacidade, nunca exercitada contra tenant real — requer credenciais de produção que este ambiente não tem)**
 
 **Saída:** evidência objetiva de consistência funcional e transacional em homologação.
+
+**M02.10 concluída (09/09/2026) — 2 dos 10 itens continuam fora do alcance deste
+ambiente por natureza (manual/produção), não por escolha.** Investigação dedicada
+(Explore agent, veredito por item com evidência arquivo:linha) mapeou os ~1193
+testes acumulados de M02.0-M02.9 contra cada um dos 10 itens do checklist ANTES
+de escrever qualquer teste novo:
+
+- **Achado mais sério — Mercado Pago sem NENHUM teste**: `lib/services/
+  mercadopago/webhook-settle.ts` (561 linhas, único caller de
+  `settlePaymentNotification`, plugado no webhook real + 2 crons de
+  reconciliação) nunca teve um teste dedicado. É o arquivo que decide
+  aprovação/estorno/chargeback de dinheiro real — o maior gap dos 10 itens.
+  Fechado com `tests/services/mercadopagoWebhookSettle.test.ts` (19 casos):
+  aprovação fresca com taxa MP lançada como despesa, reentrega idempotente,
+  refund parcial em `approved` (não confundir com refund cheio), valor
+  divergente, aprovação tardia pós-estorno (stale, no-op), aprovação em
+  pedido morto (revisão manual — dinheiro pode ter sido recebido), refund
+  cheio com restauro de estoque + reversão de receita + evento, reentrega de
+  refund (efeitos reaplicados, evento não duplicado), refund parcial na
+  reversão, `cancelled` pré-pagamento (vira `failed`, sem receita a reverter),
+  reversão impossível/já-terminal-por-outro-caminho, `authorized`,
+  `rejected` (não terminaliza), status intermediário. Mocka por inteiro os 3
+  efeitos cross-módulo (`restoreOrderStockRecoverable`/
+  `reverseDeliveryOrderRevenue`/`dispatchDomainEvent`) — mesma decisão já
+  usada em M02.5's `deliveryOrderTransitionAdmin.test.ts` (provar que o
+  arquivo DECIDE certo e DELEGA certo, não reverificar a mecânica interna do
+  que já é testado em outro lugar).
+- **Concorrência de benefícios — gap real, e o mock nem suportava testar
+  isso**: `tests/services/m02CommercialBenefits.test.ts` (único arquivo do
+  núcleo M02.4) não tinha nenhum caso de corrida nem de `TENANT_MISMATCH`,
+  apesar de `commercial-benefits-admin.ts` ter 6 pontos de `fail(
+  'TENANT_MISMATCH', ...)`. Pior: o mock de `runTransaction` não serializava
+  — um teste de corrida escrito contra ele daria falso-positivo (passaria
+  mesmo sem guard nenhum). Portado o padrão `transactionTail` (mesmo de
+  `stockCoreAdmin.test.ts`/`commercialOperationAdmin.test.ts`) e adicionados
+  4 casos: cupom `usageLimit:1` disputado por duas vendas simultâneas (só
+  uma resgata, a outra recebe `COUPON_EXHAUSTED`), gift card com saldo que
+  cabe uma mas não duas redenções simultâneas (`GIFT_CARD_INSUFFICIENT`), e
+  os 2 `TENANT_MISMATCH` que faltavam (cupom e gift card de outro negócio).
+- **Lote sob corrida**: só existia teste de concorrência pelo saldo agregado
+  do produto (`stockCoreAdmin.test.ts`); a distribuição FEFO nunca foi
+  exercida sob corrida. 1 caso novo reaproveitando o mesmo fake DB
+  (`transactionTail` já provado), disputando a última unidade de um lote
+  específico — mesmo padrão do saldo simples, agora também no
+  `stockLots/{id}`.
+- **Checkpoint `benefits_reserved` sem teste de queda+retomada**: dos 6
+  checkpoints do coordenador M02.2, 4 com efeito real já tinham teste
+  dedicado de falha+replay (`stock_applied`, `document_persisted`,
+  `event_enqueued`, `downstream_reconciled`); `benefits_reserved` (resgate de
+  cupom/gift card/pontos) era o único sem. 1 caso novo em
+  `commercialOperationAdmin.test.ts`: crasha depois de resgatar um cupom,
+  confirma `usedCount` já incrementado mas operação `failed`; retoma e
+  confirma que o replay NÃO resgata o cupom de novo (ledger já existe).
+- **`order-server.ts` era o único dos 3 canais de criação sem teste de
+  `TENANT_MISMATCH`**: Sale e DeliveryOrder já tinham (`salesServerCommercial
+  .test.ts`, `deliveryOrderServerCommercial.test.ts`); `createOrderWithSideEffects`
+  (M02.6) nunca teve NENHUM teste de serviço (só o schema de input, em
+  `tests/contracts/orderServer.test.ts`). Criado `tests/services/
+  orderServerCommercial.test.ts` (8 casos) cobrindo o caminho todo: criação
+  com cotação autoritativa, `OPERATOR_REQUIRED`, `CLIENT_NOT_FOUND`,
+  `TENANT_MISMATCH` (o gap específico), cliente do mesmo tenant, replay
+  idempotente, carrinho diferente sem colidir, `type=condicional`.
+- **Devolução parcial**: reconfirmado fora de escopo (zero implementação em
+  qualquer lugar do repo — greenfield, não é questão de teste). **Reembolso
+  assíncrono**: é o mesmo fluxo/mesmo gap do Mercado Pago acima — fechado
+  junto (webhook de estorno chegando dias depois é exatamente o que os casos
+  de refund/chargeback de `mercadopagoWebhookSettle.test.ts` cobrem).
+- **Smoke manual e comparação antes/depois contra tenant real**: confirmado
+  fora do alcance deste ambiente (sem browser, sem SEFAZ de homologação, sem
+  credenciais de produção pro `npm run audit:m02`) — mesma ressalva recorrente
+  de toda a sessão (M02.5e, M02.6). `scripts/audit-m02-commercial.ts` (M02.0,
+  estendido em M02.9) tem a CAPACIDADE de comparação `--baseline`/`--output`,
+  nunca exercitada contra dado real — fica registrado como próximo passo
+  operacional (não de código) quando alguém com acesso de produção rodar.
+- Testes novos: 19 (`mercadopagoWebhookSettle.test.ts`) + 8
+  (`orderServerCommercial.test.ts`) + 1 (lote sob corrida,
+  `stockCoreAdmin.test.ts`) + 1 (`benefits_reserved` queda+retomada,
+  `commercialOperationAdmin.test.ts`) + 4 (concorrência/tenant de benefícios,
+  `m02CommercialBenefits.test.ts`) = 33 testes novos, 2 arquivos novos. Suite
+  completa sem regressão (1226 testes/95 arquivos, subindo de 1193/93 no fim
+  da M02.9).
+
+## M02 — módulo concluído (09/09/2026)
+
+Todas as 11 sub-fases (M02.0-M02.10) estão concluídas em código, cada uma com
+escopo reduzido ou itens deliberadamente adiados por decisão explícita de risco
+(nunca por omissão silenciosa — ver nota de cada sub-fase acima). O núcleo
+comercial (cotação autoritativa, coordenador recuperável, ledgers de benefício,
+transições server-side de Sale/Order/DeliveryOrder) converge os 3 canais
+(PDV/delivery+cardápio/B2B) sob as mesmas garantias de consistência, idempotência
+e isolamento multi-tenant. Pendências que ficam deliberadamente fora, registradas
+para retomada futura sob sinal real de demanda: tela de pedido B2B (M02.6), NF-e
+de Order (M02.6), estado composto da operação na UI (M02.8), devolução parcial e
+reconciliação de enum fiscal (M02.7), sweep automático/painel de operações
+travadas (M02.9), smoke manual e auditoria contra tenant real (M02.10).
 
 ## 7. Ordem de entrega recomendada
 
