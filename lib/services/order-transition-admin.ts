@@ -121,7 +121,7 @@ async function invoiceOrder(
       amount: amounts[i],
       dueDate,
       orderId: order.id,
-      installmentNumber: amounts.length > 1 ? i + 1 : undefined,
+      ...(amounts.length > 1 ? { installmentGroupId: order.id, installmentNumber: i + 1 } : {}),
       ...(order.clientId ? { clientId: order.clientId, contactId: order.clientId } : {}),
       ...(order.clientName ? { clientName: order.clientName } : {}),
       ...(order.paymentMethod ? { paymentMethod: order.paymentMethod } : {}),

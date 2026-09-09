@@ -651,6 +651,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // M02.7 (08/09/2026) — última linha de defesa pra qualquer write-path
+    // client SDK que não passe pelo serviço server-side único
+    // (lib/services/sale-transition-admin.ts). Espelha lib/contracts/fsm/sale.ts:
+    // aberta→finalizada|cancelada, finalizada→cancelada, cancelada é terminal.
+    function isValidSaleTransition(from, to) {
+      return from == to
+        || (from == 'aberta' && to in ['finalizada', 'cancelada'])
+        || (from == 'finalizada' && to == 'cancelada');
+    }
+
     // ============================================
     // SALES COLLECTION
     // ============================================
@@ -667,7 +677,8 @@ service cloud.firestore {
       allow update: if isAuthenticated()
                     && isOwnBusiness()
                     && isOperator()
-                    && incomingBelongsToBusiness();
+                    && incomingBelongsToBusiness()
+                    && isValidSaleTransition(resource.data.status, request.resource.data.status);
 
       // Fase 5b: sales e Tier 2 status-driven. "Cancelar" via status='cancelada'
       // ja existia (PDVModule.handleCancelSale + agent tool cancelSale).

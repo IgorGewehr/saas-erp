@@ -1256,6 +1256,10 @@ export interface Sale {
   cancelledAt?: string;
   cancelledBy?: string;
   cancelledByName?: string;
+  /** M02.7 — CAS guard: presente = estatísticas do cliente (totalSpent/
+   *  visitCount/lastVisit) já foram revertidas por este cancelamento.
+   *  Impede duplo-decremento em reexecução (duplo-clique, retry, 2 abas). */
+  clientStatsReversedAt?: string;
 }
 
 // ---- Financial ----

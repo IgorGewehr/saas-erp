@@ -106,6 +106,11 @@ export const SaleSchema = z.object({
   sectorId: z.string().optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
+  cancelledAt: z.string().optional(),
+  cancelledBy: z.string().optional(),
+  cancelledByName: z.string().optional(),
+  /** M02.7 — CAS guard contra duplo-decremento de totalSpent/visitCount do cliente. */
+  clientStatsReversedAt: z.string().optional(),
 }).superRefine((s, ctx) => {
   // INVARIANTE 1: subtotal ≈ sum(items.total)
   const itemsTotal = round2(s.items.reduce((acc, it) => acc + it.total, 0));

@@ -59,10 +59,9 @@ import { useTheme } from '@/app/components/providers/ThemeProvider';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, deleteField, onSnapshot, runTransaction } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
 import { toast } from 'react-toastify';
 import { checkStockAvailability } from '@/lib/services/stock';
-import { applyStockOperation } from '@/lib/services/stock-server-client';
 import type { StockOperationAdjustment } from '@/lib/services/stock-core-admin';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import PDVModifierPicker from './PDVModifierPicker';
@@ -1131,115 +1130,29 @@ export default function PDVModule() {
     setGiftCardError(null);
   }, []);
 
+  // M02.7: cancelamento migrado pro serviço server-side único
+  // (lib/services/sale-transition-admin.ts) — a sequência inline de writes
+  // client SDK que existia aqui não tinha trava contra reexecução (duplo-
+  // clique/2 abas duplicava o decremento de totalSpent/visitCount do
+  // cliente) e nunca revertia benefícios (cupom/gift card ficavam
+  // consumidos pra sempre). O servidor faz tudo atomicamente/idempotente e
+  // devolve o resultado; a UI só chama e trata a resposta.
   const handleCancelSale = useCallback(async (sale: Sale) => {
-    if (!user || !business) return;
+    if (!user || !business || !firebaseUser) return;
     setIsCancellingSale(true);
     try {
-      const now = new Date().toISOString();
-
-      // 1. Mark sale as cancelled
-      await updateDoc(doc(db, 'sales', sale.id), {
-        status: 'cancelada',
-        cancelledAt: now,
-        cancelledBy: user.uid,
-        cancelledByName: user.name,
-        updatedAt: now,
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch(`/api/sales/${sale.id}/cancel`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ businessId: business.id }),
       });
-
-      // 2. Restore stock for product items — SIMÉTRICO à baixa (mesma
-      // buildOrderStockLines): reverte tanto a linha base quanto os insumos de
-      // modificadores (linkedProductId) debitados na venda.
-      const productIndex = new Map(products.map(p => [p.id, p]));
-      const productLines = buildOrderStockLines(
-        { items: sale.items } as unknown as DeliveryOrder,
-        productIndex,
-      );
-      if (productLines.length > 0) {
-        await applyStockOperation({
-          businessId: business.id,
-          type: 'restauracao',
-          lines: productLines,
-          operatorName: user.name,
-          sourceType: 'refund',
-          sourceId: sale.id,
-          sourceDocument: { collection: 'sales', id: sale.id, existence: 'required' },
-          idempotencyKey: `sale:${sale.id}:restore`,
-          reason: `Cancelamento venda #${sale.id.substring(0, 6)}`,
-          expandBom: true,
-        });
-      }
-
-      // 3. Cancel the linked financial transaction(s) — ATOMICAMENTE (M03.3
-      // achado: um loop de updateDoc independentes podia deixar UMA transação
-      // cancelada e outra não se a conexão caísse no meio, quando a venda tem
-      // mais de uma vinculada, ex.: receita + comissão). Este trecho não usa
-      // o núcleo transactionTxGuardAdmin.ts (Admin SDK, server-side-only,
-      // M03.2) — permanece client SDK, mas ganha atomicidade real via
-      // runTransaction, com re-checagem de tenant por documento (defesa em
-      // profundidade — firestore.rules, M03.4, também garante a transição
-      // válida e amount>0 nesta escrita, mesmo sem o núcleo).
-      const txSnap = await getDocs(
-        query(
-          collection(db, 'transactions'),
-          where('businessId', '==', business.id),
-          where('saleId', '==', sale.id),
-        ),
-      );
-      if (!txSnap.empty) {
-        const txRefs = txSnap.docs.map((d) => doc(db, 'transactions', d.id));
-        await runTransaction(db, async (tx) => {
-          const snaps = [];
-          for (const ref of txRefs) snaps.push(await tx.get(ref));
-          for (const snap of snaps) {
-            if (!snap.exists() || snap.data()?.businessId !== business.id) continue;
-            tx.update(snap.ref, { status: 'cancelado', updatedAt: now });
-          }
-        });
-      }
-
-      // 4. Reverse client stats — totalSpent + visitCount + lastVisit.
-      // Antes lastVisit não era revertido, então churn filter ficava enganado
-      // por venda cancelada. Agora consulta sales não-canceladas do cliente
-      // e usa o createdAt da mais recente como novo lastVisit (ou remove).
-      if (sale.clientId) {
-        try {
-          // EF-04: lookup direto por id (O(1)) em vez de full-scan + .find sobre
-          // toda a coleção. Confere businessId no retorno pra não reverter stats
-          // de cliente de outro tenant (R1).
-          const clientSnap = await getDoc(doc(db, 'clients', sale.clientId));
-          const data = clientSnap.exists() ? clientSnap.data() : null;
-          if (data && data.businessId === business.id) {
-            // Recalcula lastVisit consultando demais sales válidas
-            let newLastVisit: string | null | undefined = data.lastVisit;
-            try {
-              const otherSalesSnap = await getDocs(
-                query(
-                  collection(db, 'sales'),
-                  where('businessId', '==', business.id),
-                  where('clientId', '==', sale.clientId),
-                ),
-              );
-              const validSales = otherSalesSnap.docs
-                .map(d => ({ id: d.id, ...(d.data() as { status?: string; createdAt?: string }) }))
-                .filter(s => s.id !== sale.id && s.status !== 'cancelado' && s.createdAt)
-                .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-              newLastVisit = validSales[0]?.createdAt || null;
-            } catch (recalcErr) {
-              console.warn('[PDV cancel] Failed to recalc lastVisit:', recalcErr);
-              // mantém o valor atual em caso de erro — pior que ideal mas não bloqueia
-            }
-            const updates: Record<string, unknown> = {
-              totalSpent: Math.max(0, (data.totalSpent || 0) - sale.total),
-              visitCount: Math.max(0, (data.visitCount || 0) - 1),
-              updatedAt: now,
-            };
-            if (newLastVisit) updates.lastVisit = newLastVisit;
-            else updates.lastVisit = deleteField();
-            await updateDoc(doc(db, 'clients', sale.clientId), updates);
-          }
-        } catch (err) {
-          console.warn('Failed to reverse client stats:', err);
-        }
+      const payload = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !payload?.ok) {
+        throw new Error(payload?.error || 'Erro ao cancelar venda');
       }
 
       // Invalidate caches: sales (PDV salesHistory), transactions (Reports),
@@ -1254,11 +1167,11 @@ export default function PDVModule() {
       toast.success(t('pdv.cancel.success', 'Venda cancelada e estoque restaurado com sucesso'));
     } catch (error) {
       console.error('Error cancelling sale:', error);
-      toast.error(t('pdv.cancel.error', 'Erro ao cancelar venda'));
+      toast.error(error instanceof Error ? error.message : t('pdv.cancel.error', 'Erro ao cancelar venda'));
     } finally {
       setIsCancellingSale(false);
     }
-  }, [user, business, products, queryClient, t]);
+  }, [user, business, firebaseUser, queryClient, t]);
 
   const handlePreBooking = useCallback(async () => {
     if (!user || !business || !selectedClient || !pbDate || !pbServiceId || !pbTime) return;

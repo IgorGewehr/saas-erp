@@ -40,14 +40,21 @@ describe('M01.9 — smoke estrutural das telas críticas', () => {
     expect(suppliers).toContain('archiveSupplier');
   });
 
-  it('mantém PDV acessível com baixa e restauração pelo núcleo autoritativo', () => {
+  it('mantém PDV acessível com baixa pelo núcleo autoritativo e cancelamento server-side (M02.7)', () => {
     const shell = read('app/app/page.tsx');
     const pdv = read('app/components/features/pdv/PDVModule.tsx');
     expect(shell).toContain("case 'PDV'");
     expect(shell).toContain('<PDVModule />');
-    expect(pdv).toContain("from '@/lib/services/stock-server-client'");
     expect(pdv).toContain('buildOrderStockLines');
-    expect(pdv).toContain('applyStockOperation');
+    // Checkout: /api/sales/checkout (núcleo comercial server-side).
+    expect(pdv).toContain("fetch('/api/sales/checkout'");
+    // M02.7: cancelamento migrado do client SDK direto (sem trava contra
+    // reexecução, sem reverter benefícios) pro serviço server-side único
+    // (lib/services/sale-transition-admin.ts) via rota autenticada — restaura
+    // estoque, cancela transações vinculadas e reverte cupom/gift card/
+    // fidelidade atomicamente/idempotentemente.
+    expect(pdv).toContain("fetch(`/api/sales/${sale.id}/cancel`");
+    expect(pdv).not.toContain("from '@/lib/services/stock-server-client'");
   });
 
   it('mantém Pedidos acessível, criando e transicionando status pelo núcleo comercial server-side (M02.5b/d)', () => {

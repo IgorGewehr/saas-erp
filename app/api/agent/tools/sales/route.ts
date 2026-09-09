@@ -17,7 +17,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody, resolveClientId } from '@/lib/agent/auth';
 import { createSaleWithSideEffects } from '@/lib/services/sales-server';
-import { assertTransitionSale } from '@/lib/contracts/fsm/sale';
+import { cancelSaleAdmin } from '@/lib/services/sale-transition-admin';
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
 import type { Sale, SaleItem, Payment, PaymentMethod } from '@/lib/types';
 
@@ -212,31 +212,28 @@ async function createSale(businessId: string, p: CreateParams): Promise<Sale> {
 
 async function cancelSale(businessId: string, id: string, reason?: string): Promise<Sale> {
   if (!id) throw new Error('id required');
-  const ref = adminDb.collection('sales').doc(id);
-  const snap = await ref.get();
-  if (!snap.exists) throw new Error('Sale not found');
-  const sale = snap.data() as Sale;
-  if (sale.businessId !== businessId) throw new Error('Cross-tenant access denied');
-  // R4/P1.9: FSM cobre o antigo guard "já cancelada" e bloqueia origens inválidas.
-  assertTransitionSale(sale.status, 'cancelada');
+  // M02.7: delega ao serviço server-side único (lib/services/
+  // sale-transition-admin.ts) — o guard FSM, a restauração de estoque, a
+  // reversão das transações vinculadas (receita/comissão) e a reversão de
+  // benefícios (cupom/gift card/fidelidade) agora acontecem aqui, não mais
+  // só um flip de status como antes (que deixava estoque e dinheiro órfãos).
+  const result = await cancelSaleAdmin({
+    db: adminDb,
+    saleId: id,
+    businessId,
+    reason,
+    actor: { id: 'agent', name: 'IA agente' },
+  });
 
-  const now = new Date().toISOString();
-  const notes = reason
-    ? `${sale.notes ? `${sale.notes}\n---\n` : ''}[Cancelada ${now.slice(0, 10)}] ${reason.slice(0, 200)}`
-    : sale.notes;
-
-  // Fase 5b: grava audit trail do cancelamento. Agent nao tem `user` —
-  // usa identificador agente (operatorId stays = autor original da venda).
-  const patch: Partial<Sale> = {
-    status: 'cancelada',
-    notes,
-    cancelledAt: now,
-    cancelledBy: 'agent',
-    cancelledByName: 'IA agente',
-    updatedAt: now,
-  };
-  await ref.update(patch);
-  return { ...sale, ...patch, id: snap.id };
+  // Preserva a UX de anexar o motivo às notas — não é responsabilidade do
+  // serviço genérico (Order/futuros callers não têm esse campo do mesmo jeito).
+  if (reason) {
+    const now = new Date().toISOString();
+    const notes = `${result.sale.notes ? `${result.sale.notes}\n---\n` : ''}[Cancelada ${now.slice(0, 10)}] ${reason.slice(0, 200)}`;
+    await adminDb.collection('sales').doc(id).update({ notes, updatedAt: now });
+    return { ...result.sale, notes, updatedAt: now };
+  }
+  return result.sale;
 }
 
 async function summaryToday(businessId: string) {

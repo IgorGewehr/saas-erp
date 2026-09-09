@@ -371,16 +371,79 @@ acontecem depois, na transição `confirmado→faturado` — não na criação (
 
 ### M02.7 — Cancelamento, devolução e reembolso
 
-- [ ] Criar uma operação server-side de reversão por tipo de documento.
-- [ ] Validar tenant, função, FSM, motivo e situação fiscal antes de aplicar efeitos.
-- [ ] Restaurar o estoque pelos movimentos e lotes originais, inclusive variações e insumos.
-- [ ] Reverter/compensar transações, recebíveis, conta financeira e comissão.
-- [ ] Estornar cupom, gift card, fidelidade e estatísticas do cliente quando aplicável.
-- [ ] Diferenciar cancelamento total, devolução parcial e reembolso do provedor.
-- [ ] Persistir estado fiscal `nao_emitido`, `emitido`, `cancelamento_pendente`, `cancelado` ou `erro`.
-- [ ] Tornar cancelamento repetido um no-op auditável, sem efeito duplo.
+- [x] Criar uma operação server-side de reversão por tipo de documento. **(Sale — novo; DeliveryOrder e Order já tinham desde M02.5d/M02.6)**
+- [x] Validar tenant, função, FSM e situação fiscal antes de aplicar efeitos. **(motivo já era opcional nos 3 tipos; não endurecido)**
+- [x] Restaurar o estoque pelos movimentos e lotes originais, inclusive variações e insumos. **(já estava sólido nos 3 tipos — achado da investigação: único item já 100% coberto de saída)**
+- [x] Reverter/compensar transações, recebíveis, conta financeira e comissão.
+- [x] Estornar cupom, gift card, fidelidade e estatísticas do cliente quando aplicável. **(achado real: nenhum cancelamento no repo fazia isso antes — ver nota)**
+- [ ] Diferenciar cancelamento total, devolução parcial e reembolso do provedor. **(deliberadamente fora de escopo — ver nota)**
+- [ ] Persistir estado fiscal `nao_emitido`/`emitido`/`cancelamento_pendente`/`cancelado`/`erro`. **(não implementado como proposto — colidiria com um enum real já existente; ver nota)**
+- [x] Tornar cancelamento repetido um no-op auditável, sem efeito duplo. **(achado real: Sale via PDV tinha um bug de duplo-efeito ao vivo — corrigido)**
 
 **Saída:** nenhum cancelamento concluído deixa estoque, dinheiro ou benefício divergente sem pendência explícita.
+
+**M02.7 concluída parcialmente (08/09/2026) — escopo reduzido por decisão do usuário.** Investigação
+dedicada (Explore agent, evidência por arquivo:linha) ANTES de qualquer código — mesmo rigor do
+M02.5f, mas com veredito oposto: **não é item desatualizado, são bugs reais e concretos**:
+
+- **Achado mais sério — bug de duplo-efeito AO VIVO em produção**: `PDVModule.tsx`'s
+  `handleCancelSale` (client SDK) não tinha CAS no `sale.status` nem trava na reversão de stats
+  do cliente — cancelar a MESMA venda duas vezes (duplo-clique, duas abas) decrementava
+  `totalSpent`/`visitCount` do cliente DUAS vezes. Checkpoint com o usuário: escolhida a opção
+  mais ampla (reconstruir o cancelamento inteiro server-side, não só o guard cirúrgico).
+- **Achado mais valioso — cupom/gift card nunca eram liberados**: `compensateCommercialBenefitsAdmin`
+  (`commercial-benefits-admin.ts`, núcleo M02.4) já existia, já era correto, já era testado — mas
+  tinha exatamente 1 caller em todo o repo (`commercial-operation-admin.ts`, só pra falha EM
+  ANDAMENTO do checkout, nunca para cancelamento pós-hoc). Cancelar um DeliveryOrder ou uma Sale
+  que resgatou cupom/gift card deixava o valor consumido PRA SEMPRE. Agora reconstrói o
+  `CommercialOperationHandlerContext` a partir de `commercialOperations/{sale.commercialOperationId}`
+  (campo já persistido desde M02.2) e chama a função existente — sem reimplementar nada.
+- **Construído**: `lib/services/sale-transition-admin.ts` (`cancelSaleAdmin`) — serviço único
+  substituindo os DOIS caminhos divergentes que existiam (PDV client SDK, quase completo mas com
+  o bug de duplo-efeito e sem reverter benefícios/fiscal; agente, que só mudava `status` e
+  deixava estoque/dinheiro órfãos). Efeitos: gate fiscal (nota `autorizada` bloqueia — cancele a
+  nota primeiro), status+stats do cliente atômicos com CAS real (`Sale.clientStatsReversedAt`,
+  campo novo), restauração de estoque (mesma `idempotencyKey` que o client já usava — retomada
+  seguro), cancelamento de cada Transaction vinculada (núcleo M03.2, `transitionTransactionSafeAdmin`),
+  reversão de benefícios via o `commercialOperationId` original.
+- **`app/api/sales/[id]/cancel/route.ts`** (novo, autenticado) — `PDVModule.tsx`'s
+  `handleCancelSale` migrado de ~130 linhas de writes client SDK sequenciais pra 1 chamada fetch;
+  UI ao redor (loading, toast, invalidação de cache) preservada sem mudança de comportamento
+  visível. `app/api/agent/tools/sales/route.ts`'s `cancelSale` migrado pra chamar o mesmo serviço.
+- **`firestore.rules`**: `sales` ganhou `isValidSaleTransition` (espelha `isValidTransactionTransition`
+  já existente pra `transactions`) — antes o `allow update` não validava transição nenhuma, defesa
+  em profundidade real contra qualquer write-path client SDK futuro que não passe pelo serviço.
+- **`Sale`/`SaleSchema`**: ganharam `cancelledAt`/`cancelledBy`/`cancelledByName` (já eram escritos,
+  nunca declarados no contrato Zod — mesma classe de drift já corrigida em Order/DeliveryOrder) e
+  `clientStatsReversedAt` (novo, o CAS guard).
+- **Deliberadamente fora de escopo, por decisão de risco não de esforço**:
+  - *Devolução parcial* — zero implementação em QUALQUER lugar do repo hoje (nem Sale, nem
+    DeliveryOrder, nem Order); é greenfield, exigiria matemática de item-a-item nova. Fica
+    dormente até sinal real de demanda, mesmo tratamento do PIX/Boleto/Sequências de CRM.
+  - *Enum fiscal `nao_emitido/emitido/cancelamento_pendente/cancelado/erro`* — a investigação
+    achou que um enum REAL e FSM-aplicado já existe (`FiscalDocumentStatus` em
+    `lib/contracts/fsm/fiscalDocument.ts`: `pendente/processando/contingencia/autorizada/
+    rejeitada/cancelada/erro`), já denormalizado em `Sale.fiscalStatus`/etc via
+    `docs/fiscal/FISCAL_VINCULO_PENDENTE.md` (M04, sessão anterior). Introduzir o vocabulário do
+    checklist criaria um SEGUNDO enum paralelo e não-reconciliado. O que a fatia FEZ foi o gate
+    prático (bloquear cancelamento com nota `autorizada`) usando o enum que já existe — reconciliar
+    o `fiscalStatus:'nao_emitido'` legado de `sales-server.ts` com o enum real fica pra uma fatia
+    fiscal dedicada (fora do escopo comercial da M02).
+  - *DeliveryOrder e Order (B2B) não ganharam a mesma reversão de benefícios nesta fatia* —
+    `compensateCommercialBenefitsAdmin` está pronta e testada, mas só foi wireada em Sale. Order
+    nunca resgata cupom/gift card hoje (não implementado em M02.6), então não é gap real pra ele.
+    DeliveryOrder É um gap real remanescente (a investigação já mapeou o caminho: mesmo padrão
+    de `sale.commercialOperationId` existe em `deliveryOrder.commercialOperationId`) — fica
+    registrado aqui como próximo item óbvio se aparecer um caso real (cupom/gift card em pedido
+    de delivery cancelado).
+- Testes novos: `tests/services/saleTransitionAdmin.test.ts` (9 casos — fiscal gate, tenant
+  mismatch, CAS/duplo-efeito, clamp em zero, sem clientId). `tests/services/
+  orderTransitionCancelInvoice.test.ts` (8 casos — cobertura que `order-transition-admin.ts` não
+  tinha desde M02.6, achado da mesma investigação). **Bug real encontrado pelo próprio teste
+  novo**: `invoiceOrder()` (M02.6) nunca gravava `installmentGroupId` nas parcelas apesar do
+  comentário dizer que gravava — corrigido no caminho. Suite completa sem regressão (1187
+  testes/92 arquivos). `tests/contracts/m01-ui-smoke.test.ts` atualizado (asserção estrutural
+  antiga esperava o `stock-server-client` do PDV, que não existe mais no cancelamento).
 
 ### M02.8 — Experiência e desempenho comercial
 
