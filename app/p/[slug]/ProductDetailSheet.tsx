@@ -7,10 +7,11 @@ import {
   Sparkles, ChevronDown, Info,
 } from 'lucide-react';
 import type {
-  Product, ProductModifierGroup, ProductModifierOption,
   SelectedModifier, SelectedModifierOption,
 } from '@/lib/types';
-import type { CartItem } from './CatalogClient';
+import type {
+  CartItem, PublicProduct, PublicProductModifierGroup, PublicProductModifierOption,
+} from './CatalogClient';
 
 function formatBRL(n: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(n);
@@ -21,7 +22,7 @@ function shortId() {
 }
 
 interface Props {
-  product: Product;
+  product: PublicProduct;
   initialCartItem: CartItem | null;
   onClose: () => void;
   onAdd: (cartItem: CartItem) => void;
@@ -30,7 +31,7 @@ interface Props {
 // Selection state: map groupId → optionId → quantity
 type SelectionState = Record<string, Record<string, number>>;
 
-function buildInitialSelection(product: Product, initial: CartItem | null): SelectionState {
+function buildInitialSelection(product: PublicProduct, initial: CartItem | null): SelectionState {
   const state: SelectionState = {};
   const groups = product.modifierGroups || [];
 
@@ -56,7 +57,7 @@ function buildInitialSelection(product: Product, initial: CartItem | null): Sele
   return state;
 }
 
-function calculateGroupPrice(group: ProductModifierGroup, picked: Record<string, number>): number {
+function calculateGroupPrice(group: PublicProductModifierGroup, picked: Record<string, number>): number {
   const entries = Object.entries(picked).filter(([, qty]) => qty > 0);
   if (entries.length === 0) return 0;
 
@@ -184,7 +185,7 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
     });
   }, [scrollToNextIncomplete]);
 
-  const toggleMultiple = useCallback((group: ProductModifierGroup, optionId: string) => {
+  const toggleMultiple = useCallback((group: PublicProductModifierGroup, optionId: string) => {
     setSelection(prev => {
       const current = { ...(prev[group.id] || {}) };
       if (current[optionId]) {
@@ -204,7 +205,7 @@ export default function ProductDetailSheet({ product, initialCartItem, onClose, 
     });
   }, [scrollToNextIncomplete]);
 
-  const changeQuantity = useCallback((group: ProductModifierGroup, optionId: string, delta: number) => {
+  const changeQuantity = useCallback((group: PublicProductModifierGroup, optionId: string, delta: number) => {
     setSelection(prev => {
       const current = { ...(prev[group.id] || {}) };
       const option = group.options.find(o => o.id === optionId);
@@ -465,7 +466,7 @@ function ModifierGroupSection({
   group, picked, validation, showError,
   onToggleSingle, onToggleMultiple, onChangeQty,
 }: {
-  group: ProductModifierGroup;
+  group: PublicProductModifierGroup;
   picked: Record<string, number>;
   validation?: { valid: boolean; count: number; message?: string };
   showError: boolean;
@@ -554,8 +555,8 @@ function OptionRow({
   option, group, quantity, disabled,
   onToggleSingle, onToggleMultiple, onChangeQty,
 }: {
-  option: ProductModifierOption;
-  group: ProductModifierGroup;
+  option: PublicProductModifierOption;
+  group: PublicProductModifierGroup;
   quantity: number;
   disabled: boolean;
   onToggleSingle: () => void;

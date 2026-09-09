@@ -1,4 +1,17 @@
-import type { Product } from '@/lib/types';
+/**
+ * Shape mínimo pra decidir disponibilidade — não `Product` inteiro, pra que
+ * `PublicProduct` (projeção pública sem custo/fiscal, ver `app/p/[slug]/
+ * CatalogClient.tsx`, M02.8) também sirva aqui sem precisar de um cast. Todo
+ * `Product` real já satisfaz esta forma estruturalmente.
+ */
+export interface AvailabilityProduct {
+  menuAvailable?: boolean;
+  trackStock?: boolean;
+  hasModifiers?: boolean;
+  variants?: Array<{ isActive: boolean; trackStock: boolean; currentStock: number }>;
+  components?: Array<{ productId: string; quantity: number }>;
+  currentStock?: number;
+}
 
 /**
  * Disponibilidade de item de cardápio — FONTE ÚNICA.
@@ -33,15 +46,15 @@ import type { Product } from '@/lib/types';
 /** Resolve o estoque atual de um insumo pelo id; `undefined` quando desconhecido. */
 export type StockResolver = (productId: string) => number | undefined;
 
-function hasModifiers(product: Product): boolean {
+function hasModifiers(product: AvailabilityProduct): boolean {
   return Boolean(product.hasModifiers);
 }
 
-function hasComponents(product: Product): boolean {
+function hasComponents(product: AvailabilityProduct): boolean {
   return Boolean(product.components && product.components.length > 0);
 }
 
-function hasVariants(product: Product): boolean {
+function hasVariants(product: AvailabilityProduct): boolean {
   return Boolean(product.variants && product.variants.length > 0);
 }
 
@@ -50,7 +63,7 @@ function hasVariants(product: Product): boolean {
  * `undefined` quando não é composto ou quando nenhum insumo é resolvível
  * (nesse caso não há como bloquear — o público também não bloqueia).
  */
-export function composedAvailableQty(product: Product, resolve?: StockResolver): number | undefined {
+export function composedAvailableQty(product: AvailabilityProduct, resolve?: StockResolver): number | undefined {
   const components = product.components;
   if (!components || components.length === 0) return undefined;
   if (!resolve) return undefined;
@@ -67,7 +80,7 @@ export function composedAvailableQty(product: Product, resolve?: StockResolver):
 }
 
 /** `true` quando o item NÃO pode ser pedido agora. */
-export function isOutOfStock(product: Product, resolve?: StockResolver): boolean {
+export function isOutOfStock(product: AvailabilityProduct, resolve?: StockResolver): boolean {
   // Toggle manual "esgotado hoje" — vence tudo, inclusive trackStock.
   if (product.menuAvailable === false) return true;
   // "Não controlar estoque" — nunca bloqueia por estoque (só o toggle manual).
@@ -91,6 +104,6 @@ export function isOutOfStock(product: Product, resolve?: StockResolver): boolean
 }
 
 /** Inverso de `isOutOfStock` — açúcar sintático para leitura. */
-export function isProductAvailable(product: Product, resolve?: StockResolver): boolean {
+export function isProductAvailable(product: AvailabilityProduct, resolve?: StockResolver): boolean {
   return !isOutOfStock(product, resolve);
 }

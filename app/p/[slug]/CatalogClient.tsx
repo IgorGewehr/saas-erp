@@ -9,7 +9,7 @@ import {
   ChevronDown, Loader2, Package, Sparkles, Tag, RotateCcw, UtensilsCrossed,
 } from 'lucide-react';
 import type {
-  Business, Product, DeliveryOrderPaymentMethod, DeliveryType,
+  Business, Product, ProductModifierGroup, DeliveryOrderPaymentMethod, DeliveryType,
   MenuCategory, SelectedModifier,
 } from '@/lib/types';
 import type { CouponDiscountType } from '@/lib/contracts/domain/coupon';
@@ -23,7 +23,7 @@ import CardPaymentBrick from './CardPaymentBrick';
 
 export interface CartItem {
   id: string;                          // unique per configuration (product + variant + modifiers hash)
-  product: Product;
+  product: PublicProduct;
   quantity: number;
   notes: string;
   selectedModifiers?: SelectedModifier[];
@@ -87,6 +87,69 @@ export interface PublicBusiness {
   };
 }
 
+/** Projeção PÚBLICA de um produto entregue ao cardápio anônimo (M02.8). A
+ *  page.tsx monta SÓ estes campos (allowlist) — NUNCA o doc completo de
+ *  `Product`, que carrega custo/margem (costPrice, variants[].costPrice),
+ *  identificadores internos (sku, barcode, ncm/cfop/cest/fiscalTax) e vínculo
+ *  de insumo dos modificadores (linkedProductId/consumeQty). Mesmo raciocínio
+ *  de segurança que já protegia `PublicBusiness` — só nunca tinha sido
+ *  aplicado ao array de produtos. */
+export interface PublicProductModifierOption {
+  id: string;
+  name: string;
+  description?: string;
+  additionalPrice: number;
+  imageUrl?: string;
+  isDefault?: boolean;
+  maxQuantity?: number;
+  available: boolean;
+  sortOrder: number;
+}
+export interface PublicProductModifierGroup {
+  id: string;
+  name: string;
+  description?: string;
+  required: boolean;
+  minSelections: number;
+  maxSelections: number;
+  selectionType: ProductModifierGroup['selectionType'];
+  priceStrategy: ProductModifierGroup['priceStrategy'];
+  options: PublicProductModifierOption[];
+  sortOrder: number;
+}
+export interface PublicProductVariant {
+  id: string;
+  name: string;
+  attributes: Record<string, string>;
+  salePrice: number;
+  currentStock: number;
+  minStock: number;
+  trackStock: boolean;
+  isActive: boolean;
+}
+export interface PublicProduct {
+  id: string;
+  name: string;
+  description?: string;
+  menuDescription?: string;
+  category?: string;
+  menuCategory?: string;
+  menuCategoryId?: string;
+  salePrice: number;
+  imageUrl?: string;
+  dietary?: string[];
+  hasModifiers?: boolean;
+  modifierGroups?: PublicProductModifierGroup[];
+  variants?: PublicProductVariant[];
+  menuAvailable?: boolean;
+  trackStock?: boolean;
+  currentStock?: number;
+  /** BOM — só o suficiente pra `menu-availability.ts` decidir disponibilidade
+   *  (nenhum resolver de estoque é passado no cardápio público, então o
+   *  conteúdo nunca é usado pra bloquear, só o length importa). */
+  components?: Product['components'];
+}
+
 interface CheckoutForm {
   deliveryType: DeliveryType;
   tableNumber: string;
@@ -123,7 +186,7 @@ function isBusinessOpen(hours: NonNullable<Business['settings']>['openingHours']
 }
 
 /** Minimum starting price for a product (used for products with modifiers) */
-function startingPrice(product: Product): number {
+function startingPrice(product: PublicProduct): number {
   const base = product.salePrice || 0;
   if (!product.hasModifiers || !product.modifierGroups?.length) return base;
   // Sum of cheapest required option from each required group
@@ -270,7 +333,7 @@ function ProductImage({ src, name }: { src?: string; name: string }) {
 
 interface Props {
   business: PublicBusiness;
-  products: Product[];
+  products: PublicProduct[];
   categories: MenuCategory[];
   /** Veio de `?mesa=` na URL (QR code na mesa) — pré-preenche e trava o tipo
    *  de atendimento como 'mesa', escondendo o seletor (a mesa já é conhecida). */
@@ -287,7 +350,7 @@ export default function CatalogClient({ business, products, categories, tableNum
   const [orderNumber, setOrderNumber] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [detailProduct, setDetailProduct] = useState<Product | null>(null);
+  const [detailProduct, setDetailProduct] = useState<PublicProduct | null>(null);
   const [editingCartItem, setEditingCartItem] = useState<CartItem | null>(null);
 
   // ── Pagamento online (opcional) ─────────────────────────────────────────────
@@ -417,7 +480,7 @@ export default function CatalogClient({ business, products, categories, tableNum
   }, [categories, products]);
 
   const productsByCategory = useMemo(() => {
-    const map = new Map<string, Product[]>();
+    const map = new Map<string, PublicProduct[]>();
     const term = search.trim().toLowerCase();
 
     for (const p of products) {
@@ -593,7 +656,7 @@ export default function CatalogClient({ business, products, categories, tableNum
     );
   }
 
-  const addSimpleToCart = useCallback((product: Product) => {
+  const addSimpleToCart = useCallback((product: PublicProduct) => {
     setCart(prev => {
       // Match existing entry (no modifiers → same product id)
       const key = product.id + ':plain';
@@ -636,7 +699,7 @@ export default function CatalogClient({ business, products, categories, tableNum
     setCart(prev => prev.map(i => i.id === itemId ? { ...i, quantity: i.quantity + 1 } : i));
   }, []);
 
-  const handleProductClick = useCallback((product: Product) => {
+  const handleProductClick = useCallback((product: PublicProduct) => {
     // Variação (M02.5e) exige escolha explícita — mesmo sem modificadores,
     // abre a sheet (senão o item entraria no carrinho sem variantId e o
     // checkout rejeitaria com VARIANT_REQUIRED).
@@ -1905,7 +1968,7 @@ export default function CatalogClient({ business, products, categories, tableNum
 function ProductCard({
   product, qty, onClick, delay,
 }: {
-  product: Product;
+  product: PublicProduct;
   qty: number;
   onClick: () => void;
   delay: number;

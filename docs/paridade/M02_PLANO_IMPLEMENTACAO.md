@@ -447,15 +447,55 @@ M02.5f, mas com veredito oposto: **não é item desatualizado, são bugs reais e
 
 ### M02.8 — Experiência e desempenho comercial
 
-- [ ] Adaptar seletores de variação e modificadores ao PDV e cardápio.
-- [ ] Exibir indisponibilidade e mudança de preço sem aceitar total antigo silenciosamente.
-- [ ] Exibir estado composto da operação e ações de retentativa autorizadas.
-- [ ] Criar leitura pública segura do cardápio, sem expor o documento completo da empresa.
-- [ ] Paginar produtos, vendas e pedidos; limitar listeners por janela/cursor.
-- [ ] Preservar modo kanban, comanda, impressão, tracking e acessibilidade móvel.
-- [ ] Garantir que tela otimista nunca anuncie conclusão antes do checkpoint necessário.
+- [x] Adaptar seletores de variação e modificadores ao PDV e cardápio. **(cardápio já tinha desde M02.5e; PDV era o gap real — corrigido)**
+- [x] Exibir indisponibilidade e mudança de preço sem aceitar total antigo silenciosamente. **(já satisfeito nos dois canais — confirmado, sem mudança)**
+- [ ] Exibir estado composto da operação e ações de retentativa autorizadas. **(deliberadamente adiado — ver nota)**
+- [x] Criar leitura pública segura do cardápio, sem expor o documento completo da empresa. **(achado real: `products` vazava pro HTML público; corrigido)**
+- [x] Paginar produtos, vendas e pedidos; limitar listeners por janela/cursor. **(4 listeners sem teto, `limit(2000)`)**
+- [x] Preservar modo kanban, comanda, impressão, tracking e acessibilidade móvel. **(confirmado: nenhum trabalho da M02 nesta sessão tocou esses caminhos)**
+- [x] Garantir que tela otimista nunca anuncie conclusão antes do checkpoint necessário. **(já satisfeito nos 3 fluxos de checkout verificados — confirmado, sem mudança)**
 
 **Saída:** operação rápida para o usuário e custo previsível no Firestore.
+
+**M02.8 concluída (09/09/2026) — escopo reduzido por decisão de risco, não de esforço.**
+Investigação dedicada (Explore agent, veredito por item) ANTES de qualquer código, mesmo padrão
+das fatias anteriores:
+
+- **Achado mais sério — vazamento de dado do cardápio público**: `app/p/[slug]/page.tsx` já
+  aplicava allowlist ao `Business` (`PublicBusiness`, existente, bem documentado), mas passava o
+  array `products` INTEIRO pro client component — em Next.js, todo campo de um prop server→client
+  vai pro payload RSC/HTML enviado ao navegador anônimo, mesmo campo que a UI nunca lê. Isso
+  incluía `costPrice`, `sku`, `ncm`/`cfop`/`cest`, `linkedProductId` de modificador (insumo interno
+  do BOM) e `costPrice`/`sku`/`barcode` de cada variação — tudo visível no view-source de qualquer
+  visitante. Corrigido com o mesmo padrão já usado pro `Business`: `toPublicProduct()`
+  (`app/p/[slug]/page.tsx`, exportada e testada) projeta só os campos que a UI usa, incluindo
+  sanitização recursiva de `modifierGroups[].options[]` e `variants[]`. Tipos novos
+  (`PublicProduct`/`PublicProductModifierGroup`/`PublicProductModifierOption`/`PublicProductVariant`)
+  em `CatalogClient.tsx`, propagados em `ProductDetailSheet.tsx`. `lib/utils/menu-availability.ts`
+  generalizado pra uma interface estrutural mínima (`AvailabilityProduct`) — `Product` completo e
+  `PublicProduct` satisfazem os dois sem cast. Regressão coberta por
+  `tests/utils/publicProduct.test.ts` (lista negra de ~18 campos sensíveis).
+- **PDV sem seletor de variação**: `PDVModule.tsx`'s `handleCatalogClick`/`addToCart` nunca tratava
+  `product.variants[]` — um produto com variação (só variação, sem modificador) caía direto em
+  `addToCart`, que lê `product.currentStock`/`product.salePrice` (campos de topo, sem sentido pra
+  `kind:'variant'`) — entrava no carrinho com preço/estoque errados e o checkout SEMPRE rejeitava
+  no servidor (`VARIANT_REQUIRED`, `commercial-quote.ts`, já variant-aware desde M02.1). Corrigido
+  com `PDVVariantPicker.tsx` (novo, espelha `PDVModifierPicker.tsx`) + wiring em `PDVModule.tsx`.
+  `SaleItem.variantId` já existia no contrato (fatia anterior não lembrada) — gap era só de UI.
+- **4 listeners `onSnapshot` sem teto**: `products` em `PDVModule.tsx`/`VendasModule.tsx`/
+  `OrdersModule.tsx` e `orders` em `VendasModule.tsx` liam a coleção inteira do tenant sem
+  `limit`. Corrigido com `limit(2000)` nos 4 — mesmo teto já usado no `clients` de
+  `OrdersModule.tsx` (precedente existente). Catálogo/histórico real dos dois tenants pagantes
+  fica muito abaixo disso; o teto é rede de segurança de custo, não paginação de UX (cursor/
+  "carregar mais" fica pra quando um tenant real se aproximar do teto — não há sinal disso hoje).
+- **Deliberadamente adiado**: *estado composto da operação (`commercialOperations`) e ações de
+  retentativa na UI* — a investigação confirmou que o coordenador (M02.2) já persiste estado
+  suficiente pra construir essa tela, mas hoje NENHUM consumidor (usuário ou suporte) pediu essa
+  visibilidade; é observabilidade especulativa, não bug nem gap reportado. Fica registrado como
+  candidato natural pra M02.9 (que já tem "painéis/consultas de operações incompletas" no
+  checklist) em vez de ser feito agora sem caso de uso real.
+- Testes novos: `tests/utils/publicProduct.test.ts` (4 casos). Suite completa sem regressão
+  (1191 testes/93 arquivos, subindo de 1187/92 no fim da M02.7).
 
 ### M02.9 — Migração, regras e observabilidade
 

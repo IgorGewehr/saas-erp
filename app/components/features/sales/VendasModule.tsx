@@ -10,7 +10,7 @@ import {
   CalendarClock, ShoppingBag, Building2, User,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, addDoc, updateDoc, deleteDoc, doc, onSnapshot,
+  collection, query, where, orderBy, addDoc, updateDoc, deleteDoc, doc, onSnapshot, limit,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -579,7 +579,11 @@ export default function VendasModule() {
   useEffect(() => {
     if (!business?.id) { setIsLoading(false); return; }
     setIsLoading(true);
-    const q = query(collection(db, 'orders'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'));
+    // M02.8: limit(2000) evita leitura/listener sem teto num tenant com
+    // histórico grande de orçamentos/pedidos B2B — ordenado por createdAt
+    // desc, então o teto sempre corta pelos mais ANTIGOS, nunca esconde
+    // orçamento recente.
+    const q = query(collection(db, 'orders'), where('businessId', '==', business.id), orderBy('createdAt', 'desc'), limit(2000));
     const unsub = onSnapshot(q, (snap) => {
       setOrders(snap.docs.map(d => ({ ...d.data(), id: d.id } as Order)));
       setIsLoading(false);
@@ -605,8 +609,10 @@ export default function VendasModule() {
   const [products, setProducts] = useState<Product[]>([]);
   useEffect(() => {
     if (!business?.id) return;
-    // Single-field query — sort client-side.
-    const q = query(collection(db, 'products'), where('businessId', '==', business.id));
+    // Single-field query — sort client-side. limit(2000): M02.8, mesmo teto
+    // de segurança usado em clients/orders — catálogo real dos tenants atuais
+    // fica muito abaixo disso.
+    const q = query(collection(db, 'products'), where('businessId', '==', business.id), limit(2000));
     const unsub = onSnapshot(q, (snap) => {
       const list = snap.docs
         .map(d => ({ ...d.data(), id: d.id } as Product))

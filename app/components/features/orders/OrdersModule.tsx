@@ -1514,7 +1514,9 @@ export default function OrdersModule() {
   const [products, setProducts] = useState<Product[]>([]);
   useEffect(() => {
     if (!business?.id) return;
-    const q = query(collection(db, 'products'), where('businessId', '==', business.id));
+    // limit(2000): M02.8, mesmo teto de segurança já usado no listener de
+    // clients acima — catálogo real dos tenants atuais fica muito abaixo disso.
+    const q = query(collection(db, 'products'), where('businessId', '==', business.id), limit(2000));
     const unsub = onSnapshot(q, (snap) => {
       setProducts(snap.docs.map(d => ({ ...d.data(), id: d.id } as Product)));
     }, (err) => console.error('[Orders] products snapshot error:', err));

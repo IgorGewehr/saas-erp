@@ -65,12 +65,13 @@ import { checkStockAvailability } from '@/lib/services/stock';
 import type { StockOperationAdjustment } from '@/lib/services/stock-core-admin';
 import { buildOrderStockLines } from '@/lib/services/stock-lines';
 import PDVModifierPicker from './PDVModifierPicker';
+import PDVVariantPicker from './PDVVariantPicker';
 import { notifyLowStock } from '@/lib/services/notifications';
 import { calculateEarnedPoints, addLoyaltyPoints, redeemLoyaltyPoints, pointsToReais, reaisToPoints } from '@/lib/services/loyalty';
 import { findGiftCard, redeemGiftCard } from '@/lib/services/giftCard';
 import { resolveClientIdentityClient } from '@/lib/services/clients/resolveIdentity';
 import { db } from '@/lib/config/firebase';
-import type { Product, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod, SelectedModifier, DeliveryOrder } from '@/lib/types';
+import type { Product, ProductVariant, Service, CRMContact, Sale, SaleItem, Payment, PaymentMethod, SelectedModifier, DeliveryOrder } from '@/lib/types';
 
 // ==========================================
 // TYPES & CONSTANTS
@@ -198,6 +199,7 @@ export default function PDVModule() {
   const [cart, setCart] = useState<CartItem[]>([]);
   // Produto configurável aguardando escolha de modificadores (abre PDVModifierPicker).
   const [modifierProduct, setModifierProduct] = useState<Product | null>(null);
+  const [variantProduct, setVariantProduct] = useState<Product | null>(null);
   const [selectedClient, setSelectedClient] = useState<CRMContact | null>(null);
   const [discountValue, setDiscountValue] = useState('');
   const [discountType, setDiscountType] = useState<'reais' | 'percent'>('reais');
@@ -283,10 +285,13 @@ export default function PDVModule() {
     if (!business?.id) { setLoadingProducts(false); return; }
     setLoadingProducts(true);
     // Single-field query — isActive + sort por name client-side (evita
-    // composite index products/businessId+isActive+name).
+    // composite index products/businessId+isActive+name). limit(2000):
+    // M02.8, teto de segurança pra listener sem paginação — catálogo real
+    // dos tenants atuais fica muito abaixo disso.
     const q = query(
       collection(db, 'products'),
       where('businessId', '==', business.id),
+      limit(2000),
     );
     const unsub = onSnapshot(q, (snap) => {
       const list = snap.docs
@@ -488,11 +493,18 @@ export default function PDVModule() {
     });
   }, []);
 
-  // Roteia o clique do catálogo: produto configurável (hasModifiers) abre o
-  // seletor de modificadores; o resto cai no addToCart direto de sempre.
+  // Roteia o clique do catálogo: produto com variação (kind:'variant') abre o
+  // seletor de variação — preço/estoque de topo não valem pra esse tipo de
+  // produto, então nunca pode cair em addToCart direto (M02.8). Produto
+  // configurável (hasModifiers) abre o seletor de modificadores. O resto cai
+  // no addToCart direto de sempre.
   const handleCatalogClick = useCallback((item: CatalogItem) => {
     if (item.type === 'product') {
       const product = item as Product;
+      if ((product.variants?.filter(v => v.isActive).length ?? 0) > 0) {
+        setVariantProduct(product);
+        return;
+      }
       if (product.hasModifiers && (product.modifierGroups?.length ?? 0) > 0) {
         setModifierProduct(product);
         return;
@@ -500,6 +512,37 @@ export default function PDVModule() {
     }
     addToCart(item);
   }, [addToCart]);
+
+  // Adiciona um produto com variação já escolhida (M02.8) — preço/estoque
+  // sempre lidos da variante, nunca do produto raiz. Deduplica por
+  // (productId, variantId): a mesma variante incrementa a linha existente.
+  const addVariantProduct = useCallback((product: Product, variant: ProductVariant) => {
+    setCart(prev => {
+      const existing = prev.find(c => c.productId === product.id && c.variantId === variant.id);
+      if (existing) {
+        if (variant.trackStock !== false && existing.quantity >= variant.currentStock) return prev;
+        return prev.map(c =>
+          c.id === existing.id
+            ? { ...c, quantity: c.quantity + 1, total: (c.quantity + 1) * c.unitPrice }
+            : c,
+        );
+      }
+      if (variant.trackStock !== false && variant.currentStock <= 0) return prev;
+      const newItem: CartItem = {
+        id: `cart-${Date.now()}`,
+        productId: product.id,
+        serviceId: undefined,
+        variantId: variant.id,
+        description: `${product.name} — ${variant.name}`,
+        quantity: 1,
+        unitPrice: variant.salePrice,
+        discount: 0,
+        total: variant.salePrice,
+        itemType: 'product',
+      };
+      return [...prev, newItem];
+    });
+  }, []);
 
   // Adiciona um produto JÁ configurado (com modificadores). unitPrice já vem com
   // o delta aplicado (computeModifierDelta, mesma fonte do público). Deduplica por
@@ -3066,6 +3109,21 @@ export default function PDVModule() {
             onConfirm={({ selectedModifiers, unitPrice, basePrice }) => {
               addConfiguredProduct(modifierProduct, selectedModifiers, unitPrice, basePrice);
               setModifierProduct(null);
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Seletor de variação (produto kind:'variant', M02.8) */}
+      <AnimatePresence>
+        {variantProduct && (
+          <PDVVariantPicker
+            key={variantProduct.id}
+            product={variantProduct}
+            onClose={() => setVariantProduct(null)}
+            onConfirm={(variant) => {
+              addVariantProduct(variantProduct, variant);
+              setVariantProduct(null);
             }}
           />
         )}

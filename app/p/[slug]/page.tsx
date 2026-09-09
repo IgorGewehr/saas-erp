@@ -1,7 +1,64 @@
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { notFound } from 'next/navigation';
-import CatalogClient, { type PublicBusiness } from './CatalogClient';
+import CatalogClient, { type PublicBusiness, type PublicProduct } from './CatalogClient';
 import type { Business, Product, MenuCategory } from '@/lib/types';
+
+/** Projeta um Product completo pro subconjunto público (M02.8) — nunca envia
+ *  costPrice/sku/barcode/ncm/cfop/cest/fiscalTax/linkedProductId ao navegador
+ *  anônimo. Mesmo raciocínio de segurança do `publicBusiness` abaixo.
+ *  Exportada (não usada fora deste arquivo) só pra ser testável diretamente —
+ *  ver tests/utils/publicProduct.test.ts. */
+export function toPublicProduct(p: Product): PublicProduct {
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description,
+    menuDescription: p.menuDescription,
+    category: p.category,
+    menuCategory: p.menuCategory,
+    menuCategoryId: p.menuCategoryId,
+    salePrice: p.salePrice,
+    imageUrl: p.imageUrl,
+    dietary: p.dietary,
+    hasModifiers: p.hasModifiers,
+    modifierGroups: p.modifierGroups?.map((g) => ({
+      id: g.id,
+      name: g.name,
+      description: g.description,
+      required: g.required,
+      minSelections: g.minSelections,
+      maxSelections: g.maxSelections,
+      selectionType: g.selectionType,
+      priceStrategy: g.priceStrategy,
+      sortOrder: g.sortOrder,
+      options: g.options.map((o) => ({
+        id: o.id,
+        name: o.name,
+        description: o.description,
+        additionalPrice: o.additionalPrice,
+        imageUrl: o.imageUrl,
+        isDefault: o.isDefault,
+        maxQuantity: o.maxQuantity,
+        available: o.available,
+        sortOrder: o.sortOrder,
+      })),
+    })),
+    variants: p.variants?.map((v) => ({
+      id: v.id,
+      name: v.name,
+      attributes: v.attributes,
+      salePrice: v.salePrice,
+      currentStock: v.currentStock,
+      minStock: v.minStock,
+      trackStock: v.trackStock,
+      isActive: v.isActive,
+    })),
+    menuAvailable: p.menuAvailable,
+    trackStock: p.trackStock,
+    currentStock: p.currentStock,
+    components: p.components,
+  };
+}
 
 export const revalidate = 60;
 
@@ -109,7 +166,7 @@ export default async function PublicMenuPage({
   return (
     <CatalogClient
       business={publicBusiness}
-      products={products}
+      products={products.map(toPublicProduct)}
       categories={categories}
       tableNumber={tableNumber?.trim().slice(0, 20) || undefined}
     />
