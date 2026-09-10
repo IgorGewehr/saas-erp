@@ -11,6 +11,17 @@ import { setActiveConversation } from '@/lib/utils/active-conversation';
 import { markConversationRead, markConversationUnread } from '@/lib/utils/markConversationRead';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
+import {
+  isSnoozed,
+  excludeSnoozed,
+  needsAnotherFetch,
+  isFastPathView,
+  getFastPathQuerySpec,
+  mergeConversationLists,
+  buildCursor,
+  type FastPathView,
+  type ConversationCursor,
+} from '@/lib/utils/conversationListPagination';
 import { softDeleteDoc } from '@/lib/services/softDelete';
 import { createPortal } from 'react-dom';
 import { compressImage, formatFileSize } from '@/lib/utils/imageCompress';
@@ -39,6 +50,10 @@ import {
   startAfter,
   writeBatch,
   arrayUnion,
+  documentId,
+  type QueryFieldFilterConstraint,
+  type Query,
+  type DocumentData,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getAuth } from 'firebase/auth';
@@ -5431,16 +5446,10 @@ export type SmartViewId =
 
 const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1h sem resposta vira "esquecida"
 
-/**
- * True quando a conversa está em soneca ativa neste momento. Soneca é
- * "esconde-me até X" — operador disse "não agora" deliberadamente. Todas as
- * views (exceto 'snoozed') filtram com !isSnoozed pra respeitar isso.
- */
-function isSnoozed(conv: Conversation, now: number): boolean {
-  if (!conv.snoozedUntil) return false;
-  const until = new Date(conv.snoozedUntil).getTime();
-  return Number.isFinite(until) && until > now;
-}
+// `isSnoozed` vive em lib/utils/conversationListPagination.ts — o fast-path
+// de paginação da lista (mais abaixo) precisa da MESMA função pra filtrar
+// soneca pós-fetch (Firestore não consegue expressar "sem soneca ativa" via
+// where(), ver comentário na definição). Importado no topo do arquivo.
 
 function matchesSmartView(
   conv: Conversation,
@@ -7421,6 +7430,128 @@ export default function ConversasModule() {
       unsubs.forEach((u) => u?.());
     };
   }, [business?.id, user?.uid, isAdmin]);
+
+  // ── Fast-path paginado da lista (só admin/founder) ──────────────────────────
+  // Ver lib/utils/conversationListPagination.ts pros helpers puros. Só ativa
+  // pra `isAdmin`: o caminho não-admin precisaria de ~30 índices compostos
+  // adicionais (split por visibleToUserIds × channelOwnerType/channelOwnerId —
+  // ver os 4 índices já existentes em firestore.indexes.json só pra essa
+  // combinação SEM nenhum campo extra) pra cada view migrável — fora de
+  // escopo aqui. Fora da elegibilidade abaixo (não-admin, busca ativa, filtro
+  // avançado, view não-migrável, canal/escopo/setor não-default),
+  // `filteredConversations` cai em `allConversations`, idêntico a hoje.
+  const FAST_PATH_PAGE_SIZE = 30;
+  const FAST_PATH_MAX_CONTINUATION_ROUNDS = 10; // trava defensiva contra sequências longas de soneca
+
+  const fastPathEligible = isAdmin
+    && activeChannel === 'all'
+    && activeChannelScope === 'all'
+    && activeSectorFilter === 'all'
+    && !deferredSearchQuery
+    && countActiveFilters(advFilters) === 0
+    && !campaignKind
+    && sortMode === 'recent'
+    && isFastPathView(activeView);
+
+  const [pagedLive, setPagedLive] = useState<Conversation[]>([]);
+  const [pagedOlder, setPagedOlder] = useState<Conversation[]>([]);
+  const [pagedHasMore, setPagedHasMore] = useState(false);
+  const [pagedLoadingMore, setPagedLoadingMore] = useState(false);
+  const pagedCursorRef = useRef<ConversationCursor | null>(null);
+  const pagedSortFieldRef = useRef<'lastMessageAt' | 'updatedAt'>('lastMessageAt');
+
+  const pagedConversations = useMemo(
+    () => mergeConversationLists([pagedOlder, pagedLive], pagedSortFieldRef.current),
+    [pagedOlder, pagedLive],
+  );
+
+  const buildFastPathWhereClauses = useCallback((spec: ReturnType<typeof getFastPathQuerySpec>): QueryFieldFilterConstraint[] => {
+    if (!business?.id) return [];
+    const clauses: QueryFieldFilterConstraint[] = [
+      where('businessId', '==', business.id),
+      ...spec.equalityFilters.map(f => where(f.field, '==', f.value)),
+    ];
+    if (spec.cutoff) clauses.push(where(spec.orderByField, spec.cutoff.op, spec.cutoff.iso));
+    return clauses;
+  }, [business?.id]);
+
+  // Janela viva (topo) do fast-path — só resubscreve quando a view ou a
+  // elegibilidade mudam, nunca em cada render. "Carregar mais" (handler
+  // abaixo) busca páginas adicionais sem religar este listener.
+  useEffect(() => {
+    setPagedOlder([]);
+    setPagedHasMore(false);
+    pagedCursorRef.current = null;
+    if (!fastPathEligible || !business?.id) {
+      setPagedLive([]);
+      return;
+    }
+    const view = activeView as FastPathView;
+    const spec = getFastPathQuerySpec(view, user?.uid ?? '', Date.now());
+    pagedSortFieldRef.current = spec.orderByField;
+
+    const q = query(
+      collection(db, 'conversations'),
+      and(...buildFastPathWhereClauses(spec)),
+      orderBy(spec.orderByField, 'desc'),
+      orderBy(documentId(), 'desc'),
+      limit(FAST_PATH_PAGE_SIZE),
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      const now = Date.now();
+      const raw = snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation)).filter(isActiveRecord);
+      const clean = excludeSnoozed(raw, now);
+      setPagedLive(clean);
+      pagedCursorRef.current = raw.length > 0 ? buildCursor(raw[raw.length - 1], spec.orderByField) : null;
+      setPagedHasMore(raw.length >= FAST_PATH_PAGE_SIZE);
+    }, (err) => {
+      console.error('[Conversations] fast-path onSnapshot error:', err);
+    });
+
+    return () => unsub();
+  }, [fastPathEligible, activeView, business?.id, user?.uid, buildFastPathWhereClauses]);
+
+  const handleLoadMoreConversations = useCallback(async () => {
+    if (!fastPathEligible || !business?.id || pagedLoadingMore || !pagedCursorRef.current) return;
+    setPagedLoadingMore(true);
+    try {
+      const view = activeView as FastPathView;
+      const spec = getFastPathQuerySpec(view, user?.uid ?? '', Date.now());
+      const accumulated: Conversation[] = [];
+      let cursor: ConversationCursor | null = pagedCursorRef.current;
+      let hasMoreAfter = false;
+      let rounds = 0;
+
+      while (cursor && rounds < FAST_PATH_MAX_CONTINUATION_ROUNDS) {
+        rounds++;
+        const q: Query<DocumentData> = query(
+          collection(db, 'conversations'),
+          and(...buildFastPathWhereClauses(spec)),
+          orderBy(spec.orderByField, 'desc'),
+          orderBy(documentId(), 'desc'),
+          startAfter(cursor.value, cursor.id),
+          limit(FAST_PATH_PAGE_SIZE),
+        );
+        const snap = await getDocs(q);
+        const raw = snap.docs.map((d) => ({ ...d.data(), id: d.id } as Conversation)).filter(isActiveRecord);
+        const clean = excludeSnoozed(raw, Date.now());
+        accumulated.push(...clean);
+        cursor = raw.length > 0 ? buildCursor(raw[raw.length - 1], spec.orderByField) : null;
+        hasMoreAfter = raw.length >= FAST_PATH_PAGE_SIZE;
+        if (!needsAnotherFetch(raw.length, accumulated.length, FAST_PATH_PAGE_SIZE)) break;
+      }
+
+      pagedCursorRef.current = cursor;
+      setPagedHasMore(hasMoreAfter);
+      setPagedOlder((prev) => mergeConversationLists([prev, accumulated], spec.orderByField));
+    } catch (err) {
+      console.error('[Conversations] fast-path load-more error:', err);
+      toast.error('Erro ao carregar mais conversas');
+    } finally {
+      setPagedLoadingMore(false);
+    }
+  }, [fastPathEligible, business?.id, pagedLoadingMore, activeView, user?.uid, buildFastPathWhereClauses]);
 
   // ── Load channel connections (Phase 2: badges + filter) ───────────────────
   // Fetch via API pra usar a sanitização (sem tokens) + filtragem por role
@@ -9425,7 +9556,15 @@ export default function ConversasModule() {
   const filteredConversations = useMemo(() => {
     const now = Date.now();
     const currentUid = user?.uid ?? '';
-    return getVisibleConversations(allConversations).filter((c) => {
+    // Fast-path (só admin, ver bloco de state acima) alimenta a lista com um
+    // array bounded/paginado; fora dele, cai em `allConversations` — idêntico
+    // ao comportamento de hoje. O restante do predicado abaixo roda igual
+    // nos dois casos: sobre o array paginado ele é redundante (o servidor já
+    // filtrou por view/status) mas serve de defesa em profundidade — qualquer
+    // divergência entre a query server-side e `matchesSmartView` fica
+    // visível como item faltando, nunca como item indevido aparecendo.
+    const baseConversations = fastPathEligible ? pagedConversations : allConversations;
+    return getVisibleConversations(baseConversations).filter((c) => {
       // Match canal — 'whatsapp_cloud' / 'whatsapp_baileys' são sub-filtros que
       // aplicam sobre c.channel === 'whatsapp' E o c.connectedVia correspondente.
       let matchesChannel: boolean;
@@ -9528,7 +9667,7 @@ export default function ConversasModule() {
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
       return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesEngagement;
     });
-  }, [getVisibleConversations, allConversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById, clientsById, clientIdsInPipeline, messageSearchConvIds]);
+  }, [getVisibleConversations, allConversations, fastPathEligible, pagedConversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById, clientsById, clientIdsInPipeline, messageSearchConvIds]);
 
   // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
   // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,
@@ -10151,6 +10290,31 @@ export default function ConversasModule() {
                 computeItemKey={(_index, conv) => conv.id}
                 overscan={{ main: 400, reverse: 400 }}
                 increaseViewportBy={{ top: 200, bottom: 200 }}
+                endReached={() => {
+                  if (fastPathEligible && pagedHasMore && !pagedLoadingMore) {
+                    void handleLoadMoreConversations();
+                  }
+                }}
+                components={{
+                  Footer: () => {
+                    if (!fastPathEligible || !pagedHasMore) return null;
+                    return (
+                      <div className="flex items-center justify-center py-3">
+                        {pagedLoadingMore ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-gray-400" />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void handleLoadMoreConversations()}
+                            className="text-xs font-medium text-gray-400 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                          >
+                            Carregar mais conversas
+                          </button>
+                        )}
+                      </div>
+                    );
+                  },
+                }}
                 itemContent={(_index, conv) => (
                   <ConversationItem
                     conversation={conv}
