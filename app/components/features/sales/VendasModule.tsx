@@ -10,7 +10,7 @@ import {
   CalendarClock, ShoppingBag, Building2, User,
 } from 'lucide-react';
 import {
-  collection, query, where, orderBy, addDoc, updateDoc, deleteDoc, doc, onSnapshot, limit,
+  collection, query, where, orderBy, onSnapshot, limit,
 } from 'firebase/firestore';
 import { db } from '@/lib/config/firebase';
 import { useAuth } from '@/app/components/providers/AuthProvider';
@@ -19,8 +19,8 @@ import { formatCurrency, formatDate } from '@/lib/utils/format';
 import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import type {
-  Order, OrderStatus, OrderType, OrderItem, Client, Product,
-  Payment, PaymentMethod,
+  Order, OrderStatus, OrderType, Client, Product,
+  PaymentMethod, StockAlert,
 } from '@/lib/types';
 import { ORDER_STATUS_COLORS as STATUS_COLORS, ORDER_STATUS_LABELS as STATUS_LABELS } from '@/lib/types';
 import { toast } from 'react-toastify';
@@ -64,6 +64,12 @@ function StatusBadge({ status }: { status: OrderStatus }) {
 }
 
 // ─── Item Row (in form) ───────────────────────────────────────────────────────
+//
+// M02 (retomada 10/09/2026): item avulso (sem produto cadastrado) foi retirado
+// de propósito — checkpoint com o usuário. Preço passa a ser SEMPRE resolvido
+// pelo servidor a partir do catálogo (mesma cotação autoritativa que PDV/
+// Delivery já usam), nunca do que o navegador manda; o valor mostrado aqui é
+// só uma prévia calculada do `salePrice` atual do produto, não editável.
 
 function ItemRow({
   item,
@@ -71,60 +77,38 @@ function ItemRow({
   onChange,
   onRemove,
 }: {
-  item: OrderItem & { _key: string };
+  item: ItemWithKey;
   products: Product[];
-  onChange: (key: string, field: keyof OrderItem, value: string | number) => void;
+  onChange: (key: string, field: 'productId' | 'quantity', value: string | number) => void;
   onRemove: (key: string) => void;
 }) {
   const inputCls = 'w-full bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-lg px-2.5 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all';
-
-  const handleProductSelect = (productId: string) => {
-    const prod = products.find(p => p.id === productId);
-    if (prod) {
-      onChange(item._key, 'productId', prod.id);
-      onChange(item._key, 'productName', prod.name);
-      onChange(item._key, 'unitPrice', prod.salePrice);
-      onChange(item._key, 'unit', prod.unit || 'UN');
-      onChange(item._key, 'ncm', prod.ncm || '');
-    }
-  };
+  const product = products.find(p => p.id === item.productId);
+  const estimatedTotal = (product?.salePrice ?? 0) * (item.quantity || 0);
 
   return (
     <div className="flex items-start gap-2">
       <div className="flex-1 grid grid-cols-12 gap-2">
-        <div className="col-span-5">
+        <div className="col-span-7">
           <select
             className={inputCls}
-            value={item.productId || ''}
-            onChange={e => handleProductSelect(e.target.value)}
+            value={item.productId}
+            onChange={e => onChange(item._key, 'productId', e.target.value)}
           >
-            <option value="">Selecione ou digite</option>
+            <option value="">Selecione um produto</option>
             {products.map(p => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
         </div>
-        {!item.productId && (
-          <div className="col-span-5">
-            <input className={inputCls} placeholder="Nome do item" value={item.productName}
-              onChange={e => onChange(item._key, 'productName', e.target.value)} />
-          </div>
-        )}
         <div className="col-span-2">
-          <input className={inputCls} type="number" min="1" placeholder="Qtd" value={item.quantity}
+          <input className={inputCls} type="number" min="0.001" step="any" placeholder="Qtd" value={item.quantity}
             onChange={e => onChange(item._key, 'quantity', parseFloat(e.target.value) || 1)} />
         </div>
-        <div className="col-span-2">
-          <input className={inputCls} type="number" min="0" step="0.01" placeholder="Preço unit." value={item.unitPrice}
-            onChange={e => onChange(item._key, 'unitPrice', parseFloat(e.target.value) || 0)} />
-        </div>
-        <div className="col-span-2">
-          <input className={inputCls} type="number" min="0" placeholder="Desconto" value={item.discount || ''}
-            onChange={e => onChange(item._key, 'discount', parseFloat(e.target.value) || 0)} />
-        </div>
-        <div className="col-span-1 flex items-center justify-end">
+        <div className="col-span-3 flex items-center justify-end gap-1">
+          {product && <span className="text-xs text-gray-400">{formatCurrency(product.salePrice)}/un ·</span>}
           <span className="text-sm font-semibold text-gray-900 dark:text-white whitespace-nowrap">
-            {formatCurrency(item.total)}
+            {formatCurrency(estimatedTotal)}
           </span>
         </div>
       </div>
@@ -138,7 +122,11 @@ function ItemRow({
 
 // ─── Order Form ───────────────────────────────────────────────────────────────
 
-type ItemWithKey = OrderItem & { _key: string };
+interface ItemWithKey {
+  _key: string;
+  productId: string;
+  quantity: number;
+}
 
 interface OrderFormData {
   type: OrderType;
@@ -149,6 +137,7 @@ interface OrderFormData {
   discount: number;
   paymentMethod: PaymentMethod;
   paymentTerms: string;
+  installments: number;
   deliveryDate: string;
   conditionalExpiresAt: string;
   notes: string;
@@ -179,19 +168,14 @@ function OrderForm({
     const key = `item_${Date.now()}`;
     setForm(f => ({
       ...f,
-      items: [...f.items, { _key: key, productName: '', quantity: 1, unitPrice: 0, total: 0 }],
+      items: [...f.items, { _key: key, productId: '', quantity: 1 }],
     }));
   };
 
-  const updateItem = (key: string, field: keyof OrderItem, value: string | number) => {
+  const updateItem = (key: string, field: 'productId' | 'quantity', value: string | number) => {
     setForm(f => ({
       ...f,
-      items: f.items.map(it => {
-        if (it._key !== key) return it;
-        const updated = { ...it, [field]: value };
-        updated.total = (updated.quantity || 1) * (updated.unitPrice || 0) - (updated.discount || 0);
-        return updated;
-      }),
+      items: f.items.map(it => (it._key === key ? { ...it, [field]: value } : it)),
     }));
   };
 
@@ -208,7 +192,12 @@ function OrderForm({
     }));
   };
 
-  const subtotal = form.items.reduce((s, it) => s + it.total, 0);
+  // Preview client-side, calculado do salePrice atual do catálogo — o valor
+  // que efetivamente conta é sempre recalculado pelo servidor na criação.
+  const subtotal = form.items.reduce((s, it) => {
+    const product = products.find(p => p.id === it.productId);
+    return s + (product?.salePrice ?? 0) * (it.quantity || 0);
+  }, 0);
   const total = subtotal - (form.discount || 0);
 
   const inputCls = 'w-full bg-gray-50 dark:bg-gray-800/60 border border-gray-200 dark:border-gray-700 rounded-xl px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500/40 focus:border-red-400 transition-all';
@@ -272,11 +261,9 @@ function OrderForm({
           <div className="space-y-2">
             {/* Headers */}
             <div className="grid grid-cols-12 gap-2 px-0 text-xs text-gray-400 font-medium">
-              <div className="col-span-5">Produto</div>
+              <div className="col-span-7">Produto</div>
               <div className="col-span-2">Qtd</div>
-              <div className="col-span-2">Preço unit.</div>
-              <div className="col-span-2">Desconto</div>
-              <div className="col-span-1 text-right">Total</div>
+              <div className="col-span-3 text-right">Total (prévia)</div>
             </div>
             {form.items.map(item => (
               <ItemRow key={item._key} item={item} products={products}
@@ -322,6 +309,14 @@ function OrderForm({
             onChange={e => setField('paymentTerms', e.target.value)} />
         </div>
         <div>
+          <label className={labelCls}>Parcelas</label>
+          <input className={inputCls} type="number" min="1" max="48" value={form.installments}
+            onChange={e => setField('installments', Math.min(48, Math.max(1, parseInt(e.target.value, 10) || 1)))} />
+          <p className="text-[11px] text-gray-400 mt-1">
+            Gera N lançamentos de receita mensais quando o pedido for faturado.
+          </p>
+        </div>
+        <div>
           <label className={labelCls}>Data de entrega prevista</label>
           <input className={inputCls} type="date" value={form.deliveryDate}
             onChange={e => setField('deliveryDate', e.target.value)} />
@@ -358,7 +353,7 @@ function OrderForm({
           Cancelar
         </button>
         <button type="button" onClick={() => onSave(form)}
-          disabled={form.items.length === 0 || total <= 0 || isSaving}
+          disabled={form.items.length === 0 || form.items.some(it => !it.productId) || total <= 0 || isSaving}
           className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2">
           {isSaving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
           Criar pedido
@@ -512,10 +507,11 @@ function OrderDetailPanel({
               <span className="text-sm font-medium text-blue-700 dark:text-blue-300">Emitir NF-e</span>
             </div>
             <p className="text-xs text-blue-600 dark:text-blue-400 mb-2">
-              Pedido confirmado. Você pode emitir a nota fiscal agora.
+              Pedido confirmado. Emissão de NF-e pra pedido B2B ainda não está disponível.
             </p>
-            <button className="w-full px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors">
-              Emitir NF-e
+            <button disabled title="Em breve"
+              className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-semibold opacity-50 cursor-not-allowed">
+              Emitir NF-e (em breve)
             </button>
           </div>
         )}
@@ -546,7 +542,7 @@ function OrderDetailPanel({
 // ─── Main Module ─────────────────────────────────────────────────────────────
 
 export default function VendasModule() {
-  const { business, user } = useAuth();
+  const { business, user, firebaseUser } = useAuth();
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<OrderStatus | 'all'>('all');
@@ -632,43 +628,58 @@ export default function VendasModule() {
   }, [orders, selectedOrder]);
 
   // ─── Mutations ──────────────────────────────────────────────────────────────
+  //
+  // M02 (retomada 10/09/2026): migrado de write direto client SDK pro núcleo
+  // server-side do M02.6 — preço/estoque passam a ser sempre resolvidos e
+  // revalidados no servidor (R6), e faturar/cancelar passam a ter efeito real
+  // (baixa de estoque + Transaction de receita, antes era um flip de campo
+  // sem efeito nenhum). Mesmo padrão de app/api/sales/[id]/cancel (M02.7).
+  async function authedFetch(path: string, init: RequestInit) {
+    if (!firebaseUser) throw new Error('Sessão expirada. Entre novamente.');
+    const token = await firebaseUser.getIdToken();
+    const res = await fetch(path, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+    });
+    const payload = await res.json().catch(() => null) as { ok?: boolean; error?: string; data?: unknown } | null;
+    if (!res.ok || !payload?.ok) {
+      throw new Error(payload?.error || 'Erro na requisição');
+    }
+    return payload.data;
+  }
+
+  function warnStockAlerts(alerts: StockAlert[] | undefined) {
+    (alerts ?? []).forEach(a => {
+      const icon = a.severity === 'zeroed' ? '🚨' : '⚠️';
+      const msg = a.severity === 'zeroed'
+        ? `${icon} ${a.productName} esgotou`
+        : `${icon} ${a.productName} no estoque mínimo (${a.newStock}/${a.minStock})`;
+      toast.warning(msg, { autoClose: 6000 });
+    });
+  }
+
   const { mutate: createOrder, isPending: isCreating } = useMutation({
     mutationFn: async (data: OrderFormData) => {
-      const now = new Date().toISOString();
-      const subtotal = data.items.reduce((s, i) => s + i.total, 0);
-      const total = subtotal - (data.discount || 0);
-      const items = data.items.map(({ _key, ...rest }) => rest);
-
-      const payload: Omit<Order, 'id'> = {
-        businessId: business!.id,
-        type: data.type,
-        status: data.type === 'condicional' ? 'condicional' : 'pendente',
-        clientId: data.clientId || undefined,
-        clientName: data.clientName || undefined,
-        clientCpfCnpj: data.clientCpfCnpj || undefined,
-        items,
-        subtotal,
-        discount: data.discount || 0,
-        total,
-        paymentMethod: data.paymentMethod,
-        paymentTerms: data.paymentTerms || undefined,
-        deliveryDate: data.deliveryDate || undefined,
-        conditionalExpiresAt: data.conditionalExpiresAt || undefined,
-        notes: data.notes || undefined,
-        internalNotes: data.internalNotes || undefined,
-        operatorId: user!.uid,
-        operatorName: user!.name,
-        statusHistory: [{
-          status: data.type === 'condicional' ? 'condicional' : 'pendente',
-          timestamp: now,
-          userId: user!.uid,
-          userName: user!.name,
-        }],
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      await addDoc(collection(db, 'orders'), payload);
+      return authedFetch('/api/b2b-orders', {
+        method: 'POST',
+        body: JSON.stringify({
+          businessId: business!.id,
+          type: data.type,
+          clientId: data.clientId || undefined,
+          clientName: data.clientName || undefined,
+          clientCpfCnpj: data.clientCpfCnpj || undefined,
+          items: data.items.map(it => ({ productId: it.productId, quantity: it.quantity })),
+          discount: data.discount || undefined,
+          discountReason: data.discount ? 'Desconto manual' : undefined,
+          paymentMethod: data.paymentMethod,
+          paymentTerms: data.paymentTerms || undefined,
+          installments: data.installments,
+          deliveryDate: data.deliveryDate || undefined,
+          conditionalExpiresAt: data.conditionalExpiresAt || undefined,
+          notes: data.notes || undefined,
+          internalNotes: data.internalNotes || undefined,
+        }),
+      });
     },
     onSuccess: () => {
       // onSnapshot no listener acima recebe o doc novo automaticamente — sem
@@ -678,27 +689,26 @@ export default function VendasModule() {
     },
     onError: (err) => {
       console.error('[Vendas] Create error:', err);
-      toast.error('Erro ao criar pedido');
+      toast.error(err instanceof Error ? err.message : 'Erro ao criar pedido');
     },
   });
 
   const { mutate: changeStatus } = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: OrderStatus }) => {
-      const now = new Date().toISOString();
-      const order = orders.find(o => o.id === id);
-      const history = [
-        ...(order?.statusHistory || []),
-        { status, timestamp: now, userId: user!.uid, userName: user!.name },
-      ];
-      await updateDoc(doc(db, 'orders', id), { status, statusHistory: history, updatedAt: now });
+      const data = await authedFetch(`/api/b2b-orders/${id}/transition`, {
+        method: 'PATCH',
+        body: JSON.stringify({ businessId: business!.id, status }),
+      }) as { stockAlerts?: StockAlert[] } | undefined;
+      return data;
     },
-    onSuccess: (_, { id, status }) => {
+    onSuccess: (data, { id, status }) => {
       // Snapshot atualiza orders automaticamente; aqui só sincroniza o
       // selectedOrder em viewing pra refletir status na UI imediatamente.
       toast.success(`Status atualizado para: ${STATUS_LABELS[status]}`);
       setSelectedOrder(prev => prev?.id === id ? { ...prev, status, updatedAt: new Date().toISOString() } : prev);
+      warnStockAlerts(data?.stockAlerts);
     },
-    onError: () => toast.error('Erro ao atualizar status'),
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Erro ao atualizar status'),
   });
 
   // ─── Filtered list ───────────────────────────────────────────────────────────
@@ -728,7 +738,7 @@ export default function VendasModule() {
 
   const formInitial: OrderFormData = {
     type: 'b2b', clientId: '', clientName: '', clientCpfCnpj: '',
-    items: [], discount: 0, paymentMethod: 'boleto', paymentTerms: '',
+    items: [], discount: 0, paymentMethod: 'boleto', paymentTerms: '', installments: 1,
     deliveryDate: '', conditionalExpiresAt: '', notes: '', internalNotes: '',
   };
 

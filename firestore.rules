@@ -392,18 +392,16 @@ service cloud.firestore {
                   && isOwnBusiness()
                   && isOperator();
 
-      allow create: if isAuthenticated()
-                    && incomingBelongsToBusiness()
-                    && isOperator();
-
-      allow update: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isOperator()
-                    && incomingBelongsToBusiness();
-
-      allow delete: if isAuthenticated()
-                    && isOwnBusiness()
-                    && isManager();
+      // M02 (retomada 10/09/2026): VendasModule.tsx migrado pro núcleo
+      // server-side (app/api/b2b-orders, order-server.ts/order-transition-
+      // admin.ts) — mesmo motivo que fechou deliveryOrders em M02.9. Zero
+      // escritor client SDK confirmado (grep por addDoc/updateDoc/setDoc/
+      // deleteDoc/writeBatch referenciando 'orders' em app/ inteiro).
+      // "Excluir" é transição FSM pra status='cancelado' (via rota server),
+      // não hard-delete — histórico de pedido depende do doc persistir.
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
     }
 
     // ============================================

@@ -724,6 +724,51 @@ próprio (qual efeito reexecutar, com que autorização) fora do escopo deste
 painel. 1 teste novo (`m02CommercialAudit.test.ts`). Suite sem regressão
 (1227/95, de 1226/95).
 
+**Tela de pedido B2B migrada pro núcleo server-side (10/09/2026) — fecha o
+gap de preço manipulável achado em M02.9.** Investigação revelou que
+`VendasModule.tsx` já era uma tela B2B completa (lista, criação, mudança de
+status, KPIs) — só nunca tinha sido migrada pro núcleo do M02.6, e o
+preço/total de cada item era 100% calculado e confiado no navegador, sem
+NENHUMA validação server-side (nem `firestore.rules` protegia). Checkpoint
+com o usuário sobre item avulso (a tela permitia item digitado sem produto
+cadastrado, incompatível com a cotação autoritativa que só aceita
+`productId`/`serviceId` real): escolhida a opção "só catálogo" — todo item
+de pedido B2B agora exige produto cadastrado, mesma regra que PDV/Delivery/
+Cardápio já seguem. Item avulso/desconto por linha foram removidos do
+formulário; preço passa a ser sempre exibido como PRÉVIA (calculada do
+`salePrice` atual do produto, não editável) — o valor que realmente conta
+vem sempre da cotação do servidor.
+
+Construído: `app/api/b2b-orders/route.ts` (POST, criação) e
+`app/api/b2b-orders/[id]/transition/route.ts` (PATCH, transição) —
+autenticados por sessão de usuário (`verifyAuth`), mirror exato de
+`app/api/sales/[id]/cancel`/`app/api/orders/[id]/transition`
+(deliveryOrders). Diferente de `/api/v1/orders/*` (Bearer API key, só pra
+integração externa) — `VendasModule.tsx` não pode expor a API key do
+negócio no navegador. `VendasModule.tsx` migrado: `createOrder`/
+`changeStatus` agora chamam essas rotas via `fetch`, preservando a UX
+existente (toast, sincronização via `onSnapshot`, painel lateral). Novo
+campo "Parcelas" no formulário (backend já suportava `installments` desde
+M02.6, nunca exposto na UI). Alertas de estoque baixo/zerado ao faturar
+agora aparecem como toast (mesmo padrão de `OrdersModule.tsx`) — antes
+mudar status não tinha efeito NENHUM de estoque/financeiro; agora
+`confirmado→faturado` deduz estoque de verdade e lança a receita
+(parcelada se `installments>1`), e `*→cancelado` a partir de `faturado`
+reverte os dois. Botão "Emitir NF-e" (decorativo, sem `onClick`) desabilitado
+com aviso explícito — fica pra M02 NF-e de Order (próxima fatia).
+
+**`firestore.rules` fechado pra `orders` (Admin-SDK-only), mesmo padrão de
+`deliveryOrders` (M02.9).** Com a migração, zero escritor client SDK
+confirmado (grep por `addDoc`/`updateDoc`/`setDoc`/`deleteDoc`/`writeBatch`
+referenciando `'orders'` em todo `app/` — os 2 pontos restantes são leituras
+em `VendasModule.tsx`/`ReportsModule.tsx`). `allow create/update/delete: if
+false`; leitura continua liberada pro tenant. Era exatamente o gap que
+M02.9 tinha deixado aberto por depender desta migração.
+
+Suite completa sem regressão. Deploy de `firestore.rules` pendente de
+autorização explícita do usuário (mesmo padrão já usado nas fatias
+anteriores) — editado e commitado, não aplicado em produção ainda.
+
 ## 7. Ordem de entrega recomendada
 
 1. M02.0 — baseline e caracterização.
