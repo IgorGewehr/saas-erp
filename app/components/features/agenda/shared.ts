@@ -12,6 +12,33 @@ import type { AppointmentStatus } from '@/lib/types';
 
 export type RecurrenceFrequency = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly';
 
+// Grade de horários da Agenda (dia/semana) — usadas tanto pelo AgendaModule
+// (render de dia/semana/mês) quanto pelos componentes extraídos em
+// AgendaViewParts.tsx (AppointmentBlock/CurrentTimeLine).
+export const HOUR_HEIGHT = 64;
+export const HALF_HOUR_HEIGHT = HOUR_HEIGHT / 2;
+export const START_HOUR = 6;
+export const END_HOUR = 22;
+export const TOTAL_HOURS = END_HOUR - START_HOUR;
+
+export const STATUS_COLORS: Record<AppointmentStatus, string> = {
+  agendado: '#3B82F6',
+  confirmado: '#10B981',
+  em_andamento: '#F59E0B',
+  concluido: '#6366F1',
+  cancelado: '#EF4444',
+  nao_compareceu: '#6B7280',
+};
+
+export const STATUS_BG_COLORS: Record<AppointmentStatus, string> = {
+  agendado: 'rgba(59,130,246,0.12)',
+  confirmado: 'rgba(16,185,129,0.12)',
+  em_andamento: 'rgba(245,158,11,0.12)',
+  concluido: 'rgba(99,102,241,0.12)',
+  cancelado: 'rgba(239,68,68,0.12)',
+  nao_compareceu: 'rgba(107,114,128,0.12)',
+};
+
 export const STATUS_OPTIONS: { value: AppointmentStatus; label: string }[] = [
   { value: 'agendado', label: 'Agendado' },
   { value: 'confirmado', label: 'Confirmado' },
