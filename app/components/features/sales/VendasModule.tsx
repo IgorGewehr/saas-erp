@@ -369,10 +369,14 @@ function OrderDetailPanel({
   order,
   onClose,
   onStatusChange,
+  onEmitNfe,
+  isEmittingNfe,
 }: {
   order: Order;
   onClose: () => void;
   onStatusChange: (id: string, status: OrderStatus) => void;
+  onEmitNfe: (id: string) => void;
+  isEmittingNfe: boolean;
 }) {
   const nextStatuses = NEXT_STATUS[order.status] || [];
   const subtotal = order.items.reduce((s, i) => s + i.total, 0);
@@ -500,19 +504,28 @@ function OrderDetailPanel({
         )}
 
         {/* Fiscal action */}
-        {order.status === 'confirmado' && !order.fiscalDocId && (
+        {order.status === 'confirmado' && !order.fiscalDocumentId && (
           <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20">
             <div className="flex items-center gap-2 mb-2">
               <FileText className="w-4 h-4 text-blue-500" />
               <span className="text-sm font-medium text-blue-700 dark:text-blue-300">Emitir NF-e</span>
             </div>
             <p className="text-xs text-blue-600 dark:text-blue-400 mb-2">
-              Pedido confirmado. Emissão de NF-e pra pedido B2B ainda não está disponível.
+              Pedido confirmado. Você pode emitir a nota fiscal agora.
             </p>
-            <button disabled title="Em breve"
-              className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-semibold opacity-50 cursor-not-allowed">
-              Emitir NF-e (em breve)
+            <button onClick={() => onEmitNfe(order.id)} disabled={isEmittingNfe}
+              className="w-full px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold transition-colors flex items-center justify-center gap-2">
+              {isEmittingNfe && <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />}
+              Emitir NF-e
             </button>
+          </div>
+        )}
+        {order.fiscalDocumentId && (
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/20 flex items-center gap-2">
+            <FileText className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+            <p className="text-xs text-emerald-700 dark:text-emerald-400">
+              NF-e emitida{order.fiscalStatus ? ` — status: ${order.fiscalStatus}` : ''}.
+            </p>
           </div>
         )}
 
@@ -711,6 +724,40 @@ export default function VendasModule() {
     onError: (err) => toast.error(err instanceof Error ? err.message : 'Erro ao atualizar status'),
   });
 
+  // Emissão de NF-e (M02, retomada 10/09/2026) — /api/fiscal/emit responde
+  // num formato diferente das outras rotas (success/data, não ok/data), por
+  // isso não reusa authedFetch; trata os 3 desfechos possíveis (emitida,
+  // já emitida antes — idempotência, ou pendente por SEFAZ indisponível).
+  const { mutate: emitNfe, isPending: isEmittingNfe } = useMutation({
+    mutationFn: async (id: string) => {
+      if (!firebaseUser) throw new Error('Sessão expirada. Entre novamente.');
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch(`/api/fiscal/emit-b2b-order/${id}`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await res.json().catch(() => null) as {
+        error?: string; skipped?: boolean; success?: boolean;
+        fallback?: string; message?: string;
+        data?: { motivoStatus?: string; erros?: string[] };
+      } | null;
+      if (!res.ok) throw new Error(payload?.error || 'Erro ao emitir NF-e');
+      return payload;
+    },
+    onSuccess: (payload) => {
+      if (payload?.skipped) {
+        toast.info('NF-e já havia sido emitida pra este pedido.');
+      } else if (payload?.fallback === 'pending') {
+        toast.warning(payload.message || 'SEFAZ indisponível — nota salva como pendente.');
+      } else if (payload?.success === false) {
+        toast.error(payload.data?.motivoStatus || payload.data?.erros?.[0] || 'NF-e rejeitada pela SEFAZ.');
+      } else {
+        toast.success('NF-e emitida com sucesso!');
+      }
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : 'Erro ao emitir NF-e'),
+  });
+
   // ─── Filtered list ───────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let list = [...orders];
@@ -882,6 +929,8 @@ export default function VendasModule() {
                 order={selectedOrder}
                 onClose={() => setSelectedOrder(null)}
                 onStatusChange={(id, status) => changeStatus({ id, status })}
+                onEmitNfe={(id) => emitNfe(id)}
+                isEmittingNfe={isEmittingNfe}
               />
             </div>
           )}

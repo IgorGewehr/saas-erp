@@ -82,7 +82,14 @@ export const OrderSchema = z.object({
   installments: z.number().int().min(1).max(48).optional(),
   deliveryDate: z.string().optional(),
   deliveryAddress: AddressSchema.optional(),
-  fiscalDocId: z.string().optional(),
+  // ── Vínculo fiscal (NF-e) — writeback de /api/fiscal/emit ───────────────
+  // Nomes alinhados com Appointment.fiscalDocumentId/DeliveryOrder.
+  // fiscalDocumentId (linkFiscalDocToSource escreve os mesmos 3 campos pra
+  // todo sourceType) — NÃO "fiscalDocId" (nome antigo, nunca escrito por
+  // nada; achado ao ligar o botão "Emitir NF-e" nesta fatia).
+  fiscalDocumentId: z.string().optional(),
+  fiscalAccessKey: z.string().nullable().optional(),
+  fiscalStatus: z.string().optional(),
   naturezaOperacao: z.string().optional(),
   conditionalExpiresAt: z.string().optional(),
   conditionalReturnDate: z.string().optional(),

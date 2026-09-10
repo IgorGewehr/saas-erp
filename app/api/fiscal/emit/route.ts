@@ -73,14 +73,15 @@ async function persistPendingAndRespond(params: {
   ambiente?: string | null;
   error: Error;
   now: string;
-  // M04: vínculo com a origem (Sale/DeliveryOrder/Appointment) — sem isso, o
-  // documento 'pendente' nascia órfão e a origem nunca aprendia que já havia
-  // uma tentativa em andamento, deixando um operador reemitir e gerar uma
-  // SEGUNDA nota quando a SEFAZ voltasse e ambas fossem reenviadas.
+  // M04: vínculo com a origem (Sale/DeliveryOrder/Order B2B/Appointment) —
+  // sem isso, o documento 'pendente' nascia órfão e a origem nunca aprendia
+  // que já havia uma tentativa em andamento, deixando um operador reemitir e
+  // gerar uma SEGUNDA nota quando a SEFAZ voltasse e ambas fossem reenviadas.
   saleId?: string;
   orderId?: string;
+  b2bOrderId?: string;
   appointmentId?: string;
-  sourceType?: 'sale' | 'order' | 'appointment' | 'manual';
+  sourceType?: 'sale' | 'order' | 'b2bOrder' | 'appointment' | 'manual';
 }): Promise<NextResponse> {
   const { certificado: _certCleanup, csc: _cscCleanup, ...payloadForRetry } =
     params.originalRequest as Record<string, unknown>;
@@ -102,6 +103,7 @@ async function persistPendingAndRespond(params: {
       ambiente: params.ambiente || null,
       saleId: params.saleId,
       orderId: params.orderId,
+      b2bOrderId: params.b2bOrderId,
       appointmentId: params.appointmentId,
       sourceType: params.sourceType,
       issueDate: params.now,
@@ -116,6 +118,7 @@ async function persistPendingAndRespond(params: {
     businessId: params.businessId,
     saleId: params.saleId,
     orderId: params.orderId,
+    b2bOrderId: params.b2bOrderId,
     appointmentId: params.appointmentId,
     fiscalDocumentId: docRef.id,
     accessKey: null,
@@ -149,7 +152,9 @@ async function persistPendingAndRespond(params: {
 async function linkFiscalDocToSource(params: {
   businessId: string;
   saleId?: string;
+  /** DeliveryOrder (módulo Pedidos) — NÃO confundir com Order B2B (`b2bOrderId`). */
   orderId?: string;
+  b2bOrderId?: string;
   appointmentId?: string;
   fiscalDocumentId: string;
   accessKey: string | null;
@@ -157,8 +162,11 @@ async function linkFiscalDocToSource(params: {
   status: string;
   now: string;
 }): Promise<void> {
-  const collectionName = params.saleId ? 'sales' : params.orderId ? 'deliveryOrders' : params.appointmentId ? 'appointments' : null;
-  const docId = params.saleId || params.orderId || params.appointmentId;
+  const collectionName = params.saleId ? 'sales'
+    : params.orderId ? 'deliveryOrders'
+      : params.b2bOrderId ? 'orders'
+        : params.appointmentId ? 'appointments' : null;
+  const docId = params.saleId || params.orderId || params.b2bOrderId || params.appointmentId;
   if (!collectionName || !docId) return;
   try {
     const ref = adminDb.collection(collectionName).doc(docId);
@@ -217,14 +225,17 @@ export async function POST(request: NextRequest) {
   // manual), cai na X-Idempotency-Key enviada pela UI (comportamento legado).
   const sourceSaleId = typeof bodyRec?.saleId === 'string' ? bodyRec.saleId.trim() : '';
   const sourceOrderId = typeof bodyRec?.orderId === 'string' ? bodyRec.orderId.trim() : '';
+  const sourceB2bOrderId = typeof bodyRec?.b2bOrderId === 'string' ? bodyRec.b2bOrderId.trim() : '';
   const sourceAppointmentId = typeof bodyRec?.appointmentId === 'string' ? bodyRec.appointmentId.trim() : '';
   const sourceAnchor = sourceSaleId
     ? `sale_${sourceSaleId}`
     : sourceOrderId
       ? `order_${sourceOrderId}`
-      : sourceAppointmentId
-        ? `appointment_${sourceAppointmentId}`
-        : '';
+      : sourceB2bOrderId
+        ? `b2border_${sourceB2bOrderId}`
+        : sourceAppointmentId
+          ? `appointment_${sourceAppointmentId}`
+          : '';
   const idemKeyRaw = sourceAnchor || request.headers.get('x-idempotency-key')?.trim();
   if (!idemKeyRaw || typeof bid !== 'string' || !bid) {
     return emitCore(request, body);
@@ -345,23 +356,27 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
     // handler for quebrado em sub-handlers (1 por type).
     const data = parsed.data as Record<string, any>;
 
-    // Vínculo com o documento de origem (Sale/DeliveryOrder/Appointment).
-    // sourceType é derivado quando ausente. Usado pra persistir no
-    // fiscalDocument e gravar accessKey/documentId de volta na venda/
-    // pedido/atendimento após a emissão.
+    // Vínculo com o documento de origem (Sale/DeliveryOrder/Order B2B/
+    // Appointment). sourceType é derivado quando ausente. Usado pra
+    // persistir no fiscalDocument e gravar accessKey/documentId de volta na
+    // venda/pedido/atendimento após a emissão. `orderId` = DeliveryOrder
+    // (nome histórico); `b2bOrderId` = entidade Order (B2B/condicional).
     const saleId = typeof data.saleId === 'string' && data.saleId.trim() ? data.saleId.trim() : undefined;
     const orderId = typeof data.orderId === 'string' && data.orderId.trim() ? data.orderId.trim() : undefined;
+    const b2bOrderId = typeof data.b2bOrderId === 'string' && data.b2bOrderId.trim() ? data.b2bOrderId.trim() : undefined;
     const appointmentId = typeof data.appointmentId === 'string' && data.appointmentId.trim() ? data.appointmentId.trim() : undefined;
-    const sourceType: 'sale' | 'order' | 'appointment' | 'manual' | undefined =
-      data.sourceType === 'sale' || data.sourceType === 'order' || data.sourceType === 'appointment' || data.sourceType === 'manual'
+    const sourceType: 'sale' | 'order' | 'b2bOrder' | 'appointment' | 'manual' | undefined =
+      data.sourceType === 'sale' || data.sourceType === 'order' || data.sourceType === 'b2bOrder' || data.sourceType === 'appointment' || data.sourceType === 'manual'
         ? data.sourceType
         : saleId
           ? 'sale'
           : orderId
             ? 'order'
-            : appointmentId
-              ? 'appointment'
-              : undefined;
+            : b2bOrderId
+              ? 'b2bOrder'
+              : appointmentId
+                ? 'appointment'
+                : undefined;
 
     // Auth: NFC-e (cupom de caixa) pode ser emitida por operator+ — é o fluxo
     // pós-venda do PDV, operado por caixas. NF-e/NFSe seguem admin+ (dados
@@ -1343,6 +1358,7 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
           now,
           saleId,
           orderId,
+          b2bOrderId,
           sourceType,
         });
       }
@@ -1369,6 +1385,7 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
         totalValue: totalNF,
         saleId,
         orderId,
+        b2bOrderId,
         sourceType,
         ufEmitente,
         ambiente,
@@ -1382,6 +1399,7 @@ async function emitCore(request: NextRequest, body: unknown): Promise<NextRespon
       businessId,
       saleId,
       orderId,
+      b2bOrderId,
       fiscalDocumentId: nfeDocRef.id,
       accessKey: result.chaveAcesso || null,
       type: 'nfe',

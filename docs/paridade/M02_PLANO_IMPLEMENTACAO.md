@@ -765,9 +765,49 @@ em `VendasModule.tsx`/`ReportsModule.tsx`). `allow create/update/delete: if
 false`; leitura continua liberada pro tenant. Era exatamente o gap que
 M02.9 tinha deixado aberto por depender desta migração.
 
-Suite completa sem regressão. Deploy de `firestore.rules` pendente de
-autorização explícita do usuário (mesmo padrão já usado nas fatias
-anteriores) — editado e commitado, não aplicado em produção ainda.
+Suite completa sem regressão. Deploy de `firestore.rules` autorizado
+explicitamente pelo usuário e aplicado em produção nesta mesma fatia.
+
+**NF-e de Order B2B entregue (10/09/2026) — checkpoint com o usuário sobre
+escopo antes de tocar o motor fiscal compartilhado.** O motor de emissão
+(`/api/fiscal/emit`, ~1400 linhas, já em produção pra NFC-e/NFSe dos 2
+clientes reais) já tinha um campo `orderId` pra ancorar idempotência/
+writeback — mas achado importante: esse campo sempre significou
+`DeliveryOrder` (`linkFiscalDocToSource` resolvia a coleção como
+`deliveryOrders`), nunca a entidade `Order` B2B. Reusar `orderId` como
+estava teria gravado o writeback na coleção errada (ou simplesmente não
+encontrado o documento). Checkpoint: usuário escolheu estender o motor
+compartilhado (em vez de duplicar a montagem de NF-e numa rota isolada),
+aceitando o risco de mexer num arquivo já ativo — mitigado por um campo
+NOVO e distinto (`b2bOrderId`/`sourceType:'b2bOrder'`) que não toca nenhum
+dos ramos sale/deliveryOrder/appointment já existentes, só adiciona um
+4º branch em `linkFiscalDocToSource`/`persistPendingAndRespond`/idempotency
+anchor. `tests/contracts/fiscalEmitNfse.test.ts` (única suíte que já
+testava esta rota fim-a-fim) continua verde sem alteração.
+
+**Achado colateral corrigido, fora do escopo original mas bloqueante pra
+esta fatia**: `Order.fiscalDocId` (tipo hand-written e schema Zod) nunca
+batia com o que `linkFiscalDocToSource` realmente escreve
+(`fiscalDocumentId`/`fiscalAccessKey`/`fiscalStatus`, mesmo nome usado por
+`Appointment`/`DeliveryOrder`) — o botão "Emitir NF-e" da tela B2B NUNCA
+teria conseguido detectar "já emitida" mesmo após uma emissão real bem-
+sucedida. Corrigido nos dois lugares (`lib/types/index.ts`,
+`lib/contracts/domain/order.ts`) pro nome que o resto do sistema já usa.
+**Achado relacionado, NÃO corrigido (fora de escopo — afeta Sale, não
+Order)**: `Sale.fiscalDocId` parece ter o MESMO problema (schema/tipo
+declara `fiscalDocId`, mas o writeback grava `fiscalDocumentId`) —
+registrado aqui como candidato a investigação futura, não confirmado se
+algum caminho de UI depende do campo quebrado.
+
+Construído: `lib/services/fiscal/orderNfe.ts` (`buildOrderNfeInput`, mapper
+puro, mesmo padrão de `deliveryOrderNfce.ts` — mesma limitação documentada:
+desconto geral do pedido não compõe a nota, pagamento é montado sobre a
+soma dos itens) e `app/api/fiscal/emit-b2b-order/[id]/route.ts` (mirror de
+`emit-order/[id]/route.ts`, admin+ — NF-e exige mais permissão que NFC-e).
+Botão "Emitir NF-e" em `VendasModule.tsx` ligado de verdade; novo indicador
+verde "NF-e emitida" quando `fiscalDocumentId` já existe. Suite completa
+sem regressão (mesma contagem — mapper novo sem teste dedicado, mesmo
+tratamento que `deliveryOrderNfce.ts` já recebe nesta base de código).
 
 ## 7. Ordem de entrega recomendada
 

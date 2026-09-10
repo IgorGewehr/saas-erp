@@ -4091,8 +4091,13 @@ export interface Order {
   // Delivery
   deliveryDate?: string;
   deliveryAddress?: Address;
-  // Fiscal
-  fiscalDocId?: string;
+  // ── Vínculo fiscal (NF-e) — writeback de /api/fiscal/emit ───────────────
+  // Mesmos 3 campos que Appointment/DeliveryOrder usam (linkFiscalDocToSource
+  // escreve os mesmos nomes pra todo sourceType) — NÃO "fiscalDocId" (nome
+  // antigo, nunca escrito por nada; achado ao ligar "Emitir NF-e" no M02).
+  fiscalDocumentId?: string;
+  fiscalAccessKey?: string | null;
+  fiscalStatus?: string;
   naturezaOperacao?: string;
   // Conditional sale
   conditionalExpiresAt?: string; // data limite para o cliente confirmar
