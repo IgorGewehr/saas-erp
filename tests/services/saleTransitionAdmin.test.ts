@@ -117,8 +117,12 @@ describe('cancelSaleAdmin', () => {
   });
 
   it('bloqueia cancelamento quando a nota fiscal já está autorizada', async () => {
+    // M02 (10/09/2026): fixture usava fiscalDocId (nome antigo, nunca escrito
+    // por nada em produção) — o gate testava a si mesmo com um campo morto.
+    // Corrigido pra fiscalDocumentId, o nome real que linkFiscalDocToSource
+    // grava (achado ao construir devolução parcial, mesmo gate).
     const db = makeFakeAdminDb({
-      sales: [{ id: 's1', data: baseSale({ fiscalDocId: 'fd1' }) }],
+      sales: [{ id: 's1', data: baseSale({ fiscalDocumentId: 'fd1' }) }],
       fiscalDocuments: [{ id: 'fd1', data: { businessId, status: 'autorizada' } }],
     });
     await expect(cancelSaleAdmin({
@@ -128,7 +132,7 @@ describe('cancelSaleAdmin', () => {
 
   it('permite cancelamento quando a nota fiscal NÃO está autorizada (pendente/rejeitada/etc)', async () => {
     const db = makeFakeAdminDb({
-      sales: [{ id: 's1', data: baseSale({ fiscalDocId: 'fd1' }) }],
+      sales: [{ id: 's1', data: baseSale({ fiscalDocumentId: 'fd1' }) }],
       fiscalDocuments: [{ id: 'fd1', data: { businessId, status: 'rejeitada' } }],
       clients: [{ id: 'client1', data: baseClient() }],
     });

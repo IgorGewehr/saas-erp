@@ -40,6 +40,11 @@ export const SaleItemSchema = z.object({
   selectedModifiers: z.array(SelectedModifierSchema).optional(),
   basePrice: z.number().nonnegative().optional(),
   notes: z.string().max(500).optional(),
+  /** M02 — quantidade cumulativa já devolvida deste item (devolução parcial).
+   *  Ausente/0 = nada devolvido ainda. Nunca excede `quantity` — validado
+   *  transacionalmente em `sale-return-admin.ts`, não aqui (schema não tem
+   *  acesso ao histórico de devoluções anteriores pra CAS). */
+  returnedQuantity: z.number().nonnegative().optional(),
 }).superRefine((it, ctx) => {
   if (!it.productId && !it.serviceId) {
     ctx.addIssue({ code: 'custom', message: 'productId ou serviceId obrigatório', path: ['productId'] });
@@ -50,6 +55,15 @@ export const SaleItemSchema = z.object({
       code: 'custom',
       message: `total do item (${it.total}) ≠ quantity*unitPrice-discount (${expected})`,
       path: ['total'],
+    });
+  }
+  // Invariante estática (sem histórico): nunca mais devolvido do que vendido.
+  // O guard TRANSACIONAL (contra devoluções concorrentes) vive no serviço.
+  if (it.returnedQuantity !== undefined && it.returnedQuantity > it.quantity + PRICE_TOLERANCE) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `returnedQuantity (${it.returnedQuantity}) > quantity (${it.quantity})`,
+      path: ['returnedQuantity'],
     });
   }
 });
@@ -78,7 +92,14 @@ export const SaleSchema = z.object({
   tip: z.number().nonnegative().optional(),
   total: z.number().nonnegative(),
   status: SaleStatusSchema,
-  fiscalDocId: z.string().optional(),
+  // ── Vínculo fiscal (NFC-e) — writeback de /api/fiscal/emit ──────────────
+  // Nomes alinhados com Appointment/DeliveryOrder/Order (linkFiscalDocToSource
+  // escreve os mesmos 3 campos pra todo sourceType) — NÃO "fiscalDocId" (nome
+  // antigo; nada em produção jamais escreveu nesse campo, o que deixava o
+  // gate fiscal de cancelSaleAdmin morto — achado ao construir devolução
+  // parcial, que precisa do MESMO gate funcionando de verdade).
+  fiscalDocumentId: z.string().optional(),
+  fiscalAccessKey: z.string().nullable().optional(),
   /** FK para a Transaction de receita gerada na venda (lado reverso de Transaction.saleId).
    *  Guard de idempotência do side-effect financeiro. */
   transactionId: z.string().optional(),

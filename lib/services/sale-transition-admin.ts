@@ -88,8 +88,11 @@ export async function cancelSaleAdmin(params: {
   }
 
   // ── Gate fiscal — nota já autorizada exige cancelamento fiscal primeiro. ──
-  if (sale.fiscalDocId) {
-    const fiscalSnap = await db.collection('fiscalDocuments').doc(sale.fiscalDocId).get();
+  // fiscalDocumentId (NÃO fiscalDocId — nome antigo que nada em produção
+  // jamais escreveu; esse gate era código morto até esta correção, achada
+  // ao construir a devolução parcial, que precisa do mesmo gate de verdade).
+  if (sale.fiscalDocumentId) {
+    const fiscalSnap = await db.collection('fiscalDocuments').doc(sale.fiscalDocumentId).get();
     if (fiscalSnap.exists && fiscalSnap.data()?.status === 'autorizada') {
       throw new SaleCancelError(
         'FISCAL_DOCUMENT_ISSUED',

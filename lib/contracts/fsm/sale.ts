@@ -38,7 +38,7 @@ export const SALE_TRANSITION_EFFECTS: Partial<Record<`${SaleStatus}->${SaleStatu
   'aberta->finalizada': [
     'stock.applyStockOperation(saida, items)',
     'Emit event sale.finalized → criar Transaction receita',
-    'Se fiscalDocId vazio: trigger emissão NFC-e',
+    'Se fiscalDocumentId vazio: trigger emissão NFC-e',
     'loyalty.addPoints (se settings.loyalty.isEnabled)',
   ],
   'aberta->cancelada': [
@@ -47,7 +47,7 @@ export const SALE_TRANSITION_EFFECTS: Partial<Record<`${SaleStatus}->${SaleStatu
   'finalizada->cancelada': [
     'stock.applyStockOperation(restauracao, items) — devolver itens ao estoque',
     'Emit event sale.canceled → marcar Transaction estornada',
-    'Se fiscalDocId existe: cancelamento NFC-e (/api/fiscal/cancel)',
+    'Se fiscalDocumentId existe: cancelamento NFC-e (/api/fiscal/cancel)',
     'loyalty.removePoints',
   ],
 };

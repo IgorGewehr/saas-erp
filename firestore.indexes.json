@@ -35,6 +35,15 @@
       ]
     },
     {
+      "collectionGroup": "saleReturns",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "saleId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "giftCards",
       "queryScope": "COLLECTION",
       "fields": [

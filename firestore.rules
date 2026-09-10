@@ -686,6 +686,17 @@ service cloud.firestore {
     }
 
     // ============================================
+    // SALE RETURNS (devolução parcial de venda, M02)
+    // ============================================
+    // Ledger append-only, escrito exclusivamente pelo núcleo server-side
+    // (returnSaleItemsAdmin, Admin SDK) — mesmo padrão de
+    // stockMovements/couponRedemptions/giftCardRedemptions.
+    match /saleReturns/{returnId} {
+      allow read: if isAuthenticated() && isOwnBusiness() && isOperator();
+      allow create, update, delete: if false;
+    }
+
+    // ============================================
     // TRANSACTIONS (FINANCIAL) COLLECTION
     // ============================================
     // M03.4: espelha lib/contracts/fsm/transaction.ts:TRANSACTION_TRANSITIONS.

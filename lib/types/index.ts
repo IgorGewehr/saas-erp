@@ -1182,6 +1182,8 @@ export interface SaleItem {
   /** Preço base do produto antes dos modificadores (unitPrice = basePrice + delta). */
   basePrice?: number;
   notes?: string;
+  /** M02 — quantidade cumulativa já devolvida (devolução parcial). Ausente/0 = nada devolvido. */
+  returnedQuantity?: number;
 }
 
 export type PaymentMethod =
@@ -1219,7 +1221,12 @@ export interface Sale {
   tip?: number;
   total: number;
   status: 'aberta' | 'finalizada' | 'cancelada';
-  fiscalDocId?: string;
+  // Mesmos 3 campos que Appointment/DeliveryOrder/Order usam
+  // (linkFiscalDocToSource escreve os mesmos nomes pra todo sourceType) —
+  // NÃO "fiscalDocId" (nome antigo, nunca escrito por nada em produção;
+  // deixava o gate fiscal de cancelSaleAdmin morto — achado no M02).
+  fiscalDocumentId?: string;
+  fiscalAccessKey?: string | null;
   /** FK para a Transaction de receita gerada na venda (lado reverso de Transaction.saleId). */
   transactionId?: string;
   /** FK para a Transaction de comissão (despesa) gerada na venda. */

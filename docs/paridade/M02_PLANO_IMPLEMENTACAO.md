@@ -793,11 +793,11 @@ batia com o que `linkFiscalDocToSource` realmente escreve
 teria conseguido detectar "já emitida" mesmo após uma emissão real bem-
 sucedida. Corrigido nos dois lugares (`lib/types/index.ts`,
 `lib/contracts/domain/order.ts`) pro nome que o resto do sistema já usa.
-**Achado relacionado, NÃO corrigido (fora de escopo — afeta Sale, não
-Order)**: `Sale.fiscalDocId` parece ter o MESMO problema (schema/tipo
-declara `fiscalDocId`, mas o writeback grava `fiscalDocumentId`) —
-registrado aqui como candidato a investigação futura, não confirmado se
-algum caminho de UI depende do campo quebrado.
+**Achado relacionado, CONFIRMADO E CORRIGIDO na fatia seguinte (devolução
+parcial, abaixo)**: `Sale.fiscalDocId` tinha o MESMO problema — e nesse
+caso não era só um botão de UI morto, era o **gate fiscal de
+`cancelSaleAdmin` (M02.7)** que nunca disparava de verdade. Ver nota
+completa abaixo.
 
 Construído: `lib/services/fiscal/orderNfe.ts` (`buildOrderNfeInput`, mapper
 puro, mesmo padrão de `deliveryOrderNfce.ts` — mesma limitação documentada:
@@ -808,6 +808,81 @@ Botão "Emitir NF-e" em `VendasModule.tsx` ligado de verdade; novo indicador
 verde "NF-e emitida" quando `fiscalDocumentId` já existe. Suite completa
 sem regressão (mesma contagem — mapper novo sem teste dedicado, mesmo
 tratamento que `deliveryOrderNfce.ts` já recebe nesta base de código).
+
+**Devolução parcial de venda (item-a-item) entregue (10/09/2026) — maior
+escopo do grupo "pronto pra construir", greenfield real (zero implementação
+em qualquer lugar do repo antes desta fatia).** Investigação de terreno
+(7 perguntas, evidência arquivo:linha) mapeou riscos concretos antes de
+desenhar o contrato:
+- `applyStockOperationAdmin` (núcleo M01) **não protege sozinho contra
+  sobre-restauração entre devoluções parciais sucessivas** — ele só aplica
+  o delta que mandarmos; quem chama precisa garantir que a soma das
+  devoluções nunca excede o vendido. Resolvido com CAS transacional real:
+  `SaleItem.returnedQuantity` (campo novo) é lido e incrementado DENTRO da
+  mesma transação que cria o doc `saleReturns/{id}`, rejeitando
+  (`QUANTITY_EXCEEDS_REMAINING`) qualquer pedido que exceda `quantity -
+  returnedQuantity` no momento exato da escrita — cobre inclusive duas
+  devoluções concorrentes da mesma linha.
+- **Não existe precedente de estorno financeiro PARCIAL** — só
+  contra-lançamento de valor CHEIO (`transaction-reversal.ts`, usado pelo
+  estorno do Mercado Pago). Reaproveitado o MESMO padrão (nova Transaction
+  `despesa`/"Estornos", nunca muta a receita original — preserva trilha de
+  auditoria) parametrizado pelo valor devolvido, com `idempotencyKey`
+  EXPLÍCITA ancorada no `returnId` (a chave derivada automaticamente,
+  `sale:{id}:despesa`, colidiria entre múltiplas devoluções da mesma venda).
+- **Checkpoint com o usuário**: devolução parcial segue o MESMO gate fiscal
+  do cancelamento total — bloqueia se a venda já tem nota fiscal autorizada
+  (o sistema não sabe emitir nota de devolução/carta de correção).
+- **Achado sério e corrigido ANTES de construir em cima do padrão**: o gate
+  fiscal de `cancelSaleAdmin` (M02.7, construído nesta mesma sessão) nunca
+  funcionou de verdade em produção — checava `sale.fiscalDocId`, campo que
+  NADA em produção jamais escreveu (o writeback real,
+  `linkFiscalDocToSource`, grava `fiscalDocumentId`). O teste que validava
+  o gate usava a MESMA fixture errada (`fiscalDocId`), então passava sem
+  provar nada sobre o comportamento real. Corrigido em `SaleSchema`/`Sale`
+  (tipo hand-written) pro nome real, mais o gate em si e a fixture do teste
+  — mesma classe de drift já fechada pra `Order` nesta mesma fatia (achado
+  ANTES de replicar o padrão pra devolução parcial, que dependia dele
+  funcionar de verdade).
+- **Deliberadamente FORA de escopo**: cupom/gift card/pontos de fidelidade
+  (modelados hoje no nível da VENDA, não por item — confirmado:
+  `SaleItem.discount` é sempre 0 nas vendas reais; reverter
+  proporcionalmente exigiria política de rateio inexistente); comissão do
+  operador (decisão de negócio — a empresa reclama comissão de item
+  devolvido? — não decisão de engenharia); NF-e de devolução/carta de
+  correção (por isso o gate fiscal bloqueia em vez de tentar reconciliar).
+  `visitCount` do cliente NÃO é decrementado (devolução não desfaz a
+  visita) — só `totalSpent`, proporcionalmente.
+
+Construído: `lib/contracts/domain/saleReturn.ts` (`SaleReturnSchema`, ledger
+append-only — mesmo padrão de `stockMovements`/`couponRedemptions`, não um
+array dentro do doc da Sale), `SaleItem.returnedQuantity` novo (schema +
+tipo hand-written), `lib/services/sale-return-admin.ts`
+(`returnSaleItemsAdmin`), `app/api/sales/[id]/return/route.ts` (mirror de
+`.../cancel/route.ts`). Diferente do cancelamento total: **`sale.status`
+NUNCA muda** — a venda continua `finalizada` (ela de fato aconteceu; a
+devolução é um ajuste posterior, não uma anulação); não há transição de FSM
+envolvida. `firestore.rules`: `saleReturns` fechado pra Admin-SDK-only
+(mesmo padrão de `stockMovements`), leitura liberada pro tenant operator+.
+Novo índice composto `businessId+saleId+createdAt`.
+
+UI: `PDVModule.tsx` ganhou botão "Devolver" por item na tela de detalhe da
+venda (antes só tinha "Cancelar venda", ação binária tudo-ou-nada) — abre
+um stepper de quantidade inline (máx. = quantidade restante) e confirma via
+`POST /api/sales/[id]/return`. Item já parcialmente devolvido mostra badge
+"N devolvida(s)"; item 100% devolvido não mostra mais o botão.
+
+13 testes novos (`saleReturnAdmin.test.ts`) — CAS de quantidade
+(individual, cumulativo entre 2 devoluções sequenciais, rejeição da 3ª que
+excede o restante), gate fiscal, idempotência (replay não duplica
+Transaction/estoque/totalSpent), múltiplas linhas numa devolução,
+item-sem-produto não aciona estoque. Mocka `applyStockOperationAdmin`/
+`createTransactionSafeAdmin` por inteiro (já exaustivamente testados em
+`stockCoreAdmin.test.ts`/núcleo M03.2) — o objetivo é provar que
+`sale-return-admin.ts` decide certo (CAS, gate, idempotência) e delega
+certo, não re-testar a mecânica interna deles. Suite completa sem
+regressão (1240 testes/96 arquivos, subindo de 1227/95). Deploy de
+`firestore.rules`/índice pendente de autorização explícita.
 
 ## 7. Ordem de entrega recomendada
 

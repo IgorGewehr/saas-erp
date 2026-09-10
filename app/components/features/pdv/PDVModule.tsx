@@ -49,6 +49,7 @@ import {
   CalendarPlus,
   Coffee,
   Ban,
+  RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -258,6 +259,11 @@ export default function PDVModule() {
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
   const [isCancellingSale, setIsCancellingSale] = useState(false);
   const [cancelConfirmSaleId, setCancelConfirmSaleId] = useState<string | null>(null);
+  // Devolução parcial (M02) — item em edição (linha com o stepper de
+  // quantidade aberto), mesmo padrão inline de cancelConfirmSaleId acima.
+  const [returningItemId, setReturningItemId] = useState<string | null>(null);
+  const [returnQty, setReturnQty] = useState(1);
+  const [isReturningItem, setIsReturningItem] = useState(false);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -1216,6 +1222,50 @@ export default function PDVModule() {
     }
   }, [user, business, firebaseUser, queryClient, t]);
 
+  // Devolução PARCIAL de item (M02, retomada 10/09/2026) — diferente do
+  // cancelamento acima (venda inteira), aqui `sale.status` nunca muda; só o
+  // item devolvido (estoque + estorno financeiro proporcional). Servidor
+  // aplica CAS contra devolver mais do que resta; a UI só chama e sincroniza
+  // localmente (dialog fica aberto — o usuário pode devolver outro item).
+  const handleReturnItem = useCallback(async (sale: Sale, itemId: string, quantity: number) => {
+    if (!user || !business || !firebaseUser) return;
+    setIsReturningItem(true);
+    try {
+      const token = await firebaseUser.getIdToken();
+      const res = await fetch(`/api/sales/${sale.id}/return`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ businessId: business.id, lines: [{ itemId, quantity }] }),
+      });
+      const payload = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !payload?.ok) {
+        throw new Error(payload?.error || 'Erro ao devolver item');
+      }
+
+      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['clients'] });
+      queryClient.invalidateQueries({ queryKey: ['pdv-clients'] });
+
+      setSelectedSale(prev => prev && prev.id === sale.id ? {
+        ...prev,
+        items: prev.items.map(it => it.id === itemId
+          ? { ...it, returnedQuantity: (it.returnedQuantity ?? 0) + quantity }
+          : it),
+      } : prev);
+      setReturningItemId(null);
+      toast.success(t('pdv.return.success', 'Item devolvido — estoque e financeiro ajustados'));
+    } catch (error) {
+      console.error('Error returning sale item:', error);
+      toast.error(error instanceof Error ? error.message : t('pdv.return.error', 'Erro ao devolver item'));
+    } finally {
+      setIsReturningItem(false);
+    }
+  }, [user, business, firebaseUser, queryClient, t]);
+
   const handlePreBooking = useCallback(async () => {
     if (!user || !business || !selectedClient || !pbDate || !pbServiceId || !pbTime) return;
     setIsSavingPreBooking(true);
@@ -1546,17 +1596,70 @@ export default function PDVModule() {
                     {/* Items */}
                     <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 uppercase tracking-wider mb-2">{t('pdv.modal.items', 'Itens')}</p>
                     <div className="space-y-2">
-                      {selectedSale.items.map((item, idx) => (
-                        <div key={idx} className="flex justify-between text-sm">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-slate-700 dark:text-gray-300 truncate block">{item.description}</span>
-                            <span className="text-xs text-slate-400 dark:text-gray-500">{item.quantity}x {formatCurrency(item.unitPrice)}</span>
+                      {selectedSale.items.map((item, idx) => {
+                        const returned = item.returnedQuantity ?? 0;
+                        const remaining = Math.max(0, item.quantity - returned);
+                        const canReturn = selectedSale.status === 'finalizada' && remaining > 0;
+                        const itemKey = item.id || String(idx);
+                        return (
+                          <div key={itemKey} className="text-sm">
+                            <div className="flex justify-between items-start gap-2">
+                              <div className="flex-1 min-w-0">
+                                <span className="text-slate-700 dark:text-gray-300 truncate block">{item.description}</span>
+                                <span className="text-xs text-slate-400 dark:text-gray-500">{item.quantity}x {formatCurrency(item.unitPrice)}</span>
+                                {returned > 0 && (
+                                  <span className="text-[11px] text-amber-600 dark:text-amber-400 block">
+                                    {t('pdv.return.returnedBadge', '{{qty}} devolvida(s)', { qty: returned })}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <span className="font-medium text-slate-900 dark:text-gray-100">
+                                  {formatCurrency(item.total)}
+                                </span>
+                                {canReturn && item.id && (
+                                  <button
+                                    onClick={() => { setReturningItemId(itemKey); setReturnQty(1); }}
+                                    title={t('pdv.return.button', 'Devolver item')}
+                                    className="p-1 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition-colors"
+                                  >
+                                    <RotateCcw size={14} />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            {returningItemId === itemKey && item.id && (
+                              <div className="mt-1.5 flex items-center gap-2 p-2 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/20">
+                                <span className="text-xs text-amber-700 dark:text-amber-400 flex-1">
+                                  {t('pdv.return.quantityLabel', 'Quantidade a devolver (máx. {{max}})', { max: remaining })}
+                                </span>
+                                <IconButton size="small" disabled={returnQty <= 1} onClick={() => setReturnQty(q => Math.max(1, q - 1))}>
+                                  <Minus size={12} />
+                                </IconButton>
+                                <span className="text-sm font-semibold text-slate-900 dark:text-gray-100 w-6 text-center">{returnQty}</span>
+                                <IconButton size="small" disabled={returnQty >= remaining} onClick={() => setReturnQty(q => Math.min(remaining, q + 1))}>
+                                  <Plus size={12} />
+                                </IconButton>
+                                <button
+                                  onClick={() => setReturningItemId(null)}
+                                  disabled={isReturningItem}
+                                  className="px-2 py-1 text-xs rounded-lg bg-white dark:bg-gray-700 border border-slate-200 dark:border-gray-600 text-slate-600 dark:text-gray-300"
+                                >
+                                  {t('pdv.cancel.no', 'Não')}
+                                </button>
+                                <button
+                                  onClick={() => handleReturnItem(selectedSale, item.id!, returnQty)}
+                                  disabled={isReturningItem}
+                                  className="px-2 py-1 text-xs rounded-lg bg-amber-600 text-white hover:bg-amber-700 flex items-center gap-1"
+                                >
+                                  {isReturningItem ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+                                  {t('pdv.return.confirm', 'Confirmar')}
+                                </button>
+                              </div>
+                            )}
                           </div>
-                          <span className="font-medium text-slate-900 dark:text-gray-100 ml-4">
-                            {formatCurrency(item.total)}
-                          </span>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
 
                     <Divider sx={{ my: 1.5, borderStyle: 'dashed', borderColor: isDark ? '#374151' : undefined }} />
