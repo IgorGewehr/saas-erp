@@ -696,6 +696,34 @@ de Order (M02.6), estado composto da operação na UI (M02.8), devolução parci
 reconciliação de enum fiscal (M02.7), sweep automático/painel de operações
 travadas (M02.9), smoke manual e auditoria contra tenant real (M02.10).
 
+## Retomada dos itens adiados (10/09/2026)
+
+Usuário pediu explicitamente pra construir os itens acima "com cuidado" —
+priorizados por risco: primeiro os sem dependência externa, depois os
+refactors de UI de alto risco (só com plano de validação combinado antes).
+
+**Painel de operações comerciais travadas entregue (10/09/2026).** Item que
+M02.8/M02.9 registraram como "especulativo, sem consumidor real" agora tem
+consumidor real (o próprio usuário pediu). Reusa `detectStuckOperations`
+(M02.9) sem duplicar a lógica — novo `findStuckCommercialOperations`
+(`lib/services/m02-commercial-audit.ts`) extrai um resumo pronto pra UI
+(operationId, sourceType, status, checkpoint onde parou, tentativas, último
+erro) a partir do mesmo critério "sem lease ativo e fora de estado
+terminal". Como `commercialOperations` é Admin-SDK-only pra leitura E
+escrita (`firestore.rules: allow read, write: if false`), a UI não pode ler
+Firestore direto (diferente de `AuditoriaTab.tsx`, que lê soft-delete direto
+porque essas coleções têm regra de leitura liberada) — nova rota
+`GET /api/admin/commercial-operations/stuck` (Admin SDK, `verifyAuth` +
+gate `ROLE_HIERARCHY >= admin`, mesmo padrão forte de
+`app/api/admin/repair-contact-names/route.ts`) e nova aba "Operações" em
+Settings (`OperacoesTab.tsx`, `admin`+, mesmo visual de `AuditoriaTab.tsx`).
+**Deliberadamente read-only**: retomada (replay do idempotencyKey) e
+compensação manual continuam procedimento guiado via
+`M02_RUNBOOK_OPERACOES.md` — um botão de ação exigiria desenho de segurança
+próprio (qual efeito reexecutar, com que autorização) fora do escopo deste
+painel. 1 teste novo (`m02CommercialAudit.test.ts`). Suite sem regressão
+(1227/95, de 1226/95).
+
 ## 7. Ordem de entrega recomendada
 
 1. M02.0 — baseline e caracterização.

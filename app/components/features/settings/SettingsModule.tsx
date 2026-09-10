@@ -89,6 +89,7 @@ import WhatsAppProfileSection from './WhatsAppProfileSection';
 import QuickRepliesTab from './QuickRepliesTab';
 import BusinessChannelsSection from './BusinessChannelsSection';
 import { AuditoriaTab } from './AuditoriaTab';
+import { OperacoesTab } from './OperacoesTab';
 import ValidatorChipSection from './ValidatorChipSection';
 import { CachedImage } from '@/app/components/ui/CachedImage';
 import SidebarEditorTab from './SidebarEditorTab';
@@ -120,7 +121,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'pagamentos' | 'auditoria';
+type Tab = 'perfil' | 'empresa' | 'fiscal' | 'usuarios' | 'setores' | 'enterprise' | 'canais' | 'modo' | 'agente' | 'cofre' | 'pagamentos' | 'auditoria' | 'operacoes';
 
 interface CertStatus {
   hasCertificate: boolean;
@@ -7973,10 +7974,11 @@ export default function SettingsModule() {
     // migrou pra dentro da aba Canais via BusinessChannelsSection.
     { id: 'enterprise' as Tab, label: t('settings.tabs.enterprise', 'Enterprise'), icon: Blocks     },
     { id: 'auditoria' as Tab,  label: t('settings.tabs.auditoria',  'Auditoria'),   icon: Trash2     },
+    { id: 'operacoes' as Tab,  label: t('settings.tabs.operacoes',  'Operações'),   icon: AlertTriangle },
   ];
 
   const isAdmin = ROLE_HIERARCHY[user?.role ?? 'viewer'] >= ROLE_HIERARCHY['admin'];
-  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'pagamentos', 'enterprise', 'auditoria']);
+  const ADMIN_ONLY_TABS = new Set<Tab>(['empresa', 'fiscal', 'usuarios', 'setores', 'canais', 'pagamentos', 'enterprise', 'auditoria', 'operacoes']);
   const tabs = isAdmin ? allTabs : allTabs.filter(tab => !ADMIN_ONLY_TABS.has(tab.id));
 
   return (
@@ -8105,6 +8107,7 @@ export default function SettingsModule() {
         )}
         {activeTab === 'enterprise' && <EnterpriseTab key="enterprise" />}
         {activeTab === 'auditoria'  && <AuditoriaTab key="auditoria" />}
+        {activeTab === 'operacoes'  && <OperacoesTab key="operacoes" />}
       </AnimatePresence>
     </motion.div>
   );

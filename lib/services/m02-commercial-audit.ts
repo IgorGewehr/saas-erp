@@ -171,6 +171,15 @@ function pushEffect(
 // sozinha (só um replay explícito do mesmo idempotencyKey faz isso).
 const TERMINAL_OPERATION_STATUSES = new Set(['completed', 'compensated']);
 
+function isStuckOperation(data: Record<string, unknown>, referenceTime: number): boolean {
+  const status = String(data.status ?? '');
+  if (TERMINAL_OPERATION_STATUSES.has(status)) return false;
+  const lease = data.lease as { expiresAt?: unknown } | null | undefined;
+  const leaseExpiresAt = typeof lease?.expiresAt === 'string' ? Date.parse(lease.expiresAt) : NaN;
+  const leaseActive = Number.isFinite(leaseExpiresAt) && leaseExpiresAt > referenceTime;
+  return !leaseActive;
+}
+
 function detectStuckOperations(
   operations: M02AuditDocument[],
   referenceIso: string,
@@ -178,18 +187,62 @@ function detectStuckOperations(
 ): void {
   const referenceTime = Date.parse(referenceIso);
   for (const document of operations) {
+    if (!isStuckOperation(document.data, referenceTime)) continue;
     const status = String(document.data.status ?? '');
-    if (TERMINAL_OPERATION_STATUSES.has(status)) continue;
-    const lease = document.data.lease as { expiresAt?: unknown } | null | undefined;
-    const leaseExpiresAt = typeof lease?.expiresAt === 'string' ? Date.parse(lease.expiresAt) : NaN;
-    const leaseActive = Number.isFinite(leaseExpiresAt) && leaseExpiresAt > referenceTime;
-    if (leaseActive) continue;
     issues.push({
       code: 'STUCK_OPERATION',
       entityKey: `commercialOperation:${document.id}`,
       message: `Operação comercial em status "${status || '(vazio)'}" sem lease ativo — candidata a retomada/investigação manual.`,
     });
   }
+}
+
+/** M02.9 painel de UI — resumo enxuto (não o `M02CommercialAuditIssue` genérico)
+ *  de cada `commercialOperations` travada, pronto pra renderizar numa lista.
+ *  Reusa `isStuckOperation` (mesmo critério do audit) e `readOwnedDocuments`
+ *  (mesma checagem de tenant) — não duplica a lógica de detecção. */
+export interface StuckCommercialOperationSummary {
+  operationId: string;
+  sourceType: string;
+  channel: string;
+  status: string;
+  currentCheckpoint: string | null;
+  attempts: number;
+  lastError?: { code?: string; message?: string };
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export function findStuckCommercialOperations(
+  operations: M02AuditDocument[],
+  businessId: string,
+  referenceIso: string,
+): StuckCommercialOperationSummary[] {
+  const referenceTime = Date.parse(referenceIso);
+  const issues: M02CommercialAuditIssue[] = [];
+  const owned = readOwnedDocuments('commercialOperations', operations, businessId, issues);
+  return owned
+    .filter((document) => isStuckOperation(document.data, referenceTime))
+    .map((document) => {
+      const lastErrorRaw = document.data.lastError as { code?: unknown; message?: unknown } | undefined;
+      return {
+        operationId: document.id,
+        sourceType: String(document.data.sourceType ?? ''),
+        channel: String(document.data.channel ?? ''),
+        status: String(document.data.status ?? ''),
+        currentCheckpoint: typeof document.data.currentCheckpoint === 'string' ? document.data.currentCheckpoint : null,
+        attempts: Number(document.data.attempts ?? 0),
+        ...(lastErrorRaw ? {
+          lastError: {
+            ...(typeof lastErrorRaw.code === 'string' ? { code: lastErrorRaw.code } : {}),
+            ...(typeof lastErrorRaw.message === 'string' ? { message: lastErrorRaw.message } : {}),
+          },
+        } : {}),
+        ...(typeof document.data.createdAt === 'string' ? { createdAt: document.data.createdAt } : {}),
+        ...(typeof document.data.updatedAt === 'string' ? { updatedAt: document.data.updatedAt } : {}),
+      };
+    })
+    .sort((left, right) => (left.updatedAt ?? '').localeCompare(right.updatedAt ?? ''));
 }
 
 function readOwnedDocuments(

@@ -5,6 +5,7 @@ import b2bFixture from '@/tests/fixtures/m02/b2b-order.json';
 import {
   buildM02CommercialSnapshot,
   compareM02CommercialSnapshots,
+  findStuckCommercialOperations,
   type M02AuditDocument,
   type M02CommercialAuditInput,
 } from '@/lib/services/m02-commercial-audit';
@@ -193,6 +194,38 @@ describe('M02.0 — auditoria comercial read-only', () => {
     ];
     const snapshot = buildM02CommercialSnapshot(input);
     expect(snapshot.issues.filter((issue) => issue.code === 'STUCK_OPERATION')).toEqual([]);
+  });
+
+  it('M02.8/M02.9: findStuckCommercialOperations resume operações travadas pro painel de UI', () => {
+    const now = '2026-09-10T12:00:00.000Z';
+    const operations = [
+      document('op-stuck', {
+        businessId: 'biz-m02', sourceType: 'sale', channel: 'pdv', status: 'failed',
+        currentCheckpoint: 'stock_applied', attempts: 2, lease: null,
+        lastError: { code: 'INSUFFICIENT_STOCK', message: 'Saldo insuficiente' },
+        createdAt: '2026-09-10T11:00:00.000Z', updatedAt: '2026-09-10T11:05:00.000Z',
+      }),
+      document('op-done', { businessId: 'biz-m02', sourceType: 'order', channel: 'b2b', status: 'completed', lease: null }),
+      document('op-in-flight', {
+        businessId: 'biz-m02', sourceType: 'deliveryOrder', channel: 'site', status: 'running',
+        lease: { token: 't1', expiresAt: '2026-09-10T12:05:00.000Z' },
+      }),
+      document('op-other-tenant', { businessId: 'biz-other', sourceType: 'sale', channel: 'pdv', status: 'failed', lease: null }),
+    ];
+
+    const stuck = findStuckCommercialOperations(operations, 'biz-m02', now);
+
+    expect(stuck).toEqual([{
+      operationId: 'op-stuck',
+      sourceType: 'sale',
+      channel: 'pdv',
+      status: 'failed',
+      currentCheckpoint: 'stock_applied',
+      attempts: 2,
+      lastError: { code: 'INSUFFICIENT_STOCK', message: 'Saldo insuficiente' },
+      createdAt: '2026-09-10T11:00:00.000Z',
+      updatedAt: '2026-09-10T11:05:00.000Z',
+    }]);
   });
 
   it('recusa comparação entre tenants diferentes', () => {
