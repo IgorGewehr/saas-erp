@@ -7055,8 +7055,15 @@ export default function ConversasModule() {
   // Sector assignment
   const [showSectorAssign, setShowSectorAssign] = useState(false);
 
-  // Real-time data from Firestore
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  // Real-time data from Firestore.
+  // `allConversations` é a fundação sem limite — alimenta automações (SLA,
+  // roteamento), badges de aba, merge, analytics e qualquer lookup por ID
+  // específico. A lista renderizada (`filteredConversations`) usa um array
+  // paginado próprio quando o fast-path se aplica, caindo em
+  // `allConversations` no resto dos casos (busca, filtros avançados, views
+  // não migráveis) — ver plano em docs/conversas se precisar do desenho
+  // completo.
+  const [allConversations, setAllConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
@@ -7091,7 +7098,7 @@ export default function ConversasModule() {
   // ── SLA breach notifications ───────────────────────────────────────────────
   useEffect(() => {
     if (!slaConfig.enabled) return;
-    for (const conv of conversations) {
+    for (const conv of allConversations) {
       const info = getSLAInfo(conv, slaConfig);
       if (info?.status === 'breached' && !notifiedBreachIdsRef.current.has(conv.id)) {
         notifiedBreachIdsRef.current.add(conv.id);
@@ -7099,14 +7106,14 @@ export default function ConversasModule() {
       }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversations, slaTick, slaConfig.enabled]);
+  }, [allConversations, slaTick, slaConfig.enabled]);
 
   // ── Routing rules engine ─────────────────────────────────────────────────
   const appliedRoutingRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!business?.id || !routingRules.length) return;
     const enabled = routingRules.filter(r => r.enabled).sort((a, b) => a.order - b.order);
-    for (const conv of conversations) {
+    for (const conv of allConversations) {
       if (conv.assignedTo || conv.status === 'resolved' || appliedRoutingRef.current.has(conv.id)) continue;
       for (const rule of enabled) {
         const { conditions, action } = rule;
@@ -7177,21 +7184,22 @@ export default function ConversasModule() {
         break; // First matching rule wins
       }
     }
-  }, [conversations, routingRules, business, sectors, resolveVisibleToUserIds]);
+  }, [allConversations, routingRules, business, sectors, resolveVisibleToUserIds]);
 
   // ── Cross-module intents (do AppContext) ───────────────────────────────────
   // ChannelsTab do detalhe do cliente seta intents pra abrir conversa específica
   // ou iniciar nova com pré-fill. Consumimos one-shot e limpamos o pending pra
   // não re-disparar em re-renders.
 
-  // Abrir conversa existente quando o ID chega via pending. Aguarda a lista
-  // carregar (find retorna match) — se não está na lista (filtrada por ownership
-  // ou ainda hidratando), o effect re-roda quando `conversations` atualiza.
-  // Timeout de 5s evita pending pendurado pra sempre se a conversa for
-  // invisível pro user (ex: filtrada por ownership de canal pessoal).
+  // Abrir conversa existente quando o ID chega via pending. Usa
+  // `allConversations` (fundação sem limite) — não a lista paginada — pra
+  // não disparar o toast de "não encontrada" só porque a conversa está fora
+  // da janela carregada da view atual. Timeout de 5s evita pending pendurado
+  // pra sempre se a conversa for de fato invisível pro user (ex: filtrada
+  // por ownership de canal pessoal).
   useEffect(() => {
     if (!pendingOpenConversationId) return;
-    const conv = conversations.find(c => c.id === pendingOpenConversationId);
+    const conv = allConversations.find(c => c.id === pendingOpenConversationId);
     if (conv) {
       setSelectedConversation(conv);
       setShowMobileThread(true);
@@ -7204,7 +7212,7 @@ export default function ConversasModule() {
       setPendingOpenConversationId(null);
     }, 5000);
     return () => clearTimeout(t);
-  }, [pendingOpenConversationId, conversations, setPendingOpenConversationId]);
+  }, [pendingOpenConversationId, allConversations, setPendingOpenConversationId]);
 
   // Iniciar conversa nova com pré-fill — abre NewConversationDialog populado
   // com client/channel/modo. clientsList precisa ter carregado pra resolver
@@ -7252,23 +7260,18 @@ export default function ConversasModule() {
     setShowNewConversation(true);
   }, [clientsList]);
 
-  // ── Real-time: Conversations list ──────────────────────────────────────────
+  // ── Real-time: Conversations list (fundação, sem limite) ───────────────────
   //
-  // TODO(auditoria P1.4): adicionar limit(50) + paginação por lastMessageAt
-  // AQUI é arriscado e já foi revertido uma vez (commit 6fb79c2). O array
-  // `conversations` carregado por este listener NÃO alimenta só a lista — ele é
-  // o universo de:
-  //   • filtro/view "não lidas" e `unreadByChannel`/`countsByView` (badges das
-  //     abas) — uma conversa não-lida fora da janela das 50 mais recentes some
-  //     do filtro e zera o contador da aba (regressão do 6fb79c2);
-  //   • automações de SLA + routing rules (loops sobre `conversations` que
-  //     escrevem priority/assignedTo) — limitar pararia silenciosamente a
-  //     automação de conversas antigas;
-  //   • analytics panel, merge-candidates e batch CSAT.
-  // Fazer com segurança exige listener(s) separado(s) (ex.: unread-only +
-  // open-only para SLA) alimentando esses consumidores, mantendo o limit/
-  // paginação SÓ na visualização da lista. O badge global já saiu daqui
-  // (Sidebar/TopBar/Dashboard agora leem unreadCounters/{businessId}).
+  // Este listener alimenta `allConversations` — a fundação usada por badges de
+  // aba, SLA, routing rules, merge, analytics e qualquer lookup por ID
+  // específico (ver comentário na declaração do state). A lista RENDERIZADA
+  // tem seu próprio listener paginado (ver bloco "Fast-path" mais abaixo) que
+  // cai de volta pra este array sempre que busca/filtro-avançado/view
+  // não-migrável estiver ativo — mantendo o mesmo comportamento de hoje
+  // nesses casos. Um `limit()` ingênuo aqui já foi tentado e revertido
+  // (commit 6fb79c2) exatamente por quebrar os consumidores acima; não repetir.
+  // O badge global (Sidebar/TopBar/Dashboard) já não depende deste listener —
+  // lê unreadCounters/{businessId}.
   useEffect(() => {
     if (!business?.id) return;
     if (!user?.uid) return;
@@ -7320,7 +7323,7 @@ export default function ConversasModule() {
           const data = snap.docs
             .map((d) => ({ ...d.data(), id: d.id } as Conversation))
             .filter(isActiveRecord);
-          setConversations(data);
+          setAllConversations(data);
           setIsLoadingConversations(false);
 
           setSelectedConversation((prev) => {
@@ -7376,7 +7379,7 @@ export default function ConversasModule() {
       const data = Array.from(merged.values())
         .filter(isActiveRecord)
         .sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
-      setConversations(data);
+      setAllConversations(data);
       if (loadedFlags[0] && loadedFlags[1]) {
         clearTimeout(loadingTimeout);
         setIsLoadingConversations(false);
@@ -7724,7 +7727,7 @@ export default function ConversasModule() {
       let skippedInvalid = 0;
       const idsToUpdate: string[] = [];
       for (const id of batchSelectedIds) {
-        const current = conversations.find(c => c.id === id);
+        const current = allConversations.find(c => c.id === id);
         if (current && !canTransitionConversation(current.status, status)) {
           skippedInvalid++;
           continue;
@@ -7737,7 +7740,7 @@ export default function ConversasModule() {
       // Disparos paralelos via Promise.all — N conversas em batch resolve não
       // devem virar N requests sequenciais.
       if (status === 'resolved' && business.settings?.csatEnabled) {
-        const toSurvey = conversations.filter(c => idsToUpdate.includes(c.id) && !c.csatSentAt);
+        const toSurvey = allConversations.filter(c => idsToUpdate.includes(c.id) && !c.csatSentAt);
         await Promise.all(toSurvey.map(c => sendCsatSurvey(c)));
       }
       if (skippedInvalid > 0) {
@@ -7749,7 +7752,7 @@ export default function ConversasModule() {
       console.error('[Batch] status update failed:', err);
       toast.error('Erro ao atualizar conversas');
     }
-  }, [business?.id, business?.settings?.csatEnabled, batchSelectedIds, conversations, exitBatchMode, sendCsatSurvey]);
+  }, [business?.id, business?.settings?.csatEnabled, batchSelectedIds, allConversations, exitBatchMode, sendCsatSurvey]);
 
   const handleBatchMarkRead = useCallback(async () => {
     if (!business?.id || batchSelectedIds.size === 0) return;
@@ -7776,7 +7779,7 @@ export default function ConversasModule() {
       const historyEntry = { assignedTo: userId, assignedToName: userName, changedBy: user.uid, changedByName: user.name, changedAt: now };
       const batch = writeBatch(db);
       for (const id of batchSelectedIds) {
-        const current = conversations.find((c) => c.id === id);
+        const current = allConversations.find((c) => c.id === id);
         const update: Record<string, unknown> = {
           assignedTo: userId, assignedToName: userName, updatedAt: now,
           assignmentHistory: arrayUnion(historyEntry),
@@ -7805,13 +7808,13 @@ export default function ConversasModule() {
       console.error('[Batch] assign failed:', err);
       toast.error('Erro ao atribuir conversas');
     }
-  }, [business?.id, business, batchSelectedIds, user, exitBatchMode, conversations, resolveVisibleToUserIds]);
+  }, [business?.id, business, batchSelectedIds, user, exitBatchMode, allConversations, resolveVisibleToUserIds]);
 
   const handleBatchTag = useCallback(async (tag: string) => {
     if (!business?.id || batchSelectedIds.size === 0) return;
     try {
       const now = new Date().toISOString();
-      const convs = conversations.filter(c => batchSelectedIds.has(c.id));
+      const convs = allConversations.filter(c => batchSelectedIds.has(c.id));
       const batch = writeBatch(db);
       for (const c of convs) {
         const tags = Array.from(new Set([...(c.tags ?? []), tag]));
@@ -7825,7 +7828,7 @@ export default function ConversasModule() {
       console.error('[Batch] tag failed:', err);
       toast.error('Erro ao adicionar tag');
     }
-  }, [business?.id, batchSelectedIds, conversations, exitBatchMode]);
+  }, [business?.id, batchSelectedIds, allConversations, exitBatchMode]);
 
   // ── Merge conversations ────────────────────────────────────────────────────
 
@@ -8449,7 +8452,7 @@ export default function ConversasModule() {
     if (intentionallyUnreadIds.has(id)) return;
 
     const tryMark = () => {
-      const fresh = conversations.find(c => c.id === id);
+      const fresh = allConversations.find(c => c.id === id);
       if (!fresh || (fresh.unreadCount ?? 0) === 0) return;
       if (intentionallyUnreadIds.has(id)) return;
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
@@ -8461,7 +8464,7 @@ export default function ConversasModule() {
     if (typeof document === 'undefined') return;
     document.addEventListener('visibilitychange', tryMark);
     return () => document.removeEventListener('visibilitychange', tryMark);
-  }, [conversations, selectedConversation?.id, intentionallyUnreadIds, markAsRead]);
+  }, [allConversations, selectedConversation?.id, intentionallyUnreadIds, markAsRead]);
 
   // ── Send read receipt to platform (Task 3) ─────────────────────────────────
 
@@ -8965,7 +8968,7 @@ export default function ConversasModule() {
 
       // Detecta reabertura (resolved → open). Lookup via lista em memória —
       // se o doc não estiver carregado, skip o tracking (não bloqueia o update).
-      const prev = conversations.find(c => c.id === conversationId);
+      const prev = allConversations.find(c => c.id === conversationId);
       const isReopening = prev?.status === 'resolved' && status === 'open';
       const patch: Record<string, unknown> = { status, updatedAt: now };
       if (isReopening) {
@@ -8978,7 +8981,7 @@ export default function ConversasModule() {
       // Delegado pro helper que faz o POST /api/conversations/send (entrega
       // real via Meta/Baileys). Antes só criava o doc e a msg ficava parada.
       if (status === 'resolved' && business?.settings?.csatEnabled) {
-        const conv = conversations.find(c => c.id === conversationId);
+        const conv = allConversations.find(c => c.id === conversationId);
         if (conv && !conv.csatSentAt) {
           await sendCsatSurvey(conv);
         }
@@ -8986,7 +8989,7 @@ export default function ConversasModule() {
     } catch (err) {
       console.error('Error updating conversation status:', err);
     }
-  }, [business?.settings?.csatEnabled, conversations, sendCsatSurvey]);
+  }, [business?.settings?.csatEnabled, allConversations, sendCsatSurvey]);
 
   // ── Send message ───────────────────────────────────────────────────────────
 
@@ -9422,7 +9425,7 @@ export default function ConversasModule() {
   const filteredConversations = useMemo(() => {
     const now = Date.now();
     const currentUid = user?.uid ?? '';
-    return getVisibleConversations(conversations).filter((c) => {
+    return getVisibleConversations(allConversations).filter((c) => {
       // Match canal — 'whatsapp_cloud' / 'whatsapp_baileys' são sub-filtros que
       // aplicam sobre c.channel === 'whatsapp' E o c.connectedVia correspondente.
       let matchesChannel: boolean;
@@ -9525,7 +9528,7 @@ export default function ConversasModule() {
         || (!retroLookupLoading && (retroCampaignConvIds?.has(c.id) ?? false));
       return matchesChannel && matchesView && matchesSector && matchesScope && matchesSearch && matchesAssigned && matchesPriority && matchesLabel && matchesUnread && matchesSLAStatus && matchesCampaign && matchesPipelineStage && matchesEngagement;
     });
-  }, [getVisibleConversations, conversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById, clientsById, clientIdsInPipeline, messageSearchConvIds]);
+  }, [getVisibleConversations, allConversations, activeChannel, activeView, activeSectorFilter, activeChannelScope, myConnectionIds, connectionsById, deferredSearchQuery, advFilters, slaConfig, user?.uid, campaignKind, campaignId, retroCampaignConvIds, retroLookupLoading, clientStageById, clientsById, clientIdsInPipeline, messageSearchConvIds]);
 
   // Re-sort client-side. 'recent' não toca a ordem (Firestore já desc por
   // lastMessageAt). 'oldest' inverte. 'priority' ranqueia urgent>high>med>low,
@@ -9559,18 +9562,18 @@ export default function ConversasModule() {
   // Collect all unique labels/tags from conversations for the filter dropdown
   const allLabels = useMemo(() => {
     const s = new Set<string>();
-    for (const c of conversations) {
+    for (const c of allConversations) {
       c.labels?.forEach(l => s.add(l));
       c.tags?.forEach(t => s.add(t));
     }
     return Array.from(s).sort();
-  }, [conversations]);
+  }, [allConversations]);
 
   // ── Unread counts per channel ──────────────────────────────────────────────
   // Conta também os ids estendidos (whatsapp_cloud / whatsapp_baileys) baseado
   // em conv.connectedVia, pra que cada sub-tab tenha seu próprio contador.
 
-  const unreadByChannel = conversations.reduce(
+  const unreadByChannel = allConversations.reduce(
     (acc, c) => {
       acc[c.channel] = (acc[c.channel] ?? 0) + c.unreadCount;
       acc.all = (acc.all ?? 0) + c.unreadCount;
@@ -9608,26 +9611,26 @@ export default function ConversasModule() {
       awaiting_reply: 0, mine: 0, unassigned: 0, unread: 0, stale: 0,
       resolved_today: 0, snoozed: 0, in_pipeline: 0,
     };
-    for (const c of getVisibleConversations(conversations)) {
+    for (const c of getVisibleConversations(allConversations)) {
       if (!matchesActiveChannel(c)) continue;
       (Object.keys(out) as SmartViewId[]).forEach(v => {
         if (matchesSmartView(c, v, currentUid, now, clientIdsInPipeline)) out[v]++;
       });
     }
     return out;
-  }, [conversations, getVisibleConversations, user?.uid, activeChannel, clientIdsInPipeline]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [allConversations, getVisibleConversations, user?.uid, activeChannel, clientIdsInPipeline]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Tabs ────────────────────────────────────────────────────────────────────
   // Split automático WhatsApp Cloud × Baileys quando o business tem volume nos
   // dois transportes. Se só um existe, mostra "WhatsApp" único pra evitar ruído.
 
   const hasWhatsAppCloud = useMemo(
-    () => conversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup'),
-    [conversations],
+    () => allConversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'embedded_signup'),
+    [allConversations],
   );
   const hasWhatsAppBaileys = useMemo(
-    () => conversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'baileys'),
-    [conversations],
+    () => allConversations.some(c => c.channel === 'whatsapp' && c.connectedVia === 'baileys'),
+    [allConversations],
   );
   const splitWhatsApp = hasWhatsAppCloud && hasWhatsAppBaileys;
 
@@ -10068,7 +10071,7 @@ export default function ConversasModule() {
                 <div className="w-12 h-12 rounded-2xl bg-gray-100 dark:bg-white/[0.04] flex items-center justify-center mb-3">
                   <MessageSquare className="w-6 h-6 text-gray-300 dark:text-gray-600" />
                 </div>
-                {conversations.length === 0 ? (
+                {allConversations.length === 0 ? (
                   <>
                     <p className="text-sm font-medium text-gray-500 dark:text-gray-400">
                       {t('conversations.noConversationsYet', 'Nenhuma conversa ainda')}
@@ -10791,7 +10794,7 @@ export default function ConversasModule() {
           <MergeConversationsDialog
             key="merge-dialog"
             source={selectedConversation}
-            conversations={conversations}
+            conversations={allConversations}
             onClose={() => setShowMergeDialog(false)}
             onMerge={targetId => handleMergeConversations(selectedConversation.id, targetId)}
           />
@@ -10838,7 +10841,7 @@ export default function ConversasModule() {
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               className="fixed inset-0 bg-black/20 z-30" onClick={() => setShowAnalytics(false)} />
             <ConversationAnalyticsPanel
-              conversations={conversations}
+              conversations={allConversations}
               members={members}
               onClose={() => setShowAnalytics(false)}
             />
