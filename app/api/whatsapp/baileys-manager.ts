@@ -843,10 +843,10 @@ async function handleInboundMessage(
 
     const matchedDoc = pickBestCandidate(candidates);
     let conversationId: string;
-    // M13: ownership (channelOwnerType/Id) da conversa RESOLVIDA — copiado
-    // pra mensagem, elimina o get() da rule de leitura (ver
+    // M13: ownership + visibilidade da conversa RESOLVIDA — copiado pra
+    // mensagem, elimina o get() da rule de leitura (ver
     // conversationMessageOwnership.ts). Preenchido em cada branch abaixo.
-    let messageOwnership: ReturnType<typeof messageOwnershipFields> = {};
+    let messageOwnership: ReturnType<typeof messageOwnershipFields> = { visibleToUserIds: null };
 
     if (!matchedDoc) {
       // Auto-assign para canais pessoais (ownerType='user'): a conversa que
@@ -1016,6 +1016,7 @@ async function handleInboundMessage(
           appliedContactName: convUpdate.contactName as string | undefined,
           channelOwnerType: convOwnerType as 'business' | 'user',
           channelOwnerId: convOwnerId,
+          visibleToUserIds: (data.visibleToUserIds as string[] | null | undefined) ?? null,
         };
       });
 
@@ -1023,6 +1024,7 @@ async function handleInboundMessage(
         messageOwnership = messageOwnershipFields({
           channelOwnerType: claimResult.channelOwnerType,
           channelOwnerId: claimResult.channelOwnerId,
+          visibleToUserIds: claimResult.visibleToUserIds,
         });
       }
 

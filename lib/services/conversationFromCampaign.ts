@@ -134,9 +134,9 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
     })[0];
 
     let conversationId: string;
-    // M13: ownership da conversa (channelOwnerType/Id) copiado pra mensagem —
+    // M13: ownership + visibilidade da conversa copiados pra mensagem —
     // elimina o get() da rule de leitura (ver conversationMessageOwnership.ts).
-    let convOwnership: ReturnType<typeof messageOwnershipFields> = {};
+    let convOwnership: ReturnType<typeof messageOwnershipFields> = { visibleToUserIds: null };
     if (matched) {
       conversationId = matched.id;
       // Backfill da atribuição "first-touch": conversas pré-existentes (cliente
