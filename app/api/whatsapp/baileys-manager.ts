@@ -30,6 +30,7 @@ import { tryAutoConfirmFromWhatsAppReply } from '@/lib/services/agenda/whatsappC
 import { markWebhookSeen } from '@/lib/contracts/_runtime/webhookIdempotency';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { detectLikelyBotReply } from '@/lib/utils/botDetection';
+import { messageOwnershipFields } from '@/lib/utils/conversationMessageOwnership';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -842,6 +843,10 @@ async function handleInboundMessage(
 
     const matchedDoc = pickBestCandidate(candidates);
     let conversationId: string;
+    // M13: ownership (channelOwnerType/Id) da conversa RESOLVIDA — copiado
+    // pra mensagem, elimina o get() da rule de leitura (ver
+    // conversationMessageOwnership.ts). Preenchido em cada branch abaixo.
+    let messageOwnership: ReturnType<typeof messageOwnershipFields> = {};
 
     if (!matchedDoc) {
       // Auto-assign para canais pessoais (ownerType='user'): a conversa que
@@ -907,6 +912,7 @@ async function handleInboundMessage(
         updatedAt: now,
       });
       conversationId = newConvRef.id;
+      messageOwnership = messageOwnershipFields({ channelOwnerType, channelOwnerId });
       // Contador denormalizado de não-lidas (R3 — mesmo caminho dedupe-guarded).
       // Baileys pode ser canal pessoal (ownerType='user') ou business.
       try {
@@ -1008,8 +1014,17 @@ async function handleInboundMessage(
         return {
           kind: 'updated' as const,
           appliedContactName: convUpdate.contactName as string | undefined,
+          channelOwnerType: convOwnerType as 'business' | 'user',
+          channelOwnerId: convOwnerId,
         };
       });
+
+      if (claimResult.kind === 'updated') {
+        messageOwnership = messageOwnershipFields({
+          channelOwnerType: claimResult.channelOwnerType,
+          channelOwnerId: claimResult.channelOwnerId,
+        });
+      }
 
       if (claimResult.kind === 'conflict') {
         // Outro canal venceu o race — cria conversa nova com o connectionId
@@ -1067,6 +1082,7 @@ async function handleInboundMessage(
           updatedAt: now,
         });
         conversationId = newConvRef.id;
+        messageOwnership = messageOwnershipFields({ channelOwnerType, channelOwnerId });
         // Contador denormalizado de não-lidas (R3 — espelha unreadCount:1 acima).
         try {
           await incrementUnreadCounter(adminDb, businessId, { channelOwnerType, channelOwnerId }, 1);
@@ -1125,6 +1141,7 @@ async function handleInboundMessage(
       ...(replyToMessageId ? { replyToMessageId } : {}),
       sentAt: timestamp,
       createdAt: now,
+      ...messageOwnership,
     });
 
     // Dispatch to AI agent — true fire-and-forget (debounce runs inside, do NOT await)

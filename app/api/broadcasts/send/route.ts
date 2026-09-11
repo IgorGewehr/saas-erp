@@ -7,6 +7,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { sendBaileysBroadcastMessage } from '@/app/api/whatsapp/baileys-manager';
 import { generateUnsubscribeToken } from '@/lib/utils/unsubscribeToken';
 import { getAlternativeBrazilianPhone, canonicalizeBr } from '@/lib/utils/phoneAlternatives';
+import { messageOwnershipFields } from '@/lib/utils/conversationMessageOwnership';
 import type { BroadcastTemplateParam, OptOutChannel } from '@/lib/types';
 import { cleanContactName } from '@/lib/utils/contactName';
 import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
@@ -363,8 +364,12 @@ async function upsertConversationFromBroadcast(params: {
     })[0];
 
     let conversationId: string;
+    // M13: ownership da conversa (channelOwnerType/Id) copiado pra mensagem —
+    // elimina o get() da rule de leitura (ver conversationMessageOwnership.ts).
+    let convOwnership: ReturnType<typeof messageOwnershipFields> = {};
     if (matched) {
       conversationId = matched.id;
+      convOwnership = messageOwnershipFields(matched.data());
       // Backfill da atribuição "first-touch": se a conv já existia (cliente
       // mandou msg antes da campanha) ela nunca teve `originBroadcastId`
       // setado. Sem isso, conv ficaria órfã pra sempre do filtro forward,
@@ -411,6 +416,7 @@ async function upsertConversationFromBroadcast(params: {
       };
       const convRef = await adminDb.collection('conversations').add(newConvData);
       conversationId = convRef.id;
+      convOwnership = messageOwnershipFields(newConvData);
     }
 
     // Append da mensagem outbound
@@ -428,6 +434,7 @@ async function upsertConversationFromBroadcast(params: {
       broadcastMessageId: params.broadcastMessageId,
       sentAt: now,
       createdAt: now,
+      ...convOwnership,
     };
     if (params.externalMessageId) msgData.externalMessageId = params.externalMessageId;
     if (params.connectedVia) msgData.connectedVia = params.connectedVia;

@@ -19,6 +19,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { getAlternativeBrazilianPhone } from '@/lib/utils/phoneAlternatives';
 import { cleanContactName } from '@/lib/utils/contactName';
+import { messageOwnershipFields } from '@/lib/utils/conversationMessageOwnership';
 
 export type CampaignSource =
   | { kind: 'broadcast'; broadcastId: string; broadcastMessageId: string }
@@ -133,6 +134,9 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
     })[0];
 
     let conversationId: string;
+    // M13: ownership da conversa (channelOwnerType/Id) copiado pra mensagem —
+    // elimina o get() da rule de leitura (ver conversationMessageOwnership.ts).
+    let convOwnership: ReturnType<typeof messageOwnershipFields> = {};
     if (matched) {
       conversationId = matched.id;
       // Backfill da atribuição "first-touch": conversas pré-existentes (cliente
@@ -141,6 +145,7 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
       // (custo + risco em rules). Seta apenas se o campo correspondente ao
       // tipo da source ainda não existe, preservando "primeira atribuição vence".
       const existingData = matched.data();
+      convOwnership = messageOwnershipFields(existingData);
       const originPatch: Record<string, unknown> = {};
       if (params.source.kind === 'broadcast' && !existingData.originBroadcastId) {
         originPatch.originBroadcastId = params.source.broadcastId;
@@ -191,6 +196,7 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
       };
       const convRef = await adminDb.collection('conversations').add(newConvData);
       conversationId = convRef.id;
+      convOwnership = messageOwnershipFields(newConvData);
     }
 
     // Append da mensagem outbound. Flags de rastreio variam por fonte.
@@ -217,6 +223,7 @@ export async function upsertConversationFromCampaign(params: UpsertParams): Prom
       ...sourceFields,
       sentAt: now,
       createdAt: now,
+      ...convOwnership,
     };
     if (params.externalMessageId) msgData.externalMessageId = params.externalMessageId;
     if (params.connectedVia) msgData.connectedVia = params.connectedVia;

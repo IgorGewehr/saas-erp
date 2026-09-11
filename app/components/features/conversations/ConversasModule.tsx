@@ -11,6 +11,7 @@ import { setActiveConversation } from '@/lib/utils/active-conversation';
 import { markConversationRead, markConversationUnread } from '@/lib/utils/markConversationRead';
 import { isActiveClient } from '@/lib/utils/clientFilters';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
+import { messageOwnershipFields } from '@/lib/utils/conversationMessageOwnership';
 import {
   isSnoozed,
   excludeSnoozed,
@@ -4334,6 +4335,9 @@ function NewConversationDialog({
         senderId: user.uid,
         sentAt: now,
         createdAt: now,
+        // M13: denormaliza ownership da conversa recém-criada — elimina o
+        // get() da rule de leitura (ver lib/utils/conversationMessageOwnership.ts).
+        ...messageOwnershipFields({ channelOwnerType, channelOwnerId }),
       };
       if (sendType === 'template' && templateName) {
         msgData.templateName = templateName;
@@ -7809,6 +7813,7 @@ export default function ConversasModule() {
         senderName: 'Sistema',
         isCsat: true,
         sentAt: now,
+        ...messageOwnershipFields(conv),
       });
       await updateDoc(doc(db, 'conversations', conv.id), {
         lastMessage: CSAT_MESSAGE,
@@ -8450,6 +8455,7 @@ export default function ConversasModule() {
           status: 'sending' as const,
           senderName: user.name,
           sentAt: now,
+          ...messageOwnershipFields(selectedConversation),
         });
 
         // 2. Update conversation metadata (set firstResponseAt if this is the first reply)
@@ -8869,6 +8875,7 @@ export default function ConversasModule() {
         senderName: user.name,
         ...(asInternal ? { isInternal: true } : {}),
         sentAt: now,
+        ...messageOwnershipFields(selectedConversation),
       });
 
       if (!asInternal) {
@@ -9197,6 +9204,7 @@ export default function ConversasModule() {
           senderName: user.name,
           isInternal: true,
           sentAt: now,
+          ...messageOwnershipFields(selectedConversation),
         });
         // Update internal notes count
         await updateDoc(doc(db, 'conversations', selectedConversation.id), {
@@ -9224,6 +9232,7 @@ export default function ConversasModule() {
           senderName: user.name,
           ...(replyExtId ? { replyToMessageId: replyExtId } : {}),
           sentAt: now,
+          ...messageOwnershipFields(selectedConversation),
         });
 
         // 2. Update conversation metadata (set firstResponseAt if this is the first reply)

@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
+import { messageOwnershipFields } from '@/lib/utils/conversationMessageOwnership';
 
 // =============================================================================
 // POST /api/v1/conversations/send — Send a message via a conversation channel
@@ -127,6 +128,7 @@ export async function POST(req: NextRequest) {
       isInternal: isInternal || false,
       sentAt: now,
       createdAt: now,
+      ...messageOwnershipFields(convData),
     };
     if (clientMessageId && typeof clientMessageId === 'string') {
       messageDoc.clientMessageId = clientMessageId;

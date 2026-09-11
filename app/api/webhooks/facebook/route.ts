@@ -467,6 +467,10 @@ async function saveInboundMessage(params: InboundParams): Promise<void> {
       mediaUrl: params.mediaUrl ?? null,
       sentAt: params.timestamp,
       createdAt: now,
+      // M13: denormaliza ownership pra eliminar get() na rule de leitura (ver
+      // conversationMessageOwnership.ts) — Facebook Page é sempre 'business'
+      // (mesma regra de produto usada acima pra incrementUnreadCounter).
+      channelOwnerType: 'business',
     });
   } catch (err) {
     console.error('[FB Webhook] Erro ao salvar mensagem inbound:', err);

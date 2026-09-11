@@ -34,6 +34,7 @@ import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
 import { ROLE_HIERARCHY } from '@/lib/types';
 import { canUserAccessConnection } from '@/lib/services/channels/channelConnections';
 import { resolveVisibleToUserIdsAdmin } from '@/lib/services/conversationVisibilityAdmin';
+import { fanOutMessageOwnership } from '@/lib/services/conversationMessageOwnershipFanOut';
 import type { ChannelConnection, Conversation, UserRole } from '@/lib/types';
 
 const DEFAULT_NOTICE = 'Olá! A partir de agora vou te atender por este número.';
@@ -137,12 +138,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     // de um canal 'business' pra um canal 'user' continuava com
     // channelOwnerType:'business' pra sempre, e qualquer operator do negócio
     // continuava enxergando uma conversa que devia ter virado pessoal.
-    updates.channelOwnerType = target.ownerType === 'user' ? 'user' : 'business';
-    if (target.ownerType === 'user' && target.ownerId) {
-      updates.channelOwnerId = target.ownerId;
-    } else {
-      updates.channelOwnerId = FieldValue.delete();
-    }
+    const newChannelOwnerType: 'business' | 'user' = target.ownerType === 'user' ? 'user' : 'business';
+    const newChannelOwnerId: string | undefined = target.ownerType === 'user' && target.ownerId ? target.ownerId : undefined;
+    updates.channelOwnerType = newChannelOwnerType;
+    updates.channelOwnerId = newChannelOwnerId ?? FieldValue.delete();
 
     // Se canal destino é 'user', auto-assign pro owner (consistência com auto-
     // assign do handleInboundMessage)
@@ -178,6 +177,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     updates.assignmentHistory = [...existingHistory, newHistoryEntry];
 
     await convRef.update(updates);
+
+    // M13: fan-out do ownership pras mensagens JÁ EXISTENTES desta conversa —
+    // sem isso, mensagens antigas manteriam channelOwnerType/Id denormalizado
+    // do dono ANTERIOR ao transfer pra sempre (mesma classe de staleness que
+    // a correção acima resolve na conversation). Não-bloqueante: se falhar,
+    // a transferência (já efetuada) não é desfeita — mensagens antigas ficam
+    // temporariamente desatualizadas e caem no fallback via get() na rule
+    // até uma nova tentativa/reconciliação.
+    try {
+      await fanOutMessageOwnership(conversationId, { channelOwnerType: newChannelOwnerType, channelOwnerId: newChannelOwnerId });
+    } catch (fanOutErr) {
+      console.error('[transfer-channel] fan-out de ownership nas mensagens falhou:', fanOutErr);
+    }
 
     // Opcionalmente envia aviso pelo canal NOVO. Não-bloqueante: se falhar,
     // a transferência ainda foi efetuada.

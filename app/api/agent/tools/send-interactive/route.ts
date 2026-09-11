@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { adminDb } from '@/lib/config/firebaseAdmin';
+import { messageOwnershipFields } from '@/lib/utils/conversationMessageOwnership';
 import { verifyAgentRequest, agentAuthErrorResponse, parseAgentBody } from '@/lib/agent/auth';
 import { sessions } from '@/app/api/whatsapp/baileys-manager';
 import { parseToolRequest, validateToolResponse, isContractError } from '@/contracts/_runtime/agentToolValidation';
@@ -146,6 +147,7 @@ export async function POST(req: NextRequest) {
       externalMessageId,
       sentAt: now,
       createdAt: now,
+      ...messageOwnershipFields(conv),
     });
     // firstAutoResponseAt: setado UMA vez na primeira resposta IA interativa.
     // Transação evita race com saveAgentMessage caso duas msgs IA disparem

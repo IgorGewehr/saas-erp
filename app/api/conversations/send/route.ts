@@ -16,6 +16,7 @@ import crypto from 'node:crypto';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { decryptToken } from '@/lib/utils/encryption';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
+import { messageOwnershipFields } from '@/lib/utils/conversationMessageOwnership';
 import { ensureBaileysSessionConnected } from '@/app/api/whatsapp/baileys-manager';
 import { uploadServerMedia } from '@/lib/services/storage/adminUpload';
 import { logPipelineFailure, classifySendErrorSeverity } from '@/lib/services/pipelineFailures';
@@ -1372,6 +1373,16 @@ async function saveAgentMessage(
     if (connectedVia && channel === 'whatsapp') doc.connectedVia = connectedVia;
     if (clientMessageId) doc.clientMessageId = clientMessageId;
     if (replyToMessageId) doc.replyToMessageId = replyToMessageId;
+    // M13: denormaliza ownership pra eliminar get() na rule de leitura (ver
+    // conversationMessageOwnership.ts). Leitura própria (não reusa a do
+    // switch acima, que só roda pro canal whatsapp) — send de agente é
+    // caminho de escrita pouco frequente, custo de 1 get() aqui é aceitável.
+    try {
+      const convSnap = await adminDb.doc(`conversations/${conversationId}`).get();
+      Object.assign(doc, messageOwnershipFields(convSnap.data() ?? {}));
+    } catch (err) {
+      console.error('[saveAgentMessage] Failed to read conversation for ownership fields:', err);
+    }
     await adminDb.collection('conversationMessages').add(doc);
     // firstAutoResponseAt: setado UMA vez na primeira resposta IA. Usa transação
     // pra evitar race quando múltiplas msgs IA disparam quase simultaneamente.

@@ -1991,6 +1991,10 @@ async function saveInboundMessage(params: InboundMessageParams) {
     if (params.sharedContacts?.length) msgDoc.sharedContacts = params.sharedContacts;
     if (params.replyToMessageId) msgDoc.replyToMessageId = params.replyToMessageId;
     if (params.senderAvatarUrl) msgDoc.senderAvatarUrl = params.senderAvatarUrl;
+    // M13: denormaliza ownership pra eliminar get() na rule de leitura (ver
+    // conversationMessageOwnership.ts) — Meta é sempre 'business' (mesma
+    // regra de produto da conversation, linha ~1706 acima).
+    msgDoc.channelOwnerType = 'business';
     const msgRef = await adminDb.collection('conversationMessages').add(msgDoc);
 
     if (DEBUG_VERBOSE) console.log('[Meta Webhook] Saved inbound message for conversation:', conversationId);

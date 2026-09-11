@@ -397,6 +397,9 @@ async function syncSingleConversation(
       senderName: isOutbound ? 'Atendente' : contactName,
       sentAt: new Date(msg.created_time).toISOString(),
       createdAt: now,
+      // M13: denormaliza ownership pra eliminar get() na rule de leitura (ver
+      // conversationMessageOwnership.ts) — sync só roda em FB/IG, sempre 'business'.
+      channelOwnerType: 'business',
     });
 
     stats.messagesImported++;
