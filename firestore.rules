@@ -630,6 +630,16 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // M12: assinatura do PRÓPRIO SaaS (dono do tenant pagando esta
+    // plataforma) — não confundir com businesses/{id}/private/mpAuth (conta
+    // MP que o tenant conecta pra cobrar OS PRÓPRIOS clientes dele). Nenhum
+    // tenant, mesmo founder, lê ou escreve isto — só rotas Admin SDK gated
+    // por lib/utils/verifyPlatformOperator.ts (allowlist de e-mail, fora do
+    // conceito de role por-tenant que o resto destas rules modela).
+    match /platformSubscriptions/{businessId} {
+      allow read, write: if false;
+    }
+
     // Saldos por lote são legíveis pelos operadores do tenant, mas somente o
     // núcleo transacional Admin SDK pode criar ou alterar quantidades.
     match /stockLots/{lotId} {
