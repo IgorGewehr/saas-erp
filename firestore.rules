@@ -1024,11 +1024,35 @@ service cloud.firestore {
     // CONVERSATION MESSAGES COLLECTION
     // ============================================
 
+    // M13: fast-path de leitura — evita o get() de parentConversationAccessible
+    // (que Firestore reavalia POR DOCUMENTO numa query de lista, não uma vez
+    // por request — coleção mais quente do app, N mensagens = N gets no
+    // mesmo pai). channelOwnerType/channelOwnerId/visibleToUserIds são
+    // denormalizados na mensagem NA CRIAÇÃO (ver
+    // lib/utils/conversationMessageOwnership.ts) e mantidos em sincronia por
+    // fan-out sempre que a conversa muda de dono de canal ou de visibilidade
+    // (ver lib/services/conversationMessageOwnershipFanOut.ts — transfer-
+    // channel, sector assign, privacidade, routing rules, resync de setor).
+    // Só entra nesse caminho quando AMBOS os campos estão presentes (mensagem
+    // migrada); sem isso, cai no get() de sempre — nunca menos permissivo.
+    function canAccessConversationMessageFast(data) {
+      return isAdmin()
+          || ((data.channelOwnerType == 'business' || data.channelOwnerId == request.auth.uid)
+              && (data.visibleToUserIds == null
+                  || (data.visibleToUserIds is list && request.auth.uid in data.visibleToUserIds)));
+    }
+
+    function conversationMessageAccessible(data) {
+      return ('channelOwnerType' in data && 'visibleToUserIds' in data)
+          ? canAccessConversationMessageFast(data)
+          : parentConversationAccessible(data.conversationId);
+    }
+
     match /conversationMessages/{messageId} {
       allow read: if isAuthenticated()
                   && isOwnBusiness()
                   && isOperator()
-                  && parentConversationAccessible(resource.data.conversationId);
+                  && conversationMessageAccessible(resource.data);
 
       allow create: if isAuthenticated()
                     && incomingBelongsToBusiness()
