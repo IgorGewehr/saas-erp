@@ -3,6 +3,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyApiKey, isApiKeyError, apiError, apiSuccess } from '@/lib/middleware/apiKeyAuth';
 import { checkBusinessRateLimit } from '@/lib/utils/rateLimit';
 import { resolveVisibleToUserIdsAdmin } from '@/lib/services/conversationVisibilityAdmin';
+import { fanOutMessageFields } from '@/lib/services/conversationMessageOwnershipFanOut';
 import { canTransitionConversation } from '@/lib/contracts/fsm/conversation';
 import type { Query } from 'firebase-admin/firestore';
 import type { Conversation } from '@/lib/types';
@@ -212,6 +213,17 @@ export async function PUT(req: NextRequest) {
     sanitized.updatedAt = new Date().toISOString();
 
     await docRef.update(sanitized);
+
+    // M13: fan-out de visibilidade pras mensagens JÁ EXISTENTES — sem isso,
+    // mensagens antigas manteriam a restrição de setor ANTERIOR pra sempre
+    // (ver conversationMessageOwnershipFanOut.ts). Não-bloqueante.
+    if ('visibleToUserIds' in sanitized) {
+      try {
+        await fanOutMessageFields(id, { visibleToUserIds: sanitized.visibleToUserIds as string[] | null });
+      } catch (fanOutErr) {
+        console.error('[API] PUT /api/v1/conversations — fan-out de visibilidade falhou:', fanOutErr);
+      }
+    }
 
     const updatedSnap = await docRef.get();
 

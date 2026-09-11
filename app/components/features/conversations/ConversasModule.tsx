@@ -5455,6 +5455,38 @@ const STALE_THRESHOLD_MS = 60 * 60 * 1000; // 1h sem resposta vira "esquecida"
 // soneca pós-fetch (Firestore não consegue expressar "sem soneca ativa" via
 // where(), ver comentário na definição). Importado no topo do arquivo.
 
+/**
+ * M13: reescreve em lote `visibleToUserIds` de TODAS as mensagens de uma
+ * conversa — chamado depois de qualquer ação que mude a visibilidade da
+ * PRÓPRIA conversa (sector assign, privacidade, routing rules, batch
+ * assign). Mensagens são denormalizadas com esse campo na criação (ver
+ * lib/utils/conversationMessageOwnership.ts) pra firestore.rules poder
+ * decidir acesso sem get() no pai; sem este fan-out, mensagens já
+ * existentes ficariam com a restrição ANTIGA pra sempre. Espelha
+ * `cascadeConversationVisibilityForSector` (SettingsModule.tsx) — mesmo
+ * padrão de chunk já aceito neste código-base pra escrita em lote via
+ * client SDK. Não-bloqueante: falha aqui não desfaz a mudança já aplicada
+ * na conversation, só deixa mensagens antigas temporariamente atrás do
+ * fallback via get() na rule.
+ */
+async function fanOutMessageVisibilityClient(conversationId: string, visibleToUserIds: string[] | null): Promise<void> {
+  try {
+    const snap = await getDocs(query(collection(db, 'conversationMessages'), where('conversationId', '==', conversationId)));
+    if (snap.empty) return;
+    const CHUNK_SIZE = 400; // margem sob o limite de 500 ops/batch do Firestore
+    const docs = snap.docs;
+    for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
+      const batch = writeBatch(db);
+      for (const d of docs.slice(i, i + CHUNK_SIZE)) {
+        batch.update(d.ref, { visibleToUserIds });
+      }
+      await batch.commit();
+    }
+  } catch (err) {
+    console.error('[Conversations] fan-out de visibilidade nas mensagens falhou:', err);
+  }
+}
+
 function matchesSmartView(
   conv: Conversation,
   view: SmartViewId,
@@ -7143,13 +7175,18 @@ export default function ConversasModule() {
             changedByName: 'Roteamento automático',
             changedAt: now,
           };
-          updateDoc(doc(db, 'conversations', conv.id), {
-            assignedToSectorId: action.sectorId,
-            sectorIds: [action.sectorId],
-            visibleToUserIds: resolveVisibleToUserIds(conv, { sectorIds: [action.sectorId] }),
-            assignmentHistory: arrayUnion(historyEntry),
-            updatedAt: now,
-          }).catch(console.error);
+          {
+            const nextVisibleToUserIds = resolveVisibleToUserIds(conv, { sectorIds: [action.sectorId] });
+            updateDoc(doc(db, 'conversations', conv.id), {
+              assignedToSectorId: action.sectorId,
+              sectorIds: [action.sectorId],
+              visibleToUserIds: nextVisibleToUserIds,
+              assignmentHistory: arrayUnion(historyEntry),
+              updatedAt: now,
+            })
+              .then(() => fanOutMessageVisibilityClient(conv.id, nextVisibleToUserIds))
+              .catch(console.error);
+          }
           const sectorData = sectors.find(s => s.id === action.sectorId);
           const memberIds = sectorData?.memberIds ?? [];
           if (memberIds.length > 0 && business?.id) {
@@ -7172,13 +7209,18 @@ export default function ConversasModule() {
             changedByName: 'Roteamento automático',
             changedAt: now,
           };
-          updateDoc(doc(db, 'conversations', conv.id), {
-            assignedTo: action.userId,
-            assignedToName: action.userName,
-            visibleToUserIds: resolveVisibleToUserIds(conv, { assignedTo: action.userId }),
-            assignmentHistory: arrayUnion(historyEntry),
-            updatedAt: now,
-          }).catch(console.error);
+          {
+            const nextVisibleToUserIds = resolveVisibleToUserIds(conv, { assignedTo: action.userId });
+            updateDoc(doc(db, 'conversations', conv.id), {
+              assignedTo: action.userId,
+              assignedToName: action.userName,
+              visibleToUserIds: nextVisibleToUserIds,
+              assignmentHistory: arrayUnion(historyEntry),
+              updatedAt: now,
+            })
+              .then(() => fanOutMessageVisibilityClient(conv.id, nextVisibleToUserIds))
+              .catch(console.error);
+          }
           if (business?.id) {
             notifyUsers(db, [action.userId], {
               businessId: business.id,
@@ -7914,6 +7956,10 @@ export default function ConversasModule() {
       const now = new Date().toISOString();
       const historyEntry = { assignedTo: userId, assignedToName: userName, changedBy: user.uid, changedByName: user.name, changedAt: now };
       const batch = writeBatch(db);
+      // M13: acumula pra fan-out pós-commit — cada conversa cujo
+      // visibleToUserIds mudou precisa que suas mensagens JÁ EXISTENTES
+      // sejam reescritas também (ver fanOutMessageVisibilityClient).
+      const visibilityChanges: Array<{ id: string; visibleToUserIds: string[] | null }> = [];
       for (const id of batchSelectedIds) {
         const current = allConversations.find((c) => c.id === id);
         const update: Record<string, unknown> = {
@@ -7923,10 +7969,18 @@ export default function ConversasModule() {
         // Só recalcula se a conversa estiver no estado local — sem isso não
         // dá pra saber sectorIds/isPrivate atuais, e sobrescrever com um
         // valor adivinhado arriscaria abrir uma conversa restrita (fail-open).
-        if (current) update.visibleToUserIds = resolveVisibleToUserIds(current, { assignedTo: userId });
+        if (current) {
+          const nextVisibleToUserIds = resolveVisibleToUserIds(current, { assignedTo: userId });
+          update.visibleToUserIds = nextVisibleToUserIds;
+          visibilityChanges.push({ id, visibleToUserIds: nextVisibleToUserIds });
+        }
         batch.update(doc(db, 'conversations', id), update);
       }
       await batch.commit();
+      // Não-bloqueante — não atrasa o toast/exitBatchMode nem desfaz a
+      // atribuição já efetuada se alguma fan-out individual falhar.
+      Promise.all(visibilityChanges.map(({ id, visibleToUserIds }) => fanOutMessageVisibilityClient(id, visibleToUserIds)))
+        .catch((err) => console.error('[Batch] fan-out de visibilidade nas mensagens falhou:', err));
       const count = batchSelectedIds.size;
       notifyUsers(db, [userId], {
         businessId: business.id,
@@ -9468,11 +9522,13 @@ export default function ConversasModule() {
       changedBy: user.uid, changedByName: user.name, changedAt: now,
     };
     try {
+      const nextVisibleToUserIds = resolveVisibleToUserIds(selectedConversation, { sectorIds: [sectorId] });
       await updateDoc(doc(db, 'conversations', selectedConversation.id), {
         assignedToSectorId: sectorId, sectorIds: [sectorId], updatedAt: now,
-        visibleToUserIds: resolveVisibleToUserIds(selectedConversation, { sectorIds: [sectorId] }),
+        visibleToUserIds: nextVisibleToUserIds,
         assignmentHistory: arrayUnion(historyEntry),
       });
+      void fanOutMessageVisibilityClient(selectedConversation.id, nextVisibleToUserIds);
       const memberIds = sector?.memberIds ?? [];
       if (memberIds.length > 0) {
         notifyUsers(db, memberIds, {
@@ -9502,11 +9558,13 @@ export default function ConversasModule() {
     if (!selectedConversation || !business?.id) return;
     try {
       const nextIsPrivate = !selectedConversation.isPrivate;
+      const nextVisibleToUserIds = resolveVisibleToUserIds(selectedConversation, { isPrivate: nextIsPrivate });
       await updateDoc(doc(db, 'conversations', selectedConversation.id), {
         isPrivate: nextIsPrivate,
-        visibleToUserIds: resolveVisibleToUserIds(selectedConversation, { isPrivate: nextIsPrivate }),
+        visibleToUserIds: nextVisibleToUserIds,
         updatedAt: new Date().toISOString(),
       });
+      void fanOutMessageVisibilityClient(selectedConversation.id, nextVisibleToUserIds);
     } catch (err) {
       console.error('Error toggling privacy:', err);
     }

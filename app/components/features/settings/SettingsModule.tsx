@@ -9,7 +9,6 @@ import { cn } from '@/lib/utils';
 import { isActiveRecord } from '@/lib/utils/recordFilters';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import { doc, setDoc, collection, query, where, onSnapshot, updateDoc, getDocs, addDoc, deleteDoc, arrayRemove, writeBatch } from 'firebase/firestore';
-import { computeVisibleToUserIds } from '@/lib/services/conversationVisibility';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { auth as firebaseAuth, db, storage } from '@/lib/config/firebase';
 import { toast } from 'react-toastify';
@@ -5218,46 +5217,36 @@ function ModoSistemaTab() {
  * é apagado), toda `Conversation` já restrita àquele setor precisa
  * recalcular `visibleToUserIds` — senão um membro removido continua
  * enxergando conversas do setor antigo (vazamento), ou um membro novo não
- * vê o que já deveria (regressão de acesso). Assume UM sectorId por
- * conversa (única forma que os write-paths atuais produzem — ver
- * lib/services/conversationVisibility.ts); se algum dia uma conversa
- * puder ter múltiplos setores, isso precisa buscar os OUTROS setores
- * referenciados também, não só o que mudou aqui.
+ * vê o que já deveria (regressão de acesso).
+ *
+ * M13: movido pro servidor (POST /api/admin/sectors/[id]/resync-visibility)
+ * — precisa TAMBÉM propagar (fan-out) o novo valor pras mensagens já
+ * existentes de cada conversa afetada (denormalização que elimina o get()
+ * da rule de leitura, ver conversationMessageOwnership.ts). Isso é um
+ * fan-out DENTRO de outro fan-out (N conversas × M mensagens cada) — rodar
+ * isso inteiro no navegador arriscava ficar pela metade se a aba fechasse
+ * no meio, sem retry nem sinal de que a operação não completou.
  */
 async function cascadeConversationVisibilityForSector(
+  token: string,
   businessId: string,
   sectorId: string,
   memberIds: string[],
 ): Promise<void> {
-  const snap = await getDocs(query(
-    collection(db, 'conversations'),
-    where('businessId', '==', businessId),
-    where('sectorIds', 'array-contains', sectorId),
-  ));
-  if (snap.empty) return;
-
-  const now = new Date().toISOString();
-  const docs = snap.docs;
-  const CHUNK_SIZE = 400; // margem sob o limite de 500 ops/batch do Firestore
-  for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
-    const batch = writeBatch(db);
-    for (const d of docs.slice(i, i + CHUNK_SIZE)) {
-      const conv = d.data() as Conversation;
-      const visibleToUserIds = computeVisibleToUserIds({
-        sectorIds: conv.sectorIds,
-        isPrivate: conv.isPrivate,
-        assignedTo: conv.assignedTo,
-        sectorsById: new Map([[sectorId, { memberIds }]]),
-      });
-      batch.update(d.ref, { visibleToUserIds, updatedAt: now });
-    }
-    await batch.commit();
+  const res = await fetch(`/api/admin/sectors/${sectorId}/resync-visibility`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ businessId, memberIds }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
   }
 }
 
 function SectorsTab() {
   const { t } = useTranslation();
-  const { user, business, refreshUser } = useAuth();
+  const { user, business, refreshUser, firebaseUser } = useAuth();
   const [sectors, setSectors] = useState<Sector[]>([]);
   const [members, setMembers] = useState<UserType[]>([]);
   const [loading, setLoading] = useState(true);
@@ -5337,8 +5326,11 @@ function SectorsTab() {
         toast.success(t('settings.sectors.updatedSuccess', 'Setor atualizado'));
         // M07.3: composição de membros pode ter mudado — recalcula
         // visibleToUserIds de toda conversa já restrita a este setor.
-        await cascadeConversationVisibilityForSector(business.id, editingSector.id, formMemberIds)
-          .catch((err) => console.error('[Sectors] cascade de visibilidade de conversas falhou:', err));
+        if (firebaseUser) {
+          const token = await firebaseUser.getIdToken();
+          await cascadeConversationVisibilityForSector(token, business.id, editingSector.id, formMemberIds)
+            .catch((err) => console.error('[Sectors] cascade de visibilidade de conversas falhou:', err));
+        }
       } else {
         await addDoc(collection(db, 'sectors'), { ...sectorData, createdAt: now });
         toast.success(t('settings.sectors.savedSuccess', 'Setor criado'));
@@ -5387,8 +5379,11 @@ function SectorsTab() {
       // M07.3: setor apagado — nenhum membro deveria continuar tendo acesso
       // via este setor. memberIds=[] força visibleToUserIds a excluir todo
       // mundo que só tinha acesso por ele (assignedTo direto continua valendo).
-      await cascadeConversationVisibilityForSector(business.id, sector.id, [])
-        .catch((err) => console.error('[Sectors] cascade de visibilidade de conversas falhou:', err));
+      if (firebaseUser) {
+        const token = await firebaseUser.getIdToken();
+        await cascadeConversationVisibilityForSector(token, business.id, sector.id, [])
+          .catch((err) => console.error('[Sectors] cascade de visibilidade de conversas falhou:', err));
+      }
       toast.success(t('settings.sectors.deletedSuccess', 'Setor excluído'));
       setDeleteConfirm(null);
       refreshUser();
