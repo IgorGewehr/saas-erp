@@ -27,6 +27,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/lib/config/firebaseAdmin';
 import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { checkRateLimit, getClientIp } from '@/lib/utils/rateLimit';
@@ -127,6 +128,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       channelConnectionId: targetConnectionId,
       updatedAt: now,
     };
+
+    // channelOwnerType/channelOwnerId são denormalizados de
+    // channelConnections.ownerType/ownerId na CRIAÇÃO da conversa (ver
+    // webhooks/meta, baileys-manager) e usados por canAccessConversationData
+    // (firestore.rules) pra decidir quem pode ler a conversa — antes desta
+    // correção, esta rota nunca os atualizava, então uma conversa transferida
+    // de um canal 'business' pra um canal 'user' continuava com
+    // channelOwnerType:'business' pra sempre, e qualquer operator do negócio
+    // continuava enxergando uma conversa que devia ter virado pessoal.
+    updates.channelOwnerType = target.ownerType === 'user' ? 'user' : 'business';
+    if (target.ownerType === 'user' && target.ownerId) {
+      updates.channelOwnerId = target.ownerId;
+    } else {
+      updates.channelOwnerId = FieldValue.delete();
+    }
 
     // Se canal destino é 'user', auto-assign pro owner (consistência com auto-
     // assign do handleInboundMessage)
