@@ -200,6 +200,14 @@ services:
               call_endpoint "/api/membership-billing/run" 180
             fi
 
+            # platform-billing/check-overdue: 1x ao dia, 06:00 (M12) — marca
+            # platformSubscriptions ativas com nextBillingDate vencido como
+            # overdue (sem enforcement, só status pro painel do operador).
+            # Idempotente — reaplicar overdue numa já-overdue é no-op na FSM.
+            if [ "$$HOUR_NOW" = "06" ]; then
+              call_endpoint "/api/cron/platform-billing/check-overdue" 60
+            fi
+
             # webhooks/cron/purge-seen: 1x ao dia, 05:00 (M10.7) — apaga docs
             # de webhookSeen vencidos (dedup Meta/Baileys, TTL 24h já gravado
             # em expiresAt, mas nada apagava — coleção crescia pra sempre).
