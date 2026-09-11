@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Fake Admin SDK mínimo pro que subscriptionAdmin.ts realmente usa: doc().get()/
-// set()/update(), collection().get() (lista sem filtro) e runTransaction com
-// tx.get()/tx.update(). Mesmo espírito do harness de
-// tests/services/mercadopagoWebhookSettle.test.ts, mas mais enxuto — este
-// serviço não usa query .where() nem tx.set().
+// set()/update(), collection().get() (lista sem filtro), collection().where().limit().get()
+// (findBusinessIdByPreapprovalId) e runTransaction com tx.get()/tx.update(). Mesmo
+// espírito do harness de tests/services/mercadopagoWebhookSettle.test.ts, mas mais
+// enxuto — este serviço não usa tx.set().
 
 type FakeSnapshot = { id: string; exists: boolean; data: () => Record<string, unknown> | undefined };
 type FakeRef = {
@@ -38,16 +38,34 @@ function makeFakeDb(initial: Record<string, Record<string, unknown>> = {}) {
     },
   });
 
+  const listDocs = (coll: string) => {
+    const prefix = `${coll}/`;
+    return [...documents.entries()]
+      .filter(([path]) => path.startsWith(prefix))
+      .map(([path, data]) => ({ id: path.slice(prefix.length), data }));
+  };
+
   const db = {
     collection(coll: string) {
       return {
         doc(id: string) { return makeRef(coll, id); },
         async get() {
-          const prefix = `${coll}/`;
-          const docs = [...documents.entries()]
-            .filter(([path]) => path.startsWith(prefix))
-            .map(([path, data]) => ({ id: path.slice(prefix.length), exists: true, data: () => clone(data) }));
+          const docs = listDocs(coll).map(({ id, data }) => ({ id, exists: true, data: () => clone(data) }));
           return { docs, empty: docs.length === 0, size: docs.length };
+        },
+        where(field: string, _op: string, expected: unknown) {
+          const filtered = listDocs(coll).filter(({ data }) => data[field] === expected);
+          return {
+            limit(n: number) {
+              const limited = filtered.slice(0, n);
+              return {
+                async get() {
+                  const docs = limited.map(({ id, data }) => ({ id, exists: true, data: () => clone(data) }));
+                  return { docs, empty: docs.length === 0, size: docs.length };
+                },
+              };
+            },
+          };
         },
       };
     },
@@ -77,7 +95,7 @@ vi.mock('@/lib/services/mercadopago/client', async () => {
   return { ...actual, mpFetch: (...args: unknown[]) => mpFetchMock(...args) };
 });
 
-import { createSubscriptionCheckout, transitionPlatformSubscription } from '@/lib/services/platformBilling/subscriptionAdmin';
+import { createSubscriptionCheckout, transitionPlatformSubscription, settlePlatformWebhookEvent } from '@/lib/services/platformBilling/subscriptionAdmin';
 
 const BUSINESS_ID = 'biz_1';
 const BACK_URL = 'https://app.example.com/platform-admin/billing';
@@ -199,5 +217,101 @@ describe('transitionPlatformSubscription', () => {
   it('lança quando a assinatura não existe (checkout nunca foi criado)', async () => {
     fakeDbHolder.current = makeFakeDb({});
     await expect(transitionPlatformSubscription(BUSINESS_ID, 'active')).rejects.toThrow(/não existe/);
+  });
+});
+
+describe('settlePlatformWebhookEvent', () => {
+  function pendingSub(extra: Record<string, unknown> = {}) {
+    return {
+      businessId: BUSINESS_ID, status: 'pending_payment', payerEmail: 'dono@negocio.com',
+      checkoutUrl: 'https://mp.example.com/checkout/abc', amount: 199, currency: 'BRL',
+      frequency: 1, frequencyType: 'months', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', ...extra,
+    };
+  }
+
+  it('preapproval authorized -> transiciona pending_payment para active com nextBillingDate', async () => {
+    fakeDbHolder.current = makeFakeDb({ [`platformSubscriptions/${BUSINESS_ID}`]: pendingSub() });
+    mpFetchMock.mockResolvedValue({ id: 'preapproval_abc', status: 'authorized', external_reference: BUSINESS_ID });
+
+    const result = await settlePlatformWebhookEvent({ type: 'subscription_preapproval', dataId: 'preapproval_abc' });
+
+    expect(result).toEqual({ ignored: false, businessId: BUSINESS_ID });
+    expect(mpFetchMock).toHaveBeenCalledWith('/preapproval/preapproval_abc', { accessToken: 'test-platform-token' });
+    const saved = fakeDbHolder.current.get(`platformSubscriptions/${BUSINESS_ID}`);
+    expect(saved?.status).toBe('active');
+    expect(saved?.mpPreapprovalId).toBe('preapproval_abc');
+    expect(saved?.nextBillingDate).toBeTruthy();
+  });
+
+  it('preapproval cancelled -> transiciona para cancelled', async () => {
+    fakeDbHolder.current = makeFakeDb({
+      [`platformSubscriptions/${BUSINESS_ID}`]: pendingSub({ status: 'active', mpPreapprovalId: 'preapproval_abc', nextBillingDate: '2026-02-01T00:00:00.000Z' }),
+    });
+    mpFetchMock.mockResolvedValue({ id: 'preapproval_abc', status: 'cancelled', external_reference: BUSINESS_ID });
+
+    const result = await settlePlatformWebhookEvent({ type: 'subscription_preapproval', dataId: 'preapproval_abc' });
+
+    expect(result).toEqual({ ignored: false, businessId: BUSINESS_ID });
+    expect(fakeDbHolder.current.get(`platformSubscriptions/${BUSINESS_ID}`)?.status).toBe('cancelled');
+  });
+
+  it('preapproval pending (ainda não autorizado) -> ignorado, sem transição', async () => {
+    fakeDbHolder.current = makeFakeDb({ [`platformSubscriptions/${BUSINESS_ID}`]: pendingSub() });
+    mpFetchMock.mockResolvedValue({ id: 'preapproval_abc', status: 'pending', external_reference: BUSINESS_ID });
+
+    const result = await settlePlatformWebhookEvent({ type: 'subscription_preapproval', dataId: 'preapproval_abc' });
+
+    expect(result.ignored).toBe(true);
+    expect(fakeDbHolder.current.get(`platformSubscriptions/${BUSINESS_ID}`)?.status).toBe('pending_payment');
+  });
+
+  it('preapproval sem external_reference -> ignorado (não crasha)', async () => {
+    fakeDbHolder.current = makeFakeDb({});
+    mpFetchMock.mockResolvedValue({ id: 'preapproval_abc', status: 'authorized' });
+    const result = await settlePlatformWebhookEvent({ type: 'subscription_preapproval', dataId: 'preapproval_abc' });
+    expect(result.ignored).toBe(true);
+  });
+
+  it('payment approved com external_reference -> mantém/leva a active e atualiza lastPaymentAt', async () => {
+    fakeDbHolder.current = makeFakeDb({
+      [`platformSubscriptions/${BUSINESS_ID}`]: pendingSub({ status: 'overdue', mpPreapprovalId: 'preapproval_abc', nextBillingDate: '2026-01-15T00:00:00.000Z' }),
+    });
+    mpFetchMock.mockResolvedValue({ id: 999, status: 'approved', external_reference: BUSINESS_ID });
+
+    const result = await settlePlatformWebhookEvent({ type: 'payment', dataId: '999' });
+
+    expect(result).toEqual({ ignored: false, businessId: BUSINESS_ID });
+    const saved = fakeDbHolder.current.get(`platformSubscriptions/${BUSINESS_ID}`);
+    expect(saved?.status).toBe('active');
+    expect(saved?.lastPaymentStatus).toBe('approved');
+  });
+
+  it('payment approved resolvido via metadata.preapproval_id quando external_reference ausente', async () => {
+    fakeDbHolder.current = makeFakeDb({
+      [`platformSubscriptions/${BUSINESS_ID}`]: pendingSub({ status: 'active', mpPreapprovalId: 'preapproval_xyz', nextBillingDate: '2026-01-15T00:00:00.000Z' }),
+    });
+    mpFetchMock.mockResolvedValue({ id: 999, status: 'approved', metadata: { preapproval_id: 'preapproval_xyz' } });
+
+    const result = await settlePlatformWebhookEvent({ type: 'payment', dataId: '999' });
+
+    expect(result).toEqual({ ignored: false, businessId: BUSINESS_ID });
+  });
+
+  it('payment rejected -> ignorado, sem transição (cron de overdue cobre isso)', async () => {
+    fakeDbHolder.current = makeFakeDb({
+      [`platformSubscriptions/${BUSINESS_ID}`]: pendingSub({ status: 'active', mpPreapprovalId: 'preapproval_abc', nextBillingDate: '2026-01-15T00:00:00.000Z' }),
+    });
+    mpFetchMock.mockResolvedValue({ id: 999, status: 'rejected', external_reference: BUSINESS_ID });
+
+    const result = await settlePlatformWebhookEvent({ type: 'payment', dataId: '999' });
+
+    expect(result.ignored).toBe(true);
+    expect(fakeDbHolder.current.get(`platformSubscriptions/${BUSINESS_ID}`)?.status).toBe('active');
+  });
+
+  it('tipo de evento desconhecido -> ignorado', async () => {
+    fakeDbHolder.current = makeFakeDb({});
+    const result = await settlePlatformWebhookEvent({ type: 'merchant_order', dataId: '123' });
+    expect(result.ignored).toBe(true);
   });
 });

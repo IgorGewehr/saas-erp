@@ -166,3 +166,100 @@ export async function transitionPlatformSubscription(
     });
   });
 }
+
+interface MpPreapprovalDetail {
+  id: string;
+  status: string; // 'pending' | 'authorized' | 'paused' | 'cancelled'
+  external_reference?: string;
+}
+
+interface MpPaymentDetail {
+  id: number | string;
+  status: string; // 'approved' | 'pending' | 'in_process' | 'rejected' | ...
+  external_reference?: string;
+  /** Nem toda resposta de payment inclui isto — depende do fluxo que o
+   *  originou. Usado como fallback pra resolver a assinatura quando
+   *  external_reference não bate com nenhum businessId conhecido. Campo
+   *  exato a confirmar contra a API ao vivo (ver ressalva no plano). */
+  metadata?: { preapproval_id?: string };
+}
+
+function addMonths(iso: string, months: number): string {
+  const d = new Date(iso);
+  d.setMonth(d.getMonth() + months);
+  return d.toISOString();
+}
+
+async function findBusinessIdByPreapprovalId(preapprovalId: string): Promise<string | null> {
+  const snap = await adminDb.collection('platformSubscriptions')
+    .where('mpPreapprovalId', '==', preapprovalId)
+    .limit(1)
+    .get();
+  return snap.empty ? null : snap.docs[0].id;
+}
+
+export interface SettlePlatformWebhookResult {
+  ignored: boolean;
+  reason?: string;
+  businessId?: string;
+}
+
+/**
+ * Liquida uma notificação de webhook da conta MP DA PLATAFORMA — NUNCA
+ * confia no payload, sempre re-busca o recurso. Espelha o racional de
+ * lib/services/mercadopago/webhook-settle.ts (per-tenant): idempotência via
+ * CAS de FSM (reaplicar o mesmo status é no-op), não tabela de dedup.
+ */
+export async function settlePlatformWebhookEvent({ type, dataId }: { type: string; dataId: string }): Promise<SettlePlatformWebhookResult> {
+  const accessToken = platformAccessToken();
+
+  if (type === 'subscription_preapproval' || type === 'preapproval') {
+    const preapproval = await mpFetch<MpPreapprovalDetail>(`/preapproval/${dataId}`, { accessToken });
+    const businessId = preapproval.external_reference;
+    if (!businessId) {
+      return { ignored: true, reason: 'preapproval sem external_reference' };
+    }
+
+    if (preapproval.status === 'authorized') {
+      const now = new Date().toISOString();
+      await transitionPlatformSubscription(businessId, 'active', {
+        mpPreapprovalId: preapproval.id,
+        nextBillingDate: addMonths(now, PLATFORM_SUBSCRIPTION_PLAN.frequency),
+        lastPaymentAt: now,
+        lastPaymentStatus: 'approved',
+      });
+      return { ignored: false, businessId };
+    }
+    if (preapproval.status === 'cancelled') {
+      await transitionPlatformSubscription(businessId, 'cancelled', { mpPreapprovalId: preapproval.id });
+      return { ignored: false, businessId };
+    }
+    // 'pending' (ainda não autorizado) e 'paused' (fora do FSM v1) — sem
+    // ação, não é um estado que este MVP modela ainda.
+    return { ignored: true, reason: `preapproval status '${preapproval.status}' sem transição mapeada` };
+  }
+
+  if (type === 'payment') {
+    const payment = await mpFetch<MpPaymentDetail>(`/v1/payments/${dataId}`, { accessToken });
+    const preapprovalId = payment.metadata?.preapproval_id;
+    const businessId = payment.external_reference
+      ?? (preapprovalId ? await findBusinessIdByPreapprovalId(preapprovalId) : null);
+    if (!businessId) {
+      return { ignored: true, reason: 'payment sem external_reference/preapproval_id resolvível' };
+    }
+    if (payment.status !== 'approved') {
+      // Falha de cobrança recorrente — sem enforcement (M12 v1), o cron
+      // diário de overdue já cobre "passou do prazo sem pagamento".
+      return { ignored: true, reason: `payment status '${payment.status}' não é approved` };
+    }
+    const now = new Date().toISOString();
+    await transitionPlatformSubscription(businessId, 'active', {
+      nextBillingDate: addMonths(now, PLATFORM_SUBSCRIPTION_PLAN.frequency),
+      lastPaymentAt: now,
+      lastPaymentStatus: payment.status,
+    });
+    return { ignored: false, businessId };
+  }
+
+  return { ignored: true, reason: `tipo de evento '${type}' não tratado` };
+}

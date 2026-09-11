@@ -27,77 +27,13 @@
  *   - Segredo de assinatura → MP_WEBHOOK_SECRET no ambiente.
  */
 
-import crypto from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { MpWebhookPayloadSchema } from '@/contracts/api/integrations/mercadopago';
 import { settlePaymentNotification } from '@/lib/services/mercadopago/webhook-settle';
+import { parseMpXSignature, verifyMpSignature, isWithinMpReplayWindow } from '@/lib/services/mercadopago/webhookSignature';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-// Janela anti-replay: o ts assinado pelo MP não pode divergir > 5min do relógio.
-const MAX_TS_SKEW_MS = 5 * 60 * 1000;
-
-interface ParsedSignature {
-  /** epoch em segundos (string original do header). */
-  ts: string;
-  /** HMAC-SHA256 hex (parte v1). */
-  v1: string;
-}
-
-/**
- * Parseia o header `x-signature` no formato `ts=<epoch>,v1=<hash hex>`.
- * Retorna null se faltar `ts` ou `v1`.
- */
-function parseXSignature(header: string | null): ParsedSignature | null {
-  if (!header) return null;
-  let ts: string | undefined;
-  let v1: string | undefined;
-  for (const part of header.split(',')) {
-    const idx = part.indexOf('=');
-    if (idx === -1) continue;
-    const key = part.slice(0, idx).trim();
-    const value = part.slice(idx + 1).trim();
-    if (key === 'ts') ts = value;
-    else if (key === 'v1') v1 = value;
-  }
-  if (!ts || !v1) return null;
-  return { ts, v1 };
-}
-
-/**
- * Verifica a assinatura do MP (FAIL-CLOSED).
- *
- * Manifest assinado (dinâmico — só inclui segmentos presentes), na ordem:
- *   `id:<data.id>;request-id:<x-request-id>;ts:<ts>;`
- * `data.id` alfanumérico vai em minúsculas (regra do MP). HMAC-SHA256 hex
- * comparado em tempo constante com o `v1` do header.
- */
-function verifyMpSignature(opts: {
-  secret: string;
-  sig: ParsedSignature;
-  dataId: string | null;
-  requestId: string | null;
-}): boolean {
-  const { secret, sig, dataId, requestId } = opts;
-
-  const segments: string[] = [];
-  if (dataId) segments.push(`id:${dataId.toLowerCase()};`);
-  if (requestId) segments.push(`request-id:${requestId};`);
-  segments.push(`ts:${sig.ts};`);
-  const manifest = segments.join('');
-
-  const expected = crypto.createHmac('sha256', secret).update(manifest).digest('hex');
-
-  const a = Buffer.from(expected, 'utf8');
-  const b = Buffer.from(sig.v1, 'utf8');
-  if (a.length !== b.length) return false;
-  try {
-    return crypto.timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
-}
 
 export async function POST(req: NextRequest) {
   // ── 1. Assinatura: FAIL-CLOSED ─────────────────────────────────────────────
@@ -107,7 +43,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Webhook não configurado' }, { status: 401 });
   }
 
-  const sig = parseXSignature(req.headers.get('x-signature'));
+  const sig = parseMpXSignature(req.headers.get('x-signature'));
   if (!sig) {
     console.warn('[MP Webhook] x-signature ausente ou malformado');
     return NextResponse.json({ error: 'Assinatura ausente' }, { status: 401 });
@@ -124,8 +60,7 @@ export async function POST(req: NextRequest) {
   }
 
   // ── 2. Anti-replay ─────────────────────────────────────────────────────────
-  const tsMs = Number(sig.ts) * 1000;
-  if (!Number.isFinite(tsMs) || Math.abs(Date.now() - tsMs) > MAX_TS_SKEW_MS) {
+  if (!isWithinMpReplayWindow(sig.ts)) {
     console.warn('[MP Webhook] ts fora da janela anti-replay');
     return NextResponse.json({ error: 'Timestamp fora da janela' }, { status: 401 });
   }
