@@ -4,6 +4,7 @@ import { useState, useEffect, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import BusinessTypeOnboarding from '@/app/components/features/onboarding/BusinessTypeOnboarding';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '@/lib/config/firebase';
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight, Loader2, CheckCircle2 } from 'lucide-react';
@@ -15,9 +16,13 @@ type AuthMode = 'login' | 'signup';
 export default function LoginPage() {
   const { t } = useTranslation();
   const router = useRouter();
-  const { signIn, signUp, isAuthenticated, isLoading } = useAuth();
+  const { signIn, signUp, isAuthenticated, isLoading, business } = useAuth();
 
   const [mode, setMode] = useState<AuthMode>('login');
+  // Passo de onboarding (escolher tipo de negócio) só dispara pra um negócio
+  // RECÉM-CRIADO no fluxo padrão de signup (sem invite code — invite entra
+  // num negócio que já existe, não faz sentido perguntar de novo).
+  const [pendingOnboarding, setPendingOnboarding] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -33,10 +38,10 @@ export default function LoginPage() {
   const [inviteCode, setInviteCode] = useState('');
 
   useEffect(() => {
-    if (!isLoading && isAuthenticated) {
+    if (!isLoading && isAuthenticated && !pendingOnboarding) {
       router.replace('/app');
     }
-  }, [isAuthenticated, isLoading, router]);
+  }, [isAuthenticated, isLoading, pendingOnboarding, router]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -55,8 +60,12 @@ export default function LoginPage() {
         await signIn(email, password);
       } else {
         await signUp(email, password, name, useInviteCode ? inviteCode.trim().toUpperCase() : undefined);
+        // Só negócio novo (sem invite) passa pelo onboarding — quem entra via
+        // invite já está se juntando a um negócio que já tem seu useCase.
+        if (!useInviteCode) setPendingOnboarding(true);
       }
-      // redirect is handled by the useEffect watching isAuthenticated
+      // redirect (quando não há onboarding pendente) é feito pelo useEffect
+      // que observa isAuthenticated
     } catch (err: unknown) {
       const fe = err as { code?: string; message?: string };
       const msgs: Record<string, string> = {
@@ -81,6 +90,15 @@ export default function LoginPage() {
   };
 
   const busy = isSubmitting || isLoading;
+
+  if (pendingOnboarding && business?.id) {
+    return (
+      <BusinessTypeOnboarding
+        businessId={business.id}
+        onDone={() => setPendingOnboarding(false)}
+      />
+    );
+  }
 
   if (isLoading || isAuthenticated) {
     return (
