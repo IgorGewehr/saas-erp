@@ -59,6 +59,10 @@ export default function PlatformBillingPage() {
   const [error, setError] = useState<string | null>(null);
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [copiedFor, setCopiedFor] = useState<string | null>(null);
+  // Dormente até MP_PLATFORM_ACCESS_TOKEN existir (decisão do usuário —
+  // configurar PLATFORM_OPERATOR_EMAILS primeiro, MP depois). Esconde a
+  // ação de gerar checkout em vez de deixar clicar e tomar erro.
+  const [mpConfigured, setMpConfigured] = useState(true);
 
   const load = useCallback(async () => {
     if (!firebaseUser) return;
@@ -76,6 +80,7 @@ export default function PlatformBillingPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setRows(data.subscriptions);
+      setMpConfigured(!!data.mpConfigured);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar assinaturas');
     } finally {
@@ -164,6 +169,12 @@ export default function PlatformBillingPage() {
           </div>
         )}
 
+        {!mpConfigured && (
+          <div className="mb-4 rounded-xl bg-amber-50 dark:bg-amber-500/10 border border-amber-100 dark:border-amber-500/20 px-4 py-3 text-sm text-amber-700 dark:text-amber-400">
+            Cobrança via Mercado Pago ainda não configurada — defina <code className="font-mono text-xs">MP_PLATFORM_ACCESS_TOKEN</code> e <code className="font-mono text-xs">MP_PLATFORM_WEBHOOK_SECRET</code> pra habilitar a geração de link de cobrança. Por enquanto, só a listagem funciona.
+          </div>
+        )}
+
         <div className="bg-white dark:bg-[#111827] rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -197,15 +208,19 @@ export default function PlatformBillingPage() {
                       <td className="px-4 py-3 text-gray-500 dark:text-gray-400">{formatDate(sub?.lastPaymentAt)}</td>
                       <td className="px-4 py-3 text-right">
                         {needsCheckout ? (
-                          <button
-                            type="button"
-                            onClick={() => handleGenerateCheckout(row.businessId)}
-                            disabled={generatingFor === row.businessId}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold disabled:opacity-50"
-                          >
-                            {generatingFor === row.businessId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                            Gerar link de cobrança
-                          </button>
+                          mpConfigured ? (
+                            <button
+                              type="button"
+                              onClick={() => handleGenerateCheckout(row.businessId)}
+                              disabled={generatingFor === row.businessId}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold disabled:opacity-50"
+                            >
+                              {generatingFor === row.businessId ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                              Gerar link de cobrança
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-400">Aguardando configuração do MP</span>
+                          )
                         ) : sub?.checkoutUrl ? (
                           <div className="flex items-center justify-end gap-1.5">
                             <a

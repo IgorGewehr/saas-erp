@@ -20,7 +20,11 @@ export async function GET(req: NextRequest) {
 
   try {
     const subscriptions = await listAllSubscriptions();
-    return NextResponse.json({ ok: true, subscriptions });
+    // mpConfigured: a listagem em si nunca depende da conta MP da plataforma
+    // (só lê Firestore) — mas a UI usa esta flag pra decidir se mostra ou
+    // esconde a ação "Gerar link de cobrança" (dormente até a env var
+    // existir, ver lib/services/platformBilling/subscriptionAdmin.ts).
+    return NextResponse.json({ ok: true, subscriptions, mpConfigured: !!process.env.MP_PLATFORM_ACCESS_TOKEN });
   } catch (err) {
     console.error('[admin/platform-billing/subscriptions] GET error:', err);
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -37,6 +41,14 @@ export async function POST(req: NextRequest) {
 
   const auth = await verifyPlatformOperator(req);
   if (isPlatformOperatorError(auth)) return auth;
+
+  // Dormente até a conta MP da plataforma ser configurada — erro claro em
+  // vez de deixar a exceção genérica de dentro de createSubscriptionCheckout
+  // borbulhar. A UI já esconde o botão quando mpConfigured=false (GET
+  // acima), isto aqui é a segunda linha de defesa (chamada direta à API).
+  if (!process.env.MP_PLATFORM_ACCESS_TOKEN) {
+    return NextResponse.json({ error: 'Cobrança via Mercado Pago ainda não configurada (MP_PLATFORM_ACCESS_TOKEN ausente)' }, { status: 503 });
+  }
 
   try {
     const body = await req.json().catch(() => ({}));
