@@ -35,6 +35,7 @@ import {
   KeyRound,
   StickyNote,
   FileSpreadsheet,
+  Store,
 } from 'lucide-react';
 import type { UseCase, UserRole } from '@/lib/types';
 import { ROLE_HIERARCHY, DEFAULT_USE_CASE } from '@/lib/types';
@@ -48,6 +49,7 @@ export type MenuPage =
   | 'Kanban'
   | 'Notas'
   | 'PDV'
+  | 'Vitrine'
   | 'Vendas'
   | 'Compras'
   | 'Financeiro'
@@ -96,6 +98,7 @@ function useMenuSections(): MenuSection[] {
         { id: 'Conversas', label: t('sidebar.conversas'), icon: MessageSquare },
         { id: 'Notas', label: 'Notas', icon: StickyNote },
         { id: 'PDV', label: t('sidebar.pdv'), icon: ShoppingCart, useCases: ['pedidos', 'servicos', 'simples'] },
+        { id: 'Vitrine', label: 'Vitrine', icon: Store, useCases: ['pedidos', 'servicos', 'simples'] },
       ],
     },
     {

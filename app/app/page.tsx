@@ -21,6 +21,7 @@ const CRMModule        = lazy(() => import('@/app/components/features/crm/CRMMod
 const SettingsModule   = lazy(() => import('@/app/components/features/settings/SettingsModule'));
 const ConversasModule  = lazy(() => import('@/app/components/features/conversations/ConversasModule'));
 const VendasModule     = lazy(() => import('@/app/components/features/sales/VendasModule'));
+const VitrineModule    = lazy(() => import('@/app/components/features/vitrine/VitrineModule'));
 const ComprasModule    = lazy(() => import('@/app/components/features/purchases/ComprasModule'));
 const OrdersModule     = lazy(() => import('@/app/components/features/orders/OrdersModule'));
 const CardapioModule   = lazy(() => import('@/app/components/features/cardapio/CardapioModule'));
@@ -114,6 +115,7 @@ function renderModule(page: MenuPage, financialV2Enabled: boolean) {
       case 'Conversas':    return <Suspense fallback={fallback}><ConversasModule /></Suspense>;
       case 'PDV':          return <Suspense fallback={fallback}><PDVModule /></Suspense>;
       case 'Vendas':       return <Suspense fallback={fallback}><VendasModule /></Suspense>;
+      case 'Vitrine':      return <Suspense fallback={fallback}><VitrineModule /></Suspense>;
       case 'Compras':      return <Suspense fallback={fallback}><ComprasModule /></Suspense>;
       case 'Kanban':       return <Suspense fallback={fallback}><KanbanModule /></Suspense>;
       case 'Financeiro':

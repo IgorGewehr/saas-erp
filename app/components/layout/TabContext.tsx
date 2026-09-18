@@ -32,6 +32,7 @@ export const PAGE_TITLES: Record<MenuPage, string> = {
   Kanban: 'Kanban',
   Notas: 'Notas',
   PDV: 'PDV',
+  Vitrine: 'Vitrine',
   Vendas: 'Vendas',
   Compras: 'Compras',
   Financeiro: 'Financeiro',

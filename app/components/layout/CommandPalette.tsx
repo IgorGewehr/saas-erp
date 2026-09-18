@@ -7,7 +7,7 @@ import {
   FileCheck2, Receipt, FileText, Settings, Kanban, Target, MessageSquare,
   Users, ClipboardList, ShoppingBag, ClipboardCheck, UtensilsCrossed,
   BarChart3, KeyRound, StickyNote, Plus, Navigation, Pencil, Clock, Hash,
-  ArrowRight, Loader2, Contact, Tag,
+  ArrowRight, Loader2, Contact, Tag, Store,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { isActiveClient } from '@/lib/utils/clientFilters';
@@ -66,6 +66,7 @@ const NAV_COMMANDS: CommandItem[] = [
   { id: 'nav-kanban',       label: 'Kanban',       description: 'Quadros e tarefas',            icon: Kanban,           page: 'Kanban',       category: 'navigate', keywords: ['kanban','tarefas','cards','boards'] },
   { id: 'nav-notas',        label: 'Notas',        description: 'Anotações rápidas',            icon: StickyNote,       page: 'Notas',        category: 'navigate', keywords: ['notas','anotacoes','lembretes'] },
   { id: 'nav-pdv',          label: 'PDV',          description: 'Ponto de Venda',               icon: ShoppingCart,     page: 'PDV',          category: 'navigate', keywords: ['pdv','ponto de venda','caixa','venda'] },
+  { id: 'nav-vitrine',      label: 'Vitrine',      description: 'Catálogo para mostrar ao cliente', icon: Store,         page: 'Vitrine',      category: 'navigate', keywords: ['vitrine','catalogo','apresentacao','tablet','servicos','proposta'] },
   { id: 'nav-vendas',       label: 'Vendas',       description: 'Histórico de vendas',          icon: ClipboardList,    page: 'Vendas',       category: 'navigate', keywords: ['vendas','pedidos','faturamento','comercial'] },
   { id: 'nav-compras',      label: 'Compras',      description: 'Pedidos de compra',            icon: ShoppingBag,      page: 'Compras',      category: 'navigate', keywords: ['compras','fornecedores','pedido compra'] },
   { id: 'nav-pedidos',      label: 'Pedidos',      description: 'Gestão de pedidos',            icon: ClipboardCheck,   page: 'Pedidos',      category: 'navigate', keywords: ['pedidos','delivery','encomendas'] },
