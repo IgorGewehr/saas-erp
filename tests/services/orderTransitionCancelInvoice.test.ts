@@ -1,4 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// O núcleo de estoque tem suíte própria; aqui só importa QUAIS linhas o pedido manda pra ele.
+vi.mock('@/lib/services/stock-core-admin', () => ({
+  applyStockOperationAdmin: vi.fn(async () => ({ adjustments: [] })),
+}));
+
+import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 import { transitionOrderAdmin, OrderTransitionError } from '@/lib/services/order-transition-admin';
 
 // Fake Admin SDK — mesmo formato de tests/services/saleTransitionAdmin.test.ts,
@@ -57,6 +64,9 @@ function makeFakeAdminDb(initial: Record<string, FakeDoc[]> = {}) {
           };
         },
       };
+    },
+    async getAll(...refs: Array<{ get: () => Promise<unknown> }>) {
+      return Promise.all(refs.map((ref) => ref.get()));
     },
     async runTransaction(cb: (tx: unknown) => Promise<unknown>) {
       const tx = {
@@ -193,5 +203,109 @@ describe('transitionOrderAdmin', () => {
     await expect(transitionOrderAdmin({
       db, orderId: 'o1', businessId, targetStatus: 'confirmado', actor: { id: 'u1', name: 'U1' },
     })).rejects.toBeInstanceOf(OrderTransitionError);
+  });
+});
+
+describe('estoque do pedido B2B respeita "Não controlar estoque" (trackStock === false)', () => {
+  const stockMock = vi.mocked(applyStockOperationAdmin);
+
+  const product = (id: string, overrides: Record<string, unknown> = {}) => ({
+    id,
+    data: { businessId, name: `Produto ${id}`, salePrice: 100, currentStock: 0, trackStock: true, ...overrides },
+  });
+  const item = (productId: string, quantity = 1, extra: Record<string, unknown> = {}) => ({
+    productId, productName: `Produto ${productId}`, quantity, unitPrice: 100, total: 100 * quantity, ...extra,
+  });
+  const actor = { id: 'u1', name: 'U1' };
+
+  beforeEach(() => stockMock.mockClear());
+
+  it('faturar só com item sem controle de estoque (saldo 0): não baixa estoque e ainda gera a receita', async () => {
+    const db = makeFakeAdminDb({
+      products: [product('spot', { trackStock: false })],
+      orders: [{ id: 'o1', data: baseOrder({ items: [item('spot', 2)], total: 200 }) }],
+    });
+    const result = await transitionOrderAdmin({ db, orderId: 'o1', businessId, targetStatus: 'faturado', actor });
+
+    expect(stockMock).not.toHaveBeenCalled();
+    expect(result.stockApplied).toBe(false);
+    expect(result.invoiced).toBe(true);
+    expect(result.transactionIds).toHaveLength(1);
+  });
+
+  it('faturar misto: só a linha COM controle vai pro núcleo de estoque', async () => {
+    const db = makeFakeAdminDb({
+      products: [product('spot', { trackStock: false }), product('camiseta', { currentStock: 10 })],
+      orders: [{ id: 'o1', data: baseOrder({ items: [item('spot', 2), item('camiseta', 3)], total: 500 }) }],
+    });
+    const result = await transitionOrderAdmin({ db, orderId: 'o1', businessId, targetStatus: 'faturado', actor });
+
+    expect(stockMock).toHaveBeenCalledTimes(1);
+    expect(stockMock.mock.calls[0][1]).toMatchObject({ type: 'saida', lines: [{ productId: 'camiseta', quantity: 3 }] });
+    expect(result.stockApplied).toBe(true);
+  });
+
+  it('trackStock ausente conta como controlado (padrão do sistema)', async () => {
+    const legacy = product('legado');
+    delete (legacy.data as Record<string, unknown>).trackStock;
+    const db = makeFakeAdminDb({
+      products: [legacy],
+      orders: [{ id: 'o1', data: baseOrder({ items: [item('legado')], total: 100 }) }],
+    });
+    await transitionOrderAdmin({ db, orderId: 'o1', businessId, targetStatus: 'faturado', actor });
+    expect(stockMock.mock.calls[0][1]).toMatchObject({ lines: [{ productId: 'legado', quantity: 1 }] });
+  });
+
+  it('linha com variação segue o trackStock DA VARIAÇÃO, não o do produto', async () => {
+    const db = makeFakeAdminDb({
+      products: [
+        product('pacote', {
+          trackStock: true,
+          variants: [
+            { id: 'v15', name: '15s', trackStock: false, isActive: true, salePrice: 100, costPrice: 0, currentStock: 0, minStock: 0, attributes: {} },
+            { id: 'v30', name: '30s', trackStock: true, isActive: true, salePrice: 200, costPrice: 0, currentStock: 9, minStock: 0, attributes: {} },
+          ],
+        }),
+      ],
+      orders: [{ id: 'o1', data: baseOrder({ items: [item('pacote', 1, { variantId: 'v15' }), item('pacote', 2, { variantId: 'v30' })], total: 500 }) }],
+    });
+    await transitionOrderAdmin({ db, orderId: 'o1', businessId, targetStatus: 'faturado', actor });
+
+    expect(stockMock.mock.calls[0][1]).toMatchObject({ lines: [{ productId: 'pacote', variantId: 'v30', quantity: 2 }] });
+  });
+
+  it('produto inexistente ou de outro negócio NÃO é filtrado — o núcleo de estoque é quem recusa', async () => {
+    const db = makeFakeAdminDb({
+      products: [product('alheio', { businessId: 'outro-biz', trackStock: false })],
+      orders: [{ id: 'o1', data: baseOrder({ items: [item('alheio'), item('fantasma')], total: 200 }) }],
+    });
+    await transitionOrderAdmin({ db, orderId: 'o1', businessId, targetStatus: 'faturado', actor });
+
+    expect(stockMock.mock.calls[0][1]).toMatchObject({
+      lines: [{ productId: 'alheio', quantity: 1 }, { productId: 'fantasma', quantity: 1 }],
+    });
+  });
+
+  it('cancelar pedido faturado NÃO restaura saldo de item sem controle de estoque', async () => {
+    const db = makeFakeAdminDb({
+      products: [product('spot', { trackStock: false }), product('camiseta', { currentStock: 7 })],
+      orders: [{ id: 'o1', data: baseOrder({ status: 'faturado', items: [item('spot', 2), item('camiseta', 3)], total: 500 }) }],
+    });
+    await transitionOrderAdmin({ db, orderId: 'o1', businessId, targetStatus: 'cancelado', actor });
+
+    expect(stockMock).toHaveBeenCalledTimes(1);
+    expect(stockMock.mock.calls[0][1]).toMatchObject({ type: 'restauracao', lines: [{ productId: 'camiseta', quantity: 3 }] });
+  });
+
+  it('cancelar pedido faturado só de itens sem controle: não chama o núcleo de estoque', async () => {
+    const db = makeFakeAdminDb({
+      products: [product('spot', { trackStock: false })],
+      orders: [{ id: 'o1', data: baseOrder({ status: 'faturado', items: [item('spot')], total: 100 }) }],
+    });
+    const result = await transitionOrderAdmin({ db, orderId: 'o1', businessId, targetStatus: 'cancelado', actor });
+
+    expect(stockMock).not.toHaveBeenCalled();
+    expect(result.stockApplied).toBe(false);
+    expect(result.order.status).toBe('cancelado');
   });
 });

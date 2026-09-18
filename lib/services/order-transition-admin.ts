@@ -33,7 +33,7 @@ import { assertTransitionOrder } from '@/lib/contracts/fsm/order';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 import { createTransactionSafeAdmin, transitionTransactionSafeAdmin } from '@/lib/services/transactionTxGuardAdmin';
 import { splitInstallments, installmentDueDate } from '@/lib/utils/installments';
-import type { Order, OrderStatus, StockAlert } from '@/lib/types';
+import type { Order, OrderStatus, Product, StockAlert } from '@/lib/types';
 
 export class OrderTransitionError extends Error {
   constructor(
@@ -63,24 +63,61 @@ export interface OrderTransitionResult {
 // reexport mantém o import histórico (tests/services/orderTransitionAdmin.test.ts).
 export { splitInstallments };
 
+interface OrderStockLine {
+  productId: string;
+  quantity: number;
+  variantId?: string;
+}
+
+/**
+ * Linhas de estoque do pedido SEM os itens marcados "Não controlar estoque"
+ * (`trackStock === false`). Sem este filtro, faturar um serviço cadastrado como
+ * produto com saldo 0 estourava InsufficientStockError (política `prevent`) e o
+ * cancelamento "restaurava" um saldo que nunca foi baixado. Produto ou variação
+ * que não aparece no índice (inexistente/outro negócio) FICA na lista: quem
+ * recusa com o erro certo é o núcleo de estoque.
+ */
+async function buildTrackedStockLines(
+  db: Firestore,
+  order: Order & { id: string },
+): Promise<OrderStockLine[]> {
+  const productItems = order.items.filter((item) => item.productId);
+  if (productItems.length === 0) return [];
+
+  const productIds = [...new Set(productItems.map((item) => item.productId!))];
+  const snapshots = await db.getAll(...productIds.map((id) => db.collection('products').doc(id)));
+  const index = new Map<string, Product>();
+  for (const snapshot of snapshots) {
+    const data = snapshot.data() as Product | undefined;
+    if (snapshot.exists && data?.businessId === order.businessId) index.set(snapshot.id, data);
+  }
+
+  return productItems
+    .filter((item) => {
+      const product = index.get(item.productId!);
+      if (!product) return true;
+      if (!item.variantId) return product.trackStock !== false;
+      const variant = product.variants?.find((candidate) => candidate.id === item.variantId);
+      return variant ? variant.trackStock !== false : true;
+    })
+    .map((item) => ({
+      productId: item.productId!,
+      quantity: item.quantity,
+      ...(item.variantId ? { variantId: item.variantId } : {}),
+    }));
+}
+
 async function invoiceOrder(
   db: Firestore,
   order: Order & { id: string },
   actor: OrderTransitionActor,
   now: Date,
 ): Promise<{ stockApplied: boolean; stockAlerts: StockAlert[]; transactionIds: string[] }> {
-  // ── Dedução de estoque — só itens de produto (serviços não têm saldo). ────
-  const productIds = order.items.map((i) => i.productId).filter((id): id is string => !!id);
+  // ── Dedução de estoque — só itens de produto COM controle de estoque. ─────
+  const lines = await buildTrackedStockLines(db, order);
   let stockApplied = false;
   let stockAlerts: StockAlert[] = [];
-  if (productIds.length > 0) {
-    const lines = order.items
-      .filter((i) => i.productId)
-      .map((i) => ({
-        productId: i.productId!,
-        quantity: i.quantity,
-        ...(i.variantId ? { variantId: i.variantId } : {}),
-      }));
+  if (lines.length > 0) {
     const result = await applyStockOperationAdmin(db, {
       businessId: order.businessId,
       type: 'saida',
@@ -133,17 +170,10 @@ async function reverseInvoicedOrder(
   order: Order & { id: string },
   actor: OrderTransitionActor,
 ): Promise<{ stockApplied: boolean; stockAlerts: StockAlert[] }> {
-  const productIds = order.items.map((i) => i.productId).filter((id): id is string => !!id);
+  const lines = await buildTrackedStockLines(db, order);
   let stockApplied = false;
   let stockAlerts: StockAlert[] = [];
-  if (productIds.length > 0) {
-    const lines = order.items
-      .filter((i) => i.productId)
-      .map((i) => ({
-        productId: i.productId!,
-        quantity: i.quantity,
-        ...(i.variantId ? { variantId: i.variantId } : {}),
-      }));
+  if (lines.length > 0) {
     const result = await applyStockOperationAdmin(db, {
       businessId: order.businessId,
       type: 'restauracao',
