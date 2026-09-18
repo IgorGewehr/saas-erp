@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
         ...body,
         operatorId: 'api',
         operatorName: `API (${auth.businessId.slice(0, 8)})`,
-        idempotencyKey: idempotencyKey ?? undefined,
+        idempotencyKey: idempotencyKey ?? body.idempotencyKey,
       },
       context: { canApplyManualDiscount: true },
     });

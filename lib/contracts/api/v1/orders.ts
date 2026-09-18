@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { CommercialQuoteLineRequestSchema } from '../../domain/commercialV2';
+import { CommercialQuoteLineRequestSchema, MoneyCentsSchema } from '../../domain/commercialV2';
 import { OrderTypeSchema, OrderStatusSchema } from '../../domain/order';
 import { PaymentMethodSchema } from '../../domain/sale';
 
@@ -20,6 +20,12 @@ export const CreateOrderBodySchema = z.object({
   items: z.array(CommercialQuoteLineRequestSchema).min(1).max(100),
   discount: z.number().nonnegative().optional(),
   discountReason: z.string().min(3).max(300).optional(),
+  /** Total (centavos, já com o desconto manual) que o cliente viu; divergência
+   *  da cotação do servidor ⇒ 409 STALE_QUOTE antes de criar o pedido. */
+  expectedTotalCents: MoneyCentsSchema.optional(),
+  /** Gerada UMA vez por proposta (UUID). Reenvio com a mesma chave devolve o
+   *  pedido já criado. Na API pública o header X-Idempotency-Key tem precedência. */
+  idempotencyKey: z.string().min(8).max(100).optional(),
   paymentMethod: PaymentMethodSchema.optional(),
   paymentTerms: z.string().max(200).optional(),
   installments: z.number().int().min(1).max(48).default(1),

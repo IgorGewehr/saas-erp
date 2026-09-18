@@ -141,6 +141,24 @@ describe('transitionOrderAdmin', () => {
     expect(Math.round(total * 100) / 100).toBe(300);
   });
 
+  it('confirmado → faturado: recebível leva descrição curta (#últimos 6 do id, igual à tela de Vendas) + cliente + parcela', async () => {
+    const orderId = 'order_0123456789abcdef0123456789abcdef01234567';
+    const db = makeFakeAdminDb({
+      orders: [{ id: orderId, data: baseOrder({ installments: 3, total: 300, clientId: 'c1', clientName: 'Padaria do Zé' }) }],
+    });
+    const result = await transitionOrderAdmin({
+      db, orderId, businessId, targetStatus: 'faturado', actor: { id: 'u1', name: 'U1' },
+    });
+    const txs = result.transactionIds.map((id) => db.collections.transactions.find((t) => t.id === id)!.data);
+    expect(txs.map((t) => t.description)).toEqual([
+      'Pedido B2B #234567 — Padaria do Zé (parcela 1/3)',
+      'Pedido B2B #234567 — Padaria do Zé (parcela 2/3)',
+      'Pedido B2B #234567 — Padaria do Zé (parcela 3/3)',
+    ]);
+    expect(txs.every((t) => t.clientId === 'c1' && t.clientName === 'Padaria do Zé')).toBe(true);
+    expect(txs.every((t) => (t.description as string).length < 60)).toBe(true);
+  });
+
   it('confirmado → faturado é bloqueado por reexecução (faturado→faturado é FSM-inválido)', async () => {
     const db = makeFakeAdminDb({ orders: [{ id: 'o1', data: baseOrder({ status: 'faturado' }) }] });
     await expect(transitionOrderAdmin({

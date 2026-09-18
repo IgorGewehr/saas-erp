@@ -110,7 +110,7 @@ async function invoiceOrder(
       type: 'receita',
       status: 'pendente',
       category: 'Vendas B2B',
-      description: `Pedido B2B #${order.id}${order.clientName ? ` — ${order.clientName}` : ''}${
+      description: `Pedido B2B #${order.id.slice(-6).toUpperCase()}${order.clientName ? ` — ${order.clientName}` : ''}${
         amounts.length > 1 ? ` (parcela ${i + 1}/${amounts.length})` : ''
       }`,
       amount: amounts[i],

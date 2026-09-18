@@ -2,10 +2,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   createTransactionSafeAdmin,
   transitionTransactionSafeAdmin,
+  settleReceivableAdmin,
   TransactionNotFoundError,
   TransactionTenantMismatchError,
   TransactionInvalidTransitionError,
+  TransactionNotReceivableError,
 } from '@/lib/services/transactionTxGuardAdmin';
+import { SettleTransactionBodySchema } from '@/contracts/api/transactions/settle';
 
 // Fake Admin SDK — mesmo formato de tests/services/appointmentTxGuardAdmin.test.ts,
 // com tx.create() adicionado (lança se o doc já existir — mesma semântica real
@@ -202,5 +205,111 @@ describe('transitionTransactionSafeAdmin', () => {
     await expect(
       transitionTransactionSafeAdmin({ db: db as never, transactionId: 'tx-1', businessId: 'outro-biz', targetStatus: 'pago' }),
     ).rejects.toBeInstanceOf(TransactionTenantMismatchError);
+  });
+});
+
+describe('settleReceivableAdmin (Vitrine — registrar recebimento)', () => {
+  let db: ReturnType<typeof makeFakeAdminDb>;
+
+  const receivable = (overrides: Record<string, unknown> = {}) => ({
+    businessId, type: 'receita', status: 'pendente', amount: 500, description: 'Pedido B2B #ABC123',
+    paymentMethod: 'boleto', dueDate: '2026-10-18', clientId: 'cli-1', createdAt: '', updatedAt: '', ...overrides,
+  });
+
+  beforeEach(() => {
+    db = makeFakeAdminDb({ transactions: [{ id: 'tx-r1', data: receivable() }] });
+  });
+
+  it('pendente → pago grava data e forma de pagamento, sem tocar valor/cliente/vencimento', async () => {
+    const { transaction, alreadySettled } = await settleReceivableAdmin({
+      db: db as never, transactionId: 'tx-r1', businessId, paymentDate: '2026-09-18', paymentMethod: 'pix',
+    });
+    expect(alreadySettled).toBe(false);
+    expect(transaction).toMatchObject({ status: 'pago', paymentDate: '2026-09-18', paymentMethod: 'pix' });
+
+    const stored = db.collections.transactions[0].data;
+    expect(stored).toMatchObject({
+      status: 'pago', paymentDate: '2026-09-18', paymentMethod: 'pix',
+      amount: 500, dueDate: '2026-10-18', clientId: 'cli-1', description: 'Pedido B2B #ABC123',
+    });
+  });
+
+  it('sem paymentMethod mantém a forma de pagamento que já estava no lançamento', async () => {
+    await settleReceivableAdmin({ db: db as never, transactionId: 'tx-r1', businessId, paymentDate: '2026-09-18' });
+    expect(db.collections.transactions[0].data.paymentMethod).toBe('boleto');
+  });
+
+  it('atrasado → pago também é permitido (FSM)', async () => {
+    db.collections.transactions[0].data.status = 'atrasado';
+    const { transaction } = await settleReceivableAdmin({
+      db: db as never, transactionId: 'tx-r1', businessId, paymentDate: '2026-09-18',
+    });
+    expect(transaction.status).toBe('pago');
+  });
+
+  it('já paga: no-op — NÃO sobrescreve paymentDate/paymentMethod do primeiro recebimento (duplo toque)', async () => {
+    await settleReceivableAdmin({ db: db as never, transactionId: 'tx-r1', businessId, paymentDate: '2026-09-18', paymentMethod: 'pix' });
+    const second = await settleReceivableAdmin({
+      db: db as never, transactionId: 'tx-r1', businessId, paymentDate: '2026-09-25', paymentMethod: 'dinheiro',
+    });
+    expect(second.alreadySettled).toBe(true);
+    expect(db.collections.transactions[0].data).toMatchObject({ paymentDate: '2026-09-18', paymentMethod: 'pix' });
+  });
+
+  it('cancelada não pode ser recebida (FSM: terminal)', async () => {
+    db.collections.transactions[0].data.status = 'cancelado';
+    await expect(
+      settleReceivableAdmin({ db: db as never, transactionId: 'tx-r1', businessId, paymentDate: '2026-09-18' }),
+    ).rejects.toBeInstanceOf(TransactionInvalidTransitionError);
+    expect(db.collections.transactions[0].data.status).toBe('cancelado');
+  });
+
+  it('despesa não é "recebível" — recusa e não altera', async () => {
+    db.collections.transactions[0].data.type = 'despesa';
+    await expect(
+      settleReceivableAdmin({ db: db as never, transactionId: 'tx-r1', businessId, paymentDate: '2026-09-18' }),
+    ).rejects.toBeInstanceOf(TransactionNotReceivableError);
+    expect(db.collections.transactions[0].data.status).toBe('pendente');
+  });
+
+  it('id inexistente → TransactionNotFoundError', async () => {
+    await expect(
+      settleReceivableAdmin({ db: db as never, transactionId: 'ghost', businessId, paymentDate: '2026-09-18' }),
+    ).rejects.toBeInstanceOf(TransactionNotFoundError);
+  });
+
+  it('lançamento de outro business → TransactionTenantMismatchError e nada é gravado (R1)', async () => {
+    await expect(
+      settleReceivableAdmin({ db: db as never, transactionId: 'tx-r1', businessId: 'outro-biz', paymentDate: '2026-09-18' }),
+    ).rejects.toBeInstanceOf(TransactionTenantMismatchError);
+    expect(db.collections.transactions[0].data.status).toBe('pendente');
+  });
+});
+
+describe('SettleTransactionBodySchema', () => {
+  it('aceita só businessId (data/forma opcionais)', () => {
+    expect(SettleTransactionBodySchema.safeParse({ businessId: 'b1' }).success).toBe(true);
+  });
+
+  it('aceita forma de pagamento de recebimento e data válida', () => {
+    const parsed = SettleTransactionBodySchema.safeParse({ businessId: 'b1', paymentMethod: 'pix', paymentDate: '2026-02-28' });
+    expect(parsed.success).toBe(true);
+  });
+
+  it.each(['creditoLoja', 'pontos', 'gift_card', 'semPagamento', 'cheque'])('rejeita forma de pagamento %s', (paymentMethod) => {
+    expect(SettleTransactionBodySchema.safeParse({ businessId: 'b1', paymentMethod }).success).toBe(false);
+  });
+
+  it.each(['2026-02-31', '2026-13-01', '18/09/2026', '2026-9-1', ''])('rejeita data %j', (paymentDate) => {
+    expect(SettleTransactionBodySchema.safeParse({ businessId: 'b1', paymentDate }).success).toBe(false);
+  });
+
+  it('exige businessId', () => {
+    expect(SettleTransactionBodySchema.safeParse({ paymentMethod: 'pix' }).success).toBe(false);
+  });
+
+  it('descarta campos extras (não vira canal pra reescrever valor)', () => {
+    const parsed = SettleTransactionBodySchema.parse({ businessId: 'b1', amount: 1, status: 'cancelado' });
+    expect(parsed).toEqual({ businessId: 'b1' });
   });
 });

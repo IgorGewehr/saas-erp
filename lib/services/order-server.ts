@@ -143,6 +143,7 @@ export async function createOrderWithSideEffects(params: {
             reason: input.discountReason?.trim() || 'Desconto manual no pedido',
           },
         } : {}),
+        ...(input.expectedTotalCents !== undefined ? { expectedTotalCents: input.expectedTotalCents } : {}),
       },
       canApplyManualDiscount: params.context.canApplyManualDiscount === true,
       quotedAt: now,
@@ -198,7 +199,23 @@ export async function createOrderWithSideEffects(params: {
     updatedAt: nowIso,
   };
 
-  await orderRef.create(order);
+  try {
+    await orderRef.create(order);
+  } catch (err) {
+    // Dois envios simultâneos da mesma chave passam juntos pelo `existing.exists`
+    // acima; o `create()` é o CAS de verdade — quem perde devolve o vencedor
+    // como replay em vez de virar 500.
+    if (!isAlreadyExistsError(err)) throw err;
+    const winner = await orderRef.get();
+    if (!winner.exists) throw err;
+    return { order: { id: winner.id, ...winner.data() } as Order, created: false };
+  }
 
   return { order: { id: orderId, ...order } as Order, created: true };
+}
+
+function isAlreadyExistsError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  return code === 6 || code === 'already-exists';
 }

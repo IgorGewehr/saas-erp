@@ -16,7 +16,7 @@
  */
 
 import { z } from 'zod';
-import { CommercialQuoteLineRequestSchema } from '@/contracts/domain/commercialV2';
+import { CommercialQuoteLineRequestSchema, MoneyCentsSchema } from '@/contracts/domain/commercialV2';
 import { OrderTypeSchema } from '@/contracts/domain/order';
 import { PaymentMethodSchema } from '@/contracts/domain/sale';
 
@@ -41,6 +41,10 @@ export const CreateOrderWithSideEffectsInputSchema = z.object({
    *  do PDV/delivery (CommercialQuoteRequestSchema.manualDiscount). */
   discount: z.number().nonnegative().optional(),
   discountReason: z.string().min(3).max(300).optional(),
+  /** Total (centavos, já com o desconto manual) que o cliente viu ao negociar.
+   *  Divergência da cotação autoritativa ⇒ 409 STALE_QUOTE ANTES de gravar o
+   *  pedido — mesmo contrato de CommercialQuoteRequestSchema.expectedTotalCents. */
+  expectedTotalCents: MoneyCentsSchema.optional(),
   paymentMethod: PaymentMethodSchema.optional(),
   paymentTerms: z.string().max(200).optional(),
   /** 1 = à vista; >1 gera N Transactions receita com installmentGroupId/

@@ -776,7 +776,8 @@ export default function VendasModule() {
 
   // ─── KPIs ────────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
-    const totalRevenue = orders.filter(o => o.status === 'entregue').reduce((s, o) => s + o.total, 0);
+    // Faturar é o que gera o recebível; esperar "entregue" deixava um negócio recém-fechado em R$ 0.
+    const totalRevenue = orders.filter(o => ['faturado', 'enviado', 'entregue'].includes(o.status)).reduce((s, o) => s + o.total, 0);
     const pending = orders.filter(o => ['pendente', 'confirmado'].includes(o.status)).length;
     const conditional = orders.filter(o => o.status === 'condicional').length;
     const avgOrder = orders.length > 0 ? orders.reduce((s, o) => s + o.total, 0) / orders.length : 0;
@@ -819,7 +820,7 @@ export default function VendasModule() {
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         {[
-          { label: 'Receita entregue', value: formatCurrency(kpis.totalRevenue), icon: TrendingUp, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
+          { label: 'Receita faturada', value: formatCurrency(kpis.totalRevenue), icon: TrendingUp, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10' },
           { label: 'Pedidos pendentes', value: kpis.pending, icon: Clock, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-500/10' },
           { label: 'Condicionais', value: kpis.conditional, icon: CalendarClock, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-500/10' },
           { label: 'Ticket médio', value: formatCurrency(kpis.avgOrder), icon: DollarSign, color: 'text-purple-500', bg: 'bg-purple-50 dark:bg-purple-500/10' },

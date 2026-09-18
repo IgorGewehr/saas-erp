@@ -3,8 +3,8 @@
 /**
  * Timeline agregada de eventos do cliente — aba "Timeline" do detalhe.
  *
- * Faz 5 queries paralelas (conversations / appointments / sales / transactions /
- * formResponses) filtrando por businessId + clientId, mescla resultados,
+ * Faz 6 queries paralelas (conversations / appointments / sales / orders /
+ * transactions / formResponses) filtrando por businessId + clientId, mescla resultados,
  * deduplica por ID e ordena descendente. Cada query usa safeQuery pra que
  * falha em uma coleção (ex: rules bloqueando) não derrube as outras.
  *
@@ -16,7 +16,7 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { collection, query, where, getDocs, limit as firestoreLimit } from 'firebase/firestore';
 import {
-  History, Clock, MessageSquare, Calendar, ShoppingCart,
+  History, Clock, MessageSquare, Calendar, ShoppingCart, ClipboardList,
   TrendingUp, TrendingDown, FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -24,7 +24,7 @@ import { db } from '@/lib/config/firebase';
 import { formatCurrency } from '@/lib/utils/format';
 import type { Client } from '@/lib/types';
 
-type TimelineEventKind = 'conversation' | 'appointment' | 'sale' | 'transaction_in' | 'transaction_out' | 'form';
+type TimelineEventKind = 'conversation' | 'appointment' | 'sale' | 'order' | 'transaction_in' | 'transaction_out' | 'form';
 
 interface TimelineEvent {
   id: string;
@@ -44,6 +44,7 @@ const TL_CFG: Record<TimelineEventKind, { icon: React.ElementType; color: string
   conversation:    { icon: MessageSquare, color: 'text-blue-500',    bg: 'bg-blue-50 dark:bg-blue-500/10',    label: 'Conversa'    },
   appointment:     { icon: Calendar,      color: 'text-purple-500',  bg: 'bg-purple-50 dark:bg-purple-500/10', label: 'Agendamento' },
   sale:            { icon: ShoppingCart,  color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', label: 'Venda'    },
+  order:           { icon: ClipboardList, color: 'text-amber-500',   bg: 'bg-amber-50 dark:bg-amber-500/10',   label: 'Pedido'     },
   transaction_in:  { icon: TrendingUp,    color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-500/10', label: 'Receita'  },
   transaction_out: { icon: TrendingDown,  color: 'text-red-500',     bg: 'bg-red-50 dark:bg-red-500/10',      label: 'Despesa'    },
   form:            { icon: FileText,      color: 'text-violet-500',  bg: 'bg-violet-50 dark:bg-violet-500/10', label: 'Ficha'    },
@@ -54,6 +55,10 @@ const APPT_STATUS_LABEL: Record<string, string> = {
   cancelado: 'Cancelado', 'no-show': 'Não compareceu', remarcado: 'Remarcado',
 };
 const CONV_STATUS_LABEL: Record<string, string> = { open: 'Aberta', waiting: 'Aguardando', resolved: 'Resolvida' };
+const ORDER_STATUS_LABEL: Record<string, string> = {
+  pendente: 'Pendente', condicional: 'Condicional', confirmado: 'Confirmado', faturado: 'Faturado',
+  enviado: 'Enviado', entregue: 'Entregue', cancelado: 'Cancelado',
+};
 const TX_STATUS_LABEL: Record<string, string> = { pendente: 'Pendente', pago: 'Pago', atrasado: 'Atrasado', cancelado: 'Cancelado' };
 const CH_LABEL: Record<string, string> = { whatsapp: 'WhatsApp', facebook: 'Facebook', instagram: 'Instagram' };
 
@@ -81,7 +86,7 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
     queryFn: async (): Promise<TimelineEvent[]> => {
       const all: TimelineEvent[] = [];
 
-      const [convSnap, apptSnap, salesSnap, txSnap, formSnap] = await Promise.all([
+      const [convSnap, apptSnap, salesSnap, ordersSnap, txSnap, formSnap] = await Promise.all([
         safeQuery(() => getDocs(query(
           collection(db, 'conversations'),
           where('businessId', '==', businessId),
@@ -96,6 +101,12 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
         ))),
         safeQuery(() => getDocs(query(
           collection(db, 'sales'),
+          where('businessId', '==', businessId),
+          where('clientId', '==', client.id),
+          firestoreLimit(20),
+        ))),
+        safeQuery(() => getDocs(query(
+          collection(db, 'orders'),
           where('businessId', '==', businessId),
           where('clientId', '==', client.id),
           firestoreLimit(20),
@@ -146,6 +157,21 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
           id: `sale_${d.id}`, kind: 'sale',
           title: `Venda — ${items.length} item${items.length !== 1 ? 's' : ''}`,
           subtitle: items.slice(0, 2).map(i => i.description).join(', ') || undefined,
+          amount: v.total,
+          status: v.status,
+          timestamp: v.createdAt || '',
+        });
+      });
+
+      ordersSnap?.docs?.forEach(d => {
+        const v = d.data();
+        const items: Array<{ productName?: string; quantity?: number }> = v.items || [];
+        const itemsSummary = items.slice(0, 2).map(i => `${i.productName ?? 'Item'}${i.quantity && i.quantity > 1 ? ` ×${i.quantity}` : ''}`).join(', ');
+        const installments = Number(v.installments) > 1 ? `${v.installments}x` : 'À vista';
+        all.push({
+          id: `order_${d.id}`, kind: 'order',
+          title: `Pedido #${d.id.slice(-6).toUpperCase()}`,
+          subtitle: [itemsSummary, installments].filter(Boolean).join(' · ') || undefined,
           amount: v.total,
           status: v.status,
           timestamp: v.createdAt || '',
@@ -231,6 +257,7 @@ export function ClientTimeline({ client, businessId }: { client: Client; busines
           const statusLabel =
             ev.kind === 'appointment'     ? APPT_STATUS_LABEL[ev.status ?? ''] :
             ev.kind === 'conversation'    ? CONV_STATUS_LABEL[ev.status ?? ''] :
+            ev.kind === 'order'           ? ORDER_STATUS_LABEL[ev.status ?? ''] :
             ev.kind === 'transaction_in' || ev.kind === 'transaction_out'
                                           ? TX_STATUS_LABEL[ev.status ?? '']   : undefined;
 

@@ -48,7 +48,7 @@
 import { createHash } from 'node:crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import { canTransitionTransaction } from '@/contracts/fsm/transaction';
-import type { Transaction, TransactionStatus, TransactionType } from '@/lib/types';
+import type { PaymentMethod, Transaction, TransactionStatus, TransactionType } from '@/lib/types';
 
 export class TransactionNotFoundError extends Error {
   constructor(message = 'Transação não encontrada.') {
@@ -73,6 +73,13 @@ export class TransactionInvalidTransitionError extends Error {
   ) {
     super(`Transaction FSM: transição inválida ${from} → ${to}`);
     this.name = 'TransactionInvalidTransitionError';
+  }
+}
+
+export class TransactionNotReceivableError extends Error {
+  constructor(message = 'Só é possível registrar recebimento em receitas.') {
+    super(message);
+    this.name = 'TransactionNotReceivableError';
   }
 }
 
@@ -206,5 +213,48 @@ export async function transitionTransactionSafeAdmin(params: {
     const patch: Record<string, unknown> = { ...params.patch, status: toStatus, updatedAt: now };
     tx.update(ref, patch);
     return { ...current, ...patch } as Transaction;
+  });
+}
+
+export interface SettleReceivableResult {
+  transaction: Transaction;
+  /** true = já estava paga (duplo toque/retry); nada foi gravado. */
+  alreadySettled: boolean;
+}
+
+/**
+ * Registra o recebimento de uma receita. Diferente de `transitionTransactionSafeAdmin`
+ * (que aceita `pago → pago` e re-aplica o patch), aqui "já paga" é no-op decidido
+ * DENTRO da mesma tx — dois toques simultâneos não sobrescrevem `paymentDate`/
+ * `paymentMethod` do primeiro. O patch é fixo (não recebe campos arbitrários).
+ */
+export async function settleReceivableAdmin(params: {
+  db: Firestore;
+  transactionId: string;
+  businessId: string;
+  paymentDate: string;
+  paymentMethod?: PaymentMethod;
+}): Promise<SettleReceivableResult> {
+  const ref = params.db.collection('transactions').doc(params.transactionId);
+
+  return params.db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(ref);
+    if (!snapshot.exists) throw new TransactionNotFoundError();
+    const current = { id: snapshot.id, ...snapshot.data() } as Transaction;
+    if (current.businessId !== params.businessId) throw new TransactionTenantMismatchError();
+    if (current.type !== 'receita') throw new TransactionNotReceivableError();
+    if (current.status === 'pago') return { transaction: current, alreadySettled: true };
+    if (!canTransitionTransaction(current.status, 'pago')) {
+      throw new TransactionInvalidTransitionError(current.status, 'pago');
+    }
+
+    const patch = {
+      status: 'pago' as const,
+      paymentDate: params.paymentDate,
+      ...(params.paymentMethod ? { paymentMethod: params.paymentMethod } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    tx.update(ref, patch);
+    return { transaction: { ...current, ...patch }, alreadySettled: false };
   });
 }
