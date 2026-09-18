@@ -32,6 +32,7 @@ import { adminDb } from '@/lib/config/firebaseAdmin';
 import { assertTransitionOrder } from '@/lib/contracts/fsm/order';
 import { applyStockOperationAdmin } from '@/lib/services/stock-core-admin';
 import { createTransactionSafeAdmin, transitionTransactionSafeAdmin } from '@/lib/services/transactionTxGuardAdmin';
+import { splitInstallments, installmentDueDate } from '@/lib/utils/installments';
 import type { Order, OrderStatus, StockAlert } from '@/lib/types';
 
 export class OrderTransitionError extends Error {
@@ -57,16 +58,10 @@ export interface OrderTransitionResult {
   stockAlerts: StockAlert[];
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Divide `total` em `n` parcelas (reais), a última absorve o resto do arredondamento. */
-export function splitInstallments(total: number, n: number): number[] {
-  const base = Math.floor((total / n) * 100) / 100;
-  const amounts = Array.from({ length: n }, () => base);
-  const roundedSum = Math.round(base * n * 100) / 100;
-  amounts[n - 1] = Math.round((amounts[n - 1] + (total - roundedSum)) * 100) / 100;
-  return amounts;
-}
+// Movidos pra lib/utils/installments.ts (puro, sem firebase-admin) pra a prévia
+// de cronograma da Vitrine mostrar exatamente o que este serviço grava. O
+// reexport mantém o import histórico (tests/services/orderTransitionAdmin.test.ts).
+export { splitInstallments };
 
 async function invoiceOrder(
   db: Firestore,
@@ -109,7 +104,7 @@ async function invoiceOrder(
   const amounts = splitInstallments(order.total, installments);
   const transactionIds: string[] = [];
   for (let i = 0; i < amounts.length; i++) {
-    const dueDate = new Date(now.getTime() + i * 30 * DAY_MS).toISOString().split('T')[0];
+    const dueDate = installmentDueDate(now, i);
     const result = await createTransactionSafeAdmin(db, {
       businessId: order.businessId,
       type: 'receita',
