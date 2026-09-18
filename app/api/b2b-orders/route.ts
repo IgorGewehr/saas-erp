@@ -15,8 +15,8 @@ import { CommercialQuoteError } from '@/lib/services/commercial-quote';
  * VendasModule.tsx chamar do browser com o token do usuário logado.
  */
 
-function error(message: string, status: number) {
-  return NextResponse.json({ ok: false, error: message }, { status });
+function error(message: string, status: number, code?: string) {
+  return NextResponse.json({ ok: false, error: message, ...(code ? { code } : {}) }, { status });
 }
 
 export async function POST(request: NextRequest) {
@@ -55,8 +55,9 @@ export async function POST(request: NextRequest) {
       data: { ...result.order, ...(result.created ? {} : { _idempotent: true }) },
     });
   } catch (cause) {
-    if (cause instanceof CommercialQuoteError) return error(cause.message, cause.status);
-    if (cause instanceof OrderServiceError) return error(cause.message, cause.status);
+    // `code` deixa o cliente distinguir STALE_QUOTE (preço mudou → revisar proposta) de falha genérica.
+    if (cause instanceof CommercialQuoteError) return error(cause.message, cause.status, cause.code);
+    if (cause instanceof OrderServiceError) return error(cause.message, cause.status, cause.code);
     console.error('[b2b-orders] create failed', cause);
     return error('Não foi possível criar o pedido.', 500);
   }

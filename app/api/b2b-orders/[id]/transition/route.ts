@@ -5,6 +5,7 @@ import { verifyAuth, isAuthError } from '@/lib/utils/verifyAuth';
 import { ROLE_HIERARCHY, type UserRole } from '@/lib/types';
 import { OrderStatusSchema } from '@/contracts/domain/order';
 import { transitionOrderAdmin, OrderTransitionError } from '@/lib/services/order-transition-admin';
+import { InsufficientStockError, StockReferenceError } from '@/lib/services/stock-core-admin';
 
 /**
  * Transição autenticada (sessão de usuário) de Order B2B/condicional —
@@ -68,6 +69,14 @@ export async function PATCH(
             : 400;
       return error(cause.message, status);
     }
+    // Faturar baixa estoque: sem este mapeamento a falta de saldo virava um 500 genérico.
+    if (cause instanceof InsufficientStockError) {
+      return NextResponse.json(
+        { ok: false, error: cause.message, code: cause.code, shortages: cause.shortages },
+        { status: 409 },
+      );
+    }
+    if (cause instanceof StockReferenceError) return error(cause.message, 409);
     console.error('[b2b-orders/transition] failed', cause);
     return error('Não foi possível alterar o pedido.', 500);
   }
