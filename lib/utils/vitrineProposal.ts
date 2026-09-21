@@ -143,6 +143,52 @@ export function toProposalLine(product: Product, variant?: ProductVariant, quant
   };
 }
 
+export interface CatalogSyncResult {
+  /** Mesma referência de `lines` quando nada mudou (evita re-render em loop). */
+  lines: ProposalLine[];
+  /** Itens que saíram do catálogo (inativos, arquivados, sem preço) e foram tirados da proposta. */
+  removed: string[];
+  /** Itens cujo preço de catálogo mudou desde que entraram na proposta. */
+  repriced: string[];
+}
+
+/**
+ * Mantém a proposta fiel ao catálogo em tempo real: preço novo entra na hora (o total mostrado
+ * é o que o servidor vai cotar) e item que deixou de existir sai, em vez de estourar só no
+ * fechamento. Recebe a lista já filtrada por `isCatalogProduct`.
+ */
+export function syncLinesWithCatalog(lines: ProposalLine[], products: Product[]): CatalogSyncResult {
+  const byId = new Map(products.map((product) => [product.id, product]));
+  const removed: string[] = [];
+  const repriced: string[] = [];
+  let changed = false;
+
+  const next: ProposalLine[] = [];
+  for (const line of lines) {
+    const product = byId.get(line.productId);
+    const variant = line.variantId
+      ? getActiveVariants(product ?? { variants: [] }).find((candidate) => candidate.id === line.variantId)
+      : undefined;
+    const price = product ? moneyToCents(variant ? variant.salePrice : product.salePrice) : 0;
+    const gone = !product || (line.variantId !== undefined && !variant) || price <= 0;
+
+    if (gone) {
+      removed.push(line.variantName ? `${line.name} — ${line.variantName}` : line.name);
+      changed = true;
+      continue;
+    }
+    if (price !== line.unitPriceCents) {
+      repriced.push(line.variantName ? `${line.name} — ${line.variantName}` : line.name);
+      changed = true;
+      next.push({ ...line, unitPriceCents: price });
+      continue;
+    }
+    next.push(line);
+  }
+
+  return { lines: changed ? next : lines, removed, repriced };
+}
+
 export interface StockShortfall {
   key: string;
   name: string;

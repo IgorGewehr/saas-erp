@@ -3,37 +3,71 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence } from 'framer-motion';
-import { Package, Presentation, Search, X } from 'lucide-react';
+import { toast } from 'react-toastify';
+import { FileText, Package, Presentation, Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
+import type { MenuPage } from '@/app/components/layout/Sidebar';
 import { useTabContext } from '@/app/components/layout/TabContext';
+import { createApiRequest } from '@/lib/services/vitrine/apiClient';
+import { formatCurrency } from '@/lib/utils/format';
+import { getActivePromotions } from '@/lib/utils/promotions';
 import { filterCatalog, getCatalogCategories } from '@/lib/utils/vitrineCatalog';
-import type { Product } from '@/lib/types';
+import { ROLE_HIERARCHY, type Product, type UserRole } from '@/lib/types';
 import { PresentationMode } from './PresentationMode';
 import { ProductCard } from './ProductCard';
 import { ProductDetail } from './ProductDetail';
+import { ProposalDrawer } from './ProposalDrawer';
 import { useVitrineProducts } from './useVitrineProducts';
+import { useVitrineProposal } from './useVitrineProposal';
 
 const PRIORITY_CARDS = 4;
 
 export default function VitrineModule() {
-  const { business } = useAuth();
+  const { business, user, firebaseUser } = useAuth();
   const { activeTabId, openTab } = useTabContext();
   const isActive = activeTabId === 'Vitrine';
 
   const { products, isLoading } = useVitrineProducts(business?.id, isActive);
 
+  const roleValue = ROLE_HIERARCHY[(user?.role ?? 'viewer') as UserRole] ?? 0;
+  // O servidor recusa desconto de quem não é gerente (403) e as rules só liberam `transactions` pra gerente.
+  const isManager = roleValue >= ROLE_HIERARCHY.manager;
+
+  const request = useMemo(
+    () => createApiRequest(async () => {
+      if (!firebaseUser) throw new Error('Sem usuário autenticado.');
+      return firebaseUser.getIdToken();
+    }),
+    [firebaseUser],
+  );
+
+  const promotions = business?.settings?.promotions;
+  const activePromotions = useMemo(() => getActivePromotions(promotions, new Date()), [promotions]);
+
+  const proposal = useVitrineProposal({
+    businessId: business?.id,
+    products,
+    catalogReady: !isLoading,
+    promotions: activePromotions,
+    canNegotiate: isManager,
+    request,
+  });
+
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [presenting, setPresenting] = useState(false);
+  const [proposalOpen, setProposalOpen] = useState(false);
 
   // As sobreposições vivem em portal no <body> e as abas ficam montadas em paralelo:
-  // sem fechar ao sair da aba, o detalhe/apresentação cobriria o módulo que o usuário abriu.
+  // sem fechar ao sair da aba, elas cobririam o módulo que o usuário abriu.
+  // A proposta em si (itens, cliente) NÃO é perdida — só a gaveta fecha.
   useEffect(() => {
     if (isActive) return;
     setSelectedId(null);
     setPresenting(false);
+    setProposalOpen(false);
   }, [isActive]);
 
   const deferredSearch = useDeferredValue(search);
@@ -49,12 +83,32 @@ export default function VitrineModule() {
   const handleSelect = useCallback((product: Product) => setSelectedId(product.id), []);
   const handleCloseDetail = useCallback(() => setSelectedId(null), []);
   const handleExitPresentation = useCallback(() => setPresenting(false), []);
+  const handleCloseProposal = useCallback(() => setProposalOpen(false), []);
+
+  const handleAdded = useCallback((product: Product) => {
+    setSelectedId(null);
+    toast.success(`${product.name} adicionado à proposta`, { autoClose: 2000 });
+  }, []);
+
+  // Navegar pra outra aba a partir da gaveta: fecha a sobreposição antes, senão ela cobre o destino.
+  const handleNavigate = useCallback((page: MenuPage) => {
+    setProposalOpen(false);
+    openTab(page);
+  }, [openTab]);
 
   const hasFilters = search.trim() !== '' || activeCategory !== null;
   const clearFilters = () => {
     setSearch('');
     setCategory(null);
   };
+
+  const dealInProgress = proposal.phase.kind !== 'editing' && proposal.phase.kind !== 'stale';
+  const showProposalButton = proposal.itemCount > 0 || dealInProgress;
+  const proposalButtonLabel = proposal.phase.kind === 'done'
+    ? 'Negócio fechado — ver'
+    : dealInProgress
+      ? 'Fechando negócio…'
+      : `Proposta · ${proposal.itemCount} ${proposal.itemCount === 1 ? 'item' : 'itens'} · ${formatCurrency(proposal.totalMoney)}`;
 
   return (
     <div className="mx-auto max-w-[1400px]">
@@ -150,10 +204,49 @@ export default function VitrineModule() {
         )}
       </div>
 
+      {/* Botão da proposta: fica colado no rodapé da aba enquanto há proposta em andamento. */}
+      {showProposalButton && isActive && (
+        <div className="pointer-events-none sticky bottom-4 z-10 mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setProposalOpen(true)}
+            className={cn(
+              'pointer-events-auto flex h-14 touch-manipulation items-center gap-2 rounded-full px-6 text-md font-semibold text-white shadow-lg transition-colors',
+              proposal.phase.kind === 'done' ? 'bg-emerald-600 shadow-emerald-500/30 active:bg-emerald-700' : 'bg-red-600 shadow-red-500/30 active:bg-red-700',
+            )}
+          >
+            <FileText className="h-5 w-5" />
+            {proposalButtonLabel}
+          </button>
+        </div>
+      )}
+
       {isActive && typeof document !== 'undefined' && createPortal(
         <>
           <AnimatePresence>
-            {selected && !presenting && <ProductDetail key={selected.id} product={selected} onClose={handleCloseDetail} />}
+            {selected && !presenting && !proposalOpen && (
+              <ProductDetail
+                key={selected.id}
+                product={selected}
+                onClose={handleCloseDetail}
+                onAddToProposal={proposal.addProduct}
+                onAdded={handleAdded}
+              />
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {proposalOpen && !presenting && business?.id && (
+              <ProposalDrawer
+                proposal={proposal}
+                businessId={business.id}
+                activePromotions={activePromotions}
+                canNegotiate={isManager}
+                canSeeReceivables={isManager}
+                request={request}
+                onClose={handleCloseProposal}
+                onNavigate={handleNavigate}
+              />
+            )}
           </AnimatePresence>
           <AnimatePresence>
             {presenting && <PresentationMode products={visible} onExit={handleExitPresentation} />}
