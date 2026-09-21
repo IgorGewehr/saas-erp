@@ -60,6 +60,7 @@ External
 | Team-Chat | `app/components/features/team-chat/TeamChatPanel.tsx` | teamChats, teamChatMessages, aiChatMessages | Reações, mentions, AI integrado |
 | Senhas / Vault | `app/components/features/senhas/SenhasModule.tsx` + `/api/vault/route.ts` | passwordVaultEntries | AES-256-GCM, accessScope `admins`/`specific`, auto-hide 15s |
 | Spreadsheets | `app/components/features/spreadsheets/SpreadsheetsModule.tsx` | spreadsheets | Univer (lazy ~300KB), lock cooperativo 90s, debounce 1.5s |
+| Vitrine | `app/components/features/vitrine/VitrineModule.tsx` | products (leitura), clients, orders, transactions, `businesses.settings.promotions` | Catálogo p/ tablet + modo apresentação + proposta → `POST /api/b2b-orders` (idempotente, `expectedTotalCents`) → confirmar → faturar (N receitas) → `POST /api/transactions/{id}/settle` (gerente+, no-op se já paga). Sem NF/boleto. Ver `docs/vitrine/VITRINE_DEMO.md` |
 | AI Agent (Py) | `/agent` (FastAPI) | agentRuns, agentCircuits, agentNonces, knowledgeChunks | LangGraph 5 nodes; HMAC bidi; circuit-breaker; RAG = Firestore |
 
 ## Dependências cruzadas mais importantes

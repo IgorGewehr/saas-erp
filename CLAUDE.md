@@ -140,6 +140,7 @@ app/components/features/
 ├── team-chat       Chat interno + AI assistant
 ├── senhas          Vault de senhas AES-256-GCM
 ├── spreadsheets    Editor Univer com lock cooperativo
+├── vitrine         Catálogo p/ tablet + apresentação + proposta/fechamento + recebimento (sem NF)
 └── shared          Componentes compartilhados
 
 app/api/
