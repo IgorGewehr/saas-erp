@@ -2128,7 +2128,7 @@
       "dragOrClick": "Arraste uma imagem ou clique para selecionar",
       "formats": "JPG, PNG ou WebP - Max 5MB",
       "invalidFormat": "Formato inválido. Use JPG, PNG ou WebP.",
-      "tooLarge": "Imagem muito grande. Máximo 5MB."
+      "tooLarge": "Imagem muito grande. Máximo 40MB."
     },
     "deleteDialog": {
       "title": "Excluir Produto",

@@ -269,7 +269,9 @@ const EMPTY_MOVEMENT_FORM: MovementFormData = {
   expiresAt: '',
 };
 
-const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+// Limite do arquivo ORIGINAL: a foto é reduzida no envio (lib/utils/imageResize.ts), então o teto
+// de 5MB do servidor vale para o resultado, não para o que sai da câmera do tablet.
+const MAX_IMAGE_SIZE = 40 * 1024 * 1024; // 40MB
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 const DIETARY_OPTIONS: { id: string; label: string; emoji: string }[] = [
@@ -950,7 +952,7 @@ function ProductImagesEditor({
             {t('inventory.image.dragOrClickMany', 'Arraste imagens ou clique para selecionar')}
           </p>
           <p className="text-xs text-muted-foreground/60 mt-1">
-            JPG, PNG ou WebP · até 5MB cada · {total}/8
+            JPG, PNG ou WebP · reduzidas automaticamente · {total}/8
           </p>
         </div>
       )}
@@ -1975,7 +1977,7 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
     }
     const tooLarge = files.some((file) => file.size > MAX_IMAGE_SIZE);
     if (tooLarge) {
-      setImageError(t('inventory.image.tooLarge', 'Cada imagem deve ter no máximo 5MB.'));
+      setImageError(t('inventory.image.tooLarge', 'Cada imagem deve ter no máximo 40MB.'));
       return;
     }
     if (form.existingImages.length + form.imageFiles.length + files.length > 8) {

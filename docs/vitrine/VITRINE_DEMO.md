@@ -37,7 +37,7 @@ Em **Estoque → Produtos**, para cada serviço do catálogo:
 | Preço de venda | Preencher (> 0) | Item sem preço aparece como "Sob consulta" e **não entra na proposta** |
 | **Não controlar estoque** | **Ligar** | Serviço não tem saldo. Sem isso, o faturamento exige saldo em estoque |
 | Saldo | Pode ficar 0 | Só importa para itens COM controle de estoque |
-| Fotos | Adicionar, **já reduzidas (≤ 400 KB)** | O upload aceita até 5 MB por imagem e **não redimensiona**; foto grande de celular deixa a vitrine pesada no tablet (o Next gera miniaturas na grade, mas a foto cheia carrega no detalhe) |
+| Fotos | Adicionar direto da câmera/galeria | Ao salvar, cada foto é **reduzida no próprio navegador** (lado maior 1600 px, JPEG 82%, ~150–400 KB; HEIC do iPad vira JPEG). Fotos **já cadastradas** antes disso não são reduzidas — reenviar para otimizar |
 | Descrição | Linhas `Rótulo: valor` (mín. 2) | Viram a **tabela de especificações**. Ex.: `Duração: 30 segundos` / `Horário: nobre` / `Inserções: 60 por mês`. Com menos de 2 linhas vira texto corrido |
 | Opções (variações) | Opcional (ex.: 15s / 30s / 60s) | Aparecem como escolha ao adicionar; o preço vem da opção |
 
@@ -112,8 +112,8 @@ com saldo 0 estourava *Estoque insuficiente* ao faturar. Agora esses itens não 
 - **Boleto** e **PIX/cartão ao vivo** no pedido (o recebimento é registrado manualmente).
 - **PWA/offline** (é navegador; sem conexão o fechamento mostra erro e permite tentar de novo).
 - **Nota fiscal** (NFS-e/NFC-e/NF-e continuam nos módulos próprios; não há emissão aqui).
-- Preço promocional por produto, especificações estruturadas (campo próprio), redimensionar a
-  imagem no upload, PDF/impressão da proposta, política de desconto para operador, `Client.totalSpent`.
+- Preço promocional por produto, especificações estruturadas (campo próprio), PDF/impressão da
+  proposta, política de desconto para operador, `Client.totalSpent`.
 - A negociação real da rádio (regras de preço/comissão) — entra quando o cliente explicar.
 
 ## Teste manual no tablet (não foi possível validar visualmente durante o desenvolvimento)
@@ -143,4 +143,4 @@ promoções, render de tela). O que **só um tablet real confirma** — passar p
 | Não aparece campo de negociação nem *Receber* | Usuário abaixo de gerente |
 | Não aparece *Gerenciar promoções* | Usuário abaixo de admin |
 | "O valor do catálogo mudou…" | Alguém alterou o preço durante a negociação; a proposta já foi atualizada — conferir o total e fechar de novo |
-| Fotos lentas | Imagens grandes; reduzir para ≤ 400 KB e reenviar |
+| Fotos lentas | Imagens cadastradas antes da redução automática; reenviar a foto pelo Estoque |

@@ -3,6 +3,7 @@
 import { auth } from '@/lib/config/firebase';
 import type { ProductCatalogData, ProductCatalogPatch } from '@/lib/contracts/api/product-catalog';
 import type { Product, ProductImage } from '@/lib/types';
+import { prepareImagesForUpload } from '@/lib/utils/imageResize';
 
 interface ProductApiResponse {
   ok: boolean;
@@ -113,7 +114,9 @@ export async function replaceCatalogProductImages(input: {
   form.set('productId', input.productId);
   form.set('mode', input.mode ?? 'replace');
   if (input.existingImages) form.set('existingImages', JSON.stringify(input.existingImages));
-  input.files.forEach((file) => form.append('files', file));
+  // Foto de tablet/celular tem 3–12 MB (o servidor aceita até 5 MB): reduz aqui, uma por vez.
+  const files = await prepareImagesForUpload(input.files);
+  files.forEach((file) => form.append('files', file));
   const response = await fetch('/api/products/images', {
     method: 'POST',
     headers: { Authorization: `Bearer ${await token()}` },
