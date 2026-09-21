@@ -64,10 +64,15 @@ Depois:
 7. **Negociação (gerente)** — tocar numa promoção **ou** digitar o **valor negociado** (ex.:
    `4.500,00`). O desconto e o total se atualizam.
 8. **Pagamento** — escolher à vista ou parcelas (2x…12x); o cronograma mostra cada vencimento.
-9. **Fechar negócio** — cria o pedido, confirma e fatura; aparece **Negócio fechado!**.
-10. **Receber** — em cada parcela, *Receber* → forma de pagamento (PIX, dinheiro, cartão, outro)
-    → *Confirmar recebimento*. A parcela vira **Recebido**.
-11. **Onde ficou registrado** — atalhos: *Financeiro* (receitas por parcela), *Clientes* (a ficha
+9. **PDF da proposta** (opcional) — escolher a validade (7/15/30 dias), escrever observações e
+   tocar **Gerar PDF**; depois **Compartilhar** (WhatsApp, e-mail, Salvar em Arquivos, Imprimir) ou
+   **Abrir PDF**. O timbre usa os dados da empresa (nome fantasia, CNPJ, telefone, e-mail, endereço e
+   logo de *Configurações → Empresa*).
+10. **Fechar negócio** — cria o pedido, confirma e fatura; aparece **Negócio fechado!**.
+11. **Receber** — em cada parcela, *Receber* → forma de pagamento (PIX, dinheiro, cartão, outro)
+    → *Confirmar recebimento*. A parcela vira **Recebido**. Também dá pra gerar o **PDF do negócio**
+    (com o número do pedido e as datas reais das parcelas).
+12. **Onde ficou registrado** — atalhos: *Financeiro* (receitas por parcela), *Clientes* (a ficha
     do cliente → *Timeline* mostra o pedido e as receitas), *Vendas* (o pedido, com o KPI
     "Receita faturada").
 
@@ -101,6 +106,9 @@ Depois:
 - **KPI do Vendas** passou de "Receita entregue" para **"Receita faturada"** (faturado + enviado
   + entregue) — antes um negócio recém-fechado aparecia como R$ 0.
 - **Descrição do recebível** usa `#ABC123` (últimos 6 do pedido, igual à tela de Vendas).
+- **PDF**: proposta ainda não fechada mostra vencimentos relativos ("30 dias após o fechamento"); a data
+  real só existe no faturamento. O PDF pronto é descartado se a proposta mudar depois de gerado. Se o
+  logo não carregar (sem CORS no Storage, rede lenta) o PDF sai só com o nome da empresa.
 
 ## Correção incluída (vale para todo o sistema)
 
@@ -113,8 +121,7 @@ com saldo 0 estourava *Estoque insuficiente* ao faturar. Agora esses itens não 
 - **Boleto** e **PIX/cartão ao vivo** no pedido (o recebimento é registrado manualmente).
 - **PWA/offline** (é navegador; sem conexão o fechamento mostra erro e permite tentar de novo).
 - **Nota fiscal** (NFS-e/NFC-e/NF-e continuam nos módulos próprios; não há emissão aqui).
-- Preço promocional por produto, PDF/impressão da proposta, política de desconto para operador,
-  `Client.totalSpent`.
+- Preço promocional por produto, política de desconto para operador, `Client.totalSpent`.
 - A negociação real da rádio (regras de preço/comissão) — entra quando o cliente explicar.
 
 ## Teste manual no tablet (não foi possível validar visualmente durante o desenvolvimento)
@@ -132,6 +139,8 @@ promoções, render de tela). O que **só um tablet real confirma** — passar p
 - [ ] Fechar negócio no caminho feliz e **derrubando o Wi-Fi** no meio (deve avisar e permitir
       *Tentar de novo* sem duplicar o pedido — conferir em Vendas que há **um** pedido só).
 - [ ] Registrar recebimento à noite: a data gravada é a do relógio do tablet (não "amanhã").
+- [ ] PDF: *Gerar PDF* → *Compartilhar* abre a folha de compartilhamento do iPad; *Abrir PDF* mostra no
+      visualizador. Conferir acentos, o logo no timbre e a quebra de página numa proposta longa.
 - [ ] Ficha do cliente → Timeline mostra o pedido e as receitas.
 - [ ] Modo escuro.
 

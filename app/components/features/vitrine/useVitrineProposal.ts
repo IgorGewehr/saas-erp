@@ -26,17 +26,33 @@ import {
 export interface ProposalClient {
   id: string;
   name: string;
+  /** Só pra o PDF: quando o cliente vem da lista/cadastro rápido, leva o contato junto. */
+  company?: string;
+  phone?: string;
+  email?: string;
 }
 
 /** Foto do negócio no instante em que fechou — a tela "negócio fechado" não depende mais do rascunho. */
 export interface ClosedDeal {
   orderId: string;
   client: ProposalClient;
+  lines: ProposalLine[];
+  subtotalCents: number;
+  discountCents: number;
+  discountReason?: string;
   totalCents: number;
   installments: number;
   transactionIds: string[];
   schedule: InstallmentScheduleEntry[];
 }
+
+/** Opções que só existem no PDF da proposta (não vão pro pedido). */
+export interface PdfOptions {
+  validityDays: number;
+  notes: string;
+}
+
+const DEFAULT_PDF_OPTIONS: PdfOptions = { validityDays: 7, notes: '' };
 
 export type DealPhase =
   | { kind: 'editing' }
@@ -70,6 +86,7 @@ export function useVitrineProposal(params: UseVitrineProposalParams) {
   const [negotiatedText, setNegotiatedTextState] = useState('');
   const [installments, setInstallments] = useState(1);
   const [phase, setPhase] = useState<DealPhase>({ kind: 'editing' });
+  const [pdfOptions, setPdfOptions] = useState<PdfOptions>(DEFAULT_PDF_OPTIONS);
 
   // UMA chave por proposta (nunca por clique). É ela que faz o servidor devolver o mesmo pedido
   // em vez de criar outro; só é trocada ao começar/descartar uma proposta.
@@ -85,6 +102,7 @@ export function useVitrineProposal(params: UseVitrineProposalParams) {
     setPromotionId(null);
     setNegotiatedTextState('');
     setInstallments(1);
+    setPdfOptions(DEFAULT_PDF_OPTIONS);
     setPhase({ kind: 'editing' });
   }, []);
 
@@ -229,6 +247,10 @@ export function useVitrineProposal(params: UseVitrineProposalParams) {
           deal: {
             orderId: result.orderId,
             client,
+            lines,
+            subtotalCents: totals.subtotalCents,
+            discountCents: totals.discountCents,
+            ...(totals.discountReason ? { discountReason: totals.discountReason } : {}),
             totalCents: Math.round(result.total * 100),
             installments,
             transactionIds: result.transactionIds,
@@ -294,6 +316,9 @@ export function useVitrineProposal(params: UseVitrineProposalParams) {
     choosePromotion,
     setNegotiatedText,
     chooseInstallments,
+    pdfOptions,
+    setPdfValidityDays: (validityDays: number) => setPdfOptions((current) => ({ ...current, validityDays })),
+    setPdfNotes: (notes: string) => setPdfOptions((current) => ({ ...current, notes })),
     close,
     retry,
     discard,

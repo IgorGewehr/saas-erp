@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
 import { useTabContext } from '@/app/components/layout/TabContext';
+import { buildLetterhead } from '@/lib/pdf/proposalDocument';
 import { createApiRequest } from '@/lib/services/vitrine/apiClient';
 import { formatCurrency } from '@/lib/utils/format';
 import { getActivePromotions } from '@/lib/utils/promotions';
@@ -45,6 +46,8 @@ export default function VitrineModule() {
     }),
     [firebaseUser],
   );
+
+  const letterhead = useMemo(() => buildLetterhead(business ?? {}), [business]);
 
   const promotions = business?.settings?.promotions;
   const activePromotions = useMemo(() => getActivePromotions(promotions, new Date()), [promotions]);
@@ -251,6 +254,8 @@ export default function VitrineModule() {
                 activePromotions={activePromotions}
                 canNegotiate={isManager}
                 canSeeReceivables={isManager}
+                letterhead={letterhead}
+                logoUrl={business.logo}
                 request={request}
                 onClose={handleCloseProposal}
                 onNavigate={handleNavigate}

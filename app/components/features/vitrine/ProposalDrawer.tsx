@@ -8,11 +8,13 @@ import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
 import { formatDateOnly } from '@/lib/utils/localDate';
 import { centsToMoney, lineKey, lineTotalCents } from '@/lib/utils/vitrineProposal';
+import type { LetterheadInput } from '@/lib/pdf/proposalDocument';
 import type { ApiRequest } from '@/lib/services/vitrine/apiClient';
 import type { CloseDealStep } from '@/lib/services/vitrine/closeDeal';
 import type { BusinessPromotion } from '@/lib/types';
 import { ClientPicker } from './ClientPicker';
 import { DealClosedView } from './DealClosedView';
+import { ProposalPdfSection } from './ProposalPdfSection';
 import { INSTALLMENT_OPTIONS, type VitrineProposal } from './useVitrineProposal';
 
 interface ProposalDrawerProps {
@@ -22,6 +24,9 @@ interface ProposalDrawerProps {
   /** manager+: negocia valor e aplica promoção. */
   canNegotiate: boolean;
   canSeeReceivables: boolean;
+  /** Timbre do PDF (dados da empresa) e logo, quando houver. */
+  letterhead: LetterheadInput;
+  logoUrl?: string;
   request: ApiRequest;
   onClose: () => void;
   onNavigate: (page: MenuPage) => void;
@@ -75,6 +80,8 @@ export function ProposalDrawer(props: ProposalDrawerProps) {
             deal={proposal.phase.deal}
             businessId={props.businessId}
             canSeeReceivables={props.canSeeReceivables}
+            letterhead={props.letterhead}
+            logoUrl={props.logoUrl}
             request={props.request}
             onNewProposal={() => { proposal.reset(); setView('proposal'); }}
             onNavigate={props.onNavigate}
@@ -99,6 +106,8 @@ function ProposalEditor({
   proposal,
   activePromotions,
   canNegotiate,
+  letterhead,
+  logoUrl,
   onClose,
   onNavigate,
   onPickClient,
@@ -251,6 +260,30 @@ function ProposalEditor({
               ))}
             </ul>
           </section>
+        )}
+
+        {editable && proposal.client && lines.length > 0 && (
+          <ProposalPdfSection
+            letterhead={letterhead}
+            logoUrl={logoUrl}
+            document={{
+              kind: 'proposal',
+              client: proposal.client,
+              lines,
+              subtotalCents: totals.subtotalCents,
+              discountCents: totals.discountCents,
+              discountReason: totals.discountReason,
+              totalCents: totals.totalCents,
+              installments: proposal.installments,
+              schedule: totals.schedule,
+            }}
+            options={{
+              validityDays: proposal.pdfOptions.validityDays,
+              notes: proposal.pdfOptions.notes,
+              onValidityChange: proposal.setPdfValidityDays,
+              onNotesChange: proposal.setPdfNotes,
+            }}
+          />
         )}
 
         {phase.kind === 'stale' && (

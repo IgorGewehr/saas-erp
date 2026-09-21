@@ -46,6 +46,9 @@ function makeProposal(overrides: Partial<VitrineProposal> = {}, options: { lines
     choosePromotion: noop,
     setNegotiatedText: noop,
     chooseInstallments: noop,
+    pdfOptions: { validityDays: 7, notes: '' },
+    setPdfValidityDays: noop,
+    setPdfNotes: noop,
     close: asyncNoop,
     retry: asyncNoop,
     discard: asyncNoop,
@@ -63,6 +66,7 @@ function render(proposal: VitrineProposal, props: { canNegotiate?: boolean; canS
       activePromotions={props.promotions ?? [promo]}
       canNegotiate={props.canNegotiate ?? true}
       canSeeReceivables={props.canSeeReceivables ?? true}
+      letterhead={{ name: 'Rádio Nova FM' }}
       request={async () => ({ ok: true, data: null })}
       onClose={() => undefined}
       onNavigate={() => undefined}
@@ -174,6 +178,10 @@ describe('ProposalDrawer — negócio fechado', () => {
   const deal: ClosedDeal = {
     orderId: 'order_0123456789abcdef',
     client: { id: 'cli_1', name: 'Padaria do Zé' },
+    lines: [line],
+    subtotalCents: 300_000,
+    discountCents: 30_000,
+    discountReason: 'Promoção: Lançamento',
     totalCents: 270_000,
     installments: 3,
     transactionIds: ['tx1', 'tx2', 'tx3'],
@@ -202,5 +210,65 @@ describe('ProposalDrawer — negócio fechado', () => {
     expect(html).toContain('Financeiro');
     expect(html).toContain('Clientes');
     expect(html).toContain('Vendas');
+  });
+});
+
+describe('ProposalDrawer — PDF', () => {
+  it('proposta com cliente e itens oferece o PDF: validade, observações e botão', () => {
+    const html = render(makeProposal());
+    expect(html).toContain('PDF da proposta');
+    expect(html).toContain('Válida por');
+    expect(html).toContain('7 dias');
+    expect(html).toContain('15 dias');
+    expect(html).toContain('30 dias');
+    expect(html).toContain('Observações (opcional)');
+    expect(html).toContain('Gerar PDF');
+  });
+
+  it('a validade escolhida aparece marcada', () => {
+    const html = render(makeProposal({ pdfOptions: { validityDays: 15, notes: '' } }));
+    expect(buttonWith(html, '15 dias')).toContain('aria-pressed="true"');
+    expect(buttonWith(html, '7 dias')).toContain('aria-pressed="false"');
+  });
+
+  it('as observações digitadas voltam preenchidas (o estado mora no hook, sobrevive ao fechar a gaveta)', () => {
+    const html = render(makeProposal({ pdfOptions: { validityDays: 7, notes: 'Inclui gravação do spot.' } }));
+    expect(html).toContain('Inclui gravação do spot.');
+  });
+
+  it('o campo de observações usa 16px (senão o iPad dá zoom)', () => {
+    expect(render(makeProposal())).toMatch(/<textarea[^>]*text-\[16px\]/);
+  });
+
+  it('sem cliente não há o que imprimir: a seção some', () => {
+    expect(render(makeProposal({ client: null, canClose: false }))).not.toContain('PDF da proposta');
+  });
+
+  it('proposta vazia: a seção some', () => {
+    const empty = makeProposal({ canClose: false, totals: computeProposalTotals({ lines: [], promotion: null, negotiatedTotalCents: null, installments: 1, now: NOW }) }, { lines: [] });
+    expect(render(empty)).not.toContain('PDF da proposta');
+  });
+
+  it('proposta travada (fechando/falhou) não gera PDF por essa tela', () => {
+    expect(render(makeProposal({ editable: false, phase: { kind: 'closing', step: 'create' }, canClose: false }))).not.toContain('PDF da proposta');
+  });
+
+  it('negócio fechado oferece o PDF do negócio, sem validade nem observações', () => {
+    const deal: ClosedDeal = {
+      orderId: 'order_0123456789abcdef',
+      client: { id: 'cli_1', name: 'Padaria do Zé' },
+      lines: [line],
+      subtotalCents: 300_000,
+      discountCents: 0,
+      totalCents: 300_000,
+      installments: 1,
+      transactionIds: ['tx1'],
+      schedule: computeProposalTotals({ lines: [line], promotion: null, negotiatedTotalCents: null, installments: 1, now: NOW }).schedule,
+    };
+    const html = render(makeProposal({ phase: { kind: 'done', deal } }));
+    expect(html).toContain('PDF do negócio');
+    expect(html).toContain('Gerar PDF');
+    expect(html).not.toContain('Válida por');
+    expect(html).not.toContain('Observações (opcional)');
   });
 });

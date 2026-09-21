@@ -10,9 +10,11 @@ import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
 import { formatDateOnly, toLocalDateString } from '@/lib/utils/localDate';
 import { centsToMoney } from '@/lib/utils/vitrineProposal';
+import type { LetterheadInput } from '@/lib/pdf/proposalDocument';
 import type { ApiRequest } from '@/lib/services/vitrine/apiClient';
 import { settleReceivable } from '@/lib/services/vitrine/closeDeal';
 import type { Transaction } from '@/lib/types';
+import { ProposalPdfSection } from './ProposalPdfSection';
 import type { ClosedDeal } from './useVitrineProposal';
 
 interface DealClosedViewProps {
@@ -20,6 +22,8 @@ interface DealClosedViewProps {
   businessId: string;
   /** manager+: lê `transactions` (rules) e registra recebimentos. */
   canSeeReceivables: boolean;
+  letterhead: LetterheadInput;
+  logoUrl?: string;
   request: ApiRequest;
   onNewProposal: () => void;
   onNavigate: (page: MenuPage) => void;
@@ -67,7 +71,7 @@ function useDealReceivables(businessId: string, orderId: string, enabled: boolea
   return { receivables, isLoading };
 }
 
-export function DealClosedView({ deal, businessId, canSeeReceivables, request, onNewProposal, onNavigate, onClose }: DealClosedViewProps) {
+export function DealClosedView({ deal, businessId, canSeeReceivables, letterhead, logoUrl, request, onNewProposal, onNavigate, onClose }: DealClosedViewProps) {
   const { receivables, isLoading } = useDealReceivables(businessId, deal.orderId, canSeeReceivables);
   const received = receivables.filter((transaction) => transaction.status === 'pago').length;
 
@@ -141,6 +145,23 @@ export function DealClosedView({ deal, businessId, canSeeReceivables, request, o
             </ul>
           )}
         </section>
+
+        <ProposalPdfSection
+          letterhead={letterhead}
+          logoUrl={logoUrl}
+          document={{
+            kind: 'deal',
+            client: deal.client,
+            lines: deal.lines,
+            subtotalCents: deal.subtotalCents,
+            discountCents: deal.discountCents,
+            discountReason: deal.discountReason,
+            totalCents: deal.totalCents,
+            installments: deal.installments,
+            schedule: deal.schedule,
+            orderNumber: deal.orderId.slice(-6).toUpperCase(),
+          }}
+        />
 
         <section aria-label="Atalhos" className="grid grid-cols-3 gap-2">
           {canSeeReceivables && <Shortcut icon={Wallet} label="Financeiro" onClick={() => onNavigate('Financeiro')} />}

@@ -322,6 +322,41 @@ describe('useVitrineProposal — fechar negócio', () => {
     expect(server.orders.size).toBe(2);
   });
 
+  it('opções do PDF: validade padrão 7 dias, editáveis, e zeradas numa nova proposta', async () => {
+    const { result } = await readyToClose();
+    expect(result.current.pdfOptions).toEqual({ validityDays: 7, notes: '' });
+
+    act(() => { result.current.setPdfValidityDays(15); result.current.setPdfNotes('Inclui gravação.'); });
+    expect(result.current.pdfOptions).toEqual({ validityDays: 15, notes: 'Inclui gravação.' });
+
+    act(() => { result.current.reset(); });
+    expect(result.current.pdfOptions).toEqual({ validityDays: 7, notes: '' });
+  });
+
+  it('opções do PDF NÃO travam com a proposta (não afetam o pedido)', async () => {
+    const { result } = await readyToClose({}, { invoiceFailures: [noStock] });
+    await act(async () => { await result.current.close(); });
+    expect(result.current.editable).toBe(false);
+
+    act(() => { result.current.setPdfNotes('ainda dá pra anotar'); });
+    expect(result.current.pdfOptions.notes).toBe('ainda dá pra anotar');
+  });
+
+  it('o negócio fechado guarda itens e desconto (é o que alimenta o PDF do negócio)', async () => {
+    const { result } = await readyToClose();
+    act(() => { result.current.choosePromotion('promo1'); });
+    await act(async () => { await result.current.close(); });
+
+    expect(result.current.phase.kind).toBe('done');
+    if (result.current.phase.kind !== 'done') return;
+    expect(result.current.phase.deal).toMatchObject({
+      subtotalCents: 150_000,
+      discountCents: 15_000,
+      discountReason: 'Promoção: Lançamento',
+      lines: [{ productId: 'p1', quantity: 1 }],
+    });
+  });
+
   it('nova proposta zera tudo', async () => {
     const { result } = await readyToClose();
     await act(async () => { await result.current.close(); });

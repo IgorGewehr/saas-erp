@@ -89,7 +89,7 @@ export function ClientPicker({ businessId, selected, onSelect, onBack }: ClientP
           <ul className="space-y-2">
             {results.slice(0, MAX_RESULTS).map((client) => (
               <li key={client.id}>
-                <ClientRow client={client} isSelected={client.id === selected?.id} onSelect={() => onSelect({ id: client.id, name: client.name })} />
+                <ClientRow client={client} isSelected={client.id === selected?.id} onSelect={() => onSelect(toProposalClient(client))} />
               </li>
             ))}
             {results.length > MAX_RESULTS && (
@@ -100,6 +100,16 @@ export function ClientPicker({ businessId, selected, onSelect, onBack }: ClientP
       </div>
     </div>
   );
+}
+
+function toProposalClient(client: Client): ProposalClient {
+  return {
+    id: client.id,
+    name: client.name,
+    ...(client.company ? { company: client.company } : {}),
+    ...(client.phone ? { phone: client.phone } : {}),
+    ...(client.email ? { email: client.email } : {}),
+  };
 }
 
 function ClientRow({ client, isSelected, onSelect }: { client: Client; isSelected: boolean; onSelect: () => void }) {
@@ -162,8 +172,10 @@ function QuickCreateClient({
       }
       // Se o telefone já existia, usa o cadastro existente (com o nome que ele já tem).
       const snapshot = await getDoc(clientRef);
-      const finalName = (snapshot.data() as Client | undefined)?.name || name.trim();
-      onCreated({ id: resolved.clientId, name: finalName });
+      const stored = snapshot.data() as Client | undefined;
+      onCreated(stored
+        ? toProposalClient({ ...stored, id: resolved.clientId, name: stored.name || name.trim() })
+        : { id: resolved.clientId, name: name.trim() });
     } catch (error) {
       setSubmitError(error instanceof Error && /telefone inválido/i.test(error.message)
         ? 'Telefone inválido. Confira o DDD e o número.'
