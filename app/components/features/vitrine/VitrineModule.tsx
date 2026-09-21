@@ -1,15 +1,16 @@
 'use client';
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence } from 'framer-motion';
 import { toast } from 'react-toastify';
-import { FileText, Package, Presentation, Search, X } from 'lucide-react';
+import { Download, FileText, Package, Presentation, Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/app/components/providers/AuthProvider';
 import type { MenuPage } from '@/app/components/layout/Sidebar';
 import { useTabContext } from '@/app/components/layout/TabContext';
 import { buildLetterhead } from '@/lib/pdf/proposalDocument';
+import { getCanInstall, promptInstall, subscribeInstallPrompt } from '@/lib/pwa/installPrompt';
 import { createApiRequest } from '@/lib/services/vitrine/apiClient';
 import { formatCurrency } from '@/lib/utils/format';
 import { getActivePromotions } from '@/lib/utils/promotions';
@@ -67,6 +68,8 @@ export default function VitrineModule() {
   const [presenting, setPresenting] = useState(false);
   const [proposalOpen, setProposalOpen] = useState(false);
   const [managingPromotions, setManagingPromotions] = useState(false);
+  // Só existe em Chrome/Edge/Android; no iPad a instalação é manual (Compartilhar → Tela de Início).
+  const canInstall = useSyncExternalStore(subscribeInstallPrompt, getCanInstall, () => false);
 
   // As sobreposições vivem em portal no <body> e as abas ficam montadas em paralelo:
   // sem fechar ao sair da aba, elas cobririam o módulo que o usuário abriu.
@@ -127,15 +130,27 @@ export default function VitrineModule() {
           <h1 className="font-display text-2xl font-bold text-gray-900 dark:text-white">Vitrine</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">Catálogo para mostrar ao cliente</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setPresenting(true)}
-          disabled={visible.length === 0}
-          className="flex h-12 touch-manipulation items-center gap-2 rounded-xl bg-red-600 px-5 text-sm font-semibold text-white shadow-sm shadow-red-500/25 transition-colors active:bg-red-700 disabled:opacity-40"
-        >
-          <Presentation className="h-5 w-5" />
-          Modo apresentação
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {canInstall && (
+            <button
+              type="button"
+              onClick={() => void promptInstall()}
+              className="flex h-12 touch-manipulation items-center gap-2 rounded-xl border border-gray-200 px-4 text-sm font-semibold text-gray-700 active:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:active:bg-gray-900"
+            >
+              <Download className="h-4 w-4" />
+              Instalar app
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setPresenting(true)}
+            disabled={visible.length === 0}
+            className="flex h-12 touch-manipulation items-center gap-2 rounded-xl bg-red-600 px-5 text-sm font-semibold text-white shadow-sm shadow-red-500/25 transition-colors active:bg-red-700 disabled:opacity-40"
+          >
+            <Presentation className="h-5 w-5" />
+            Modo apresentação
+          </button>
+        </div>
       </header>
 
       <PromotionsBar promotions={activePromotions} canManage={isAdmin} onManage={() => setManagingPromotions(true)} />

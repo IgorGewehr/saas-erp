@@ -1,7 +1,7 @@
 # Vitrine — demo para a rádio (catálogo, proposta e recebimento no tablet)
 
 Módulo **Vitrine** (menu lateral, ícone de loja). Feito para o vendedor mostrar o catálogo de
-serviços ao cliente no tablet (navegador, sem PWA), negociar, cadastrar o cliente, fechar o
+serviços ao cliente no tablet (navegador ou app instalado — ver "Instalar no tablet"), negociar, cadastrar o cliente, fechar o
 negócio e registrar os recebimentos — **sem nota fiscal e sem boleto**.
 
 Não é um 4º modo de uso nem uma entidade nova: é uma tela sobre o que já existe
@@ -26,6 +26,28 @@ Estoque (produtos)  ──►  Vitrine (catálogo)  ──►  Proposta  ──�
   liberam `transactions` a partir de gerente).
 - **Cadastrar promoções** exige **admin ou acima** (é uma escrita em `businesses/{id}`).
 - Nenhuma variável de ambiente nova. Nenhuma mudança em regras/índices do Firestore.
+
+## Instalar no tablet (PWA)
+
+O Aevo é instalável: vira um ícone na tela inicial e abre **em tela cheia**, sem barra do navegador.
+
+| Aparelho | Como |
+|---|---|
+| **iPad (Safari)** | Abrir o sistema → **Compartilhar** → **Adicionar à Tela de Início** |
+| **Android / Chrome / Edge** | Botão **Instalar app** no topo da Vitrine (ou menu ⋮ → *Instalar app*) |
+
+- **Precisa de HTTPS** (o túnel Cloudflare já entrega). Em `http://IP-da-rede` o app funciona no navegador,
+  mas não instala.
+- **O app instalado do iPad tem armazenamento separado do Safari**: no primeiro acesso é preciso entrar
+  de novo.
+- **Sem conexão**: aparece uma página "Sem conexão" com *Tentar de novo* (e recarrega sozinha quando a
+  rede volta). **Não existe modo offline** — nada de página, dado ou API fica guardado; o ERP é
+  dinâmico e autenticado, e mostrar cópia velha de preço/estoque/financeiro seria pior que avisar.
+- **Atualizações**: como as páginas sempre vêm da rede, publicar uma versão nova vale na próxima abertura
+  do app. O service worker (`public/sw.js`) só guarda a página offline.
+- Ícones em `public/icons/`, gerados por `node scripts/generate-pwa-icons.mjs` a partir de `public/icon.png`.
+- ⚠ **Login com Google usa popup** — em app instalado no iPad isso costuma falhar (não testado aqui).
+  Se falhar, entrar com e-mail e senha.
 
 ## Checklist de dados (fazer antes da demo)
 
@@ -119,7 +141,8 @@ com saldo 0 estourava *Estoque insuficiente* ao faturar. Agora esses itens não 
 ## Fora do escopo desta versão
 
 - **Boleto** e **PIX/cartão ao vivo** no pedido (o recebimento é registrado manualmente).
-- **PWA/offline** (é navegador; sem conexão o fechamento mostra erro e permite tentar de novo).
+- **Modo offline** (o app instalado precisa de internet; sem conexão o fechamento mostra erro e permite
+  tentar de novo, e a navegação mostra "Sem conexão").
 - **Nota fiscal** (NFS-e/NFC-e/NF-e continuam nos módulos próprios; não há emissão aqui).
 - Preço promocional por produto, política de desconto para operador, `Client.totalSpent`.
 - A negociação real da rádio (regras de preço/comissão) — entra quando o cliente explicar.
@@ -142,6 +165,9 @@ promoções, render de tela). O que **só um tablet real confirma** — passar p
 - [ ] PDF: *Gerar PDF* → *Compartilhar* abre a folha de compartilhamento do iPad; *Abrir PDF* mostra no
       visualizador. Conferir acentos, o logo no timbre e a quebra de página numa proposta longa.
 - [ ] Ficha do cliente → Timeline mostra o pedido e as receitas.
+- [ ] Instalar (iPad: Adicionar à Tela de Início; Android: *Instalar app*): ícone correto (arredondado sem
+      bordas estranhas), abre em tela cheia, barra de status legível, e o login funciona dentro do app.
+- [ ] Desligar o Wi-Fi com o app instalado e navegar: aparece "Sem conexão"; ao religar, recarrega.
 - [ ] Modo escuro.
 
 ## Problemas comuns

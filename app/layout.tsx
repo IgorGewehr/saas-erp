@@ -1,9 +1,10 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter, Plus_Jakarta_Sans } from 'next/font/google';
 import './globals.css';
 import ThemeProvider from './components/providers/ThemeProvider';
 import QueryProvider from './components/providers/QueryProvider';
 import AuthProvider from './components/providers/AuthProvider';
+import PwaRegister from './components/providers/PwaRegister';
 import I18nProvider from './components/providers/I18nProvider';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -21,9 +22,21 @@ const plusJakarta = Plus_Jakarta_Sans({
   display: 'swap',
 });
 
+// `viewportFit: 'cover'` fica de fora de propósito: estenderia o app por baixo do notch/barra do iPad
+// e exigiria `env(safe-area-inset-*)` em cada tela.
+export const viewport: Viewport = {
+  themeColor: '#dc2626',
+};
+
 export const metadata: Metadata = {
   title: 'Aevo - Gestão Inteligente',
   description: 'Plataforma completa de gestão e CRM omnichannel: agenda, clientes, financeiro, estoque, fiscal e atendimento via WhatsApp, Instagram e Messenger.',
+  // Instalável no tablet ("Adicionar à Tela de Início"). O manifest vem de app/manifest.ts.
+  appleWebApp: {
+    capable: true,
+    title: 'Aevo',
+    statusBarStyle: 'default',
+  },
   icons: {
     icon: [
       { url: '/favicon.ico', sizes: '32x32' },
@@ -51,6 +64,7 @@ export default function RootLayout({
         />
       </head>
       <body className="antialiased font-sans">
+        <PwaRegister />
         <ThemeProvider>
           <QueryProvider>
             <AuthProvider>
