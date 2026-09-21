@@ -17,6 +17,8 @@ import { ROLE_HIERARCHY, type Product, type UserRole } from '@/lib/types';
 import { PresentationMode } from './PresentationMode';
 import { ProductCard } from './ProductCard';
 import { ProductDetail } from './ProductDetail';
+import { PromotionsBar } from './PromotionsBar';
+import { PromotionsManager } from './PromotionsManager';
 import { ProposalDrawer } from './ProposalDrawer';
 import { useVitrineProducts } from './useVitrineProducts';
 import { useVitrineProposal } from './useVitrineProposal';
@@ -33,6 +35,8 @@ export default function VitrineModule() {
   const roleValue = ROLE_HIERARCHY[(user?.role ?? 'viewer') as UserRole] ?? 0;
   // O servidor recusa desconto de quem não é gerente (403) e as rules só liberam `transactions` pra gerente.
   const isManager = roleValue >= ROLE_HIERARCHY.manager;
+  // `businesses` só aceita update de admin+ (rules) — é quem cadastra promoção.
+  const isAdmin = roleValue >= ROLE_HIERARCHY.admin;
 
   const request = useMemo(
     () => createApiRequest(async () => {
@@ -59,6 +63,7 @@ export default function VitrineModule() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [presenting, setPresenting] = useState(false);
   const [proposalOpen, setProposalOpen] = useState(false);
+  const [managingPromotions, setManagingPromotions] = useState(false);
 
   // As sobreposições vivem em portal no <body> e as abas ficam montadas em paralelo:
   // sem fechar ao sair da aba, elas cobririam o módulo que o usuário abriu.
@@ -68,6 +73,7 @@ export default function VitrineModule() {
     setSelectedId(null);
     setPresenting(false);
     setProposalOpen(false);
+    setManagingPromotions(false);
   }, [isActive]);
 
   const deferredSearch = useDeferredValue(search);
@@ -84,6 +90,7 @@ export default function VitrineModule() {
   const handleCloseDetail = useCallback(() => setSelectedId(null), []);
   const handleExitPresentation = useCallback(() => setPresenting(false), []);
   const handleCloseProposal = useCallback(() => setProposalOpen(false), []);
+  const handleClosePromotions = useCallback(() => setManagingPromotions(false), []);
 
   const handleAdded = useCallback((product: Product) => {
     setSelectedId(null);
@@ -127,6 +134,8 @@ export default function VitrineModule() {
           Modo apresentação
         </button>
       </header>
+
+      <PromotionsBar promotions={activePromotions} canManage={isAdmin} onManage={() => setManagingPromotions(true)} />
 
       <div className="relative">
         <Search className="pointer-events-none absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-gray-400" aria-hidden />
@@ -246,6 +255,11 @@ export default function VitrineModule() {
                 onClose={handleCloseProposal}
                 onNavigate={handleNavigate}
               />
+            )}
+          </AnimatePresence>
+          <AnimatePresence>
+            {managingPromotions && !presenting && business?.id && (
+              <PromotionsManager businessId={business.id} promotions={promotions ?? []} onClose={handleClosePromotions} />
             )}
           </AnimatePresence>
           <AnimatePresence>
