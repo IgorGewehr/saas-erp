@@ -38,7 +38,8 @@ Em **Estoque → Produtos**, para cada serviço do catálogo:
 | **Não controlar estoque** | **Ligar** | Serviço não tem saldo. Sem isso, o faturamento exige saldo em estoque |
 | Saldo | Pode ficar 0 | Só importa para itens COM controle de estoque |
 | Fotos | Adicionar direto da câmera/galeria | Ao salvar, cada foto é **reduzida no próprio navegador** (lado maior 1600 px, JPEG 82%, ~150–400 KB; HEIC do iPad vira JPEG). Fotos **já cadastradas** antes disso não são reduzidas — reenviar para otimizar |
-| Descrição | Linhas `Rótulo: valor` (mín. 2) | Viram a **tabela de especificações**. Ex.: `Duração: 30 segundos` / `Horário: nobre` / `Inserções: 60 por mês`. Com menos de 2 linhas vira texto corrido |
+| Especificações | No cadastro do produto → **Especificações** → *Adicionar especificação* (rótulo + valor) | Viram a **tabela de especificações** na Vitrine, na ordem que você definir (↑/↓). Ex.: `Duração` → `30 segundos` · `Horário` → `nobre` · `Inserções` → `60 por mês` |
+| Descrição | Texto livre (opcional) | Aparece abaixo da tabela. Produtos antigos com linhas `Rótulo: valor` na descrição continuam mostrando a tabela; para migrar, abra o produto e use **Converter em especificações** |
 | Opções (variações) | Opcional (ex.: 15s / 30s / 60s) | Aparecem como escolha ao adicionar; o preço vem da opção |
 
 Depois:
@@ -112,8 +113,8 @@ com saldo 0 estourava *Estoque insuficiente* ao faturar. Agora esses itens não 
 - **Boleto** e **PIX/cartão ao vivo** no pedido (o recebimento é registrado manualmente).
 - **PWA/offline** (é navegador; sem conexão o fechamento mostra erro e permite tentar de novo).
 - **Nota fiscal** (NFS-e/NFC-e/NF-e continuam nos módulos próprios; não há emissão aqui).
-- Preço promocional por produto, especificações estruturadas (campo próprio), PDF/impressão da
-  proposta, política de desconto para operador, `Client.totalSpent`.
+- Preço promocional por produto, PDF/impressão da proposta, política de desconto para operador,
+  `Client.totalSpent`.
 - A negociação real da rádio (regras de preço/comissão) — entra quando o cliente explicar.
 
 ## Teste manual no tablet (não foi possível validar visualmente durante o desenvolvimento)

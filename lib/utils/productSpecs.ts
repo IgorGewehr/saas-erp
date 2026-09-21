@@ -1,21 +1,17 @@
 /**
  * lib/utils/productSpecs.ts
  *
- * Vitrine (tablet): Product não tem campo estruturado de especificações — a
- * convenção da demo é escrever `Rótulo: valor` (uma por linha) na `description`
- * do produto. Este helper interpreta isso numa tabela e devolve o resto como
- * texto. Estruturar num campo próprio fica pra quando o cliente explicar o que
- * realmente precisa (ver plano da Vitrine) — mexer no schema de Product toca
- * ~6 arquivos (produtos são server-write-only).
- *
- * Degrada com graça: se a descrição não parece uma lista de specs, tudo vira
- * texto normal (`rest`) e `specs` fica vazio.
+ * Especificações do produto para a Vitrine (tablet). Duas fontes:
+ *  1. `Product.specs` — campo estruturado (rótulo/valor), editado no cadastro do produto;
+ *  2. legado — linhas `Rótulo: valor` (uma por linha) escritas na `description`. `parseProductSpecs`
+ *     interpreta isso numa tabela e devolve o resto como texto; degrada com graça (se a descrição
+ *     não parece uma lista de specs, tudo vira texto e `specs` fica vazio).
+ * `resolveProductSpecs` escolhe: estruturado primeiro, senão o legado.
  */
 
-export interface ProductSpec {
-  label: string;
-  value: string;
-}
+import type { Product, ProductSpec } from '@/lib/types';
+
+export type { ProductSpec };
 
 export interface ParsedProductSpecs {
   specs: ProductSpec[];
@@ -64,4 +60,37 @@ export function parseProductSpecs(description: string | null | undefined): Parse
   }
   const rest = restLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   return { specs, rest };
+}
+
+const MAX_SPECS = 30;
+
+/** Tira espaços e descarta linha com rótulo OU valor vazio (linha meio digitada não pode barrar o salvar). */
+export function sanitizeSpecs(specs: ProductSpec[] | null | undefined): ProductSpec[] {
+  return (specs ?? [])
+    .map((spec) => ({ label: spec.label.trim(), value: spec.value.trim() }))
+    .filter((spec) => spec.label !== '' && spec.value !== '')
+    .slice(0, MAX_SPECS);
+}
+
+/** Sobe/desce uma linha (delta −1/+1); fora dos limites não muda nada. */
+export function moveSpec(specs: ProductSpec[], index: number, delta: -1 | 1): ProductSpec[] {
+  const target = index + delta;
+  if (index < 0 || index >= specs.length || target < 0 || target >= specs.length) return specs;
+  const next = [...specs];
+  [next[index], next[target]] = [next[target], next[index]];
+  return next;
+}
+
+/**
+ * Especificações a exibir. Com campo estruturado, ele manda e a descrição inteira vira texto
+ * (o autor escolheu manter as linhas lá). Sem ele, cai na convenção antiga `Rótulo: valor`
+ * da descrição — produtos cadastrados antes do campo continuam com a tabela.
+ */
+export function resolveProductSpecs(
+  product: Pick<Product, 'specs' | 'description' | 'menuDescription'>,
+): ParsedProductSpecs {
+  const description = product.description?.trim() || product.menuDescription?.trim() || '';
+  const structured = sanitizeSpecs(product.specs);
+  if (structured.length > 0) return { specs: structured, rest: description };
+  return parseProductSpecs(description);
 }

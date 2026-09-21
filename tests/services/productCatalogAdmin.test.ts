@@ -4,6 +4,7 @@ import type { ProductCatalogData } from '@/lib/contracts/api/product-catalog';
 import {
   archiveProductCatalogAdmin,
   createProductCatalogAdmin,
+  mergeProductImagesAdmin,
   normalizeBarcode,
   normalizeSku,
   ProductCatalogDuplicateIdentifierError,
@@ -328,5 +329,84 @@ describe('product catalog admin core', () => {
       productId: created.id,
       patch: { trackLots: true },
     })).rejects.toBeInstanceOf(ProductCatalogLotTrackingError);
+  });
+});
+
+describe('especificações estruturadas (specs) no núcleo do catálogo', () => {
+  const specs = [
+    { label: 'Duração', value: '30 segundos' },
+    { label: 'Horário', value: 'nobre' },
+  ];
+
+  it('persiste specs no cadastro', async () => {
+    const fake = makeFakeDb();
+    const product = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData({ specs }) });
+
+    expect(product.specs).toEqual(specs);
+    expect(fake.list('products')[0].data.specs).toEqual(specs);
+  });
+
+  it('produto sem specs não grava o campo', async () => {
+    const fake = makeFakeDb();
+    const product = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData() });
+    expect('specs' in product).toBe(false);
+    expect('specs' in fake.list('products')[0].data).toBe(false);
+  });
+
+  it('editar OUTRO campo preserva as specs (o patch é merge, não substituição)', async () => {
+    const fake = makeFakeDb();
+    const created = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData({ specs }) });
+
+    const updated = await updateProductCatalogAdmin({
+      db: fake.db, businessId: 'biz-1', productId: created.id, patch: { salePrice: 2000, name: 'Café Premium' },
+    });
+
+    expect(updated).toMatchObject({ salePrice: 2000, name: 'Café Premium' });
+    expect(updated.specs).toEqual(specs);
+  });
+
+  it('trocar as fotos (upload do Estoque) preserva as specs', async () => {
+    const fake = makeFakeDb();
+    const created = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData({ specs }) });
+
+    const updated = await mergeProductImagesAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      productId: created.id,
+      images: [{ id: 'img-1', url: 'https://cdn.exemplo.com/a.jpg', sortOrder: 0, isPrimary: true }],
+      mode: 'replace',
+    });
+
+    expect(updated.images).toHaveLength(1);
+    expect(updated.specs).toEqual(specs);
+  });
+
+  it('patch com novas specs substitui a lista inteira', async () => {
+    const fake = makeFakeDb();
+    const created = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData({ specs }) });
+
+    const next = [{ label: 'Alcance', value: '50 mil ouvintes' }];
+    const updated = await updateProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', productId: created.id, patch: { specs: next } });
+    expect(updated.specs).toEqual(next);
+  });
+
+  it('patch com specs: [] LIMPA — o campo some do documento', async () => {
+    const fake = makeFakeDb();
+    const created = await createProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', data: productData({ specs }) });
+
+    const updated = await updateProductCatalogAdmin({ db: fake.db, businessId: 'biz-1', productId: created.id, patch: { specs: [] } });
+
+    expect('specs' in updated).toBe(false);
+    expect('specs' in fake.list('products')[0].data).toBe(false);
+  });
+
+  it('spec com rótulo vazio é recusada na escrita (defesa além do contrato do boundary)', async () => {
+    const fake = makeFakeDb();
+    await expect(createProductCatalogAdmin({
+      db: fake.db,
+      businessId: 'biz-1',
+      data: productData({ specs: [{ label: '', value: 'x' }] }),
+    })).rejects.toThrow();
+    expect(fake.list('products')).toHaveLength(0);
   });
 });

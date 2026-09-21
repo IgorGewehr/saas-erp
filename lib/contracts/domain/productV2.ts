@@ -31,6 +31,13 @@ export const ProductImageV2Schema = z.object({
   isPrimary: z.boolean().optional(),
 });
 
+/** Especificação exibida como linha de tabela (ex.: "Duração" → "30 segundos"). */
+export const ProductSpecSchema = z.object({
+  label: z.string().trim().min(1).max(60),
+  value: z.string().trim().min(1).max(200),
+});
+export const PRODUCT_SPECS_MAX = 30;
+
 export const ProductVariantV2Schema = z.object({
   id: z.string().min(1),
   name: z.string().min(1).max(160),
@@ -53,6 +60,7 @@ const ProductV2CanonicalSchema = z.object({
   kind: z.enum(PRODUCT_KINDS),
   name: z.string().min(1).max(200),
   description: z.string().max(2000).optional(),
+  specs: z.array(ProductSpecSchema).max(PRODUCT_SPECS_MAX).optional(),
   sku: z.string().max(80).optional(),
   barcode: z.string().max(80).optional(),
   category: z.string().min(1).max(100),

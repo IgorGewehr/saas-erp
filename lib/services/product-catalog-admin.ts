@@ -210,6 +210,7 @@ function buildProductDocument(params: {
     modifierGroups: Array.isArray(merged.modifierGroups) && merged.modifierGroups.length > 0
       ? merged.modifierGroups
       : undefined,
+    specs: Array.isArray(merged.specs) && merged.specs.length > 0 ? merged.specs : undefined,
     dietary: Array.isArray(merged.dietary) && merged.dietary.length > 0 ? merged.dietary : undefined,
     createdAt: typeof merged.createdAt === 'string' ? merged.createdAt : params.now,
     updatedAt: params.now,

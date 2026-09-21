@@ -52,6 +52,21 @@ describe('Vitrine — o que o cliente vê', () => {
     expect(html).toContain('60 por mês');
   });
 
+  it('especificações estruturadas têm prioridade; a descrição inteira aparece como texto', () => {
+    const html = renderToStaticMarkup(
+      <ProductInfo product={makeProduct({
+        specs: [{ label: 'Alcance', value: '50 mil ouvintes' }],
+        description: 'Duração: 30 segundos\nHorário: nobre\nPacote mensal.',
+      })}
+      />,
+    );
+    expect(html).toContain('Especificações');
+    expect(html).toContain('Alcance');
+    expect(html).toContain('50 mil ouvintes');
+    expect(html).not.toMatch(/<dt[^>]*>Duração<\/dt>/);
+    expect(html).toContain('Pacote mensal.');
+  });
+
   it('descrição sem "Rótulo: valor" aparece como texto corrido, sem tabela', () => {
     const html = renderToStaticMarkup(
       <ProductInfo product={makeProduct({ description: 'Spot de 30 segundos em horário nobre.' })} />,

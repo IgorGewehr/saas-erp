@@ -2,11 +2,10 @@
 
 import { cn } from '@/lib/utils';
 import { formatCurrency } from '@/lib/utils/format';
-import { parseProductSpecs } from '@/lib/utils/productSpecs';
+import { resolveProductSpecs } from '@/lib/utils/productSpecs';
 import {
   getActiveVariants,
   getDisplayPrice,
-  getProductDescription,
   productCategory,
 } from '@/lib/utils/vitrineCatalog';
 import type { Product } from '@/lib/types';
@@ -23,7 +22,7 @@ interface ProductInfoProps {
 export function ProductInfo({ product, hidePrices = false, large = false }: ProductInfoProps) {
   const price = getDisplayPrice(product);
   const variants = getActiveVariants(product);
-  const { specs, rest } = parseProductSpecs(getProductDescription(product));
+  const { specs, rest } = resolveProductSpecs(product);
 
   return (
     <div className="space-y-4">

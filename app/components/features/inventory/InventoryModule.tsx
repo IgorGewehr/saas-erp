@@ -76,6 +76,7 @@ import type {
   StockLotSummary,
   ProductComponent,
   ProductModifierGroup,
+  ProductSpec,
   MenuCategory,
 } from '@/lib/types';
 import type { ProductCatalogData } from '@/lib/contracts/api/product-catalog';
@@ -107,6 +108,8 @@ import MenuCategoriesManager from './MenuCategoriesManager';
 import NcmSelector from '@/app/components/features/fiscal/NcmSelector';
 import { onSnapshot } from 'firebase/firestore';
 import { Sparkles } from 'lucide-react';
+import { sanitizeSpecs } from '@/lib/utils/productSpecs';
+import { ProductSpecsEditor } from './ProductSpecsEditor';
 import {
   importProductCsvRows,
   parseProductCsv,
@@ -135,6 +138,7 @@ type ProductUnit = 'UN' | 'KG' | 'L' | 'M' | 'M2' | 'M3' | 'CX' | 'PCT';
 interface ProductFormData {
   name: string;
   description: string;
+  specs: ProductSpec[];
   sku: string;
   barcode: string;
   category: string;
@@ -220,6 +224,7 @@ const CATEGORY_ICONS: Record<string, React.ReactNode> = {
 const EMPTY_PRODUCT_FORM: ProductFormData = {
   name: '',
   description: '',
+  specs: [],
   sku: '',
   barcode: '',
   category: 'Produto',
@@ -1866,6 +1871,7 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
         setForm({
           name: product.name,
           description: product.description || '',
+          specs: product.specs ? product.specs.map((spec) => ({ ...spec })) : [],
           sku: product.sku || '',
           barcode: product.barcode || '',
           category: product.category,
@@ -2100,6 +2106,13 @@ function ProductDialog({ open, onClose, onSave, product, allProducts = [], deliv
               multiline
               rows={2}
               size="small"
+            />
+
+            <ProductSpecsEditor
+              value={form.specs}
+              onChange={(specs) => setForm((current) => ({ ...current, specs }))}
+              description={form.description}
+              onDescriptionChange={(next) => updateField('description', next)}
             />
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -3020,6 +3033,8 @@ export default function InventoryModule() {
     const productData: ProductCatalogData = {
       name: data.name.trim(),
       description: data.description.trim() || undefined,
+      // Sempre a lista (mesmo vazia): o update é merge, `undefined` não apagaria as specs removidas.
+      specs: sanitizeSpecs(data.specs),
       sku,
       barcode: data.barcode.trim() || undefined,
       category: data.category,

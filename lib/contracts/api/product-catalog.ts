@@ -9,7 +9,9 @@ import {
 import {
   PRODUCT_COST_METHODS,
   PRODUCT_KINDS,
+  PRODUCT_SPECS_MAX,
   ProductImageV2Schema,
+  ProductSpecSchema,
   ProductVariantV2Schema,
 } from '@/lib/contracts/domain/productV2';
 
@@ -19,6 +21,8 @@ export const ProductCatalogDataSchema = z.object({
   kind: z.enum(PRODUCT_KINDS).optional(),
   name: z.string().trim().min(1).max(200),
   description: optionalText(2000),
+  /** `[]` limpa as especificações no update (o patch é um merge; `undefined` não altera). */
+  specs: z.array(ProductSpecSchema).max(PRODUCT_SPECS_MAX).optional(),
   sku: optionalText(80),
   barcode: optionalText(80),
   category: z.string().trim().min(1).max(100),

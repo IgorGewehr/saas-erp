@@ -1654,6 +1654,8 @@ export interface Product {
   kind?: 'simple' | 'variant' | 'composite';
   name: string;
   description?: string;
+  /** Especificações estruturadas (tabela na Vitrine). Ausente = a Vitrine lê linhas "Rótulo: valor" da descrição. */
+  specs?: ProductSpec[];
   sku?: string;
   skuNormalized?: string;
   barcode?: string;
@@ -1714,6 +1716,11 @@ export interface Product {
   components?: ProductComponent[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProductSpec {
+  label: string;
+  value: string;
 }
 
 export interface ProductImage {
