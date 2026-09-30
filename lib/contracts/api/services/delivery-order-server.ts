@@ -40,6 +40,11 @@ export const CreateDeliveryOrderWithSideEffectsInputSchema = z.object({
   deliveryAddress: DeliveryOrderAddressSchema.optional(),
   /** Número/identificador da mesa no salão — só relevante pra deliveryType='mesa'. */
   tableNumber: z.string().min(1).max(20).optional(),
+  /** FK pra uma `tableSessions/{id}` ABERTA — vincula o pedido a uma comanda de
+   *  mesa. O serviço valida (mesmo businessId + status 'aberta') antes de criar
+   *  e faz o arrayUnion do orderId na sessão depois. Ver
+   *  lib/services/table-session-admin.ts. */
+  tableSessionId: z.string().min(1).optional(),
   /** Taxa proposta pelo operador (reais) quando nenhuma zona resolve o
    *  endereço. Só tem efeito com permissão de gerente+ (ver executionContext
    *  de delivery-order-server.ts); ignorada quando uma zona casa. */

@@ -24,8 +24,9 @@ RUN groupadd --system --gid 1001 nextjs \
 
 WORKDIR /app
 
-# Copy pre-built app (standalone nests files under the project path)
-COPY --chown=nextjs:nextjs .next/standalone/development/service-provider-pro ./
+# Copy pre-built app. `output: 'standalone'` emits a self-contained tree with
+# server.js at its root; .next/static and public are copied alongside.
+COPY --chown=nextjs:nextjs .next/standalone ./
 COPY --chown=nextjs:nextjs .next/static ./.next/static
 COPY --chown=nextjs:nextjs public ./public
 

@@ -50,6 +50,7 @@ import {
   Coffee,
   Ban,
   RotateCcw,
+  UtensilsCrossed,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
@@ -213,6 +214,9 @@ export default function PDVModule() {
   const [isSaving, setIsSaving] = useState(false);
   const [saleError, setSaleError] = useState<string | null>(null);
   const [lastSaleId, setLastSaleId] = useState<string | null>(null);
+  // Fechamento de comanda de mesa: carrinho pré-carregado pela tela Mesas.
+  // Após o checkout, POST /api/table-sessions/{id}/settle liquida a comanda.
+  const [tableCheckout, setTableCheckout] = useState<{ tableSessionId: string; tableLabel: string; orderCount: number } | null>(null);
 
   // NFC-e state
   const [emitirNfce, setEmitirNfce] = useState(false);
@@ -273,6 +277,38 @@ export default function PDVModule() {
       searchInputRef.current?.focus();
     }
   }, [mainView]);
+
+  // Fechamento de comanda: a tela Mesas ("Enviar pro PDV") deixa o carrinho
+  // consolidado em sessionStorage. Semeia o cart e guarda a sessão pra liquidar
+  // depois do checkout.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const raw = sessionStorage.getItem('pendingTableCheckout');
+    if (!raw) return;
+    sessionStorage.removeItem('pendingTableCheckout');
+    try {
+      const data = JSON.parse(raw) as {
+        tableSessionId?: string; tableLabel?: string; orderCount?: number;
+        items?: Array<{ productId: string; productName: string; quantity: number; unitPrice: number; total: number; selectedModifiers?: SelectedModifier[]; basePrice?: number }>;
+      };
+      if (!data.tableSessionId || !data.tableLabel || !data.items?.length) return;
+      setTableCheckout({ tableSessionId: data.tableSessionId, tableLabel: data.tableLabel, orderCount: data.orderCount ?? 0 });
+      setCart(data.items.map((it, i) => ({
+        id: `cart-mesa-${i}-${Date.now()}`,
+        productId: it.productId,
+        description: it.productName,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        discount: 0,
+        total: it.total,
+        itemType: 'product' as const,
+        ...(it.selectedModifiers?.length ? { selectedModifiers: it.selectedModifiers } : {}),
+        ...(it.basePrice !== undefined ? { basePrice: it.basePrice } : {}),
+      })));
+    } catch (err) {
+      console.warn('[PDV] pendingTableCheckout inválido:', err);
+    }
+  }, []);
 
   // --- Firestore Queries ---
   // Products via onSnapshot (refactor sync multi-user):
@@ -735,6 +771,7 @@ export default function PDVModule() {
     setGiftCardLookup(null);
     setGiftCardError(null);
     setLastSaleId(null);
+    setTableCheckout(null);
     setPbStep('success');
     setPbDate('');
     setPbServiceId('');
@@ -1117,6 +1154,29 @@ export default function PDVModule() {
 
       setLastSaleId(docRef.id);
 
+      // Liquida a comanda de mesa (fechada → paga): marca cada pedido vinculado
+      // como entregue com settledViaSaleId (sem receita própria). Best-effort —
+      // a venda já está commitada; a rota é idempotente por saleId.
+      if (tableCheckout) {
+        try {
+          const settleRes = await fetch(`/api/table-sessions/${tableCheckout.tableSessionId}/settle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ businessId: business.id, saleId: docRef.id }),
+          });
+          if (!settleRes.ok) {
+            const p = await settleRes.json().catch(() => null) as { error?: string } | null;
+            toast.warning(`Venda ok, mas a mesa não fechou: ${p?.error || 'erro'}. Revincule em Mesas.`);
+          } else {
+            toast.success(`${tableCheckout.tableLabel} paga e fechada.`);
+          }
+        } catch (err) {
+          console.warn('[PDV] settle table session failed:', err);
+          toast.warning('Venda ok, mas a mesa não fechou automaticamente. Verifique em Mesas.');
+        }
+        setTableCheckout(null);
+      }
+
       // NFC-e emission (if toggled on)
       if (emitirNfce) {
         // Save context for retry capability
@@ -1158,7 +1218,7 @@ export default function PDVModule() {
     } finally {
       setIsSaving(false);
     }
-  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, tipAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce, resetSale, firebaseUser]);
+  }, [user, business, cart, selectedClient, payments, subtotal, discountAmount, tipAmount, total, products, queryClient, emitirNfce, cpfConsumidor, emitNfce, resetSale, firebaseUser, tableCheckout]);
 
   const cancelSale = useCallback(() => {
     saleIdemKeyRef.current = null;
@@ -1177,7 +1237,11 @@ export default function PDVModule() {
     setGiftCardCode('');
     setGiftCardLookup(null);
     setGiftCardError(null);
-  }, []);
+    if (tableCheckout) {
+      toast.info(`Fechamento de ${tableCheckout.tableLabel} cancelado — a comanda continua fechada em Mesas.`);
+      setTableCheckout(null);
+    }
+  }, [tableCheckout]);
 
   // M02.7: cancelamento migrado pro serviço server-side único
   // (lib/services/sale-transition-admin.ts) — a sequência inline de writes
@@ -2013,6 +2077,13 @@ export default function PDVModule() {
 
       {/* ========== RIGHT PANEL - Cart/Checkout ========== */}
       <div className="w-full lg:w-[40%] flex flex-col bg-white dark:bg-[#111827]">
+        {tableCheckout && (
+          <div className="px-6 py-2.5 bg-indigo-600 text-white flex items-center gap-2 text-sm font-semibold">
+            <UtensilsCrossed size={16} />
+            Fechando {tableCheckout.tableLabel}
+            {tableCheckout.orderCount > 0 && ` · ${tableCheckout.orderCount} pedido${tableCheckout.orderCount === 1 ? '' : 's'}`}
+          </div>
+        )}
         {/* Cart Header */}
         <div className="px-6 pt-6 pb-4 border-b border-slate-100 dark:border-gray-800">
           <div className="flex items-center justify-between mb-3">

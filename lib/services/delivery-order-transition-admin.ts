@@ -182,6 +182,12 @@ export async function transitionDeliveryOrderAdmin(params: {
   actor: DeliveryOrderTransitionActor;
   reason?: string;
   now?: Date;
+  /** Liquidação de comanda de mesa: quando presente e `targetStatus==='entregue'`,
+   *  o pedido é marcado entregue SEM lançar receita própria (sem
+   *  `transactions/{orderId}_revenue`, sem loyalty/clientPurchase). A receita
+   *  única sai pela Sale `settleViaSaleId` criada no checkout do PDV. Só é aceito
+   *  se o pedido tiver `tableSessionId`. Ver lib/services/table-session-admin.ts. */
+  settleViaSaleId?: string;
 }): Promise<DeliveryOrderTransitionResult> {
   const db = params.db ?? adminDb;
   const now = params.now ?? new Date();
@@ -203,7 +209,25 @@ export async function transitionDeliveryOrderAdmin(params: {
   let revenueBooked = false;
   let stockAlerts: StockAlert[] = [];
 
-  if (params.targetStatus === 'entregue') {
+  if (params.targetStatus === 'entregue' && params.settleViaSaleId) {
+    // Liquidação por comanda de mesa: entrega SEM receita própria. A Sale do PDV
+    // (settleViaSaleId) já lançou a receita consolidada + registrou a compra.
+    if (!order.tableSessionId) {
+      throw new DeliveryOrderTransitionError(
+        'SETTLE_WITHOUT_TABLE_SESSION',
+        'settleViaSaleId só é válido para pedido vinculado a uma comanda de mesa.',
+      );
+    }
+    if (isOnlineOrder(order) && order.paymentFsmStatus !== 'paid') {
+      throw new DeliveryOrderTransitionError('ONLINE_UNPAID', 'Pedido online ainda não foi pago — não é possível entregar.');
+    }
+    await orderRef.update({
+      status: 'entregue',
+      deliveredAt: nowIso,
+      settledViaSaleId: params.settleViaSaleId,
+      updatedAt: nowIso,
+    });
+  } else if (params.targetStatus === 'entregue') {
     revenueBooked = await bookDeliveryRevenueAdmin(db, params.businessId, params.orderId, now);
   } else if (params.targetStatus === 'cancelado') {
     await restoreOrderStockRecoverable(params.orderId, params.businessId, {

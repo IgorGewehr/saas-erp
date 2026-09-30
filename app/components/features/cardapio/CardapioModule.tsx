@@ -19,6 +19,8 @@ import type {
 import { computeModifierDelta, round2, validateAndCleanModifiers } from '@/lib/services/orders/pricing';
 import { isOutOfStock, type StockResolver } from '@/lib/utils/menu-availability';
 import { toast } from 'react-toastify';
+import MesaQrCodes, { CardapioLinkMissing } from './MesaQrCodes';
+import type { BusinessTable } from '@/lib/contracts/domain/tableSession';
 
 type DietaryTag = NonNullable<Product['dietary']>[number];
 
@@ -996,6 +998,18 @@ export default function CardapioModule() {
           </p>
         </div>
       </motion.div>
+
+      {/* Link público + QR codes por mesa */}
+      {business?.slug ? (
+        <MesaQrCodes
+          slug={business.slug}
+          tables={(business.settings?.aiAgent?.pedidos?.tables ?? []) as BusinessTable[]}
+          businessName={business.nomeFantasia || business.razaoSocial || 'Cardápio'}
+          onConfigure={() => setActivePage('Configurações')}
+        />
+      ) : (
+        <CardapioLinkMissing onConfigure={() => setActivePage('Configurações')} />
+      )}
 
       {/* Search */}
       <div className="relative">
